@@ -20,11 +20,25 @@ Two things had to be fixed to get here (see docs/data-sources.md for the full st
    frame-0 comparison looked like nothing. Scanning the product found a long, stable, well-lit
    stretch around frames 240-530; `build_camera_from_spice.TARGET_FRAME_INDEX` (440) was moved
    there so the synthetic camera and this real-image comparison both land on visible terrain.
+
+The crop uses the full 704-sample width and however many along-track frames cover that same real
+ground distance -- i.e. a square patch of real ground, not a fixed pixel count. The frame count is
+computed from the real WAC color-mode FOV and the actual orbital ground speed at this pose (see
+`build_camera_from_spice.compute_n_frames_for_square_crop`), not a magic constant -- so the
+resulting crop won't be square in *pixels* (704 samples cross-track vs. a different line count
+along-track, since the two axes have different native GSD), but is square in real km, matching the
+synthetic camera's FOV (which is sized from the same real WAC FOV figure).
 """
 import numpy as np
 
 from cache_utils import fetch_lroc_cdr_file
-from build_camera_from_spice import EDR_SUBDIR, EDR_DOY, TARGET_FRAME_INDEX
+from build_camera_from_spice import (
+    EDR_SUBDIR,
+    EDR_DOY,
+    TARGET_FRAME_INDEX,
+    fetch_edr_label,
+    compute_n_frames_for_square_crop,
+)
 
 # CDR uses a different PDS volume/product-suffix convention than EDR for the same acquisition --
 # see docs/data-sources.md ("Chosen EDR product for this demo").
@@ -47,9 +61,15 @@ VIS_BLOCK_HEIGHT = 14
 MISSING_CONSTANT = np.uint32(0xFF7FFFFB).view(np.float32)  # per the CDR label's Special_Constants
 
 
-def fetch_vis_mosaic(start_frame: int = TARGET_FRAME_INDEX, n_frames: int = 19) -> np.ndarray:
+def fetch_vis_mosaic(start_frame: int = TARGET_FRAME_INDEX, n_frames: int = None) -> np.ndarray:
     """Stack one VIS filter's TDI-line block from `n_frames` consecutive frames starting at
-    `start_frame`, producing a single continuous (n_frames * 14, 704) image."""
+    `start_frame`, producing a single continuous (n_frames * 14, 704) image. If `n_frames` isn't
+    given, it's computed so the crop covers the same real ground distance as the 704-sample
+    cross-track width -- see `build_camera_from_spice.compute_n_frames_for_square_crop`."""
+    if n_frames is None:
+        edr = fetch_edr_label()
+        n_frames = compute_n_frames_for_square_crop(edr, start_frame)["n_frames_for_square_crop"]
+
     img_path = fetch_lroc_cdr_file(CDR_VOLUME, EDR_SUBDIR, EDR_DOY, CDR_PRODUCT, "IMG")
     byte_start = PDS3_HEADER_BYTES + start_frame * FRAME_BYTES
     with open(img_path, "rb") as f:

@@ -175,18 +175,46 @@ Two fixes were needed to get a real image that's actually comparable to the synt
    both the synthetic camera and the real-image comparison land on visible terrain. (This also
    explains why the very first version of this comparison, which used frame 0, looked like nothing
    no matter how the data was decoded: there was essentially no signal to see there.)
-3. Verified visually: stacking 19 consecutive frames' VIS blocks (266 lines x 704 samples) starting
-   at frame 440, contrast-stretched over valid (non-`missing_constant`) pixels, produces a clearly
-   recognizable cratered lunar scene that visibly matches the synthetic render's terrain (same
-   bright diagonal feature, same dark crater) — confirms both the band-separation logic and the
+3. Verified visually (first with a fixed 19-frame crop, then with the real-geometry-sized crop
+   below), contrast-stretched over valid (non-`missing_constant`) pixels: produces a clearly
+   recognizable, dramatic cratered lunar scene (a large crater with a bright central peak/rim and
+   dark, likely-permanently-shadowed floor) — confirms both the band-separation logic and the
    frame choice are correct.
 
 Product chosen and used (see above): `M1329714703CE`, posed at **framelet index 440** (not 0).
 Computed LRO position in `MOON_ME` at that instant: sub-spacecraft/output camera center lon/lat/alt
 ≈ (112.03°, -82.56°, 68.51 km) — still consistent with LRO's low south-polar Fourth Extended
-Science Mission orbit, just a different point along the same pass than frame 0. Camera intrinsics:
-`fu=fv` derived from the actual slant range at this instant, `cu=cv=128`, 256x256, `pitch=1`
-(chosen so GSD ≈ 100 m/px to match Lunaserv's WAC/GLD100 source resolution).
+Science Mission orbit, just a different point along the same pass than frame 0.
+
+### Square-crop sizing: real ground area, not a fixed pixel/frame count
+
+Originally the synthetic camera's FOV was sized to hit a fixed ~100 m/px GSD at 256x256, and the
+real CDR comparison crop used a fixed 19 frames (chosen ad hoc to look roughly 256 px tall) —
+neither was grounded in the instrument's actual FOV, so the two images didn't reliably cover the
+same real ground area. Fixed by deriving both from the real WAC color-mode field of view:
+
+- Tried reading the real FOV straight out of the loaded WAC-VIS IK via
+  `spice.getfov(-85621, ...)` — it returns a symmetric ~91.6°-derived pyramid, which matches the
+  SIS's **monochrome**-mode cross-track FOV (91.7°), not the narrower color-mode readout (which
+  only uses the center 704 of the full ~1024-wide detector). So the IK's generic FOV entry isn't
+  usable directly for the color-mode crop; the SIS's explicit color-mode figure — **61.4°** — is
+  used instead (`build_camera_from_spice.WAC_VIS_COLOR_FOV_DEG`).
+- The synthetic camera's `fu=fv` is now `(IMAGE_SIZE/2) / tan(61.4°/2)` (≈215.6 px at 256x256) —
+  its angular FOV literally equals the real WAC color-mode FOV at the same pose, so its footprint
+  matches the real swath width by construction.
+- The real cross-track ground width at frame 440's exact pose is computed by ray-tracing the
+  ±30.7° rays (half of 61.4°) along the camera's cross-track axis to the Moon's sphere and taking
+  the chord distance between the two ground points (`cross_track_width_km`) — **≈82.0 km**
+  (implied GSD ≈82.0 km/704 ≈ 116 m/px, a plausible value for WAC at this ~68.5 km altitude).
+- The real per-frame ground advance (`km_per_frame`) is the chord distance between the boresight
+  ground point at frame 440 and frame 450, divided by 10 — **≈1.147 km/frame**.
+- `n_frames_for_square_crop = round(cross_track_width_km / km_per_frame)` — **71 frames**, giving
+  a `71*14 = 994` line x 704 sample real CDR crop. Not square in *pixels* (cross-track and
+  along-track have different native GSD), but square in real km, matching the synthetic camera's
+  FOV — this was the user's explicit request and tolerance.
+- All of this lives in `build_camera_from_spice.compute_n_frames_for_square_crop()`, reusable by
+  both `build()` (included in its returned info dict) and `fetch_wac_comparison.fetch_vis_mosaic()`
+  (used as its default `n_frames` when not given explicitly).
 
 **Gotcha (fixed):** the Lunaserv WMS tile cache is keyed by `(layer, bbox, width, height, format)`,
 so after `TARGET_FRAME_INDEX` moved from 0 to 440 the cache ended up holding tiles for *both*

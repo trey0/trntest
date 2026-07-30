@@ -36,7 +36,16 @@ PDS_NS = {
 TARGET_FRAME_INDEX = 440
 
 IMAGE_SIZE = 256
-TARGET_GSD_M = 100.0  # match Lunaserv's GLD100/WAC ~100 m/px source resolution
+
+# LROC EDR/CDR SIS: "The VIS optics have a cross-track FOV of 91.7 deg (monochrome) and 61.4 deg
+# (color)." Color mode is what this product uses (INSTRUMENT_MODE_ID = COLOR) and only reads out
+# the center 704 (of ~1024) columns -- this is that narrower FOV, not the full-detector one. (An
+# attempt to read the real FOV straight out of the loaded WAC-VIS IK via `spice.getfov(-85621, ...)`
+# returned a ~91.6 deg-derived pyramid instead -- that's the generic/monochrome-mode FOV entry, not
+# usable for the color-mode crop, so the SIS's explicit color-mode figure is used directly.)
+# Used both to size the synthetic camera's FOV and to size the real WAC CDR comparison crop
+# (see compute_n_frames_for_square_crop) so the two cover the same real ground area.
+WAC_VIS_COLOR_FOV_DEG = 61.4
 
 
 @dataclass
@@ -89,6 +98,57 @@ def ray_sphere_intersect_range(origin_km: np.ndarray, direction_unit: np.ndarray
         return None
     t = (-b - np.sqrt(disc)) / 2  # near intersection
     return t
+
+
+def ground_chord_km(p1_km: np.ndarray, p2_km: np.ndarray) -> float:
+    """Straight-line (chord) distance between two MOON_ME points, in km -- fine at these short
+    (tens of km) distances; no need for a full geodesic/haversine calculation."""
+    return float(np.linalg.norm(p1_km - p2_km))
+
+
+def boresight_ground_point_km(c_km: np.ndarray, r_cam_to_me: np.ndarray) -> np.ndarray:
+    boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
+    t = ray_sphere_intersect_range(c_km, boresight_me)
+    return c_km + t * boresight_me
+
+
+def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_rad: float) -> float:
+    """Real cross-track ground width at this exact pose: ray-trace the +/- half-angle rays along
+    the camera's x (cross-track) axis to the Moon's surface and return the distance between them."""
+    left_me = r_cam_to_me @ np.array([-np.sin(half_angle_rad), 0.0, np.cos(half_angle_rad)])
+    right_me = r_cam_to_me @ np.array([np.sin(half_angle_rad), 0.0, np.cos(half_angle_rad)])
+    left_ground = c_km + ray_sphere_intersect_range(c_km, left_me) * left_me
+    right_ground = c_km + ray_sphere_intersect_range(c_km, right_me) * right_me
+    return ground_chord_km(left_ground, right_ground)
+
+
+def km_per_frame(edr: EdrInfo, frame_index: int, n: int = 10) -> float:
+    """Real ground advance per framelet, smoothed over `n` frames (boresight ground point at
+    frame_index vs. frame_index + n, divided by n)."""
+    c0_m, r0, _, _ = camera_pose_moon_me(frame_et(edr, frame_index))
+    c1_m, r1, _, _ = camera_pose_moon_me(frame_et(edr, frame_index + n))
+    ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)
+    ground1 = boresight_ground_point_km(c1_m / 1000.0, r1)
+    return ground_chord_km(ground0, ground1) / n
+
+
+def compute_n_frames_for_square_crop(edr: EdrInfo, frame_index: int = TARGET_FRAME_INDEX) -> dict:
+    """How many consecutive frames of the real WAC CDR (full 704-sample width) are needed so the
+    along-track distance covered matches the real cross-track swath width -- i.e. a square crop
+    of real ground, per the demo's objective (see docs/plan.md). Self-contained: furnishes SPICE
+    kernels and computes the pose itself, so callers only need an EdrInfo."""
+    fetch_and_furnish(edr.start_time)
+    et = frame_et(edr, frame_index)
+    c_meters, r_cam_to_me, _, _ = camera_pose_moon_me(et)
+    half_angle_rad = np.radians(WAC_VIS_COLOR_FOV_DEG / 2.0)
+    w_cross_km = cross_track_width_km(c_meters / 1000.0, r_cam_to_me, half_angle_rad)
+    per_frame_km = km_per_frame(edr, frame_index)
+    n_frames = max(1, round(w_cross_km / per_frame_km))
+    return {
+        "cross_track_width_km": w_cross_km,
+        "km_per_frame": per_frame_km,
+        "n_frames_for_square_crop": n_frames,
+    }
 
 
 def pixel_ray_cam(px: float, py: float, fu: float, fv: float, cu: float, cv: float) -> np.ndarray:
@@ -145,12 +205,14 @@ def build(output_tsai_path):
     et = frame_et(edr, TARGET_FRAME_INDEX)
 
     c_meters, r_cam_to_me, slant_range_km, off_nadir_deg = camera_pose_moon_me(et)
-    fu = fv = (slant_range_km * 1000.0) / TARGET_GSD_M
+    half_angle_rad = np.radians(WAC_VIS_COLOR_FOV_DEG / 2.0)
+    fu = fv = (IMAGE_SIZE / 2.0) / np.tan(half_angle_rad)
     cu = cv = IMAGE_SIZE / 2.0
 
     write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
 
     footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, IMAGE_SIZE)
+    crop_info = compute_n_frames_for_square_crop(edr, TARGET_FRAME_INDEX)
 
     return {
         "et": et,
@@ -159,6 +221,7 @@ def build(output_tsai_path):
         "off_nadir_deg": off_nadir_deg,
         "focal_length_px": fu,
         "footprint_lonlat_deg": footprint,
+        **crop_info,
     }
 
 

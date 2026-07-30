@@ -32,8 +32,10 @@ data-caching approach. Update those files (not just this one) as concrete choice
   the minimal kernel set (~585 MB, dominated by one 10-day `lrosc` CK chunk) and verifies CK
   coverage for both the SC_BUS (-85000) and WAC (-85620) frames at the target ET.
   `scripts/build_camera_from_spice.py` computes LRO's position + WAC-VIS boresight orientation
-  directly in `MOON_ME`, derives focal length from the actual slant range to hit ~100 m/px GSD at
-  256x256, writes `output/camera_frame440.tsai`, and computes the 4-corner+center ground footprint
+  directly in `MOON_ME`, derives focal length so the camera's FOV equals the real documented WAC
+  color-mode FOV (61.4°, see "Square-crop sizing" below — originally derived from a fixed ~100
+  m/px GSD target instead, revised), writes `output/camera_frame440.tsai`, and computes the
+  4-corner+center ground footprint
   (via analytic sphere intersection, not `sincpt`, since our synthetic camera isn't a registered
   SPICE frame). **Checkpoint passed (at frame 0, before the frame-index move):** altitude came out
   ~64 km at ~79°S — squarely consistent with LRO's known Fourth Extended Science Mission frozen
@@ -77,6 +79,17 @@ data-caching approach. Update those files (not just this one) as concrete choice
      terrain only appearing from frame ~240 onward. Moved `TARGET_FRAME_INDEX` to **440** (Phase 2)
      as a result. Final result: a clearly recognizable cratered scene that visually matches the
      synthetic render (same bright diagonal feature, same dark crater) — verified by eye.
+  4. **Square-crop sizing revision:** the synthetic camera's FOV and the CDR crop's frame count
+     were originally sized independently (fixed ~100 m/px GSD target; fixed 19 frames chosen ad
+     hoc) and didn't reliably cover the same real ground area. Fixed by grounding both in the real
+     WAC color-mode FOV (61.4°, from the SIS — `spice.getfov` on the loaded WAC-VIS IK returns the
+     wrong, monochrome-mode ~91.7° FOV instead, so it can't be used directly): the synthetic
+     camera's `fu=fv` is now derived from that angle directly, and
+     `build_camera_from_spice.compute_n_frames_for_square_crop()` ray-traces the real cross-track
+     ground width (≈82.0 km) and per-frame ground advance (≈1.147 km) to pick the frame count
+     (71, giving a 994x704 CDR crop) so both images cover the same real square ground area — not
+     square in pixels, but square in km, per the user's explicit request. See
+     `docs/data-sources.md` ("Square-crop sizing") for the full derivation.
 - [x] **Phase 6 — Notebook.** `notebooks/lunar_sat_sim_demo.ipynb` drives all the `scripts/`
   modules end to end: SPICE pose → Lunaserv DEM/ortho → footprint-over-mosaic plot → `sat_sim`
   render + `cam_gen` CSM/ISD JSON → real WAC CDR band-separated comparison. Verified with
