@@ -13,16 +13,15 @@ we treat the metakernel purely as a manifest: parse it, then download only:
 
 See docs/data-sources.md and docs/caching.md for the background.
 """
+
 import re
-import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import requests
 import spiceypy as spice
 
-from cache_utils import fetch_naif_kernel, naif_url, CACHE_ROOT
-
-MK_DIR_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/extras/mk/"
+from trntest import cache
+from trntest.config import TrntestConfig, load_config
 
 # Kernels needed no matter what date we're targeting.
 ALWAYS_KERNELS = [
@@ -42,18 +41,23 @@ WAC_CK_PREFIXES = ("lrosc", "lrolc")
 
 DATE_RANGE_RE = re.compile(r"_(\d{7})_(\d{7})_v\d+\.(bc|bsp)$")
 
+LRO_ID = -85
+LRO_SC_BUS_ID = -85000
+LRO_LROCWAC_ID = -85620
+
 
 def doy_code(dt: datetime) -> int:
     """YYYYDDD integer used in NAIF's LRO kernel filenames, e.g. 2019-11-30 -> 2019334."""
     return dt.year * 1000 + dt.timetuple().tm_yday
 
 
-def latest_metakernel_url(year: int) -> str:
-    resp = requests.get(MK_DIR_URL, timeout=30)
+def latest_metakernel_url(year: int, config: TrntestConfig) -> str:
+    mk_dir_url = f"{config.naif_base_url}extras/mk/"
+    resp = requests.get(mk_dir_url, timeout=30)
     resp.raise_for_status()
     versions = [int(m) for m in re.findall(rf"lro_{year}_v(\d+)\.tm", resp.text)]
     if not versions:
-        raise RuntimeError(f"no metakernel found for year {year} at {MK_DIR_URL}")
+        raise RuntimeError(f"no metakernel found for year {year} at {mk_dir_url}")
     return f"extras/mk/lro_{year}_v{max(versions):02d}.tm"
 
 
@@ -80,9 +84,9 @@ def select_date_ranged(paths: list[str], target_doy: int, subdir: str, prefixes=
     return selected
 
 
-def select_kernels_for(target_dt: datetime) -> list[str]:
-    mk_path = latest_metakernel_url(target_dt.year)
-    mk_local = fetch_naif_kernel(mk_path)
+def select_kernels_for(target_dt: datetime, config: TrntestConfig) -> list[str]:
+    mk_path = latest_metakernel_url(target_dt.year, config)
+    mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
     all_paths = parse_metakernel(mk_local.read_text())
 
     target_doy = doy_code(target_dt)
@@ -92,10 +96,14 @@ def select_kernels_for(target_dt: datetime) -> list[str]:
     return ALWAYS_KERNELS + ck_paths + spk_paths
 
 
-def fetch_and_furnish(target_dt: datetime) -> list[str]:
+def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) -> list[str]:
     """Download the minimal kernel set for target_dt and spice.furnsh() each one. Returns paths."""
-    kernel_paths = select_kernels_for(target_dt)
-    local_paths = [str(fetch_naif_kernel(p)) for p in kernel_paths]
+    config = config or load_config()
+    kernel_paths = select_kernels_for(target_dt, config)
+    local_paths = [
+        str(cache.fetch_naif_kernel(p, cache_root=config.cache_root, base_url=config.naif_base_url))
+        for p in kernel_paths
+    ]
     for lp in local_paths:
         spice.furnsh(lp)
     return local_paths
@@ -111,22 +119,3 @@ def verify_ck_coverage(idcode: int, et: float) -> bool:
             if start <= et <= stop:
                 return True
     return False
-
-
-LRO_ID = -85
-LRO_SC_BUS_ID = -85000
-LRO_LROCWAC_ID = -85620
-
-if __name__ == "__main__":
-    # Example / smoke test: the WAC EDR chosen for this demo (see docs/data-sources.md).
-    target = datetime(2019, 11, 30, 0, 57, 15, tzinfo=timezone.utc)
-    paths = fetch_and_furnish(target)
-    print(f"Furnished {len(paths)} kernels for {target.isoformat()}:")
-    for p in paths:
-        print(" ", p)
-
-    sclk_string = "1/596768235:26909"
-    et = spice.scs2e(LRO_ID, sclk_string)
-    print(f"\nSCLK '{sclk_string}' -> ET {et}")
-    print("SC_BUS attitude (lrosc) covers this time:", verify_ck_coverage(LRO_SC_BUS_ID, et))
-    print("WAC frame offset (lrolc) covers this time:", verify_ck_coverage(LRO_LROCWAC_ID, et))

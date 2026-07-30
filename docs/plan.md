@@ -134,13 +134,38 @@ data-caching approach. Update those files (not just this one) as concrete choice
   outputs baked in, so it's viewable without re-running. Open via Jupyter Lab (`docker compose up`,
   port-mapped per the user's preference — see README).
 
+- [x] **Phase 7 — Package restructuring.** Converted the flat `scripts/` layout into an installable
+  package: `src/trntest/` (src-layout — `cache.py`, `spice_kernels.py`, `camera.py`, `lunaserv.py`,
+  `wac.py`, `tie_points.py`, `orientation.py`, `render.py`, `plotting.py`, `session.py`), with
+  `pyproject.toml` (`pip install -e '.[dev]'`), a `TrntestConfig`/`load_config()` config module
+  (TOML file + `TRNTEST_*` env vars) replacing scattered hard-coded constants (the Moon's radius was
+  independently restated 3 times; `TARGET_FRAME_INDEX`/`IMAGE_SIZE`/`WAC_VIS_COLOR_FOV_DEG`/EDR-CDR
+  product IDs were defined in whichever module happened to need them first and imported
+  transitively elsewhere), and a `Session` facade (`trntest.Session`) so notebook cells read as
+  near-one-liners. `run_sat_sim.sh` was retired in favor of direct `subprocess` calls in `render.py`
+  (`lunaserv_result.txt` — the fragile Python-writes/bash-sources handoff file — is gone with it).
+  `build_camera_from_spice.EdrInfo`/`fetch_edr_label()` renamed to `camera.FrameTiming`/
+  `fetch_frame_timing()` (naming only — see `camera.py`'s docstring for why "EDR" was misleading:
+  it's used only for frame timing metadata, never pixel data, which comes from the CDR product).
+  Fixed a real duplicate-computation bug found while porting: `fetch_lunaserv.fetch_dem_and_ortho()`
+  used to call `build_camera_from_spice.build()` internally, so the notebook silently computed the
+  camera pose twice per run; `lunaserv.fetch_dem_and_ortho()` now takes the already-built `Camera`
+  as a parameter instead. Added a `tests/` suite (pytest) for the pure/deterministic logic, an
+  MIT-0 `LICENSE`, and automated style checking (`ruff` format+lint+import-sort, `mypy`, composed by
+  the `trntest-lint` console script and a `githooks/pre-commit` hook — see `README.md`). `cache/`
+  and `output/` moved fully outside this repo (siblings of the outer workspace's `src/`, ROS-
+  workspace-inspired out-of-source layout — see `docker/docker-compose.yml`'s volume mounts). The
+  notebook's outputs are now stripped from version control (`nbstripout`); a rendered HTML copy is
+  published separately to GitHub Pages instead (see README's "Viewing the rendered demo").
+
 ## All phases complete
 
 The demo is done end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
-render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `scripts/tie_points.py`)
+render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `tie_points.py`)
 against a properly band-separated, correctly-sized, correctly-posed crop of real WAC data, all
-reproducible from the checked-in Dockerfile. See `notebooks/lunar_sat_sim_demo.ipynb` for the
-walkthrough and `README.md` to run it.
+reproducible from the checked-in Dockerfile, and now packaged as an installable library (`trntest`)
+with config, tests, and style tooling. See `notebooks/lunar_sat_sim_demo.ipynb` for the walkthrough
+and `README.md` to run it.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 

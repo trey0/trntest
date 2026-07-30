@@ -1,0 +1,13 @@
+# trntest.example.toml
+#
+# Copy to trntest.toml (repo root) to override defaults, or point the TRNTEST_CONFIG env var at a
+# copy elsewhere. Any field omitted here uses the built-in default -- see src/trntest/config.py for
+# the full field list, defaults, and discovery order.
+#
+# Fields are a flat namespace matching TrntestConfig's dataclass field names exactly.
+
+cache_root = "/data/trntest-cache"
+output_dir = "/data/trntest-output"
+
+# Example: sample the Lunaserv DEM at higher resolution than the 100 m default.
+dem_target_gsd_m = 50.0

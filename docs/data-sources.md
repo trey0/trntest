@@ -16,12 +16,12 @@ isn't only in code comments or conversation history.
   reprojection needed before feeding `sat_sim`.
 - **Gotcha (important):** `luna_wac_dtm_numeric_meters_absolute`'s pixel values are
   **planetocentric radius in meters** (empirically ~1.73-1.74 million, not small elevation values),
-  not height-above-datum. `scripts/fetch_lunaserv.py` subtracts the reference radius
+  not height-above-datum. `src/trntest/lunaserv.py` subtracts the reference radius
   (`MOON_RADIUS_M = 1737400.0`) before handing the DEM to ASP, producing normal-looking elevations
   (observed range for our ROI: -3563 to +948 m). Feeding the raw radius values straight to ASP would
   silently double-count the planet's radius.
 - Near the poles, a lon/lat bbox is very non-square in physical km (1° longitude shrinks by
-  `cos(lat)`); `pixel_dims_for_gsd()` in `scripts/fetch_lunaserv.py` computes width/height from the
+  `cos(lat)`); `pixel_dims_for_gsd()` in `src/trntest/lunaserv.py` computes width/height from the
   actual physical footprint size (not naive degrees-to-pixels) so both axes sample at the same
   ground resolution.
 - Layers of interest:
@@ -156,7 +156,7 @@ isn't only in code comments or conversation history.
 ### Real image comparison (Phase 5): band separation + finding sunlit frames
 
 Two fixes were needed to get a real image that's actually comparable to the synthetic render (see
-`scripts/fetch_wac_comparison.py`):
+`src/trntest/wac.py`):
 
 1. **De-interleave one VIS filter across many frames.** WAC's push-frame design is meant to build
    continuous coverage by "repeated imaging such that each of the narrow framelets of each color
@@ -171,7 +171,7 @@ Two fixes were needed to get a real image that's actually comparable to the synt
    interleaved VIS block for frames 0, 30, 60, ... 530 showed means and maxima at the noise floor
    (some even negative) through frame ~210, then jumping to real signal (mean ~0.003-0.018, max up
    to ~0.07) from frame ~240 onward, stable through at least frame ~530. **Framelet 440** was picked
-   from that stable, well-lit stretch — `build_camera_from_spice.TARGET_FRAME_INDEX = 440` — so
+   from that stable, well-lit stretch — `config.target_frame_index = 440` — so
    both the synthetic camera and the real-image comparison land on visible terrain. (This also
    explains why the very first version of this comparison, which used frame 0, looked like nothing
    no matter how the data was decoded: there was essentially no signal to see there.)
@@ -198,8 +198,8 @@ same real ground area. Fixed by deriving both from the real WAC color-mode field
   SIS's **monochrome**-mode cross-track FOV (91.7°), not the narrower color-mode readout (which
   only uses the center 704 of the full ~1024-wide detector). So the IK's generic FOV entry isn't
   usable directly for the color-mode crop; the SIS's explicit color-mode figure — **61.4°** — is
-  used instead (`build_camera_from_spice.WAC_VIS_COLOR_FOV_DEG`).
-- The synthetic camera's `fu=fv` is now `(IMAGE_SIZE/2) / tan(61.4°/2)` (≈215.6 px at 256x256) —
+  used instead (`config.wac_vis_color_fov_deg`).
+- The synthetic camera's `fu=fv` is now `(config.image_size/2) / tan(61.4°/2)` (≈215.6 px at 256x256) —
   its angular FOV literally equals the real WAC color-mode FOV at the same pose, so its footprint
   matches the real swath width by construction.
 - The real cross-track ground width at frame 440's exact pose is computed by ray-tracing the
@@ -212,13 +212,13 @@ same real ground area. Fixed by deriving both from the real WAC color-mode field
   a `71*14 = 994` line x 704 sample real CDR crop. Not square in *pixels* (cross-track and
   along-track have different native GSD), but square in real km, matching the synthetic camera's
   FOV — this was the user's explicit request and tolerance.
-- All of this lives in `build_camera_from_spice.compute_n_frames_for_square_crop()`, reusable by
+- All of this lives in `camera.compute_n_frames_for_square_crop()`, reusable by
   both `build()` (included in its returned info dict) and `fetch_wac_comparison.fetch_vis_mosaic()`
   (used as its default `n_frames` when not given explicitly).
 
 **Gotcha (fixed):** the Lunaserv WMS tile cache is keyed by `(layer, bbox, width, height, format)`,
-so after `TARGET_FRAME_INDEX` moved from 0 to 440 the cache ended up holding tiles for *both*
-footprints. `scripts/run_sat_sim.sh` originally picked the ortho tile via
+so after `config.target_frame_index` moved from 0 to 440 the cache ended up holding tiles for *both*
+footprints. `src/trntest/render.py`'s `run_sat_sim()` originally picked the ortho tile via
 `ls .../luna_wac_global/*.tif | head -1` — which silently grabbed the *stale* (frame-0) tile,
 mismatched against the freshly-regenerated (frame-440) DEM. Fixed by having
 `fetch_lunaserv.fetch_dem_and_ortho()` write the exact resolved paths it used to
@@ -227,13 +227,13 @@ mismatched against the freshly-regenerated (frame-440) DEM. Fixed by having
 
 ### Pose epoch fix: crop's temporal midpoint, not its start
 
-The real CDR crop spans `n_frames` (71) frames *starting at* `TARGET_FRAME_INDEX` (440) — frames
+The real CDR crop spans `n_frames` (71) frames *starting at* `config.target_frame_index` (440) — frames
 440 through 510. The synthetic camera's pose was being computed at frame 440's exact timestamp —
 the crop's *start*, not its middle — so the synthetic image's center should have lined up with the
-real crop's *top edge*, not its center. Fixed in `build_camera_from_spice.build()`: compute
-`crop_info` (and thus `n_frames_for_square_crop`) first using `TARGET_FRAME_INDEX`'s geometry as
+real crop's *top edge*, not its center. Fixed in `camera.build_camera()`: compute
+`crop_info` (and thus `n_frames_for_square_crop`) first using `config.target_frame_index`'s geometry as
 the estimate (negligible drift over ~71 frames/~49 seconds), then derive
-`center_frame_index = TARGET_FRAME_INDEX + n_frames/2 = 475.5` and use *that* epoch for the actual
+`center_frame_index = config.target_frame_index + n_frames/2 = 475.5` and use *that* epoch for the actual
 pose (`C`/`R`, focal length base, footprint corners, and hence the Lunaserv ROI too). No change
 needed in `fetch_wac_comparison.py` — the real crop correctly starts at frame 440 regardless.
 
@@ -248,7 +248,7 @@ ground area it represents is square. Fixed in the notebook by plotting both pane
 actual achieved along-track distance, which can differ very slightly from `cross_track_width_km`
 due to `n_frames` being rounded to an integer).
 
-### SPICE-derived tie points (`scripts/tie_points.py`)
+### SPICE-derived tie points (`src/trntest/tie_points.py`)
 
 Adds 5 explicit tie points (a die's "5"/X pattern: 4 corners + center) to the comparison figure,
 computed from the real camera geometry rather than eyeballed: find each image's own ground
@@ -289,7 +289,7 @@ images' pixel coordinates.
 
 The 90° mismatch above came from the synthetic camera's pixel axes being an arbitrary in-house
 choice (`px→X, py→Y`) with no relation to any instrument convention. Fixed in
-`build_camera_from_spice.py` by rotating the camera's `R` by a **fixed** 90° about its own
+`camera.py` by rotating the camera's `R` by a **fixed** 90° about its own
 boresight before writing the `.tsai` — deliberately **not** a per-run/per-pass choice (that's a
 separate, later concern; see "North-up display rotation" below).
 
@@ -314,18 +314,18 @@ separate, later concern; see "North-up display rotation" below).
   property** (how the archived data's row axis relates to the instrument frame), not an
   attitude- or pass-dependent one — the same `k=1` applies regardless of which orbit pass, or
   whether it's ascending/descending, or the current yaw state.
-- `build_camera_from_spice.build()` now stores the rotated `R` in its returned info dict
-  (`camera_info["r_cam_to_me"]`) — `tie_points.py` uses this directly (`compute_tie_points()`)
+- `camera.build_camera()` now stores the rotated `R` in the returned `Camera`
+  (`camera.r_cam_to_me`) — `tie_points.py` uses this directly (`compute_tie_points()`)
   rather than recomputing/re-deciding anything, so there's a single source of truth for "the
   camera's actual pose as used for the `.tsai`."
 - This changes the actual rendered pixels (a real 90° rotation of the output image), so the
-  pipeline must be (and was) re-run: `scripts/run_sat_sim.sh` (render) and `cam_gen` (CSM/ISD JSON).
+  pipeline must be (and was) re-run: `src/trntest/render.py`'s `run_sat_sim()` (render) and `cam_gen` (CSM/ISD JSON).
 - **Verified**: re-ran the crop-corner self-consistency check (still exact:
   `(0,0)`/`(704,0)`/`(0,994)`/`(704,994)`) and the synthetic-vs-crop closest-corner match — now
   `top_left↔top_left`, `top_right↔top_right`, etc. directly (not the previous 90°-rotated pairing) —
   and visually, all 5 tie-point markers now sit on matching terrain in both panels.
 
-### North-up display rotation (`scripts/display_orientation.py`, notebook-only)
+### North-up display rotation (`src/trntest/orientation.py`, notebook-only)
 
 Deliberately kept **separate** from the sensor-model fix above: which way is "north" depends on
 this specific pass (ascending vs. descending) and the spacecraft's yaw state, so it must not

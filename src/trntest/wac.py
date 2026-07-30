@@ -18,32 +18,22 @@ Two things had to be fixed to get here (see docs/data-sources.md for the full st
 2. The chosen product's early frames (roughly 0-210 of 538) turned out to be in near-total shadow
    (I/F values at the noise floor, sometimes negative) -- this is presumably why the original
    frame-0 comparison looked like nothing. Scanning the product found a long, stable, well-lit
-   stretch around frames 240-530; `build_camera_from_spice.TARGET_FRAME_INDEX` (440) was moved
-   there so the synthetic camera and this real-image comparison both land on visible terrain.
+   stretch around frames 240-530; the target frame index (default 440) was moved there so the
+   synthetic camera and this real-image comparison both land on visible terrain.
 
 The crop uses the full 704-sample width and however many along-track frames cover that same real
 ground distance -- i.e. a square patch of real ground, not a fixed pixel count. The frame count is
 computed from the real WAC color-mode FOV and the actual orbital ground speed at this pose (see
-`build_camera_from_spice.compute_n_frames_for_square_crop`), not a magic constant -- so the
-resulting crop won't be square in *pixels* (704 samples cross-track vs. a different line count
-along-track, since the two axes have different native GSD), but is square in real km, matching the
-synthetic camera's FOV (which is sized from the same real WAC FOV figure).
+`camera.compute_n_frames_for_square_crop`), not a magic constant -- so the resulting crop won't be
+square in *pixels* (704 samples cross-track vs. a different line count along-track, since the two
+axes have different native GSD), but is square in real km, matching the synthetic camera's FOV
+(which is sized from the same real WAC FOV figure).
 """
+
 import numpy as np
 
-from cache_utils import fetch_lroc_cdr_file
-from build_camera_from_spice import (
-    EDR_SUBDIR,
-    EDR_DOY,
-    TARGET_FRAME_INDEX,
-    fetch_edr_label,
-    compute_n_frames_for_square_crop,
-)
-
-# CDR uses a different PDS volume/product-suffix convention than EDR for the same acquisition --
-# see docs/data-sources.md ("Chosen EDR product for this demo").
-CDR_VOLUME = "LROLRC_1041C"
-CDR_PRODUCT = "M1329714703CC"
+from trntest import cache, camera
+from trntest.config import TrntestConfig, load_config
 
 PDS3_HEADER_BYTES = 10560  # from the CDR label's Array_2D_Image/offset (EDR's was 7040)
 SAMPLES = 704
@@ -61,43 +51,36 @@ VIS_BLOCK_HEIGHT = 14
 MISSING_CONSTANT = np.uint32(0xFF7FFFFB).view(np.float32)  # per the CDR label's Special_Constants
 
 
-def fetch_vis_mosaic(start_frame: int = TARGET_FRAME_INDEX, n_frames: int = None) -> np.ndarray:
+def fetch_vis_mosaic(
+    start_frame: int | None = None, n_frames: int | None = None, config: TrntestConfig | None = None
+) -> np.ndarray:
     """Stack one VIS filter's TDI-line block from `n_frames` consecutive frames starting at
     `start_frame`, producing a single continuous (n_frames * 14, 704) image. If `n_frames` isn't
     given, it's computed so the crop covers the same real ground distance as the 704-sample
-    cross-track width -- see `build_camera_from_spice.compute_n_frames_for_square_crop`."""
+    cross-track width -- see `camera.compute_n_frames_for_square_crop`."""
+    config = config or load_config()
+    if start_frame is None:
+        start_frame = config.target_frame_index
     if n_frames is None:
-        edr = fetch_edr_label()
-        n_frames = compute_n_frames_for_square_crop(edr, start_frame)["n_frames_for_square_crop"]
+        frame_timing = camera.fetch_frame_timing(config)
+        n_frames = camera.compute_n_frames_for_square_crop(frame_timing, start_frame, config)[
+            "n_frames_for_square_crop"
+        ]
 
-    img_path = fetch_lroc_cdr_file(CDR_VOLUME, EDR_SUBDIR, EDR_DOY, CDR_PRODUCT, "IMG")
+    img_path = cache.fetch_lroc_file(
+        config.lroc_cdr_dataset,
+        config.cdr_volume,
+        config.edr_subdir,
+        config.edr_doy,
+        config.cdr_product,
+        "IMG",
+        cache_root=config.cache_root,
+        base_url=config.lroc_base_url,
+    )
     byte_start = PDS3_HEADER_BYTES + start_frame * FRAME_BYTES
     with open(img_path, "rb") as f:
         f.seek(byte_start)
         data = np.fromfile(f, dtype="<f4", count=n_frames * LINES_PER_FRAME * SAMPLES)
     frames = data.reshape(n_frames, LINES_PER_FRAME, SAMPLES)
-    vis = frames[:, VIS_BLOCK_OFFSET:VIS_BLOCK_OFFSET + VIS_BLOCK_HEIGHT, :]
+    vis = frames[:, VIS_BLOCK_OFFSET : VIS_BLOCK_OFFSET + VIS_BLOCK_HEIGHT, :]
     return vis.reshape(n_frames * VIS_BLOCK_HEIGHT, SAMPLES)
-
-
-if __name__ == "__main__":
-    import os
-
-    os.makedirs("/workspace/output", exist_ok=True)
-    mosaic = fetch_vis_mosaic()
-    valid = mosaic[mosaic != MISSING_CONSTANT]
-    print(f"VIS mosaic: shape={mosaic.shape}, dtype={mosaic.dtype}")
-    print(f"missing fraction: {1 - valid.size / mosaic.size:.3%}")
-    print(f"valid I/F range: min={valid.min():.5f}, max={valid.max():.5f}, mean={valid.mean():.5f}")
-
-    import rasterio
-    from rasterio.transform import Affine
-
-    with rasterio.open(
-        "/workspace/output/wac_vis_mosaic.tif", "w",
-        driver="GTiff", height=mosaic.shape[0], width=mosaic.shape[1],
-        count=1, dtype=mosaic.dtype, transform=Affine.identity(),
-        nodata=float(MISSING_CONSTANT),
-    ) as dst:
-        dst.write(mosaic, 1)
-    print("Wrote /workspace/output/wac_vis_mosaic.tif")

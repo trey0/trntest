@@ -18,7 +18,7 @@ cache/
   lroc_edr/<volume>/DATA/<subdir>/<doy>/WAC/<product>.*
 ```
 
-Fetch helpers (`scripts/cache_utils.py`) check "does this local mirrored path already exist" before
+Fetch helpers (`src/trntest/cache.py`) check "does this local mirrored path already exist" before
 making any network request; if present, skip the request entirely.
 
 ## SPICE kernel selection (avoid over-pulling)
@@ -39,7 +39,7 @@ CK (pointing) kernels dominate a year's data volume. Process:
 
 For the demo's chosen 2019-11-30 timestamp, selecting only the `lrosc`/`lrolc` CK flavors (out of
 five) for one 10-day chunk, plus the always-needed kernels, downloaded **~585 MB** total —
-`fetch_spice_kernels.py`'s `select_kernels_for()` handles this. Note the single `lrosc` (spacecraft
+`spice_kernels.py`'s `select_kernels_for()` handles this. Note the single `lrosc` (spacecraft
 bus reconstructed attitude) file for just that 10-day window is itself ~529 MB; the CK format
 apparently samples at high angular rate. Skipping `lrodv`/`lrohg`/`lrosa` (still avoids ~4-5x more
 CK volume) and never touching kernels outside the target date range is what keeps this tractable at

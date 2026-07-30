@@ -23,3 +23,10 @@ just this file). Then, as needed:
   (exact product IDs, kernel filenames, gotchas) in `docs/data-sources.md` rather than only in code
   comments or commit messages — this repo's docs are meant to carry context across sessions so a
   fresh Claude Code session doesn't have to re-derive it.
+- The demo logic is an installable package, `src/trntest/` (see `pyproject.toml`) — not a flat
+  `scripts/` directory. Endpoints/paths/product IDs live in `src/trntest/config.py`
+  (`TrntestConfig`/`load_config()`), not hard-coded; `docs/data-sources.md`/`docs/caching.md`
+  describe the underlying data-source facts these config values encode. Run `trntest-lint` (see
+  README) before committing Python changes — `git config core.hooksPath githooks` wires this up as
+  a pre-commit hook automatically. `cache/`/`output/` live outside this repo entirely (siblings of
+  the outer workspace's `src/`, not inside this checkout).

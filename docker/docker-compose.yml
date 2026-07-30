@@ -1,12 +1,21 @@
 services:
   demo:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Build context is the repo root, not this docker/ dir -- the Dockerfile now COPYs the whole
+      # repo in (for the editable `pip install -e`), which needs pyproject.toml/src/ in scope.
+      context: ..
+      dockerfile: docker/Dockerfile
     image: trntest-lunar-demo
     volumes:
       - ..:/workspace
-      - ./cache:/workspace/cache
+      # cache/output live outside this repo entirely, as siblings of the outer workspace's `src/`
+      # (ROS-workspace-inspired out-of-source layout: this repo is expected at
+      # <workspace>/src/trntest). If you've cloned this repo somewhere else, either recreate that
+      # wrapper directory or edit these two lines (or set TRNTEST_CACHE_ROOT/TRNTEST_OUTPUT_DIR /
+      # a trntest.toml instead of relying on these mounts at all -- see README's Configuration
+      # section).
+      - ../../../cache:/workspace/cache
+      - ../../../output:/workspace/output
     ports:
       # Bound to loopback only — this host has a public IP and the Jupyter
       # server below runs with no auth token. Reach it via an SSH tunnel:

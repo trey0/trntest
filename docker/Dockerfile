@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bzip2 \
         libgl1 \
         libglu1-mesa \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /uvx /usr/local/bin/
@@ -29,16 +30,12 @@ ENV PATH="${ASP_DIR}/bin:${PATH}"
 
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
-RUN uv venv "${VIRTUAL_ENV}" \
-    && uv pip install --no-cache \
-        jupyterlab \
-        numpy \
-        matplotlib \
-        rasterio \
-        requests \
-        spiceypy
+RUN uv venv "${VIRTUAL_ENV}"
 
 WORKDIR /workspace
+COPY . /workspace
+RUN uv pip install --no-cache -e '.[dev]'
+
 EXPOSE 8888
 
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=", "--NotebookApp.password="]
