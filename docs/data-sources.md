@@ -224,3 +224,138 @@ mismatched against the freshly-regenerated (frame-440) DEM. Fixed by having
 `fetch_lunaserv.fetch_dem_and_ortho()` write the exact resolved paths it used to
 `output/lunaserv_result.txt`, which `run_sat_sim.sh` now sources — never glob the cache dir for
 "any" tile of a layer.
+
+### Pose epoch fix: crop's temporal midpoint, not its start
+
+The real CDR crop spans `n_frames` (71) frames *starting at* `TARGET_FRAME_INDEX` (440) — frames
+440 through 510. The synthetic camera's pose was being computed at frame 440's exact timestamp —
+the crop's *start*, not its middle — so the synthetic image's center should have lined up with the
+real crop's *top edge*, not its center. Fixed in `build_camera_from_spice.build()`: compute
+`crop_info` (and thus `n_frames_for_square_crop`) first using `TARGET_FRAME_INDEX`'s geometry as
+the estimate (negligible drift over ~71 frames/~49 seconds), then derive
+`center_frame_index = TARGET_FRAME_INDEX + n_frames/2 = 475.5` and use *that* epoch for the actual
+pose (`C`/`R`, focal length base, footprint corners, and hence the Lunaserv ROI too). No change
+needed in `fetch_wac_comparison.py` — the real crop correctly starts at frame 440 regardless.
+
+### Comparison-figure aspect ratio
+
+`imshow()` with no `aspect`/`extent` renders one array cell as one square screen unit regardless of
+row/column counts, so the CDR crop's 994x704 array displayed as a tall rectangle even though the
+ground area it represents is square. Fixed in the notebook by plotting both panels with
+`extent=[0, width_km, height_km, 0]` (real km, not raw pixel index) — the synthetic panel uses
+`cross_track_width_km` for both axes (its FOV is symmetric by construction); the CDR panel uses
+`cross_track_width_km` for width and `n_frames_for_square_crop * km_per_frame` for height (the
+actual achieved along-track distance, which can differ very slightly from `cross_track_width_km`
+due to `n_frames` being rounded to an integer).
+
+### SPICE-derived tie points (`scripts/tie_points.py`)
+
+Adds 5 explicit tie points (a die's "5"/X pattern: 4 corners + center) to the comparison figure,
+computed from the real camera geometry rather than eyeballed: find each image's own ground
+footprint, an (approximate, isotropic-shrink) inscribed axis-aligned lon/lat box per image,
+intersect the two boxes, place 5 points inside with a 10% margin, and project each into both
+images' pixel coordinates.
+
+- Synthetic image: closed-form pinhole inverse (`project_ground_to_synthetic_pixel`) — exact,
+  single fixed pose, axis-agnostic (just uses the real `R` directly).
+- Real CDR crop: mixes many real poses (one per frame), so `project_ground_to_crop_pixel` bisects
+  over frame index for where the along-track camera component crosses zero, then reads the
+  cross-track column from that frame's pose. **Bug found and fixed** during implementation: the
+  bisection's sign-change precondition (`(f_lo>0)==(f_hi>0)`) fired incorrectly when a target point
+  sat almost exactly at one of the search boundaries (e.g. the crop's own corners, which are
+  defined *at* frames `start_frame`/`start_frame+n_frames`) — `f_lo`/`f_hi` would be a tiny nonzero
+  float of a consistent sign, not exactly 0, so the "already at the root" case wasn't caught before
+  the sign-change check ran. Fixed by checking `abs(f_lo) < tol` / `abs(f_hi) < tol` first.
+- **Verified via a self-consistency check** (not just "no exception raised"): projected each of the
+  real crop's own 4 defining corners back through `project_ground_to_crop_pixel` and got back
+  exactly `(0,0)`, `(704,0)`, `(0,994)`, `(704,994)` — confirms the cross-track sign convention and
+  frame-to-row mapping are correct.
+- **Finding — the two images are rotated ~90° relative to each other, and this is real, not a
+  bug.** Cross-projecting each image's own (inset) corners into the *other* image's pixel space
+  shows synthetic `top_left` ≈ crop `bottom_left`, synthetic `top_right` ≈ crop `top_left`, and so
+  on around — a consistent 90° rotation, confirmed numerically (closest-corner matching, ~0.06-0.4°
+  residual — plausible given the two corner sets are defined differently: synthetic's from one
+  fixed pose, the crop's from its start/end poses). This is a direct consequence of the two images'
+  differing pixel-axis conventions given the WAC-VIS **X = along-track, Y = cross-track** finding
+  above: the crop's rows are explicitly built to be along-track (X) and columns cross-track (Y),
+  while the synthetic image's `pixel_ray_cam` maps `px`(columns)`->`camera `X` and
+  `py`(rows)`->`camera `Y` — i.e. the synthetic render's rows/columns are swapped relative to the
+  crop's convention. The tie-point markers in the comparison figure correctly reflected this
+  rotation (that was them doing their job) at the time — left unfixed in that round since the user
+  had only asked for tie points and their two specified checks. **Now fixed** — see "Fixed
+  sensor-model axis convention" below.
+
+### Fixed sensor-model axis convention (not pass-dependent)
+
+The 90° mismatch above came from the synthetic camera's pixel axes being an arbitrary in-house
+choice (`px→X, py→Y`) with no relation to any instrument convention. Fixed in
+`build_camera_from_spice.py` by rotating the camera's `R` by a **fixed** 90° about its own
+boresight before writing the `.tsai` — deliberately **not** a per-run/per-pass choice (that's a
+separate, later concern; see "North-up display rotation" below).
+
+- Checked NAC's own convention too (LROC SIS): NAC is a simple pushbroom line-scan camera,
+  "5064-pixel CCD line-array providing a cross-track field-of-view" — i.e. NAC's samples are
+  cross-track too. So this isn't actually a WAC-vs-NAC fork: both instruments' real archived-image
+  layouts agree (samples/columns = cross-track, lines/rows = along-track) — one convention to
+  adopt and motivate, not a choice between two.
+- A pinhole camera's rendered image is fixed only up to rotation about its own boresight (a proper,
+  handedness-preserving rotation — unlike swapping two axes while holding the boresight fixed,
+  which is a reflection and would require flipping the boresight too, breaking "forward"). Rotating
+  `R` by `rotation_about_boresight(k)` for `k=0,1,2,3` cycles which raw camera axis (`X`, `Y`, `-X`,
+  `-Y`) maps to `px` (and correspondingly the other to `py`). Two of the four (`k=1`, `k=3`) put
+  `px∥Y` (cross-track) and `py∥X` (along-track) — the desired convention; `k=0`/`k=2` keep the
+  original, unmotivated mapping.
+- Between `k=1` and `k=3`: picked `k=1` so that increasing `py` (row) matches the **same temporal
+  sense** as the real archived WAC image's row axis (which increases forward in time, by
+  construction of how `fetch_wac_comparison.py` stacks frames). Consecutive-frame ground-track
+  motion measures as dominantly `-X` in the raw WAC-VIS frame (`[-1.146, 0.001, -0.022]` km, from
+  the earlier finding) — i.e. "forward in time" is `-X`. `k=1` maps `py→-X`, matching that sense;
+  `k=3` would map `py→+X`, the opposite (backward-in-time) sense. This is a **hardware/data-format
+  property** (how the archived data's row axis relates to the instrument frame), not an
+  attitude- or pass-dependent one — the same `k=1` applies regardless of which orbit pass, or
+  whether it's ascending/descending, or the current yaw state.
+- `build_camera_from_spice.build()` now stores the rotated `R` in its returned info dict
+  (`camera_info["r_cam_to_me"]`) — `tie_points.py` uses this directly (`compute_tie_points()`)
+  rather than recomputing/re-deciding anything, so there's a single source of truth for "the
+  camera's actual pose as used for the `.tsai`."
+- This changes the actual rendered pixels (a real 90° rotation of the output image), so the
+  pipeline must be (and was) re-run: `scripts/run_sat_sim.sh` (render) and `cam_gen` (CSM/ISD JSON).
+- **Verified**: re-ran the crop-corner self-consistency check (still exact:
+  `(0,0)`/`(704,0)`/`(0,994)`/`(704,994)`) and the synthetic-vs-crop closest-corner match — now
+  `top_left↔top_left`, `top_right↔top_right`, etc. directly (not the previous 90°-rotated pairing) —
+  and visually, all 5 tie-point markers now sit on matching terrain in both panels.
+
+### North-up display rotation (`scripts/display_orientation.py`, notebook-only)
+
+Deliberately kept **separate** from the sensor-model fix above: which way is "north" depends on
+this specific pass (ascending vs. descending) and the spacecraft's yaw state, so it must not
+influence the camera model, the `.tsai`, or the CSM/ISD JSON — it's purely how the notebook plots
+already-rendered/extracted arrays.
+
+- `north_tangent_km(ground_km)`: local north-pointing tangent (`polar - (polar·p̂)p̂`, normalized).
+- `best_k_for_north_up(right_orig, up_orig, north, candidates)`: for each candidate `k` (a
+  `np.rot90(arr, k)` rotation), the resulting on-screen "up" direction is
+  `sin(k·90°)·right_orig + cos(k·90°)·up_orig` — derived from "rotating the displayed array by
+  `np.rot90(arr,k)` physically rotates the image `k·90°` counter-clockwise," and **verified
+  numerically** against `np.rot90` directly (marked-pixel test) before trusting it, since the
+  hand-derived algebra for this kind of thing is easy to get backwards. Picks whichever `k` has the
+  highest dot product with true north.
+  - Synthetic image: all 4 `k∈{0,1,2,3}` are valid candidates (this is a free display rotation of
+    an already-rendered array; the sensor-model's fixed convention above is irrelevant to *this*
+    choice). `right_orig = R[:,0]`, `up_orig = -R[:,1]` (using the *already boresight-rotated* `R`
+    from `camera_info["r_cam_to_me"]`).
+  - Real crop: only `k∈{0,2}` are meaningful (its row axis is real along-track data; a 90°/270°
+    rotation would put cross-track on the vertical axis, not "north-up"). `right_orig`/`up_orig`
+    come from the **raw** (not sensor-model-rotated) `R` at the crop's center-frame pose:
+    `right_orig = R_raw[:,1]` (cross-track), `up_orig = R_raw[:,0]` (along-track, "forward in
+    time", per the same axis finding as above).
+- `rotate_pixel_coords(col, row, k, height, width)`: maps a pixel coordinate through the same
+  `np.rot90(arr, k)` transform, for repositioning tie-point markers on the rotated display. Also
+  **verified numerically** (marked-pixel test) rather than trusted from hand-derived array-index
+  algebra alone — an off-by-one crept into the first attempt (dropping a `-1` when moving from
+  discrete array indices to continuous pixel coordinates) and was caught this way.
+- **This run's result**: both images picked `k=2` (180°) with the same residual deviation from true
+  north (26.7°) — expected, since after the sensor-model fix above, both images already share the
+  same axis convention, so whatever rotation is needed for one is needed for the other. The 26.7°
+  residual (not 0°) reflects that this pass's along-track direction isn't exactly north-south — the
+  best achievable result under the "only multiples of 90°, no mirroring" constraint, not a bug.

@@ -89,6 +89,30 @@ def camera_pose_moon_me(et: float):
     return c_km * 1000.0, r_cam_to_me, slant_range_km, off_nadir_deg
 
 
+def rotation_about_boresight(k: int) -> np.ndarray:
+    """Proper (handedness-preserving) rotation by 90*k degrees about the boresight (Z) axis. Unlike
+    swapping two axes while holding the third fixed (a reflection), this keeps the boresight
+    direction unchanged and just relabels which of +X/+Y/-X/-Y maps to the image's px/py axes."""
+    theta = np.radians(90.0 * k)
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+# Fixed (NOT pass- or attitude-dependent) sensor-model axis convention. Applying
+# rotation_about_boresight(1) to the raw WAC-VIS camera frame makes the synthetic image's px
+# (column) align with the raw frame's +Y and py (row) align with -X. This is one of exactly two
+# boresight rotations (the other being k=3) that align px with cross-track and py with along-track
+# -- matching both WAC's and NAC's real archived-image layout (samples/columns = cross-track,
+# lines/rows = along-track; see docs/data-sources.md for why this isn't actually a WAC-vs-NAC
+# choice, both agree). k=1 (not k=3) is picked specifically so that increasing py (row, downward)
+# matches the same temporal sense as the real archived WAC image's row axis: consecutive-frame
+# ground motion measures as dominantly -X in the raw WAC-VIS frame (see
+# compute_n_frames_for_square_crop's use of km_per_frame), i.e. "forward in time" is -X, which is
+# exactly where k=1 sends py. This is a hardware/data-format property, fixed once here -- it does
+# not vary with which pass, ascending/descending, or yaw state this particular render happens to be.
+SENSOR_MODEL_BORESIGHT_ROTATION_K = 1
+
+
 def ray_sphere_intersect_range(origin_km: np.ndarray, direction_unit: np.ndarray, moon_radius_km: float = 1737.4) -> float:
     """Distance along `direction_unit` from `origin_km` to the Moon's mean sphere; None if it misses."""
     b = 2 * np.dot(origin_km, direction_unit)
@@ -202,9 +226,21 @@ def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
 def build(output_tsai_path):
     edr = fetch_edr_label()
     fetch_and_furnish(edr.start_time)
-    et = frame_et(edr, TARGET_FRAME_INDEX)
 
-    c_meters, r_cam_to_me, slant_range_km, off_nadir_deg = camera_pose_moon_me(et)
+    # The real CDR comparison crop (Phase 5) spans n_frames frames *starting* at
+    # TARGET_FRAME_INDEX, not centered on it -- so the synthetic camera's pose epoch must be the
+    # crop's temporal midpoint, not its start, for the two images' centers to actually match.
+    # The n_frames estimate itself barely changes over this short span, so using the start frame's
+    # geometry for that estimate (not yet knowing the midpoint) isn't a meaningful circularity.
+    crop_info = compute_n_frames_for_square_crop(edr, TARGET_FRAME_INDEX)
+    center_frame_index = TARGET_FRAME_INDEX + crop_info["n_frames_for_square_crop"] / 2.0
+    et = frame_et(edr, center_frame_index)
+
+    c_meters, r_cam_to_me_raw, slant_range_km, off_nadir_deg = camera_pose_moon_me(et)
+    # Apply the fixed sensor-model axis convention (see SENSOR_MODEL_BORESIGHT_ROTATION_K above) --
+    # this only relabels px/py against the (unchanged) boresight, it doesn't move the camera.
+    r_cam_to_me = r_cam_to_me_raw @ rotation_about_boresight(SENSOR_MODEL_BORESIGHT_ROTATION_K)
+
     half_angle_rad = np.radians(WAC_VIS_COLOR_FOV_DEG / 2.0)
     fu = fv = (IMAGE_SIZE / 2.0) / np.tan(half_angle_rad)
     cu = cv = IMAGE_SIZE / 2.0
@@ -212,11 +248,12 @@ def build(output_tsai_path):
     write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
 
     footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, IMAGE_SIZE)
-    crop_info = compute_n_frames_for_square_crop(edr, TARGET_FRAME_INDEX)
 
     return {
         "et": et,
+        "center_frame_index": center_frame_index,
         "camera_center_moon_me_m": c_meters.tolist(),
+        "r_cam_to_me": r_cam_to_me.tolist(),
         "slant_range_km": slant_range_km,
         "off_nadir_deg": off_nadir_deg,
         "focal_length_px": fu,

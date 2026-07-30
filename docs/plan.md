@@ -90,6 +90,42 @@ data-caching approach. Update those files (not just this one) as concrete choice
      (71, giving a 994x704 CDR crop) so both images cover the same real square ground area — not
      square in pixels, but square in km, per the user's explicit request. See
      `docs/data-sources.md` ("Square-crop sizing") for the full derivation.
+  5. **Pose epoch fix:** the synthetic camera's pose was at the crop's *start* frame (440), not its
+     *middle* — so its image center should have lined up with the crop's top edge, not its center.
+     Fixed: `build()` now derives `center_frame_index = TARGET_FRAME_INDEX + n_frames/2 = 475.5` and
+     poses the camera there instead.
+  6. **Comparison-figure aspect ratio:** the CDR crop's non-square pixel array (994x704) was
+     displayed by `imshow()` as a tall rectangle despite covering a square ground area. Fixed by
+     plotting both panels with `extent=` in real km instead of raw pixel index.
+  7. **SPICE-derived tie points** (`scripts/tie_points.py`): 5 points (die's "5"/X pattern) placed
+     in the ground area both images share, projected into each image's real pixel coordinates
+     (closed-form pinhole for the synthetic image; a frame-index bisection for the real crop, which
+     mixes many real poses). Verified via a self-consistency check (the crop's own 4 corners
+     project back to exactly `(0,0)`/`(704,0)`/`(0,994)`/`(704,994)`) and via the two checks the
+     user asked for (shared bbox non-empty; all 5 points within both images' bounds) — both pass.
+     Also found (fixed in the next two revisions, below): the two images are rotated ~90° relative
+     to each other, a real consequence of the WAC-VIS X=along-track/Y=cross-track finding combined
+     with how the synthetic camera's pixel axes were set up.
+  8. **Fixed sensor-model axis convention:** the synthetic camera's pixel axes were an arbitrary
+     in-house choice, causing the ~90° mismatch above. Fixed with a **single, fixed** (not
+     pass-dependent) 90°-about-boresight rotation of `R` in `build_camera_from_spice.build()`,
+     chosen so `px`=cross-track, `py`=along-track — matching both WAC's and NAC's real
+     archived-image layout (checked NAC too; not actually a WAC-vs-NAC fork, both agree) — and,
+     between the two rotations satisfying that, the one where `py` increases in the same temporal
+     sense as the real archived data's row axis. Required re-rendering (`run_sat_sim.sh`, `cam_gen`)
+     since it changes actual pixel output. Verified via the crop-corner self-consistency check
+     (still exact) and the synthetic-vs-crop corner matching (now direct, not rotated) — see
+     `docs/data-sources.md` ("Fixed sensor-model axis convention").
+  9. **North-up display rotation** (`scripts/display_orientation.py`): deliberately kept separate
+     from the previous fix — this is notebook-display-only (rotates already-rendered/extracted
+     arrays and tie-point marker positions via `np.rot90`-equivalent transforms, verified
+     numerically against `np.rot90` directly rather than trusted from hand-derived algebra alone),
+     and does not touch the sensor model. Picks, per image, the multiple of 90° (no mirroring)
+     whose on-screen "up" is closest to true north. This run: both images picked the same 180°
+     rotation with the same 26.7° residual deviation from true north (expected, since both share
+     the same axis convention after the previous fix; the nonzero residual reflects that this
+     pass's along-track direction isn't exactly north-south, the best available result under a
+     90°-multiples-only constraint) — see `docs/data-sources.md` for the full derivation.
 - [x] **Phase 6 — Notebook.** `notebooks/lunar_sat_sim_demo.ipynb` drives all the `scripts/`
   modules end to end: SPICE pose → Lunaserv DEM/ortho → footprint-over-mosaic plot → `sat_sim`
   render + `cam_gen` CSM/ISD JSON → real WAC CDR band-separated comparison. Verified with
@@ -101,9 +137,10 @@ data-caching approach. Update those files (not just this one) as concrete choice
 ## All phases complete
 
 The demo is done end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
-render + CSM/ISD sidecar → compared against a properly band-separated crop of real WAC data (from
-a sunlit part of the same swath), all reproducible from the checked-in Dockerfile. See
-`notebooks/lunar_sat_sim_demo.ipynb` for the walkthrough and `README.md` to run it.
+render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `scripts/tie_points.py`)
+against a properly band-separated, correctly-sized, correctly-posed crop of real WAC data, all
+reproducible from the checked-in Dockerfile. See `notebooks/lunar_sat_sim_demo.ipynb` for the
+walkthrough and `README.md` to run it.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
