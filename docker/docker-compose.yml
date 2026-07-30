@@ -1,0 +1,15 @@
+services:
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trntest-lunar-demo
+    volumes:
+      - ..:/workspace
+      - ./cache:/workspace/cache
+    ports:
+      # Bound to loopback only — this host has a public IP and the Jupyter
+      # server below runs with no auth token. Reach it via an SSH tunnel:
+      #   ssh -L 8888:localhost:8888 <this-host>
+      - "127.0.0.1:8888:8888"
+    working_dir: /workspace
