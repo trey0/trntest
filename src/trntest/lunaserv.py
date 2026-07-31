@@ -27,9 +27,18 @@ class LunaservResult:
 
 
 def footprint_bbox_deg(footprint_lonlat):
+    """Bounding box (minlon, minlat, maxlon, maxlat) of a camera's footprint corners. Longitudes are
+    unwrapped onto a common branch (relative to the first corner) before taking min/max: LRO's
+    near-polar orbit means a footprint can straddle the +-180 deg antimeridian, where a naive
+    min/max would report a near-360 deg span instead of the true few-degree span on the other side.
+    The resulting bbox may extend slightly outside [-180, 180]; Lunaserv's WMS handles that
+    correctly -- confirmed empirically, an out-of-range bbox like (170, ..., 190) returns the same
+    real, non-blank pixel data as the equivalent in-range request (-190, ..., -170)."""
     lons = [v[0] for v in footprint_lonlat.values() if v]
     lats = [v[1] for v in footprint_lonlat.values() if v]
-    return min(lons), min(lats), max(lons), max(lats)
+    ref = lons[0]
+    unwrapped_lons = [ref + (((lon - ref) + 180.0) % 360.0 - 180.0) for lon in lons]
+    return min(unwrapped_lons), min(lats), max(unwrapped_lons), max(lats)
 
 
 def pad_bbox(bbox, fraction):

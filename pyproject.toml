@@ -15,6 +15,7 @@ dependencies = [
     "numpy",
     "rasterio",
     "matplotlib",
+    "pandas",
 ]
 
 [project.optional-dependencies]
@@ -67,5 +68,5 @@ warn_unused_configs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["spiceypy.*", "rasterio.*"]
+module = ["spiceypy.*", "rasterio.*", "pandas.*"]
 ignore_missing_imports = true

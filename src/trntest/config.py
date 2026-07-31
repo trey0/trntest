@@ -31,6 +31,7 @@ DEFAULT_LUNASERV_SRS = "IAU2000:30100"
 DEFAULT_LROC_BASE_URL = "https://pds.lroc.im-ldi.com/data/"
 DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
 DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
+DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 
 # The WAC EDR/CDR product chosen for this demo -- see docs/data-sources.md.
 DEFAULT_EDR_VOLUME = "LROLRC_0041C"
@@ -69,6 +70,7 @@ class TrntestConfig:
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET
     lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET
+    ode_base_url: str = DEFAULT_ODE_BASE_URL
 
     edr_volume: str = DEFAULT_EDR_VOLUME
     edr_subdir: str = DEFAULT_EDR_SUBDIR

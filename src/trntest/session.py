@@ -7,10 +7,12 @@ etc. as free functions (independently usable and unit-testable without construct
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 
-from trntest import camera, lunaserv, orientation, render, spice_kernels, tie_points, wac
+from trntest import camera, dataset, lunaserv, orientation, render, spice_kernels, tie_points, wac
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
+from trntest.dataset import GenerationResult
 from trntest.lunaserv import LunaservResult
 from trntest.orientation import DisplayRotations
 from trntest.render import RenderResult
@@ -68,3 +70,11 @@ class Session:
     @_inherit_doc(spice_kernels.fetch_and_furnish)
     def fetch_and_furnish(self, target_dt: datetime) -> list[str]:
         return spice_kernels.fetch_and_furnish(target_dt, config=self.config)
+
+    @_inherit_doc(dataset.select_dataset)
+    def select_dataset(self, **kwargs) -> pd.DataFrame:
+        return dataset.select_dataset(config=self.config, **kwargs)
+
+    @_inherit_doc(dataset.generate_dataset)
+    def generate_dataset(self, images: pd.DataFrame, limit: int | None = None, **kwargs) -> list[GenerationResult]:
+        return dataset.generate_dataset(images, config=self.config, limit=limit, **kwargs)

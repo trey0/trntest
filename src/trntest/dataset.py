@@ -1,0 +1,334 @@
+"""Catalog-driven WAC dataset selection and generation: `select_dataset()` queries the real LROC
+catalog for a multi-orbit window with favorable illumination geometry and returns a throttled,
+illumination-filtered image list; `generate_dataset()` takes that list and generates real synthetic
+images for it, reusing the existing single-image pipeline (`camera.build_camera`,
+`lunaserv.fetch_dem_and_ortho`, `render.run_sat_sim`) unchanged, just parameterized per image.
+"""
+
+import dataclasses
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+
+from trntest import camera, catalog, illumination, lunaserv, render, spice_kernels
+from trntest.camera import Camera, FrameTiming
+from trntest.config import TrntestConfig, load_config
+from trntest.lunaserv import LunaservResult
+from trntest.render import RenderResult
+
+# Same neighborhood as this repo's original single-demo product, so calling select_dataset() with
+# no arguments is reproducible and "just works."
+DEFAULT_SEARCH_START = datetime(2019, 11, 1, tzinfo=UTC)
+
+DATASET_COLUMNS = [
+    "product_id",
+    "edr_volume",
+    "edr_subdir",
+    "edr_doy",
+    "edr_product",
+    "cdr_volume",
+    "cdr_subdir",
+    "cdr_doy",
+    "cdr_product",
+    "orbit_number",
+    "start_time",
+    "stop_time",
+    "start_frame",
+    "center_frame_index",
+    "n_frames_for_square_crop",
+    "sun_elevation_deg",
+    "incidence_angle_deg",
+    "center_lat_deg",
+    "center_lon_deg",
+]
+
+
+@dataclasses.dataclass(frozen=True)
+class GenerationResult:
+    selected_image: pd.Series  # the manifest row this was generated from
+    config: TrntestConfig  # the per-image config actually used -- feed this to Session/the
+    # tie-points/orientation calls downstream, e.g. in the notebook
+    frame_timing: FrameTiming
+    camera: Camera
+    lunaserv_result: LunaservResult
+    render_result: RenderResult
+
+
+def anchor_start_frame_for_centered_crop(frame_timing: FrameTiming, config: TrntestConfig) -> tuple[float, dict]:
+    """Compute the crop start frame that centers the ~70-framelet square along-track crop on the
+    product's own temporal midpoint (nframes/2), rather than a hand-picked offset. ODE's (and
+    presumably the PDS3 index's) per-product summary geometry fields -- Center_latitude/longitude,
+    Incidence_angle -- most plausibly characterize the observation's midpoint, not its start, so
+    anchoring our own square crop there keeps our precise SPICE-computed sun-elevation check aligned
+    with what the catalog already reports (confirmed empirically: a real product's SPICE-computed
+    midpoint boresight point landed within ~1.3 deg longitude / ~0.05 deg latitude of ODE's own
+    reported Center_longitude/Center_latitude, and the SPICE-computed incidence angle there matched
+    ODE's reported Incidence_angle almost exactly)."""
+    midpoint = frame_timing.nframes / 2.0
+    crop_info = camera.compute_n_frames_for_square_crop(frame_timing, round(midpoint), config)
+    n_frames = crop_info["n_frames_for_square_crop"]
+    start_frame = midpoint - n_frames / 2.0
+    return start_frame, crop_info
+    # Note: by construction start_frame + n_frames/2 == midpoint exactly.
+
+
+def evaluate_candidate_image(edr_row: pd.Series, config: TrntestConfig, min_sun_elevation_deg: float) -> dict | None:
+    """Pose the camera for `edr_row` at its midpoint-anchored crop, check sun elevation at the
+    resulting image center (spherical-ish, via illumination.sun_elevation_deg), and return the new
+    manifest columns if illuminated, else None. Uses the lower-level camera.py functions, not
+    build_camera(), so this never writes a .tsai file or touches Lunaserv during selection."""
+    per_row_config = dataclasses.replace(
+        config,
+        edr_volume=edr_row["volume"],
+        edr_subdir=edr_row["subdir"],
+        edr_doy=str(edr_row["doy"]),
+        edr_product=edr_row["product"],
+    )
+    frame_timing = camera.fetch_frame_timing(per_row_config)
+    start_frame, crop_info = anchor_start_frame_for_centered_crop(frame_timing, per_row_config)
+    n_frames = crop_info["n_frames_for_square_crop"]
+    center_frame_index = start_frame + n_frames / 2.0
+    et = camera.frame_et(frame_timing, center_frame_index)
+    c_meters, r_cam_to_me, _, _ = camera.camera_pose_moon_me(et)
+    # Raw (unrotated) r_cam_to_me is fine here -- rotation_about_boresight only relabels px/py, it
+    # doesn't move the boresight direction, so the ground point is identical either way.
+    ground_km = camera.boresight_ground_point_km(c_meters / 1000.0, r_cam_to_me)
+    sun_elevation_deg = illumination.sun_elevation_deg(ground_km, et)
+    if sun_elevation_deg < min_sun_elevation_deg:
+        return None
+    return {
+        "start_frame": start_frame,
+        "center_frame_index": center_frame_index,
+        "n_frames_for_square_crop": n_frames,
+        "sun_elevation_deg": sun_elevation_deg,
+    }
+
+
+def throttle_by_time(images: pd.DataFrame, min_gap_minutes: float) -> pd.DataFrame:
+    """Sort by start_time and greedily keep a row only if its start_time is >= min_gap_minutes after
+    the previously KEPT row's start_time."""
+    sorted_images = images.sort_values("start_time").reset_index(drop=True)
+    min_gap = timedelta(minutes=min_gap_minutes)
+    keep_positions = []
+    last_kept_time = None
+    for position, start_time in enumerate(sorted_images["start_time"]):
+        if last_kept_time is None or (start_time - last_kept_time) >= min_gap:
+            keep_positions.append(position)
+            last_kept_time = start_time
+    return sorted_images.iloc[keep_positions].reset_index(drop=True)
+
+
+def _candidate_geometry_windows(
+    node_ets: list[float], num_orbits: int, min_lan_offset_deg: float
+) -> list[tuple[float, float]]:
+    """Every sliding window of num_orbits *consecutive* ascending-node crossings (N+1 crossings
+    bound N orbits) where every crossing in the window is >= min_lan_offset_deg off the terminator."""
+    node_ets = sorted(node_ets)
+    passing = {et for et in node_ets if illumination.node_terminator_offset_deg(et) >= min_lan_offset_deg}
+    windows = []
+    for i in range(len(node_ets) - num_orbits):
+        window_nodes = node_ets[i : i + num_orbits + 1]
+        if all(et in passing for et in window_nodes):
+            windows.append((window_nodes[0], window_nodes[-1]))
+    return windows
+
+
+_ILLUMINATED_COLUMNS = [
+    *catalog.CATALOG_COLUMNS,
+    "start_frame",
+    "center_frame_index",
+    "n_frames_for_square_crop",
+    "sun_elevation_deg",
+]
+
+
+def _evaluate_illuminated_candidates(
+    edr_candidates: pd.DataFrame, config: TrntestConfig, min_sun_elevation_deg: float
+) -> pd.DataFrame:
+    """Run evaluate_candidate_image over every candidate, dropping unilluminated ones and any that
+    fail outright (one bad candidate shouldn't abort the whole search)."""
+    rows = []
+    for _, edr_row in edr_candidates.iterrows():
+        try:
+            extra = evaluate_candidate_image(edr_row, config, min_sun_elevation_deg)
+        except Exception as exc:
+            print(f"select_dataset: skipping {edr_row['product_id']} ({exc})")
+            continue
+        if extra is not None:
+            rows.append({**edr_row.to_dict(), **extra})
+    return pd.DataFrame(rows, columns=_ILLUMINATED_COLUMNS)
+
+
+def _pick_best_window(
+    candidate_windows: list[tuple[float, float]],
+    illuminated_df: pd.DataFrame,
+    num_orbits: int,
+    min_images_per_orbit: int | None,
+) -> tuple[datetime, datetime, pd.DataFrame]:
+    """Pick the geometry-valid window with the highest minimum per-orbit illuminated-image count
+    (or, if min_images_per_orbit is given, the first window that clears that floor)."""
+    best_window: tuple[datetime, datetime, pd.DataFrame] | None = None
+    best_floor = -1
+    for window_start_et, window_end_et in candidate_windows:
+        window_start_dt = illumination.et_to_datetime(window_start_et)
+        window_end_dt = illumination.et_to_datetime(window_end_et)
+        in_window = illuminated_df[
+            (illuminated_df["start_time"] >= window_start_dt) & (illuminated_df["start_time"] < window_end_dt)
+        ]
+        if in_window.empty:
+            continue
+        per_orbit_counts = in_window.groupby("orbit_number").size()
+        if len(per_orbit_counts) < num_orbits:
+            continue
+        floor = int(per_orbit_counts.min())
+        if min_images_per_orbit is not None:
+            if floor >= min_images_per_orbit:
+                return window_start_dt, window_end_dt, in_window
+        elif floor > best_floor:
+            best_floor = floor
+            best_window = (window_start_dt, window_end_dt, in_window)
+
+    if best_window is None:
+        raise ValueError(
+            "No geometry-valid window had sufficient per-orbit WAC image availability -- try a "
+            "larger max_search_days, or lower min_sun_elevation_deg/min_lan_offset_deg."
+        )
+    return best_window
+
+
+def _attach_cdr_fields(throttled: pd.DataFrame, config: TrntestConfig) -> pd.DataFrame:
+    """Look up each throttled row's matching CDR product, skipping (with a warning) any that has
+    none rather than crashing the whole selection."""
+    rows = []
+    for _, edr_row in throttled.iterrows():
+        cdr_row = catalog.find_matching_cdr(edr_row, config)
+        if cdr_row is None:
+            print(f"select_dataset: no matching CDR found for {edr_row['product_id']}, skipping")
+            continue
+        merged = edr_row.to_dict()
+        merged["cdr_volume"] = cdr_row["volume"]
+        merged["cdr_subdir"] = cdr_row["subdir"]
+        merged["cdr_doy"] = cdr_row["doy"]
+        merged["cdr_product"] = cdr_row["product"]
+        rows.append(merged)
+    return pd.DataFrame(rows)
+
+
+def select_dataset(
+    config: TrntestConfig | None = None,
+    search_start: datetime | None = None,
+    num_orbits: int = 12,
+    min_lan_offset_deg: float = 30.0,
+    throttle_minutes: float = 5.0,
+    min_sun_elevation_deg: float = 10.0,
+    max_search_days: float = 30.0,
+    min_images_per_orbit: int | None = None,
+) -> pd.DataFrame:
+    """Query the real LROC catalog for a ~num_orbits-orbit window with favorable illumination
+    geometry (ascending node >= min_lan_offset_deg off the terminator, so either the ascending or
+    descending pass is well-lit) and good WAC data availability, and return the throttled,
+    illumination-filtered image list for it as a DataFrame (columns: DATASET_COLUMNS).
+
+    By default (min_images_per_orbit=None) picks the geometry-valid window with the highest minimum
+    per-orbit illuminated-image count, evaluated exhaustively over the search range. Pass
+    min_images_per_orbit to instead take the first geometry-valid window that clears that floor.
+    """
+    config = config or load_config()
+    search_start = search_start or DEFAULT_SEARCH_START
+
+    spice_kernels.fetch_and_furnish(search_start, config)  # gets LSK etc. loaded for utc_to_et
+    start_et = illumination.utc_to_et(search_start)
+    end_et = start_et + max_search_days * 86400.0
+
+    node_ets = illumination.find_ascending_node_crossings(start_et, end_et, config)
+    candidate_windows = _candidate_geometry_windows(node_ets, num_orbits, min_lan_offset_deg)
+    if not candidate_windows:
+        raise ValueError(
+            f"No {num_orbits}-orbit window found with ascending node >= {min_lan_offset_deg} deg "
+            f"off the terminator within {max_search_days} days of {search_start}. Try a larger "
+            "max_search_days."
+        )
+
+    edr_candidates = catalog.list_products(
+        config, catalog.EDR_PRODUCT_TYPE, search_start, search_start + timedelta(days=max_search_days)
+    )
+    illuminated_df = _evaluate_illuminated_candidates(edr_candidates, config, min_sun_elevation_deg)
+
+    window_start_dt, window_end_dt, window_images = _pick_best_window(
+        candidate_windows, illuminated_df, num_orbits, min_images_per_orbit
+    )
+
+    throttled = throttle_by_time(window_images, throttle_minutes)
+    result = _attach_cdr_fields(throttled, config)
+    result = result.rename(
+        columns={"volume": "edr_volume", "subdir": "edr_subdir", "doy": "edr_doy", "product": "edr_product"}
+    )
+    result = result[DATASET_COLUMNS].reset_index(drop=True)
+
+    per_orbit_counts = window_images.groupby("orbit_number").size().to_dict()
+    print(
+        f"select_dataset: {len(result)} images across {result['orbit_number'].nunique()} orbits "
+        f"({window_start_dt} to {window_end_dt}); per-orbit counts: {per_orbit_counts}"
+    )
+    return result
+
+
+def generate_dataset(
+    images: pd.DataFrame,
+    config: TrntestConfig | None = None,
+    limit: int | None = None,
+    output_dir: Path | str | None = None,
+) -> list[GenerationResult]:
+    """Generate real synthetic images for (up to `limit` of) the given selected images, reusing the
+    existing single-image pipeline unchanged, just parameterized per image."""
+    config = config or load_config()
+    output_dir = Path(output_dir) if output_dir is not None else config.output_dir / "dataset"
+    rows = images if limit is None else images.head(limit)
+
+    results = []
+    failures = []
+    for _, row in rows.iterrows():
+        product_id = row["product_id"]
+        try:
+            per_image_config = dataclasses.replace(
+                config,
+                edr_volume=row["edr_volume"],
+                edr_subdir=row["edr_subdir"],
+                edr_doy=str(row["edr_doy"]),
+                edr_product=row["edr_product"],
+                cdr_volume=row["cdr_volume"],
+                cdr_product=row["cdr_product"],
+                target_frame_index=round(row["start_frame"]),
+                output_dir=output_dir / product_id,
+            )
+            built_camera = camera.build_camera(per_image_config)
+            frame_timing = camera.fetch_frame_timing(per_image_config)
+            lunaserv_result = lunaserv.fetch_dem_and_ortho(built_camera, per_image_config)
+            render_result = render.run_sat_sim(built_camera, lunaserv_result, per_image_config)
+        except Exception as exc:  # noqa: BLE001 -- one bad image shouldn't abort the whole batch
+            print(f"generate_dataset: FAILED {product_id}: {exc}")
+            failures.append(product_id)
+            continue
+        results.append(
+            GenerationResult(
+                selected_image=row,
+                config=per_image_config,
+                frame_timing=frame_timing,
+                camera=built_camera,
+                lunaserv_result=lunaserv_result,
+                render_result=render_result,
+            )
+        )
+
+    summary = f"generate_dataset: {len(results)} succeeded, {len(failures)} failed"
+    print(summary + (f" ({failures})" if failures else ""))
+    return results
+
+
+def write_manifest(images: pd.DataFrame, path: Path | str) -> None:
+    images.to_csv(path, index=False)
+
+
+def read_manifest(path: Path | str) -> pd.DataFrame:
+    return pd.read_csv(path, parse_dates=["start_time", "stop_time"])

@@ -24,6 +24,14 @@ isn't only in code comments or conversation history.
   `cos(lat)`); `pixel_dims_for_gsd()` in `src/trntest/lunaserv.py` computes width/height from the
   actual physical footprint size (not naive degrees-to-pixels) so both axes sample at the same
   ground resolution.
+- **Antimeridian:** LRO's near-polar orbit means a camera footprint can straddle +-180° longitude.
+  Confirmed empirically that GetMap handles an out-of-range bbox (e.g. `170,40,190,45`) correctly —
+  it returns the same real, non-blank pixel data as the equivalent in-range request expressed the
+  other way (`-190,40,-170,45`), i.e. longitude is treated cyclically, not clipped to the layer's
+  nominal `-180/180` global bbox. `footprint_bbox_deg()` in `src/trntest/lunaserv.py` relies on
+  this: it unwraps footprint corner longitudes onto a common branch (relative to the first corner)
+  before taking min/max, which can produce a bbox that extends slightly outside `[-180, 180]` — this
+  is intentional and works, not a bug to "fix" by clamping.
 - Layers of interest:
   - `luna_wac_global` — "LROC WAC Global 100m/px" visible mosaic (GLD100-projected WAC mosaic).
     Global bbox `-180/-90/180/90`.

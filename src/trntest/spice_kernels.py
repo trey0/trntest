@@ -14,6 +14,7 @@ we treat the metakernel purely as a manifest: parse it, then download only:
 See docs/data-sources.md and docs/caching.md for the background.
 """
 
+import functools
 import re
 from datetime import datetime
 
@@ -45,13 +46,35 @@ LRO_ID = -85
 LRO_SC_BUS_ID = -85000
 LRO_LROCWAC_ID = -85620
 
+# Tracks which date-ranged (CK/SPK) kernel paths are currently furnished, so fetch_and_furnish can
+# unload ones no longer needed before furnishing a new date's set -- see fetch_and_furnish's
+# docstring for why this matters. Process-global by necessity: SPICE's own kernel pool is itself
+# global per-process state, so this just mirrors it, rather than introducing new global state on
+# top of a purely-functional design.
+_loaded_date_ranged_kernels: set[str] = set()
+
+# Tracks every local kernel path currently furnished (ALWAYS_KERNELS included), so fetch_and_furnish
+# can skip re-furnishing a kernel it already loaded. This is NOT redundant with SPICE's own kernel
+# pool: empirically, spice.furnsh() does not dedupe repeat loads of the same file across separate
+# calls -- each call consumes a fresh slot in SPICE's fixed-size KEEPER table (SPICE(NOMOREROOM) once
+# ~5300 accumulate), so a long-running process re-furnishing ALWAYS_KERNELS on every call (e.g. once
+# per sampled epoch in illumination.find_ascending_node_crossings) exhausts it. Tracking loaded state
+# ourselves and only calling furnsh() for genuinely-new paths avoids that.
+_loaded_kernels: set[str] = set()
+
 
 def doy_code(dt: datetime) -> int:
     """YYYYDDD integer used in NAIF's LRO kernel filenames, e.g. 2019-11-30 -> 2019334."""
     return dt.year * 1000 + dt.timetuple().tm_yday
 
 
+@functools.cache
 def latest_metakernel_url(year: int, config: TrntestConfig) -> str:
+    """Which metakernel is "latest" for `year` doesn't change within a process's lifetime, so this
+    is memoized -- without it, callers that furnish kernels for many different dates in one process
+    (e.g. dataset.select_dataset() evaluating hundreds of candidate images) would otherwise re-hit
+    this live (uncached-by-design, since it's a directory listing, not a specific file) NAIF
+    endpoint once per date. Safe to cache: `config` is a hashable frozen dataclass."""
     mk_dir_url = f"{config.naif_base_url}extras/mk/"
     resp = requests.get(mk_dir_url, timeout=30)
     resp.raise_for_status()
@@ -97,15 +120,41 @@ def select_kernels_for(target_dt: datetime, config: TrntestConfig) -> list[str]:
 
 
 def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) -> list[str]:
-    """Download the minimal kernel set for target_dt and spice.furnsh() each one. Returns paths."""
+    """Download the minimal kernel set for target_dt and spice.furnsh() each one. Returns paths.
+
+    Unloads any previously-furnished date-ranged (CK/SPK) kernels not needed for `target_dt` before
+    furnishing the new set -- SPICE's kernel pool has a fixed-size character-value buffer that can
+    fill up (SPICE(KERNELPOOLFULL)) if many distinct kernels accumulate across a long-running
+    process without ever being unloaded, e.g. `dataset.select_dataset()` evaluating hundreds of
+    candidate images spanning several kernel date-ranges in one process. ALWAYS_KERNELS are
+    unaffected -- they're the same fixed set regardless of date, so they're only furnished once:
+    only paths not already in `_loaded_kernels` are actually passed to spice.furnsh(), since
+    spice.furnsh() itself does NOT dedupe repeat loads of the same file across separate calls (each
+    call consumes a fresh, limited KEEPER slot -- SPICE(NOMOREROOM) once ~5300 accumulate), which a
+    long-running process calling this once per sampled epoch (e.g.
+    illumination.find_ascending_node_crossings) would otherwise hit quickly."""
     config = config or load_config()
     kernel_paths = select_kernels_for(target_dt, config)
+    always_paths = set(ALWAYS_KERNELS)
+    needed_date_ranged = set(kernel_paths) - always_paths
+
+    for stale_path in _loaded_date_ranged_kernels - needed_date_ranged:
+        stale_local = str(
+            cache.fetch_naif_kernel(stale_path, cache_root=config.cache_root, base_url=config.naif_base_url)
+        )
+        spice.unload(stale_local)
+        _loaded_kernels.discard(stale_local)
+    _loaded_date_ranged_kernels.clear()
+    _loaded_date_ranged_kernels.update(needed_date_ranged)
+
     local_paths = [
         str(cache.fetch_naif_kernel(p, cache_root=config.cache_root, base_url=config.naif_base_url))
         for p in kernel_paths
     ]
     for lp in local_paths:
-        spice.furnsh(lp)
+        if lp not in _loaded_kernels:
+            spice.furnsh(lp)
+            _loaded_kernels.add(lp)
     return local_paths
 
 

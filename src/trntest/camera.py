@@ -2,12 +2,18 @@
 of a chosen LROC WAC EDR framelet -- so a small synthetic image rendered from this camera
 approximates the FOV of that part of the real swath.
 
-Framelet index 440 (of 538) is used, not the start of the swath: frames 0-~210 of this particular
-product are in near-total shadow (verified by inspecting the CDR -- see docs/data-sources.md), so
-they wouldn't be recognizable in any decoding. Frame 440 falls within a long, stable, well-lit
-stretch (frames ~240-530), matched against real WAC imagery in Phase 5.
+`config.target_frame_index` (default 440, of this repo's original single-demo product's 538
+framelets) is the START of the along-track crop; the actual pose epoch is that crop's own temporal
+midpoint (see `build_camera`). This default was chosen empirically for ONE specific product, whose
+early framelets are in shadow -- see docs/plan.md (Phase 2) for that history -- and is NOT a
+general illumination-avoidance strategy: different EDR products have different lit spans depending
+on their own orbit geometry, and hand-tuning a start offset per product doesn't scale. The demo
+notebook no longer uses this default directly -- see `trntest.dataset.select_dataset`/
+`generate_dataset`, which anchor each product's crop at a stable, product-relative point (its own
+temporal midpoint, not a hand-picked offset) and simply exclude whole products that aren't
+illuminated there, rather than searching within a product for a better offset.
 
-See docs/plan.md (Phase 2) and docs/data-sources.md for the background and the specific EDR chosen.
+See docs/plan.md (Phase 2) and docs/data-sources.md for the single-demo background.
 """
 
 import dataclasses
