@@ -158,14 +158,160 @@ data-caching approach. Update those files (not just this one) as concrete choice
   notebook's outputs are now stripped from version control (`nbstripout`); a rendered HTML copy is
   published separately to GitHub Pages instead (see README's "Viewing the rendered demo").
 
-## All phases complete
+- [x] **Phase 8 — Catalog-driven dataset selection/generation.** Replaced the single hardcoded
+  demo EDR (`M1329714703CE`, framelet 440 chosen by hand-inspecting that one product's shadow
+  pattern — see Phase 2 above) with a repeatable, programmatic pipeline for building a much bigger
+  dataset of real WAC images with favorable illumination:
+  1. **`src/trntest/illumination.py`** (new): Sun/orbit geometry via real SPICE functions, not
+     hand-rolled vector math — `sun_elevation_deg()` (`spice.ilumin`, method `"ELLIPSOID"`, the real
+     PCK reference ellipsoid already loaded, deliberately **not** forced to a sphere — close enough
+     that forcing them to match isn't worth a kernel-pool mutation), `sub_solar_lonlat_deg()`
+     (`spice.subslr`), `spacecraft_lonlat_deg()` (pure `spkezr`+`reclat`, no shape model needed),
+     `terminator_offset_deg()` (pure, our own derived ">=30° off the terminator" criterion),
+     `find_sign_change_crossings()`/`find_ascending_node_crossings()` (generic bisection to find
+     real ascending-node epochs from actual SPICE trajectory data, no assumed orbital period).
+  2. **`src/trntest/catalog.py`** (new): PDS Geosciences Node Orbital Data Explorer (ODE) REST API
+     client (`https://oderest.rsl.wustl.edu/live2/`) — confirmed `EDR_PRODUCT_TYPE = "EDRWAC4"`,
+     `CDR_PRODUCT_TYPE = "CDRWAC4"` live via the `query=iipt` discovery endpoint. `list_products()`
+     returns a `pandas.DataFrame` (paginated), `find_matching_cdr()` looks up each EDR's CDR
+     counterpart by orbit number. Reuses `cache.cached_get` for ODE responses, same as everything
+     else.
+  3. **`src/trntest/dataset.py`** (new): the public API.
+     - `select_dataset(config=None, search_start=..., num_orbits=12, min_lan_offset_deg=30.0,
+       throttle_minutes=5.0, min_sun_elevation_deg=10.0, max_search_days=30.0,
+       min_images_per_orbit=None) -> pd.DataFrame` — finds ascending-node crossings, keeps only
+       those >=30° off the terminator (so either the ascending or descending pass is well-lit),
+       evaluates every geometry-valid `num_orbits`-orbit window in the search range, and picks the
+       one with the **highest minimum per-orbit illuminated-image count** (not just the first window
+       clearing a fixed floor — exhaustive search over the whole range, since both the ODE query and
+       the per-candidate SPICE check are cheap). Each candidate's illumination is checked at its
+       product's own **temporal midpoint** (`nframes/2`, not framelet 0 — a stable, product-relative
+       anchor instead of a hand-tuned offset; empirically validated: SPICE-computed midpoint ground
+       point matches ODE's own reported `Center_lat`/`Center_lon`/`Incidence_angle` closely).
+       Unilluminated products (sun elevation <10° there, `"ELLIPSOID"` model) are excluded outright,
+       never searched for a better internal offset. Then throttled to one image per 5 real minutes
+       (`throttle_by_time`) and matched to a CDR counterpart.
+     - `generate_dataset(images, config=None, limit=None, output_dir=None) -> list[GenerationResult]`
+       — runs the *existing, unmodified* single-image pipeline (`camera.build_camera` →
+       `lunaserv.fetch_dem_and_ortho` → `render.run_sat_sim`) per selected row, into its own
+       `output_dir/<product_id>/` subdirectory (avoids output-filename collisions across images).
+       `limit` throttles how many rows are actually processed, for cheap testing (`n=1`, `n=3`)
+       before a full run; per-image failures are caught/logged, not fatal to the batch.
+     - Both are **plain importable Python functions, not CLI scripts** (explicit preference — no
+       argparse, no `[project.scripts]` entries), also exposed as `Session.select_dataset()`/
+       `Session.generate_dataset()` one-line delegators.
+  4. **Notebook rewire** (`notebooks/lunar_sat_sim_demo.ipynb`): now sources its image via
+     `images = session.select_dataset(max_search_days=7)` then
+     `results = session.generate_dataset(images, limit=1)` instead of one hardcoded EDR — this
+     retires the framelet-440-specific logic from the notebook's main path entirely.
+     `camera.py`'s module docstring was corrected to stop framing framelet 440 as a general
+     illumination-avoidance strategy (it's specific to one product's history) and points here
+     instead.
+  5. New dependency: **`pandas`** (explicit, discussed exception to this project's previously
+     pandas-free stance — simplifies per-orbit grouping/throttling/manifest I/O and gives free,
+     readable table display of `select_dataset()`'s result as a notebook cell's own output).
+  6. **Two real bugs found and fixed** while verifying this end-to-end against many real orbit
+     passes (not just one product) — see `docs/data-sources.md` for the full write-ups:
+     - **SPICE kernel-pool exhaustion** (`SPICE(NOMOREROOM)`/`KERNELPOOLFULL`): `spice.furnsh()`
+       does **not** dedupe repeat loads of the same kernel file across separate calls — each call
+       consumes a fresh, limited KEEPER slot (~5300 max). `illumination.find_ascending_node_crossings`
+       calling `spice_kernels.fetch_and_furnish` once per sampled epoch (thousands of times over a
+       multi-day search) exhausted this fast. Fixed in `spice_kernels.py` by tracking every
+       currently-furnished local path (`_loaded_kernels`) and skipping `furnsh()` for paths already
+       loaded, plus unloading superseded date-ranged (CK/SPK) kernels when the target date moves to
+       a different chunk.
+     - **Antimeridian longitude-wraparound bug**: `lunaserv.py`'s `footprint_bbox_deg()` took a
+       naive `min()`/`max()` of footprint corner longitudes; for a near-polar footprint straddling
+       ±180°, this produced a ~360°-wide bbox instead of the true few-degree span on the other side,
+       inflated further by padding into a bogus 567°-wide, 57225px-wide WMS request that timed out.
+       Fixed by unwrapping corner longitudes onto a common branch (relative to the first corner)
+       before taking min/max — confirmed empirically that Lunaserv's WMS handles an out-of-range
+       bbox (e.g. `170,...,190`) correctly, returning the same real pixel data as the equivalent
+       in-range form (`-190,...,-170`), so no request-splitting is needed.
+  7. **Verified**: offline (`ruff format --check`/`ruff check`/`mypy`/`pytest`, 72 tests) and, inside
+     Docker: `select_dataset(max_search_days=7)` (twice consecutively, confirming the kernel-pool fix
+     — both runs returned 81 images across 12 orbits, 7/orbit), `generate_dataset(limit=1)` and
+     `generate_dataset(limit=3)` (including a previously-failing near-polar image, confirming the
+     antimeridian fix), and a full `jupyter nbconvert --to notebook --execute` run (all cells pass,
+     ~9 min wall time). Committed and pushed as `6e90d82`.
 
-The demo is done end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
+## Phases 1-8 complete; Phase 9 (below) is open
+
+The demo runs end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
 render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `tie_points.py`)
 against a properly band-separated, correctly-sized, correctly-posed crop of real WAC data, all
-reproducible from the checked-in Dockerfile, and now packaged as an installable library (`trntest`)
-with config, tests, and style tooling. See `notebooks/lunar_sat_sim_demo.ipynb` for the walkthrough
-and `README.md` to run it.
+reproducible from the checked-in Dockerfile, and packaged as an installable library (`trntest`)
+with config, tests, and style tooling, now with a repeatable catalog-driven dataset
+selection/generation capability (Phase 8). See `notebooks/lunar_sat_sim_demo.ipynb` for the
+walkthrough and `README.md` to run it. **A real visual bug was just found in that comparison
+figure — see "Phase 9" immediately below before doing anything else here.**
+
+## Phase 9 (in progress) — WAC CDR appears vertically flipped relative to the synthetic image
+
+Found by manually reviewing the notebook after Phase 8: in the Phase 5 comparison figure, the real
+WAC CDR panel looks **vertically flipped** relative to the synthetic image — and this is **not**
+explainable as any 90°-multiple rotation. There's also a separate-but-possibly-related symptom:
+visible discontinuities in the WAC CDR panel that look like they land on framelet (14-line VIS
+block) boundaries. Tie points line up with the underlying (possibly-wrong) image data the same way
+across both images, so they don't reveal anything by themselves — see why below.
+
+**Leading hypothesis** (from the user, and supported by code reading below): the along-track
+*order* the framelets are stacked in is reversed, while the line order *within* each framelet is
+correct. That single mechanism would explain both symptoms at once — an overall flip (blocks in the
+wrong order) plus boundary discontinuities (each individual block is internally fine, but adjacent
+blocks no longer physically overlap the way WAC's real push-frame design intends once their overall
+order is backwards).
+
+**Code trail:**
+
+- **`src/trntest/wac.py:54-86`** (`fetch_vis_mosaic`) stacks each frame's 14-line VIS block in
+  increasing `frame_index` order (row 0 = earliest frame in the crop, last row = latest) via
+  `frames[:, VIS_BLOCK_OFFSET:VIS_BLOCK_OFFSET+VIS_BLOCK_HEIGHT, :].reshape(n_frames * 14, 704)`.
+- **`src/trntest/tie_points.py:111`** (`_crop_pixel_at_frame`) computes tie-point rows as
+  `row = (frame_index - start_frame) * wac.VIS_BLOCK_HEIGHT` — the *same* increasing-frame_index-
+  to-increasing-row convention as `wac.py`. This is exactly why tie points "line up with the
+  underlying image data the same way across the pair": tie points can't catch a bug baked into an
+  assumption they themselves reuse.
+- **Why it can't be a rotation**: the crop's north-up display rotation
+  (`src/trntest/orientation.py:98`, `best_k_for_north_up(..., candidates=(0, 2))`, applied via
+  `np.rot90(display_mosaic, rotations.k_crop)` in `src/trntest/plotting.py:103`) only ever chooses
+  among proper rotations (`np.rot90`, determinant +1). A "framelet order reversed, lines within each
+  framelet correct" bug is a pure mirror along the along-track axis (determinant −1, e.g.
+  `np.flipud`) — structurally impossible to produce *or fix* via `np.rot90`. If a flip is really
+  there, it must already be baked into `display_mosaic` (i.e. into `wac.fetch_vis_mosaic`'s output)
+  before any display rotation runs — the north-up logic is very likely a red herring, not the
+  culprit, though it's worth double-checking `k_crop`'s two-candidate restriction isn't itself
+  hiding something.
+- **A previously-made claim worth re-examining**: `src/trntest/camera.py`'s
+  `SENSOR_MODEL_BORESIGHT_ROTATION_K` comment and `docs/data-sources.md`'s "Fixed sensor-model axis
+  convention" section assert that "forward in time is `-X`" in the raw WAC-VIS frame is a
+  **hardware/data-format property, not pass-dependent** ("the same k=1 applies regardless of which
+  orbit pass, ascending/descending, or yaw state"). That claim was derived and verified against
+  exactly **one** product (this repo's original single-demo EDR) and was never re-tested against a
+  second, independently-selected image until `generate_dataset()` started producing new ones — and a
+  flip has now appeared on one of those new images. `wac.py`'s own docstring notes WAC's band order
+  "is reversed after a 180 deg yaw maneuver," so at least one WAC data property *is*
+  yaw-state-dependent — worth checking whether the "forward in time" axis claim actually is too.
+- **Suggested empirical check**: compute real sub-spacecraft latitude vs. `frame_index` directly via
+  SPICE (`illumination.spacecraft_lonlat_deg(et)` at `camera.frame_et(frame_timing, frame_index)`,
+  for a few frame indices spanning the crop) to get ground truth for whether increasing
+  `frame_index` means increasing or decreasing latitude on *this* pass, then cross-check against
+  `orientation.py`'s already-computed `north_crop`/`r_crop_raw` vectors and the actual displayed
+  content. Also check whether this pass is ascending or descending and whether that differs from the
+  original single-demo product's pass.
+- **Where a fix would land**, once root-caused: `src/trntest/wac.py` (frame-stacking order) and/or
+  `src/trntest/tie_points.py` (`_crop_pixel_at_frame`'s row formula, must stay consistent with
+  whatever `wac.py` does) and/or `src/trntest/camera.py` (`SENSOR_MODEL_BORESIGHT_ROTATION_K`, if
+  the "not pass-dependent" claim is actually wrong) and/or `src/trntest/orientation.py` (if a
+  genuine mirror needs to become a real display-rotation candidate, not just `np.rot90`).
+- **Reproducibility**: the notebook's current default selection (`select_dataset(max_search_days=7)`
+  then `.head(1)`) deterministically picks product `M1327210646CE` (orbit 46625, window
+  2019-11-01T01:13 to 2019-11-02T00:40 UTC) as of the current cache/window — this is the exact image
+  the flip was observed on.
+
+See `docs/data-sources.md`'s "Open bug: WAC CDR appears vertically flipped relative to synthetic
+image" section (right after "North-up display rotation") for the same write-up alongside the
+related derived facts it references.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
