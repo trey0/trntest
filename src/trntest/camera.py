@@ -2,18 +2,11 @@
 of a chosen LROC WAC EDR framelet -- so a small synthetic image rendered from this camera
 approximates the FOV of that part of the real swath.
 
-`config.target_frame_index` (default 440, of this repo's original single-demo product's 538
-framelets) is the START of the along-track crop; the actual pose epoch is that crop's own temporal
-midpoint (see `build_camera`). This default was chosen empirically for ONE specific product, whose
-early framelets are in shadow -- see docs/plan.md (Phase 2) for that history -- and is NOT a
-general illumination-avoidance strategy: different EDR products have different lit spans depending
-on their own orbit geometry, and hand-tuning a start offset per product doesn't scale. The demo
-notebook no longer uses this default directly -- see `trntest.dataset.select_dataset`/
-`generate_dataset`, which anchor each product's crop at a stable, product-relative point (its own
-temporal midpoint, not a hand-picked offset) and simply exclude whole products that aren't
-illuminated there, rather than searching within a product for a better offset.
-
-See docs/plan.md (Phase 2) and docs/data-sources.md for the single-demo background.
+`config.target_frame_index` is the START of the along-track crop; the actual pose epoch is that
+crop's own temporal midpoint (see `build_camera`). Its default (440) is only meaningful for this
+repo's original single-demo product -- the live default path, `trntest.dataset.select_dataset`/
+`generate_dataset`, sets it per-product instead, anchored at each product's own temporal midpoint
+and filtered by illumination there. See docs/history.md (Phase 2) for how 440 was originally chosen.
 """
 
 import dataclasses
@@ -42,15 +35,12 @@ PDS_NS = {
 #
 # Between k=1 and k=3: pick whichever makes +py increase in the same temporal sense as the real
 # archived WAC image's row axis (rows increase forward in time, by construction of how
-# wac.fetch_vis_mosaic stacks frames). This was originally hardcoded as a fixed k=1, on the claim
-# that "forward in time" is always -X in the raw WAC-VIS frame -- a hardware/data-format property,
-# not attitude-dependent. That claim was derived from exactly one product and turned out to be
-# wrong: a second, independently-selected product (M1327210646CE, see docs/data-sources.md "Open
-# bug") measured dominant +X for "forward in time", the opposite sign. LRO's WAC is body-fixed (no
-# gimbal), and LRO performs periodic 180-degree yaw flips (for thermal/power reasons) that rotate
-# the whole instrument frame -- including which raw axis "forward in time" projects onto -- so this
-# really is pass/yaw-state-dependent, not fixed. `boresight_rotation_k` below now measures it fresh
-# via real SPICE trajectory data for every pose, instead of assuming a constant.
+# wac.fetch_vis_mosaic stacks frames). This is genuinely pass/yaw-state-dependent, not a fixed
+# hardware property -- LRO's WAC is body-fixed (no gimbal) and undergoes periodic 180-degree yaw
+# flips that rotate the whole instrument frame, including which raw axis "forward in time" projects
+# onto -- so `boresight_rotation_k` below measures it fresh via real SPICE trajectory data for every
+# pose, instead of assuming a constant. See docs/data-sources.md ("Pass-dependent sensor axis
+# convention") and docs/history.md (Phase 9) for why this isn't just a fixed hardware property.
 _FORWARD_TIME_K = 1  # forward_step_me_km projects to -X_raw
 _REVERSED_TIME_K = 3  # forward_step_me_km projects to +X_raw -- also Camera.reverse_crop_along_track
 
@@ -104,9 +94,8 @@ class Camera:
         reference product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in
         reverse along-track order (and `tie_points`/`orientation` must correspondingly flip their
         row/up-direction conventions) for the crop's pixel-space chirality to keep matching the
-        synthetic image's -- see docs/data-sources.md, "Open bug: WAC CDR appears vertically
-        flipped", for the empirical finding this encodes: a genuine, pass-dependent mirror, not
-        just a rotation."""
+        synthetic image's -- see docs/data-sources.md, "Pass-dependent sensor axis convention": a
+        genuine, pass-dependent mirror, not just a rotation."""
         return self.boresight_rotation_k == _REVERSED_TIME_K
 
 
@@ -223,11 +212,11 @@ def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_r
 def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int = 10) -> np.ndarray:
     """Real "forward in time" ground-track step vector (MOON_ME, km, not normalized): the
     boresight's ground point at `frame_index + n` minus at `frame_index`, smoothed over `n` frames.
-    Empirically measured from real SPICE trajectory data rather than assumed from a fixed raw-camera
-    axis, since that assumption turned out to be pass/yaw-state-dependent (see
-    `boresight_rotation_k`'s docstring and docs/data-sources.md, "Open bug: WAC CDR appears
-    vertically flipped"). Used both for `km_per_frame`'s magnitude and for `boresight_rotation_k`'s
-    (and `orientation.compute_display_rotations`'s) direction."""
+    Measured fresh from real SPICE trajectory data rather than assumed from a fixed raw-camera axis,
+    since that direction is genuinely pass/yaw-state-dependent (see `boresight_rotation_k`'s
+    docstring and docs/data-sources.md, "Pass-dependent sensor axis convention"). Used both for
+    `km_per_frame`'s magnitude and for `boresight_rotation_k`'s (and
+    `orientation.compute_display_rotations`'s) direction."""
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))
     c1_m, r1, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index + n))
     ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)

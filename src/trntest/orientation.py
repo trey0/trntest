@@ -100,9 +100,9 @@ def compute_display_rotations(
     # "Up" for k=0 (row 0 at the top) is backward in time when wac.fetch_vis_mosaic stacked frames
     # in their natural order, but *forward* in time when it stacked them in reverse
     # (`camera.reverse_crop_along_track`) -- must track whichever that module actually did for this
-    # pass, not a fixed raw-camera-axis assumption (that sign turned out to be pass/yaw-dependent,
-    # not hardware-fixed -- see `camera.boresight_rotation_k`'s docstring and docs/data-sources.md,
-    # "Open bug: WAC CDR appears vertically flipped").
+    # pass, not a fixed raw-camera-axis assumption (this is genuinely pass/yaw-dependent, not
+    # hardware-fixed -- see `camera.boresight_rotation_k`'s docstring and docs/data-sources.md,
+    # "Pass-dependent sensor axis convention").
     forward_step_km = ground_track_step_km(frame_timing, camera.center_frame_index)
     forward_in_time = forward_step_km / np.linalg.norm(forward_step_km)
     up_orig = forward_in_time if camera.reverse_crop_along_track else -forward_in_time

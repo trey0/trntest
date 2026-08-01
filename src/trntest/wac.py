@@ -1,45 +1,26 @@
 """Build a recognizable single-band image from the real WAC CDR product, for comparison against
-the synthetic sat_sim render (Phase 5).
+the synthetic sat_sim render.
 
-Two things had to be fixed to get here (see docs/data-sources.md for the full story):
-
-1. WAC is a "push-frame" camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines +
-   5 VIS @ 14 TDI lines), and per the official LROC EDR/CDR SIS, "the WAC CDR file will require
-   further processing to separate framelets into their respective bands ... in order to be viewed
-   as a standard image." A raw multiplexed strip (what this script used to extract) is therefore
-   never going to look like a picture -- it has to be de-interleaved first. This module extracts
-   ONE filter's TDI-line block from each of many consecutive frames and stacks them vertically,
-   which is exactly how WAC's push-frame design is meant to build up continuous coverage
-   ("continuous color coverage ... such that each of the narrow framelets of each color band
-   overlap" -- LROCSIS.PDF). The 14-line block at offset 22 is guaranteed to be a pure VIS band
-   regardless of which of the two band orderings LRO is currently flying (the order reverses after
-   each 180-degree yaw/solar-panel maneuver) -- see the offset comment below.
-
-2. The chosen product's early frames (roughly 0-210 of 538) turned out to be in near-total shadow
-   (I/F values at the noise floor, sometimes negative) -- this is presumably why the original
-   frame-0 comparison looked like nothing. Scanning the product found a long, stable, well-lit
-   stretch around frames 240-530; the target frame index (default 440) was moved there so the
-   synthetic camera and this real-image comparison both land on visible terrain.
+WAC is a "push-frame" camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS
+@ 14 TDI lines), and per the official LROC EDR/CDR SIS, "the WAC CDR file will require further
+processing to separate framelets into their respective bands ... in order to be viewed as a
+standard image" -- see docs/data-sources.md for the full byte-layout facts. This module extracts
+ONE filter's TDI-line block (lines [22:36) -- always pure VIS regardless of yaw-dependent band
+order, see the offset comment below) from each of many consecutive frames and stacks them
+vertically, matching how WAC's push-frame design is meant to build continuous coverage.
 
 The crop uses the full 704-sample width and however many along-track frames cover that same real
-ground distance -- i.e. a square patch of real ground, not a fixed pixel count. The frame count is
-computed from the real WAC color-mode FOV and the actual orbital ground speed at this pose (see
-`camera.compute_n_frames_for_square_crop`), not a magic constant -- so the resulting crop won't be
-square in *pixels* (704 samples cross-track vs. a different line count along-track, since the two
-axes have different native GSD), but is square in real km, matching the synthetic camera's FOV
-(which is sized from the same real WAC FOV figure).
+ground distance -- a square patch of real ground, not a fixed pixel count (see
+`camera.compute_n_frames_for_square_crop`); the resulting crop isn't square in *pixels* (the two
+axes have different native GSD) but is square in real km, matching the synthetic camera's FOV.
 
-3. Frames are always read off disk in strict acquisition-time order (frame N was captured before
-   frame N+1, always -- a PDS archival guarantee, not an assumption), but which real-world direction
-   that "forward in time" runs, expressed against WAC's fixed sample-axis convention, is
-   **pass-dependent** (see `camera.boresight_rotation_k`'s docstring): body-fixed WAC's raw axes
-   rotate with the spacecraft's own periodic 180-degree yaw flips, so the resulting mosaic's
-   chirality (its along-track row order relative to its across-track column order) can come out
-   mirrored, not just rotated, relative to the synthetic image -- empirically confirmed via two
-   independently-selected real products (see docs/data-sources.md, "Open bug: WAC CDR appears
-   vertically flipped"). `fetch_vis_mosaic` corrects for this by reversing the along-track frame
-   order (`camera_pose.reverse_crop_along_track`) whenever needed, which keeps the mosaic's
-   chirality matching the synthetic image's regardless of pass/yaw state.
+Frames are always read off disk in strict acquisition-time order (a PDS archival guarantee), but
+which real-world direction that "forward in time" runs, expressed against WAC's fixed sample-axis
+convention, is **pass-dependent** (see `camera.boresight_rotation_k`'s docstring and
+docs/data-sources.md, "Pass-dependent sensor axis convention") -- the resulting mosaic's chirality
+can come out mirrored, not just rotated, relative to the synthetic image. `fetch_vis_mosaic`
+corrects for this by reversing the along-track frame order (`camera_pose.reverse_crop_along_track`)
+whenever needed.
 """
 
 import numpy as np
@@ -77,7 +58,7 @@ def fetch_vis_mosaic(
     `camera_pose` (the already-built synthetic `Camera` for this same product/pose) determines
     whether frames must be stacked in *reverse* along-track order
     (`camera_pose.reverse_crop_along_track`): a real, pass-dependent mirror -- see that property's
-    docstring and docs/data-sources.md, "Open bug: WAC CDR appears vertically flipped" -- not
+    docstring and docs/data-sources.md, "Pass-dependent sensor axis convention" -- not
     optional/cosmetic, so this is a required argument, not a config knob."""
     config = config or load_config()
     if start_frame is None:

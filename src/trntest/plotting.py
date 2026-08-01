@@ -90,9 +90,10 @@ def plot_comparison(
     p2, p98 = np.percentile(vis_mosaic[valid_mask], [2, 98])
     display_mosaic = np.where(valid_mask, vis_mosaic, p2)  # fill missing edge columns with the low end of the stretch
 
-    # Both panels cover the same real square ground area (see docs/plan.md), but at different
-    # native pixel resolution per axis -- plot in real km (not raw pixel index) so both display as
-    # square and are directly, visually comparable. Also apply the north-up rotation computed above
+    # Both panels cover the same real square ground area (see docs/data-sources.md, "Current
+    # image-pipeline algorithm"), but at different native pixel resolution per axis -- plot in real
+    # km (not raw pixel index) so both display as square and are directly, visually comparable.
+    # Also apply the north-up rotation computed above
     # (display only).
     n_frames = camera.n_frames_for_square_crop
     synthetic_width_km = camera.cross_track_width_km

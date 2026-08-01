@@ -47,11 +47,16 @@ Inside the Docker container (recommended — has GDAL/ASP/SPICE already):
 ```sh
 docker compose run --rm demo pip install -e '.[dev]'
 docker compose run --rm demo nbstripout --install
+git config filter.nbstripout.clean 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout'
+git config diff.ipynb.textconv 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout -t'
 ```
 
 This installs `trntest` in editable mode plus `ruff`, `mypy`, `pytest`, `nbstripout`, `jupyterlab`,
 and `ipykernel`, and registers the `nbstripout` git filter (see "Viewing the rendered demo" below
-for why). Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain
+for why). The two `git config` lines are needed because `nbstripout --install`, run inside the
+container, writes filter/diff commands pointing at the container's own Python path — which fails
+when git itself runs on the host (outside Docker); these overrides route both back through Docker
+instead. Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain
 host venv with Python 3.11+:
 
 ```sh

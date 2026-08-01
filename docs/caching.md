@@ -35,7 +35,7 @@ CK (pointing) kernels dominate a year's data volume. Process:
    SCLK, PCK/lunar frame kernel, LRO FK, WAC IK.
 5. Download only that selected set into `cache/naif/...` (mirrored paths), then `furnsh` just those.
 
-## Observed result (Phase 2 implementation)
+## Observed result
 
 For the demo's chosen 2019-11-30 timestamp, selecting only the `lrosc`/`lrolc` CK flavors (out of
 five) for one 10-day chunk, plus the always-needed kernels, downloaded **~585 MB** total —

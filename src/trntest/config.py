@@ -33,7 +33,10 @@ DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
 DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
 DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 
-# The WAC EDR/CDR product chosen for this demo -- see docs/data-sources.md.
+# Reference/regression-test WAC EDR/CDR product -- not the live default image (that's
+# dataset.select_dataset(), catalog-driven); this is a known-good fallback/test fixture for
+# TrntestConfig()'s built-in defaults. See docs/data-sources.md, "Reference/regression-test EDR
+# products".
 DEFAULT_EDR_VOLUME = "LROLRC_0041C"
 DEFAULT_EDR_SUBDIR = "ESM4"
 DEFAULT_EDR_DOY = "2019334"
@@ -41,8 +44,10 @@ DEFAULT_EDR_PRODUCT = "M1329714703CE"
 DEFAULT_CDR_VOLUME = "LROLRC_1041C"
 DEFAULT_CDR_PRODUCT = "M1329714703CC"
 
-# Frame index (0-based) within the product's `nframes` framelets to pose the camera at -- chosen to
-# land in sunlit terrain, not the shadowed start of the swath (see docs/data-sources.md).
+# Frame index (0-based) within the product's `nframes` framelets to pose the camera at, for the
+# reference product above -- chosen to land in sunlit terrain, not the shadowed start of the swath
+# (see docs/history.md, Phase 2). dataset.generate_dataset() overrides this per-image on the live,
+# catalog-driven path.
 DEFAULT_TARGET_FRAME_INDEX = 440
 DEFAULT_IMAGE_SIZE = 256
 

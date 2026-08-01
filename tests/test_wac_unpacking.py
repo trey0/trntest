@@ -54,7 +54,7 @@ def test_fetch_vis_mosaic_respects_start_frame_offset(tmp_path):
 
 
 def test_fetch_vis_mosaic_reverses_frame_order_when_flagged(tmp_path):
-    """See docs/data-sources.md, "Open bug: WAC CDR appears vertically flipped" -- for passes where
+    """See docs/data-sources.md, "Pass-dependent sensor axis convention" -- for passes where
     the real ground-track direction is dominant +X in the raw camera frame, frames must be stacked
     in reverse along-track order to keep chirality matching the synthetic image."""
     n_frames = 3
