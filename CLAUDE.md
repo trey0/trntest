@@ -38,10 +38,17 @@ just this file). Then, as needed:
   pre-commit habit of rendering the notebook in place for manual validation. Don't bother
   building/publishing an Artifact for this kind of internal validation check — it's slower and not
   worth the token cost when the user can just view the live render themselves.
-- **`nbstripout` is currently NOT actually wired up** despite the README/this-file's docs describing
-  it as the convention: there's no `.gitattributes` (which `nbstripout --install` should add, to
-  make the filter apply for any clone) and `git config --get filter.nbstripout.clean` is empty in
-  this working tree — confirmed by the committed notebook at `HEAD` having baked-in outputs. Don't
-  assume outputs get stripped at commit time; check `.gitattributes`/`git config` again before
-  relying on this, and flag it to the user rather than silently assuming the documented convention
-  is actually active.
+- `nbstripout` **is** wired up (fixed after an earlier session found it wasn't): `.gitattributes` is
+  committed (`*.ipynb filter=nbstripout`/`diff=ipynb`), and `filter.nbstripout.clean`/`.smudge`/
+  `.required` plus `diff.ipynb.textconv` are set in local git config, each wrapped through
+  `docker compose run` (not the bare `nbstripout` binary — see next bullet). Verify with
+  `git config --get filter.nbstripout.clean` / `git config --get diff.ipynb.textconv` before relying
+  on this on a fresh clone, since these are per-clone local config, not committed.
+- **Gotcha**: `nbstripout --install` (the command README's dev-setup section tells you to run) writes
+  `filter.nbstripout.clean` *and* `diff.ipynb.textconv` pointing at the bare in-container Python path
+  (`/opt/venv/bin/python3`), which fails when git runs on the host (outside Docker) — `error: external
+  filter '...' failed 127` for the clean filter, or a silently-empty `git diff`/`git diff --stat` on
+  any `.ipynb` file for the textconv (no error printed — it just looks like there's no diff, even
+  when there is one). Fix both to run through Docker instead, e.g.
+  `git config filter.nbstripout.clean 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout'`
+  and `git config diff.ipynb.textconv 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout -t'`.

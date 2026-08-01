@@ -110,6 +110,36 @@ isn't only in code comments or conversation history.
   (-85631..-85635) are then *fixed* (TKFRAME) offsets from -85620, defined right in the FK — no CK
   needed for those.
 
+### Ascending-node search: `gfposc`, and a `functools.cache` gotcha (Phase 10)
+
+- `illumination.find_ascending_node_crossings` finds LRO's `MOON_ME`-frame latitude=0 crossings via
+  SPICE's `gfposc` (geometry finder over position coordinates: `targ="LRO"`, `frame="MOON_ME"`,
+  `obsrvr="MOON"`, `crdsys="LATITUDINAL"`, `coord="LATITUDE"`, `relate="="`, `refval=0.0`) — one
+  call over the whole search window, SPICE's own compiled adaptive root-finder, instead of a
+  hand-rolled 60s-step sample-and-bisect loop making thousands of Python↔SPICE round trips. Still
+  returns both ascending and descending crossings (`relate="="` doesn't distinguish direction); keep
+  filtering for ascending via a small ±5s latitude sign check, same as before. Needs SPK coverage for
+  the *whole* confinement window furnished at once — `spice_kernels.furnish_spk_range` does this
+  (SPK/`lrorg` only, not CK; safe to pre-furnish a whole search window's worth since SPK volume is
+  small relative to CK, see above), unlike `fetch_and_furnish`'s per-epoch just-in-time pattern used
+  everywhere else in this codebase for full camera-pose work (which does need CK).
+- **Gotcha, worth remembering for any future `functools.cache`-on-`TrntestConfig` usage**:
+  `spice_kernels.latest_metakernel_url` is `@functools.cache`d on `(year, ...)` specifically because
+  it's a live, uncached-by-design NAIF directory listing that a sweep evaluating many candidates
+  would otherwise re-hit once per candidate. It was originally keyed on `(year, config)` — a whole
+  `TrntestConfig`, not just the one field (`naif_base_url`) it actually reads. Since
+  `dataset.evaluate_candidate_image` builds a fresh per-candidate config via `dataclasses.replace`
+  (different `edr_volume`/`edr_product`/etc. per row), every candidate produced a *different* cache
+  key by value, silently defeating the memoization entirely — ~1600 real HTTP requests for a 7-day,
+  1633-candidate sweep, ~495s of a ~500s total call (confirmed via `cProfile`; `spice.furnsh()`
+  itself was only 0.178s total, ruling out kernel-file-size as the cause). Fixed by keying on
+  `(year, naif_base_url: str)` instead of the whole config. **Lesson**: when memoizing on a
+  `TrntestConfig` argument, the cache key is the whole dataclass by value — fine when callers reuse
+  one shared config, a real footgun when callers legitimately vary it per-item (as `dataset.py`'s
+  per-candidate `dataclasses.replace` does) but the cached function only cares about one field of it.
+  Prefer keying on just the specific field(s) actually used, not the whole config, whenever the
+  caller might vary other fields per call.
+
 ### Chosen EDR product for this demo
 
 - Product `M1329714703CE`, path

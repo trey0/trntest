@@ -7,7 +7,6 @@ independent of local topography -- appropriate given the ~70 km square FOV this 
 far coarser than individual-crater-scale terrain relief.
 """
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 
 import numpy as np
@@ -55,47 +54,6 @@ def terminator_offset_deg(longitude_deg: float, sub_solar_longitude_deg: float) 
     return abs(abs(offset_from_subsolar) - 90.0)
 
 
-def find_sign_change_crossings(
-    f: Callable[[float], float], t0: float, t1: float, coarse_step_s: float, tol_s: float = 1.0
-) -> list[float]:
-    """Coarse-sample `f` over [t0, t1] at `coarse_step_s`, then bisect each sign-change bracket to
-    `tol_s` precision. Generic (not SPICE-specific) -- mirrors the bisection style already used in
-    `tie_points.project_ground_to_crop_pixel`. Returns crossing times in ascending order, regardless
-    of crossing direction."""
-    n_steps = max(1, int((t1 - t0) / coarse_step_s))
-    times = [t0 + i * coarse_step_s for i in range(n_steps + 1)]
-    if times[-1] < t1:
-        times.append(t1)
-    values = [f(t) for t in times]
-
-    crossings = []
-    if values[0] == 0.0:
-        crossings.append(times[0])
-
-    for i in range(len(times) - 1):
-        t_lo, v_lo = times[i], values[i]
-        t_hi, v_hi = times[i + 1], values[i + 1]
-        if v_hi == 0.0:
-            # Claimed by this bracket's upper endpoint -- if the next bracket starts here too, its
-            # own v_lo == 0.0 check below skips it, so an exact zero on an interior sample point
-            # isn't double-counted.
-            crossings.append(t_hi)
-            continue
-        if v_lo == 0.0:
-            continue
-        if (v_lo < 0) == (v_hi < 0):
-            continue  # no sign change in this bracket
-        while (t_hi - t_lo) > tol_s:
-            t_mid = (t_lo + t_hi) / 2.0
-            v_mid = f(t_mid)
-            if (v_mid < 0) == (v_lo < 0):
-                t_lo, v_lo = t_mid, v_mid
-            else:
-                t_hi, v_hi = t_mid, v_mid
-        crossings.append((t_lo + t_hi) / 2.0)
-    return crossings
-
-
 def et_to_datetime(et: float) -> datetime:
     iso = spice.et2utc(et, "ISOC", 3)
     return datetime.fromisoformat(iso).replace(tzinfo=UTC)
@@ -106,23 +64,51 @@ def utc_to_et(dt: datetime) -> float:
     return spice.utc2et(dt.strftime("%Y-%m-%dT%H:%M:%S.%f"))
 
 
-def find_ascending_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -> list[float]:
-    """Ascending-node (latitude crossing from south to north) epochs in [start_et, end_et], derived
-    directly from real SPICE trajectory data -- no assumed orbital period.
+_NODE_SEARCH_STEP_S = 60.0  # gfposc's step must stay under half the minimum gap between successive
+# latitude=0 crossings (~half an LRO orbit, ~56 min) or it can miss one -- same correctness
+# requirement as the coarse-sample step this replaced, now enforced inside SPICE's own C search.
+_LRO_ORBITAL_PERIOD_S = 113.0 * 60.0  # approximate -- used only to size gfposc's result-window
+# workspace with margin, not for any precision-sensitive computation.
 
-    Furnishes kernels just-in-time per sampled epoch (via spice_kernels.fetch_and_furnish, which
-    only reloads/unloads when the epoch's date actually needs a different date-ranged CK/SPK set)
-    rather than pre-furnishing the whole range up front -- a wide search range can span more kernel
-    date-ranges than the SPICE kernel pool can hold loaded simultaneously (its character-value
-    buffer is fixed-size), so keeping only the currently-relevant chunk loaded is required, not just
-    an optimization. Consecutive samples are almost always within the same chunk, so this is a cheap
-    no-op most of the time."""
+
+def find_ascending_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -> list[float]:
+    """Ascending-node (latitude crossing from south to north) epochs in [start_et, end_et], found via
+    SPICE's gfposc geometry-finder (LRO's MOON_ME-frame latitude crossing zero) -- SPICE's own
+    compiled adaptive root-finder over the whole window in one call, rather than a hand-rolled
+    sample-and-bisect loop making thousands of Python<->SPICE round trips. Cross-checked against the
+    prior hand-rolled implementation: identical crossing counts, epochs agreeing to within ~0.5s
+    (well under the old implementation's own 1s bisection tolerance).
+
+    Needs SPK coverage for the whole window furnished at once (gfposc searches the whole confinement
+    window in a single call) -- spice_kernels.furnish_spk_range handles that; see its docstring for
+    why this differs from fetch_and_furnish's per-epoch just-in-time pattern used elsewhere."""
+    spice_kernels.furnish_spk_range(et_to_datetime(start_et), et_to_datetime(end_et), config)
+
+    cnfine = spice.cell_double(2)
+    spice.wninsd(start_et, end_et, cnfine)
+
+    # ~2 latitude=0 crossings per orbit (ascending + descending), with a 2x safety margin.
+    max_crossings = max(200, int((end_et - start_et) / _LRO_ORBITAL_PERIOD_S * 4) + 20)
+    result = spice.gfposc(
+        "LRO",
+        "MOON_ME",
+        "NONE",
+        "MOON",
+        "LATITUDINAL",
+        "LATITUDE",
+        "=",
+        0.0,
+        0.0,
+        _NODE_SEARCH_STEP_S,
+        max_crossings,
+        cnfine,
+        spice.cell_double(2 * max_crossings),
+    )
+    all_crossings = [spice.wnfetd(result, i)[0] for i in range(spice.wncard(result))]
 
     def latitude_at(et: float) -> float:
         spice_kernels.fetch_and_furnish(et_to_datetime(et), config)
         return spacecraft_lonlat_deg(et)[1]
-
-    all_crossings = find_sign_change_crossings(latitude_at, start_et, end_et, coarse_step_s=60.0, tol_s=1.0)
 
     ascending = []
     eps_s = 5.0

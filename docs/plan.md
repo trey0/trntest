@@ -235,7 +235,7 @@ data-caching approach. Update those files (not just this one) as concrete choice
      antimeridian fix), and a full `jupyter nbconvert --to notebook --execute` run (all cells pass,
      ~9 min wall time). Committed and pushed as `6e90d82`.
 
-## Phases 1-9 complete
+## Phases 1-10 complete
 
 The demo runs end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
 render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `tie_points.py`)
@@ -245,7 +245,9 @@ with config, tests, and style tooling, now with a repeatable catalog-driven data
 selection/generation capability (Phase 8). See `notebooks/lunar_sat_sim_demo.ipynb` for the
 walkthrough and `README.md` to run it. Phase 9 (below) found and fixed a real, pass-dependent
 mirror bug in the WAC CDR comparison, uncovered by Phase 8's move to catalog-driven, multi-product
-selection (the single hand-picked demo product had never exercised this).
+selection (the single hand-picked demo product had never exercised this). Phase 10 (below) found
+and fixed two real performance bugs in that same catalog-driven sweep, cutting a from-cold
+`select_dataset(max_search_days=7)` call from ~500s to ~6s.
 
 ## Phase 9 (complete) — WAC CDR was mirrored (not rotated) relative to the synthetic image, on some passes
 
@@ -307,6 +309,53 @@ the correct matching features in both panels.
 See `docs/data-sources.md`'s "Fixed: WAC CDR mirror relative to synthetic image (pass-dependent
 chirality)" section (right after "North-up display rotation") for the full derivation, including the
 exact chirality-check numbers before and after the fix.
+
+## Phase 10 (complete) — `select_dataset()` sweep: ~500s → ~6s for a from-cold 7-day search
+
+Motivated by wanting faster iteration on `select_dataset()`'s tuning parameters
+(`min_sun_elevation_deg`, `num_orbits`, `min_lan_offset_deg`, `throttle_minutes`) — every call
+redid all the sweep's work from scratch, and a from-cold call took ~500s (Docker,
+`max_search_days=7`, 1633 EDR candidates evaluated). Rather than guessing which of several
+proposed caching layers would matter most, profiled first (`cProfile`/`pstats` around a real
+`select_dataset()` call) and let the numbers decide. Found two real, unrelated bugs, in order of
+what a first-principles look and then profiling turned up:
+
+1. **`illumination.find_ascending_node_crossings` replaced with SPICE's `gfposc`.** The original
+   implementation sampled LRO's `MOON_ME`-frame latitude every 60s across the whole search window
+   (~10,000 Python-level `spkezr`+`reclat` calls for a 7-day search) and bisected sign changes with
+   a hand-rolled loop (`find_sign_change_crossings`) — despite this module's own stated philosophy
+   of using real SPICE geometry functions, not hand-rolled vector math. `spice.gfposc` (geometry
+   finder over position coordinates) does the same latitude=0 search natively, as a single call over
+   the whole confinement window, evaluated by SPICE's own compiled adaptive search. Needs SPK
+   coverage for the whole window furnished at once (new `spice_kernels.furnish_spk_range`) rather
+   than the per-epoch just-in-time furnish/unload pattern `fetch_and_furnish` uses elsewhere for CK
+   data — safe here since node-crossing search only needs SPK (trajectory), not CK (attitude, the
+   kernel type that actually risks exceeding the kernel pool's buffer). Cross-checked against the
+   old implementation before removing it: identical crossing counts, epochs agreeing to ~0.5s (well
+   under the old implementation's own 1s bisection tolerance), for a real 2019-11-01, 7-day window.
+   `find_sign_change_crossings` (now unused in production) and its 3 tests were removed.
+
+2. **`spice_kernels.latest_metakernel_url`'s `functools.cache` was silently defeated.** It's
+   memoized on `(year, config)` specifically to avoid re-hitting NAIF's live (uncached-by-design)
+   `extras/mk/` directory listing once per date — its own docstring already called this out as
+   necessary for exactly this sweep's "hundreds of candidate images in one process" case. But
+   `dataset.evaluate_candidate_image` builds a fresh per-candidate config via `dataclasses.replace`
+   (varying `edr_volume`/`edr_product`/etc — fields this function never reads), so every one of the
+   1633 candidates got a distinct cache key and forced a real HTTP request: ~1600 requests, ~495s of
+   the ~500s total, confirmed via `cProfile` (`latest_metakernel_url`/`requests.get` dominating
+   cumulative time; `spice.furnsh()` itself only 0.178s across 16 calls, ruling out kernel-file-size
+   as the cause). Fixed by keying the cache on `(year, naif_base_url: str)` instead of the whole
+   config — `naif_base_url` is the only field the function actually reads, and it never varies
+   per-candidate.
+
+**Verified**: `trntest-lint`/`pytest` (70 tests, post-removal) pass. Before/after `cProfile` of a
+from-cold `select_dataset(max_search_days=7)` (fresh Docker container each time, same real network
++ SPICE): 502.1s → 5.9s, same 81-images-across-12-orbits result both times. Further caching layers
+discussed but not implemented (`functools.cache` on `camera.fetch_frame_timing`, splitting
+candidate evaluation from threshold filtering into a reusable in-memory DataFrame) — deferred, since
+profiling now shows ~2s of the ~6s from-cold total is `fetch_frame_timing`'s XML parse and the rest
+is spread across many smaller costs; revisit if repeat-call latency within one process still matters
+after this fix.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
