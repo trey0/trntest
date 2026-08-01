@@ -98,17 +98,28 @@ def project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, 
 
 
 def _crop_pixel_at_frame(
-    frame_timing: FrameTiming, frame_index: float, start_frame: float, ground_km: np.ndarray, half_angle_rad: float
+    frame_timing: FrameTiming,
+    frame_index: float,
+    start_frame: float,
+    n_frames: float,
+    reverse: bool,
+    ground_km: np.ndarray,
+    half_angle_rad: float,
 ) -> tuple:
     """Cross-track column (real pinhole formula, cross-track = camera Y) + row (linear frame-to-row
-    mapping) for a ground point, given the along-track-matching frame index has already been found."""
+    mapping) for a ground point, given the along-track-matching frame index has already been found.
+    `reverse` must match `wac.fetch_vis_mosaic`'s own `camera_pose.reverse_crop_along_track` for
+    this same product/pose (see its docstring) -- when the mosaic's frames were stacked in reverse
+    along-track order, row must be measured from the *far* end (`start_frame + n_frames`) instead,
+    not just from `start_frame`."""
     et = frame_et(frame_timing, frame_index)
     c_m, r_cam_to_me, _, _ = camera_pose_moon_me(et)
     v_cam = r_cam_to_me.T @ (ground_km - c_m / 1000.0)
     fu_real = (wac.SAMPLES / 2.0) / np.tan(half_angle_rad)
     cu_real = wac.SAMPLES / 2.0
     col = fu_real * (v_cam[1] / v_cam[2]) + cu_real
-    row = (frame_index - start_frame) * wac.VIS_BLOCK_HEIGHT
+    offset = frame_index - start_frame
+    row = (n_frames - offset if reverse else offset) * wac.VIS_BLOCK_HEIGHT
     return col, row
 
 
@@ -116,6 +127,7 @@ def project_ground_to_crop_pixel(
     frame_timing: FrameTiming,
     start_frame: float,
     n_frames: float,
+    reverse: bool,
     ground_km: np.ndarray,
     half_angle_rad: float,
     tol: float = 1e-6,
@@ -124,7 +136,9 @@ def project_ground_to_crop_pixel(
     """The real crop mixes many real poses (one per frame), so finding which pixel a ground point
     falls on requires locating which frame's along-track position it matches. Bisects over frame
     index for where the along-track (camera X) component crosses zero -- monotonic over this short
-    span (confirmed empirically, see docs/data-sources.md)."""
+    span (confirmed empirically, see docs/data-sources.md). `reverse` -- see
+    `_crop_pixel_at_frame` -- only affects the row this frame index maps to, not the bisection
+    itself (which is purely about locating the matching frame, independent of stacking order)."""
 
     def along_track_tangent(frame_index: float) -> float:
         et = frame_et(frame_timing, frame_index)
@@ -135,9 +149,9 @@ def project_ground_to_crop_pixel(
     lo, hi = start_frame, start_frame + n_frames
     f_lo, f_hi = along_track_tangent(lo), along_track_tangent(hi)
     if abs(f_lo) < tol:
-        return _crop_pixel_at_frame(frame_timing, lo, start_frame, ground_km, half_angle_rad)
+        return _crop_pixel_at_frame(frame_timing, lo, start_frame, n_frames, reverse, ground_km, half_angle_rad)
     if abs(f_hi) < tol:
-        return _crop_pixel_at_frame(frame_timing, hi, start_frame, ground_km, half_angle_rad)
+        return _crop_pixel_at_frame(frame_timing, hi, start_frame, n_frames, reverse, ground_km, half_angle_rad)
     if (f_lo > 0) == (f_hi > 0):
         raise ValueError(
             f"no sign change in along-track tangent over [{lo}, {hi}] "
@@ -154,7 +168,9 @@ def project_ground_to_crop_pixel(
         else:
             hi, f_hi = mid, f_mid
     frame_index_solved = (lo + hi) / 2.0
-    return _crop_pixel_at_frame(frame_timing, frame_index_solved, start_frame, ground_km, half_angle_rad)
+    return _crop_pixel_at_frame(
+        frame_timing, frame_index_solved, start_frame, n_frames, reverse, ground_km, half_angle_rad
+    )
 
 
 def inscribed_bbox(corners: dict, interior_point: tuple, shrink_steps: int = 40) -> tuple:
@@ -245,7 +261,12 @@ def compute_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntes
         ground_km = lonlat_to_ground_km(lon, lat, config.moon_radius_km)
         px, py = project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv)
         col, row = project_ground_to_crop_pixel(
-            frame_timing, config.target_frame_index, n_frames, ground_km, half_angle_rad
+            frame_timing,
+            config.target_frame_index,
+            n_frames,
+            camera.reverse_crop_along_track,
+            ground_km,
+            half_angle_rad,
         )
 
         image_size = config.image_size

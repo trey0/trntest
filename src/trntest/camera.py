@@ -33,19 +33,36 @@ PDS_NS = {
     "img": "http://pds.nasa.gov/pds4/img/v1",
 }
 
-# Fixed (NOT pass- or attitude-dependent) sensor-model axis convention. Applying
-# rotation_about_boresight(1) to the raw WAC-VIS camera frame makes the synthetic image's px
-# (column) align with the raw frame's +Y and py (row) align with -X. This is one of exactly two
-# boresight rotations (the other being k=3) that align px with cross-track and py with along-track
-# -- matching both WAC's and NAC's real archived-image layout (samples/columns = cross-track,
-# lines/rows = along-track; see docs/data-sources.md for why this isn't actually a WAC-vs-NAC
-# choice, both agree). k=1 (not k=3) is picked specifically so that increasing py (row, downward)
-# matches the same temporal sense as the real archived WAC image's row axis: consecutive-frame
-# ground motion measures as dominantly -X in the raw WAC-VIS frame (see
-# compute_n_frames_for_square_crop's use of km_per_frame), i.e. "forward in time" is -X, which is
-# exactly where k=1 sends py. This is a hardware/data-format property, fixed once here -- it does
-# not vary with which pass, ascending/descending, or yaw state this particular render happens to be.
-SENSOR_MODEL_BORESIGHT_ROTATION_K = 1
+# Sensor-model axis convention: applying rotation_about_boresight(1) to the raw WAC-VIS camera
+# frame makes the synthetic image's px (column) align with the raw frame's +Y and py (row) align
+# with -X; rotation_about_boresight(3) instead aligns px with -Y and py with +X. These are the only
+# two boresight rotations that put px on cross-track and py on along-track -- matching both WAC's
+# and NAC's real archived-image layout (samples/columns = cross-track, lines/rows = along-track;
+# see docs/data-sources.md for why this isn't actually a WAC-vs-NAC choice, both agree).
+#
+# Between k=1 and k=3: pick whichever makes +py increase in the same temporal sense as the real
+# archived WAC image's row axis (rows increase forward in time, by construction of how
+# wac.fetch_vis_mosaic stacks frames). This was originally hardcoded as a fixed k=1, on the claim
+# that "forward in time" is always -X in the raw WAC-VIS frame -- a hardware/data-format property,
+# not attitude-dependent. That claim was derived from exactly one product and turned out to be
+# wrong: a second, independently-selected product (M1327210646CE, see docs/data-sources.md "Open
+# bug") measured dominant +X for "forward in time", the opposite sign. LRO's WAC is body-fixed (no
+# gimbal), and LRO performs periodic 180-degree yaw flips (for thermal/power reasons) that rotate
+# the whole instrument frame -- including which raw axis "forward in time" projects onto -- so this
+# really is pass/yaw-state-dependent, not fixed. `boresight_rotation_k` below now measures it fresh
+# via real SPICE trajectory data for every pose, instead of assuming a constant.
+_FORWARD_TIME_K = 1  # forward_step_me_km projects to -X_raw
+_REVERSED_TIME_K = 3  # forward_step_me_km projects to +X_raw -- also Camera.reverse_crop_along_track
+
+
+def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.ndarray) -> int:
+    """Pick k in {1, 3} (see module comment above) so that +py increases in the same temporal sense
+    as `forward_step_me_km` -- the real, empirically-measured "forward in time" ground-track
+    direction (MOON_ME, from `ground_track_step_km`) at this pose. k=1 sends py to -X_raw, so it's
+    correct when `forward_step_me_km` projects to negative X in the raw camera frame; k=3 (py=+X_raw)
+    is correct when it projects positive."""
+    forward_cam = r_cam_to_me_raw.T @ forward_step_me_km
+    return _FORWARD_TIME_K if forward_cam[0] < 0 else _REVERSED_TIME_K
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,6 +87,7 @@ class Camera:
     center_frame_index: float
     camera_center_moon_me_m: list
     r_cam_to_me: list
+    boresight_rotation_k: int
     slant_range_km: float
     off_nadir_deg: float
     focal_length_px: float
@@ -78,6 +96,18 @@ class Camera:
     km_per_frame: float
     n_frames_for_square_crop: int
     tsai_path: Path
+
+    @property
+    def reverse_crop_along_track(self) -> bool:
+        """True when this pass's real "forward in time" ground-track direction is dominant +X in
+        the raw WAC-VIS camera frame (see `boresight_rotation_k`) -- opposite of the original
+        reference product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in
+        reverse along-track order (and `tie_points`/`orientation` must correspondingly flip their
+        row/up-direction conventions) for the crop's pixel-space chirality to keep matching the
+        synthetic image's -- see docs/data-sources.md, "Open bug: WAC CDR appears vertically
+        flipped", for the empirical finding this encodes: a genuine, pass-dependent mirror, not
+        just a rotation."""
+        return self.boresight_rotation_k == _REVERSED_TIME_K
 
 
 def fetch_frame_timing(config: TrntestConfig | None = None) -> FrameTiming:
@@ -190,14 +220,24 @@ def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_r
     return ground_chord_km(left_ground, right_ground)
 
 
-def km_per_frame(frame_timing: FrameTiming, frame_index: int, n: int = 10) -> float:
-    """Real ground advance per framelet, smoothed over `n` frames (boresight ground point at
-    frame_index vs. frame_index + n, divided by n)."""
+def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int = 10) -> np.ndarray:
+    """Real "forward in time" ground-track step vector (MOON_ME, km, not normalized): the
+    boresight's ground point at `frame_index + n` minus at `frame_index`, smoothed over `n` frames.
+    Empirically measured from real SPICE trajectory data rather than assumed from a fixed raw-camera
+    axis, since that assumption turned out to be pass/yaw-state-dependent (see
+    `boresight_rotation_k`'s docstring and docs/data-sources.md, "Open bug: WAC CDR appears
+    vertically flipped"). Used both for `km_per_frame`'s magnitude and for `boresight_rotation_k`'s
+    (and `orientation.compute_display_rotations`'s) direction."""
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))
     c1_m, r1, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index + n))
     ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)
     ground1 = boresight_ground_point_km(c1_m / 1000.0, r1)
-    return ground_chord_km(ground0, ground1) / n
+    return ground1 - ground0
+
+
+def km_per_frame(frame_timing: FrameTiming, frame_index: int, n: int = 10) -> float:
+    """Real ground advance per framelet, smoothed over `n` frames."""
+    return ground_chord_km(np.zeros(3), ground_track_step_km(frame_timing, frame_index, n)) / n
 
 
 def compute_n_frames_for_square_crop(
@@ -291,9 +331,12 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     et = frame_et(frame_timing, center_frame_index)
 
     c_meters, r_cam_to_me_raw, slant_range_km, off_nadir_deg = camera_pose_moon_me(et)
-    # Apply the fixed sensor-model axis convention (see SENSOR_MODEL_BORESIGHT_ROTATION_K above) --
-    # this only relabels px/py against the (unchanged) boresight, it doesn't move the camera.
-    r_cam_to_me = r_cam_to_me_raw @ rotation_about_boresight(SENSOR_MODEL_BORESIGHT_ROTATION_K)
+    # Apply the sensor-model axis convention (see `boresight_rotation_k`'s docstring above) -- this
+    # only relabels px/py against the (unchanged) boresight, it doesn't move the camera. k is
+    # measured fresh from this pose's real ground-track direction, not a fixed constant.
+    forward_step_km = ground_track_step_km(frame_timing, center_frame_index)
+    k = boresight_rotation_k(r_cam_to_me_raw, forward_step_km)
+    r_cam_to_me = r_cam_to_me_raw @ rotation_about_boresight(k)
 
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     fu = fv = (config.image_size / 2.0) / np.tan(half_angle_rad)
@@ -312,6 +355,7 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
         center_frame_index=center_frame_index,
         camera_center_moon_me_m=c_meters.tolist(),
         r_cam_to_me=r_cam_to_me.tolist(),
+        boresight_rotation_k=k,
         slant_range_km=slant_range_km,
         off_nadir_deg=off_nadir_deg,
         focal_length_px=fu,

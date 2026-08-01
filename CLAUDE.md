@@ -30,3 +30,18 @@ just this file). Then, as needed:
   README) before committing Python changes — `git config core.hooksPath githooks` wires this up as
   a pre-commit hook automatically. `cache/`/`output/` live outside this repo entirely (siblings of
   the outer workspace's `src/`, not inside this checkout).
+- When validating a change with a full notebook render (`jupyter nbconvert --to notebook
+  --execute`), write the executed output directly over
+  `notebooks/lunar_sat_sim_demo.ipynb` itself — not a scratch/output path — so the results are
+  immediately visible by opening that file in the user's already-running `docker compose up`
+  Jupyter Lab server (no scp, no separate render step on their end). This matches the user's own
+  pre-commit habit of rendering the notebook in place for manual validation. Don't bother
+  building/publishing an Artifact for this kind of internal validation check — it's slower and not
+  worth the token cost when the user can just view the live render themselves.
+- **`nbstripout` is currently NOT actually wired up** despite the README/this-file's docs describing
+  it as the convention: there's no `.gitattributes` (which `nbstripout --install` should add, to
+  make the filter apply for any clone) and `git config --get filter.nbstripout.clean` is empty in
+  this working tree — confirmed by the committed notebook at `HEAD` having baked-in outputs. Don't
+  assume outputs get stripped at commit time; check `.gitattributes`/`git config` again before
+  relying on this, and flag it to the user rather than silently assuming the documented convention
+  is actually active.

@@ -235,7 +235,7 @@ data-caching approach. Update those files (not just this one) as concrete choice
      antimeridian fix), and a full `jupyter nbconvert --to notebook --execute` run (all cells pass,
      ~9 min wall time). Committed and pushed as `6e90d82`.
 
-## Phases 1-8 complete; Phase 9 (below) is open
+## Phases 1-9 complete
 
 The demo runs end-to-end: real LRO SPICE trajectory → posed synthetic camera → `sat_sim`
 render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points, `tie_points.py`)
@@ -243,75 +243,70 @@ against a properly band-separated, correctly-sized, correctly-posed crop of real
 reproducible from the checked-in Dockerfile, and packaged as an installable library (`trntest`)
 with config, tests, and style tooling, now with a repeatable catalog-driven dataset
 selection/generation capability (Phase 8). See `notebooks/lunar_sat_sim_demo.ipynb` for the
-walkthrough and `README.md` to run it. **A real visual bug was just found in that comparison
-figure — see "Phase 9" immediately below before doing anything else here.**
+walkthrough and `README.md` to run it. Phase 9 (below) found and fixed a real, pass-dependent
+mirror bug in the WAC CDR comparison, uncovered by Phase 8's move to catalog-driven, multi-product
+selection (the single hand-picked demo product had never exercised this).
 
-## Phase 9 (in progress) — WAC CDR appears vertically flipped relative to the synthetic image
+## Phase 9 (complete) — WAC CDR was mirrored (not rotated) relative to the synthetic image, on some passes
 
 Found by manually reviewing the notebook after Phase 8: in the Phase 5 comparison figure, the real
-WAC CDR panel looks **vertically flipped** relative to the synthetic image — and this is **not**
-explainable as any 90°-multiple rotation. There's also a separate-but-possibly-related symptom:
-visible discontinuities in the WAC CDR panel that look like they land on framelet (14-line VIS
-block) boundaries. Tie points line up with the underlying (possibly-wrong) image data the same way
-across both images, so they don't reveal anything by themselves — see why below.
+WAC CDR panel looked **vertically flipped** relative to the synthetic image on the newly-selected
+product `M1327210646CE` — and this was **not** explainable as any 90°-multiple rotation. There was
+also a separate-but-related symptom: visible discontinuities in the WAC CDR panel landing on
+framelet (14-line VIS block) boundaries. Tie points lined up with the underlying (wrong) image data
+the same way across both images, so they didn't reveal anything by themselves (they reuse `wac.py`'s
+own row-stacking convention, so they can't catch a bug baked into an assumption they themselves
+reuse).
 
-**Leading hypothesis** (from the user, and supported by code reading below): the along-track
-*order* the framelets are stacked in is reversed, while the line order *within* each framelet is
-correct. That single mechanism would explain both symptoms at once — an overall flip (blocks in the
-wrong order) plus boundary discontinuities (each individual block is internally fine, but adjacent
-blocks no longer physically overlap the way WAC's real push-frame design intends once their overall
-order is backwards).
+**A wrong first fix, caught by the user.** The first hypothesis (mine) was that this was actually a
+*rotation*: `camera.py`'s `SENSOR_MODEL_BORESIGHT_ROTATION_K` comment and
+`docs/data-sources.md`'s "Fixed sensor-model axis convention" section had asserted "forward in time
+is `-X`" in the raw WAC-VIS frame is a **hardware/data-format property, not pass-dependent** — but
+that claim was derived and verified against exactly **one** product and never re-tested until
+`generate_dataset()` (Phase 8) started producing new ones. Directly measuring it via real SPICE
+trajectory data confirmed the sign really is pass-dependent (dominant `+X` for the new product vs.
+`-X` for the original) — but a fix built purely from that (`camera.boresight_rotation_k`, computed
+per-pose instead of hardcoded) only ever changes *rotation* choices (`rotation_about_boresight`/
+`np.rot90`, always determinant +1 at every layer of this pipeline) and **the user correctly pointed
+out this could never produce or repair a genuine mirror** — a real, structural limitation, not
+something more testing of the rotation-only fix could have found.
 
-**Code trail:**
+**The decisive test**: comparing the **sign of a 2D signed area** of a 3-point tie-point triangle
+in the synthetic image's pixel space vs. the real crop's pixel space — using the existing,
+already-independent SPICE-based tie-point projections, with no display-rotation logic involved at
+all. Same sign means the two pixel spaces are related by a rotation; opposite sign means a genuine
+mirror. Result: the original demo product's signs matched (no mirror, consistent with Phase 5's
+verification); the flagged product's signs were **opposite** — a real, definitively-confirmed
+mirror.
 
-- **`src/trntest/wac.py:54-86`** (`fetch_vis_mosaic`) stacks each frame's 14-line VIS block in
-  increasing `frame_index` order (row 0 = earliest frame in the crop, last row = latest) via
-  `frames[:, VIS_BLOCK_OFFSET:VIS_BLOCK_OFFSET+VIS_BLOCK_HEIGHT, :].reshape(n_frames * 14, 704)`.
-- **`src/trntest/tie_points.py:111`** (`_crop_pixel_at_frame`) computes tie-point rows as
-  `row = (frame_index - start_frame) * wac.VIS_BLOCK_HEIGHT` — the *same* increasing-frame_index-
-  to-increasing-row convention as `wac.py`. This is exactly why tie points "line up with the
-  underlying image data the same way across the pair": tie points can't catch a bug baked into an
-  assumption they themselves reuse.
-- **Why it can't be a rotation**: the crop's north-up display rotation
-  (`src/trntest/orientation.py:98`, `best_k_for_north_up(..., candidates=(0, 2))`, applied via
-  `np.rot90(display_mosaic, rotations.k_crop)` in `src/trntest/plotting.py:103`) only ever chooses
-  among proper rotations (`np.rot90`, determinant +1). A "framelet order reversed, lines within each
-  framelet correct" bug is a pure mirror along the along-track axis (determinant −1, e.g.
-  `np.flipud`) — structurally impossible to produce *or fix* via `np.rot90`. If a flip is really
-  there, it must already be baked into `display_mosaic` (i.e. into `wac.fetch_vis_mosaic`'s output)
-  before any display rotation runs — the north-up logic is very likely a red herring, not the
-  culprit, though it's worth double-checking `k_crop`'s two-candidate restriction isn't itself
-  hiding something.
-- **A previously-made claim worth re-examining**: `src/trntest/camera.py`'s
-  `SENSOR_MODEL_BORESIGHT_ROTATION_K` comment and `docs/data-sources.md`'s "Fixed sensor-model axis
-  convention" section assert that "forward in time is `-X`" in the raw WAC-VIS frame is a
-  **hardware/data-format property, not pass-dependent** ("the same k=1 applies regardless of which
-  orbit pass, ascending/descending, or yaw state"). That claim was derived and verified against
-  exactly **one** product (this repo's original single-demo EDR) and was never re-tested against a
-  second, independently-selected image until `generate_dataset()` started producing new ones — and a
-  flip has now appeared on one of those new images. `wac.py`'s own docstring notes WAC's band order
-  "is reversed after a 180 deg yaw maneuver," so at least one WAC data property *is*
-  yaw-state-dependent — worth checking whether the "forward in time" axis claim actually is too.
-- **Suggested empirical check**: compute real sub-spacecraft latitude vs. `frame_index` directly via
-  SPICE (`illumination.spacecraft_lonlat_deg(et)` at `camera.frame_et(frame_timing, frame_index)`,
-  for a few frame indices spanning the crop) to get ground truth for whether increasing
-  `frame_index` means increasing or decreasing latitude on *this* pass, then cross-check against
-  `orientation.py`'s already-computed `north_crop`/`r_crop_raw` vectors and the actual displayed
-  content. Also check whether this pass is ascending or descending and whether that differs from the
-  original single-demo product's pass.
-- **Where a fix would land**, once root-caused: `src/trntest/wac.py` (frame-stacking order) and/or
-  `src/trntest/tie_points.py` (`_crop_pixel_at_frame`'s row formula, must stay consistent with
-  whatever `wac.py` does) and/or `src/trntest/camera.py` (`SENSOR_MODEL_BORESIGHT_ROTATION_K`, if
-  the "not pass-dependent" claim is actually wrong) and/or `src/trntest/orientation.py` (if a
-  genuine mirror needs to become a real display-rotation candidate, not just `np.rot90`).
-- **Reproducibility**: the notebook's current default selection (`select_dataset(max_search_days=7)`
-  then `.head(1)`) deterministically picks product `M1327210646CE` (orbit 46625, window
-  2019-11-01T01:13 to 2019-11-02T00:40 UTC) as of the current cache/window — this is the exact image
-  the flip was observed on.
+**Actual root cause**: WAC's raw camera frame is body-fixed (no gimbal), and LRO performs periodic
+180°-yaw-flip maneuvers (the two products are ~26 days apart, consistent with a flip having occurred
+between them). `wac.fetch_vis_mosaic`'s frame-stacking order is always correct *in time* (frames are
+read off disk in strict acquisition order, unconditionally) — but a yaw flip rotates the *entire*
+raw camera frame together, changing the resulting mosaic's **chirality** relative to the
+always-proper synthetic image, not just its rotation. This confirms the plan's original "framelet
+order reversed" hypothesis from the user, just precisely conditioned on a real, per-pass SPICE
+measurement rather than assumed universally true or false.
 
-See `docs/data-sources.md`'s "Open bug: WAC CDR appears vertically flipped relative to synthetic
-image" section (right after "North-up display rotation") for the same write-up alongside the
-related derived facts it references.
+**The fix**: `camera.Camera.reverse_crop_along_track` (derived from `boresight_rotation_k`) tells
+`wac.fetch_vis_mosaic` to reverse along-track frame-stacking order (`vis[::-1]`) when this pass's
+real ground-track direction doesn't match the original reference convention — a genuine mirror,
+unlike anything a rotation constant could produce. `tie_points.py` and `orientation.py` were updated
+to stay consistent with whichever stacking order `wac.py` actually used for a given pose
+(`crop_footprint_corners` needed no change — it's pure ground geometry, independent of pixel
+row/reversal).
+
+**Verified**: the same signed-area chirality check, re-run after the fix, now shows matching signs
+for *both* products (mirror gone in both cases — confirmed by direct computation, not just visual
+impression). `trntest-lint` and the full test suite (73 tests, including a new regression test for
+the reversal behavior) pass. A full `jupyter nbconvert --to notebook --execute` run on the flagged
+product's default selection shows the comparison figure's two panels now showing genuinely matching
+terrain (same large crater, same bright diagonal feature), with all 5 tie-point markers landing on
+the correct matching features in both panels.
+
+See `docs/data-sources.md`'s "Fixed: WAC CDR mirror relative to synthetic image (pass-dependent
+chirality)" section (right after "North-up display rotation") for the full derivation, including the
+exact chirality-check numbers before and after the fix.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 

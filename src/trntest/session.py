@@ -64,8 +64,8 @@ class Session:
         return orientation.compute_display_rotations(camera, frame_timing, config=self.config)
 
     @_inherit_doc(wac.fetch_vis_mosaic)
-    def fetch_vis_mosaic(self) -> np.ndarray:
-        return wac.fetch_vis_mosaic(config=self.config)
+    def fetch_vis_mosaic(self, camera: Camera) -> np.ndarray:
+        return wac.fetch_vis_mosaic(camera, config=self.config)
 
     @_inherit_doc(spice_kernels.fetch_and_furnish)
     def fetch_and_furnish(self, target_dt: datetime) -> list[str]:

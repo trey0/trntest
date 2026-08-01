@@ -113,21 +113,19 @@ any clone with just Docker installed -- no host-side Python setup required.
 
 The git-tracked notebook has its outputs stripped (via the `nbstripout` filter set up above) so
 diffs stay clean — source (code/markdown cells) and results (rendered plots) aren't mixed in the
-same versioned file. To view a rendered copy, regenerate it inside Docker whenever the demo
-changes meaningfully:
+same versioned file. To view a rendered copy, regenerate and publish it to the `gh-pages` branch
+for GitHub Pages hosting whenever the demo changes meaningfully:
 
 ```sh
-docker compose run --rm demo jupyter nbconvert --to html --execute \
-    notebooks/lunar_sat_sim_demo.ipynb -o docs/rendered/lunar_sat_sim_demo.html
+scripts/publish_gh_pages.sh
 ```
 
-then publish `docs/rendered/` to a `gh-pages` branch for GitHub Pages hosting (enable Pages from
-that branch once, in the repo's Settings):
-
-```sh
-git add docs/rendered && git commit -m "Update rendered demo output"
-git subtree push --prefix docs/rendered origin gh-pages
-```
+This re-executes the notebook to `docs/rendered/lunar_sat_sim_demo.html` inside Docker, commits
+just that file (skipping the commit if the render didn't actually change), and
+`git subtree push`es `docs/rendered/` to `origin`'s `gh-pages` branch. Enable Pages once, in the
+repo's Settings (source: `gh-pages` branch, folder: `/` root) — `git subtree push --prefix
+docs/rendered` strips that prefix, so the published page lands at the *root* of `gh-pages`, e.g.
+`https://<user>.github.io/<repo>/lunar_sat_sim_demo.html`, not nested under `/docs/rendered/`.
 
 (ReadTheDocs was considered instead, but rejected: rendering this notebook needs the full Docker
 environment — SPICE kernels, live NASA archive fetches, the ASP binaries — which RTD's build

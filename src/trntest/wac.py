@@ -28,6 +28,18 @@ computed from the real WAC color-mode FOV and the actual orbital ground speed at
 square in *pixels* (704 samples cross-track vs. a different line count along-track, since the two
 axes have different native GSD), but is square in real km, matching the synthetic camera's FOV
 (which is sized from the same real WAC FOV figure).
+
+3. Frames are always read off disk in strict acquisition-time order (frame N was captured before
+   frame N+1, always -- a PDS archival guarantee, not an assumption), but which real-world direction
+   that "forward in time" runs, expressed against WAC's fixed sample-axis convention, is
+   **pass-dependent** (see `camera.boresight_rotation_k`'s docstring): body-fixed WAC's raw axes
+   rotate with the spacecraft's own periodic 180-degree yaw flips, so the resulting mosaic's
+   chirality (its along-track row order relative to its across-track column order) can come out
+   mirrored, not just rotated, relative to the synthetic image -- empirically confirmed via two
+   independently-selected real products (see docs/data-sources.md, "Open bug: WAC CDR appears
+   vertically flipped"). `fetch_vis_mosaic` corrects for this by reversing the along-track frame
+   order (`camera_pose.reverse_crop_along_track`) whenever needed, which keeps the mosaic's
+   chirality matching the synthetic image's regardless of pass/yaw state.
 """
 
 import numpy as np
@@ -52,12 +64,21 @@ MISSING_CONSTANT = np.uint32(0xFF7FFFFB).view(np.float32)  # per the CDR label's
 
 
 def fetch_vis_mosaic(
-    start_frame: int | None = None, n_frames: int | None = None, config: TrntestConfig | None = None
+    camera_pose: camera.Camera,
+    start_frame: int | None = None,
+    n_frames: int | None = None,
+    config: TrntestConfig | None = None,
 ) -> np.ndarray:
     """Stack one VIS filter's TDI-line block from `n_frames` consecutive frames starting at
     `start_frame`, producing a single continuous (n_frames * 14, 704) image. If `n_frames` isn't
     given, it's computed so the crop covers the same real ground distance as the 704-sample
-    cross-track width -- see `camera.compute_n_frames_for_square_crop`."""
+    cross-track width -- see `camera.compute_n_frames_for_square_crop`.
+
+    `camera_pose` (the already-built synthetic `Camera` for this same product/pose) determines
+    whether frames must be stacked in *reverse* along-track order
+    (`camera_pose.reverse_crop_along_track`): a real, pass-dependent mirror -- see that property's
+    docstring and docs/data-sources.md, "Open bug: WAC CDR appears vertically flipped" -- not
+    optional/cosmetic, so this is a required argument, not a config knob."""
     config = config or load_config()
     if start_frame is None:
         start_frame = config.target_frame_index
@@ -83,4 +104,6 @@ def fetch_vis_mosaic(
         data = np.fromfile(f, dtype="<f4", count=n_frames * LINES_PER_FRAME * SAMPLES)
     frames = data.reshape(n_frames, LINES_PER_FRAME, SAMPLES)
     vis = frames[:, VIS_BLOCK_OFFSET : VIS_BLOCK_OFFSET + VIS_BLOCK_HEIGHT, :]
+    if camera_pose.reverse_crop_along_track:
+        vis = vis[::-1]
     return vis.reshape(n_frames * VIS_BLOCK_HEIGHT, SAMPLES)

@@ -87,8 +87,8 @@ def test_fetch_vis_mosaic_delegates_with_config():
     session = Session(config=config)
     with mock.patch("trntest.session.wac.fetch_vis_mosaic") as mock_fn:
         mock_fn.return_value = "mosaic-sentinel"
-        result = session.fetch_vis_mosaic()
-    mock_fn.assert_called_once_with(config=config)
+        result = session.fetch_vis_mosaic("camera-sentinel")
+    mock_fn.assert_called_once_with("camera-sentinel", config=config)
     assert result == "mosaic-sentinel"
 
 

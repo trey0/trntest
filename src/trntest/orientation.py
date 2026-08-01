@@ -3,9 +3,11 @@
 Purely cosmetic: rotates already-rendered/extracted image arrays (and remaps tie-point plot
 coordinates to match) so north is approximately "up" in the notebook's comparison figure. Does
 **not** touch the sensor model, the `.tsai`, or the crop-extraction code -- kept strictly separate
-from the fixed synthetic-camera axis convention in `camera.py` (see docs/data-sources.md for why:
-the sensor model's convention must be a fixed, hardware-motivated choice, while which way is "north"
-varies by pass -- ascending vs. descending -- and shouldn't influence the model at all).
+from the synthetic-camera axis convention in `camera.py` (see docs/data-sources.md): which way is
+"north" varies by pass (ascending vs. descending) and shouldn't influence the sensor model itself,
+even though both this module and `camera.boresight_rotation_k` independently need the same real,
+per-pass "forward in time" ground-track direction (from `camera.ground_track_step_km`) to get their
+own, separate rotation choices right.
 """
 
 import dataclasses
@@ -13,7 +15,7 @@ import dataclasses
 import numpy as np
 
 from trntest import tie_points
-from trntest.camera import Camera, FrameTiming, camera_pose_moon_me, frame_et
+from trntest.camera import Camera, FrameTiming, camera_pose_moon_me, frame_et, ground_track_step_km
 from trntest.config import TrntestConfig, load_config
 
 
@@ -95,7 +97,16 @@ def compute_display_rotations(
     north_crop = north_tangent_km(
         tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat, config.moon_radius_km)
     )
-    k_crop, dev_crop = best_k_for_north_up(r_crop_raw[:, 1], r_crop_raw[:, 0], north_crop, candidates=(0, 2))
+    # "Up" for k=0 (row 0 at the top) is backward in time when wac.fetch_vis_mosaic stacked frames
+    # in their natural order, but *forward* in time when it stacked them in reverse
+    # (`camera.reverse_crop_along_track`) -- must track whichever that module actually did for this
+    # pass, not a fixed raw-camera-axis assumption (that sign turned out to be pass/yaw-dependent,
+    # not hardware-fixed -- see `camera.boresight_rotation_k`'s docstring and docs/data-sources.md,
+    # "Open bug: WAC CDR appears vertically flipped").
+    forward_step_km = ground_track_step_km(frame_timing, camera.center_frame_index)
+    forward_in_time = forward_step_km / np.linalg.norm(forward_step_km)
+    up_orig = forward_in_time if camera.reverse_crop_along_track else -forward_in_time
+    k_crop, dev_crop = best_k_for_north_up(r_crop_raw[:, 1], up_orig, north_crop, candidates=(0, 2))
 
     return DisplayRotations(
         k_synthetic=k_synthetic,
