@@ -339,6 +339,45 @@ was queried directly and confirms it serves `notebooks/lunar_sat_sim_demo.py` wi
 `"type": "notebook"` (via the bundled `jupyterlab-jupytext` extension), i.e. it opens as a live
 notebook, not a text file.
 
+## Phase 12 (spike, inconclusive — no `trntest` code changed) — ISIS/CSM real-WAC DEM reprojection
+
+Motivated by reflecting on how much hand-derived, footgun-prone logic `wac.py`'s framelet
+handling required (the Phase 9 mirroring bug) and a bigger goal beyond just fixing that: reproject
+a real WAC CDR swath onto the DEM via a genuine camera model (ASP `mapproject`) and re-render it
+from a chosen synthetic pose (`sat_sim --ortho`), instead of `wac.py`'s manual pixel-stacking
+approach — which needs a real ISD/camera model for the *actual* WAC data, something `wac.py` never
+had. Research found this is ASP's own flagship documented example for CSM `Pushframe` sensor
+support, written specifically for WAC.
+
+Full technical findings (install recipe, exact commands, measured sizes/timings, both spike runs)
+are in `docs/data-sources.md`'s "ISIS3/CSM spike" section — this entry is the narrative pointer to
+that. Summary of what was learned, run entirely in a throwaway Docker container against two real
+reference products (`M1329714703CE`/440, the old hand-picked product, and `M1327210646CE`/94, the
+product the live `select_dataset()` path actually currently selects):
+
+- The full chain (`lrowac2isis` → `spiceinit web=yes` → `lrowaccal` → `isd_generate` → `mapproject
+  -t csm` → `sat_sim --ortho`) works end-to-end on real data from this repo's own reference
+  products, confirmed twice.
+- **The user's original concern (large ISIS data download) is resolved**: `spiceinit web=yes`
+  works for WAC (not just NAC, which is all the docs confirm) with **zero local kernel files** —
+  confirmed directly, not just assumed from docs.
+- **`framestitch`'s `FLIP` parameter was cross-validated against `camera.boresight_rotation_k`
+  twice**, on two products with opposite yaw states, and matched both times — real evidence that
+  ISIS's manual flag tracks the exact same physical phenomenon this repo's SPICE-derived code
+  already computes automatically.
+- **The blocker**: real, severe periodic striping at framelet boundaries in the `mapproject`
+  output, on both products — confirmed this is a structural/geometric artifact in ASP's own
+  (self-described "not fully mature") CSM Pushframe stitching, not an illumination or AOI-sizing
+  problem (the second, brighter, correctly-sized-AOI run showed it just as badly, covering ~80% of
+  the frame). This is the open blocker for using this pipeline as a `wac.py` replacement.
+
+**Status / next step for whoever picks this up**: not yet a viable `wac.py` replacement as-is.
+Unresolved: whether the striping is fixable (tighter `num_lines_overlap` tuning, ASP's own
+suggested low-res-DEM mitigation, or some other calibration/geometry correction) or is a hard
+limitation of ASP's current Pushframe CSM support. No `trntest` source was changed by this spike —
+picking it back up means either continuing the artifact investigation (start from the "ISIS3/CSM
+spike" section in `docs/data-sources.md`) or deciding to shelve the idea and keep `wac.py` as-is.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

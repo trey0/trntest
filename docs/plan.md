@@ -57,6 +57,12 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   directly; sanity-check against the known GLD100/LOLA convention.
 - Whether Lunaserv's native projection is directly usable by `sat_sim` or a reprojection step is
   actually required after all.
+- **Open spike, not yet resolved**: whether a real WAC swath can be reprojected onto the DEM via a
+  genuine ISIS/CSM camera model (`mapproject`) + `sat_sim`, as a principled alternative to `wac.py`'s
+  manual framelet-stacking. The pipeline works end-to-end on real data, but hits a real, unresolved
+  blocker (severe framelet-boundary striping in `mapproject`'s output, confirmed on two products,
+  not an illumination/AOI artifact) — see `docs/history.md` Phase 12 and `docs/data-sources.md`'s
+  "ISIS3/CSM spike" section before re-investigating or re-deriving any of this.
 
 ## Development history
 

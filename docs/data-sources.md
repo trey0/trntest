@@ -219,3 +219,100 @@ holds for both):
   a 90°/270° rotation would put cross-track on the vertical axis). The crop's `up_orig` depends on
   `camera.reverse_crop_along_track`, since which end of the mosaic is "forward in time" is
   pass-dependent (see above).
+
+## ISIS3/CSM spike: real-WAC DEM reprojection (prototype only, not adopted in `trntest` code)
+
+Hands-on spike (see `docs/history.md` for the motivating discussion) validating whether a real WAC
+CDR swath can be reprojected onto the DEM via a genuine CSM camera model (`mapproject`) and
+re-rendered from a synthetic pose (`sat_sim --ortho`), as an alternative/complement to `wac.py`'s
+manual framelet-stacking approach. Run entirely in a throwaway container, **no `trntest` source
+changed** — recorded here so this isn't re-derived from scratch if picked up again.
+
+- **Install**: `mamba create -n isis --override-channels -c usgs-astrogeology -c conda-forge
+  --channel-priority flexible isis ale` — the plain `-c usgs-astro` channel name from older docs
+  is wrong/404; the current channel is **`usgs-astrogeology`**. This single command pulled ISIS
+  10.0.0 and ALE 1.2.0 (`isd_generate`) together with no dependency conflicts once the channel name
+  was fixed and priority set to `flexible` (`strict` fails to solve — ISIS's own build pulls
+  `embree`/`qt`/`bullet` pins that strict priority can't reconcile against conda-forge). Needs
+  `ISISROOT=<conda env prefix>` set explicitly (e.g. `/opt/conda/envs/isis`) — without it,
+  `IsisPreferences` isn't found and every app aborts immediately.
+- **`$ISISDATA` size — bulk download is avoidable, confirming the on-demand approach works**:
+  `spiceinit web=yes` (USGS's SPICE Web Service) **works for WAC**, not just NAC as the docs imply
+  — confirmed directly: after running it, `$ISISDATA/lro/kernels/` doesn't exist locally at all
+  (zero files), yet the resulting label correctly lists the real per-date CK/SPK files
+  (`lrolc_2019334_2020001_v01.bc`, `fdf29r_2019305_2019335_v01.bsp`, etc.) that were used remotely.
+  ~14s/call. This is the key finding for avoiding a bulk kernel download. What's still needed
+  locally: the mission-independent `base` area (real measured size **26 GB**, not the ~10 GB
+  estimated from secondhand docs — it includes generic multi-mission kernels like Neptune's SPK;
+  `--no-kernels` shrinks `base` to near-zero, since `spiceinit web=yes` covers the pointing/position
+  role) and `lro`'s non-kernel calibration files that `lrowaccal` needs (dark/flat cubes, measured
+  **~5 GB** via `downloadIsisData lro $ISISDATA --no-kernels`, includes NAC+WAC together — no
+  narrower filter found). **Gotcha**: `downloadIsisData`'s `--dry-run` flag does not actually skip
+  the transfer in this version (10.0.0) — real files were written to disk despite `--dry-run` being
+  passed; don't rely on it to preview size before committing to a real download.
+- **`lrowac2isis`** (EDR `.IMG` only, confirmed CDR is not accepted) splits into 4 cubes
+  (`*.uv.even.cub`, `*.vis.even.cub`, `*.uv.odd.cub`, `*.vis.odd.cub`). Confirmed via `catlab`:
+  `vis.even.cub` is **704 samples × 7532 lines × 5 bands** — the 5 VIS filters come out as 5
+  distinct ISIS cube bands already correctly separated, no manual byte-offset extraction needed
+  (unlike `wac.py`'s current hand-picked `VIS_BLOCK_OFFSET`/`VIS_BLOCK_HEIGHT`).
+- **`framestitch`'s `FLIP` is a real, per-pass manual decision, not automatic** — directly tested
+  both values on `M1329714703CE` (this repo's documented non-mirrored/`k=1` reference product):
+  `flip=false` produced a coherent, recognizable lunar surface; `flip=true` produced a scrambled,
+  heavily-banded image. `flip=false` being correct here is consistent with this product's existing
+  "non-mirrored" characterization from `camera.boresight_rotation_k`'s convention (see above) — a
+  useful cross-check, but ISIS did not derive this automatically; it had to be determined the same
+  way `boresight_rotation_k` already does (real-SPICE-geometry-informed, here just visual A/B).
+- **`isd_generate`** (ALE) run against the *unstitched*, calibrated even/odd cubes produces a CSM
+  `USGS_ASTRO_PUSHFRAME_SENSOR_MODEL` state JSON per parity. Unlike ASP's own `cam_gen` output
+  (bare model-name string on line 1, then JSON — see the `sat_sim`/ISD note above), ALE's
+  `isd_generate` output is **plain, direct JSON** with `name_model` as a top-level key — no line to
+  skip.
+- **`mapproject -t csm <dem> <cub> <json> <out>`** works directly against the unstitched per-parity
+  cube + its own ISD (no separate stitched-cube pairing step needed for this) — confirmed on real
+  data: ASP's bundled GDAL reads `.cub` natively (no `isis2gdal`/conversion needed for the DEM
+  input either — `isis2gdal` doesn't exist in ISIS 10; use GDAL's native ISIS3 driver directly). A
+  4337×5367 output at 100 m/px took **~23s**. Confirms ASP's own caveat concretely: the resulting
+  orthophoto has **real, significant periodic striping at framelet boundaries** (visually severe in
+  a 1:1 crop, not a display artifact) — matches ASP's documented "not fully mature... artifacts at
+  framelet borders" warning exactly, for this project's actual reference product.
+- **One parity alone leaves large coverage gaps** — mapprojecting only `vis.even` and feeding it to
+  `sat_sim --ortho` with this repo's existing `camera_frame440.tsai` pose left most of the 256×256
+  render as nodata; mosaicking `vis.even` + `vis.odd` orthophotos (`dem_mosaic`) filled in more but
+  the render was still mostly nodata — the DEM/ortho AOI used for this spike (a generous south-polar
+  cap, lat -75 to -90) evidently didn't fully contain frame 440's real footprint. Not investigated
+  further (spike scope) — a real integration would need a properly sized/centered AOI, not a
+  generic polar cap.
+- **End-to-end wall time** for one product, from a cold `.IMG` fetch through a rendered `sat_sim`
+  frame: a few minutes total (dominated by the ~1min `mamba create`, `EDR` fetch, and two ~23s
+  `mapproject` calls) — fast enough that per-product cost isn't a practical concern.
+- **Net verdict**: the chain is technically real and works end-to-end on this project's actual
+  reference product, but isn't yet a clean drop-in replacement for `wac.py` — the framelet-boundary
+  striping is a genuine, visible quality problem (not just ASP being cautious in its docs), and a
+  usable comparison needs both parities mosaicked plus a correctly-sized AOI, neither of which is
+  spelled out in ASP's own WAC example. See the plan file this spike came from for the decision
+  point on whether/how to integrate this into `trntest` itself.
+
+**Second run, `M1327210646CE`/frame 94 (the product the live demo notebook's `select_dataset()`
+path actually chose, not the old hand-picked `M1329714703CE`/440 — see `docs/history.md` Phase 2/5
+and Phase 8 for why those are different selection strategies)** — reused this product's own
+already-cached `dem_filled-tile-0.tif` and `camera_frame94.tsai` from the notebook's last real run
+instead of a hand-built polar-cap DEM, to rule out AOI-sizing as a confound:
+
+- Confirms illumination was never the striping's cause: this product's I/F range (0.02–0.17, per
+  `lrowaccal`/`mapproject` stats) is far brighter than `M1329714703CE`'s near-terminator polar crop
+  (max ~0.058, much of it noise-floor) — **and the striping is just as severe**, dominating roughly
+  80% of the mapprojected frame (a clean, sharp, unstriped strip only survives at the image's left
+  edge). This is a structural/geometric artifact in the current CSM Pushframe stitching itself, not
+  something better lighting fixes.
+- **`FLIP` cross-check confirmed exactly as predicted**: this product's `boresight_rotation_k=3`
+  (a mirrored pass, opposite yaw state from `M1329714703CE`'s `k=1`) — and indeed `flip=true` (not
+  `false`) was the coherent choice here, the reverse of the first product. Directly validates that
+  ISIS's manual `FLIP` tracks the exact same real, per-pass yaw-flip geometry
+  `camera.boresight_rotation_k` already computes from SPICE, just as a hand-set flag instead of a
+  derived one.
+- **Reusing the pipeline's own DEM fixed the coverage-gap problem**: mosaicking both parities
+  against this product's real, correctly-sized/centered `dem_filled-tile-0.tif` gave ~63% valid
+  coverage over the full mapprojected extent, and the final `sat_sim`-rendered 256×256 crop (same
+  pose as the notebook's own `camera_frame94.tsai`) came out with real signal in every pixel except
+  a narrow nodata sliver at one edge — unlike the first run's mostly-nodata result, confirming that
+  problem was AOI sizing, not a fundamental gap in the approach.
