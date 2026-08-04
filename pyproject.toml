@@ -23,7 +23,7 @@ dev = [
     "ruff",
     "mypy",
     "pytest",
-    "nbstripout",
+    "jupytext",
     "jupyterlab",
     "ipykernel",
 ]
@@ -55,6 +55,13 @@ ignore = ["PLR0913", "PLR0917"]
 # PLR2004 (magic value in comparison): normal and expected in test assertions, which compare
 # against literal expected values by design -- not a code smell there the way it can be elsewhere.
 "tests/*" = ["PLR2004"]
+# E501 (line too long): markdown cells carry long prose lines as comments -- wrapping prose to fit
+# a code line-length limit doesn't serve the same purpose it does for actual code.
+# B018 (useless expression): a bare trailing expression is the standard Jupyter idiom for
+# displaying a value as a cell's output -- intentional, not a mistake.
+# E703 (unnecessary semicolon): a trailing `;` is how Jupyter/IPython suppresses auto-display of a
+# cell's last expression (e.g. to hide a plot call's Axes repr) -- meaningful here, unlike scripts.
+"notebooks/*" = ["E501", "B018", "E703"]
 
 [tool.mypy]
 # Matches the actual interpreter this project runs under (confirmed 3.13.13 in the Docker image),

@@ -5,8 +5,11 @@ models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories
 with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See `docs/plan.md`
 for the full approach and status, and `AGENTS.md` for how the docs in this repo are organized.
 
-The demo logic is the installable `trntest` Python package (`src/trntest/`); the notebook
-(`notebooks/lunar_sat_sim_demo.ipynb`) drives it via a small `Session` facade.
+The demo logic is the installable `trntest` Python package (`src/trntest/`); the notebook drives
+it via a small `Session` facade. It's tracked as a jupytext-paired pair:
+`notebooks/lunar_sat_sim_demo.py` (percent format, the source of truth for review/diff/lint/IDE
+work) and `notebooks/lunar_sat_sim_demo.ipynb` (fully executed, viewable directly in GitHub's file
+browser — no separate publishing step needed).
 
 ## Build & run
 
@@ -27,7 +30,11 @@ own machine:
 ssh -L 8888:localhost:8888 <this-host>
 ```
 
-then open `http://localhost:8888` in a browser. Open `notebooks/lunar_sat_sim_demo.ipynb`.
+then open `http://localhost:8888` in a browser. Open `notebooks/lunar_sat_sim_demo.py` — the
+bundled `jupyterlab-jupytext` extension renders it as a live, editable notebook (equivalent to
+opening `notebooks/lunar_sat_sim_demo.ipynb` directly). After making changes, run
+`scripts/run_notebook.sh notebooks/lunar_sat_sim_demo.py` to regenerate and re-execute the
+`.ipynb` before committing (see "Viewing the rendered demo" below).
 
 For one-off commands instead of the notebook server:
 
@@ -46,18 +53,13 @@ Inside the Docker container (recommended — has GDAL/ASP/SPICE already):
 
 ```sh
 docker compose run --rm demo pip install -e '.[dev]'
-docker compose run --rm demo nbstripout --install
-git config filter.nbstripout.clean 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout'
-git config diff.ipynb.textconv 'docker compose -f docker/docker-compose.yml run --rm -T demo nbstripout -t'
 ```
 
-This installs `trntest` in editable mode plus `ruff`, `mypy`, `pytest`, `nbstripout`, `jupyterlab`,
-and `ipykernel`, and registers the `nbstripout` git filter (see "Viewing the rendered demo" below
-for why). The two `git config` lines are needed because `nbstripout --install`, run inside the
-container, writes filter/diff commands pointing at the container's own Python path — which fails
-when git itself runs on the host (outside Docker); these overrides route both back through Docker
-instead. Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain
-host venv with Python 3.11+:
+This installs `trntest` in editable mode plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`,
+and `ipykernel`. jupytext's JupyterLab integration (`jupyterlab-jupytext`) registers automatically
+as part of the `jupytext` install — no separate `jupyter labextension install` step. Lint/
+type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain host venv with
+Python 3.11+:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
@@ -103,8 +105,10 @@ binaries, so it runs anywhere the dev dependencies are installed.
 ## Git pre-commit hook
 
 This repo ships a pre-commit hook (`githooks/pre-commit`) that runs `trntest-lint` against
-staged `.py` files before each commit. It uses git's built-in `core.hooksPath` mechanism (no
-external `pre-commit` framework, no symlinks to set up). Enable it once per clone:
+staged `.py` files (`ruff format --check`, `ruff check`, `mypy`) and staged notebook `.py`/`.ipynb`
+pairs (jupytext structural-sync check — see "Viewing the rendered demo" below) before each commit.
+It uses git's built-in `core.hooksPath` mechanism (no external `pre-commit` framework, no symlinks
+to set up). Enable it once per clone:
 
 ```sh
 git config core.hooksPath githooks
@@ -116,26 +120,25 @@ any clone with just Docker installed -- no host-side Python setup required.
 
 ## Viewing the rendered demo
 
-The git-tracked notebook has its outputs stripped (via the `nbstripout` filter set up above) so
-diffs stay clean — source (code/markdown cells) and results (rendered plots) aren't mixed in the
-same versioned file. To view a rendered copy, regenerate and publish it to the `gh-pages` branch
-for GitHub Pages hosting whenever the demo changes meaningfully:
+The git-tracked `notebooks/lunar_sat_sim_demo.ipynb` carries real, fully-executed outputs and
+renders natively in GitHub's file browser (markdown, code, and outputs, including images) — just
+click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
+
+`notebooks/lunar_sat_sim_demo.py` (jupytext percent format, paired with the `.ipynb` via inline
+metadata) is the actual source of truth: it's what you edit, what gets `ruff`/`mypy`-checked, and
+what stays diffable — the `.ipynb`'s own diff will always be noisy since it carries outputs, which
+is expected. After editing the notebook, regenerate and re-execute the `.ipynb` before committing:
 
 ```sh
-scripts/publish_gh_pages.sh
+scripts/run_notebook.sh notebooks/lunar_sat_sim_demo.py
 ```
 
-This re-executes the notebook to `docs/rendered/lunar_sat_sim_demo.html` inside Docker, commits
-just that file (skipping the commit if the render didn't actually change), and
-`git subtree push`es `docs/rendered/` to `origin`'s `gh-pages` branch. Enable Pages once, in the
-repo's Settings (source: `gh-pages` branch, folder: `/` root) — `git subtree push --prefix
-docs/rendered` strips that prefix, so the published page lands at the *root* of `gh-pages`, e.g.
-`https://<user>.github.io/<repo>/lunar_sat_sim_demo.html`, not nested under `/docs/rendered/`.
-
-(ReadTheDocs was considered instead, but rejected: rendering this notebook needs the full Docker
-environment — SPICE kernels, live NASA archive fetches, the ASP binaries — which RTD's build
-containers can't provide either, so it would only host a pre-executed copy same as this approach,
-at the cost of a whole Sphinx project for no practical gain.)
+The pre-commit hook checks that the `.py`/`.ipynb` pair is staged together, that their code/
+markdown content actually matches, and that the `.ipynb`'s `execution_count`s look like a single
+clean top-to-bottom run (the shape this script produces) — but it can't cheaply verify that the
+outputs are *fresh* relative to the code (that needs a real re-execution, which is slow: SPICE/WMS/
+`sat_sim` calls). Always run the script above after a code change rather than relying on the hook
+alone.
 
 ## About this project
 

@@ -1,8 +1,9 @@
 #!/bin/sh
-# Lints exactly the staged .py files about to be committed. Runs via `trntest-lint` directly if
-# it's on PATH (e.g. a host venv from `pip install -e '.[dev]'`); otherwise falls back to running
-# it inside Docker, so this hook works on any host with just Docker installed -- no host-side
-# Python setup required, better isolation from host environment differences across developers.
+# Lints exactly the staged .py files about to be committed, plus a jupytext sync check for any
+# staged notebook .ipynb files. Runs via `trntest-lint` directly if it's on PATH (e.g. a host venv
+# from `pip install -e '.[dev]'`); otherwise falls back to running it inside Docker, so this hook
+# works on any host with just Docker installed -- no host-side Python setup required, better
+# isolation from host environment differences across developers.
 #
 # Known limitation: this lints the *working-tree* content of each staged file, not the exact
 # staged blob -- if a file is only partially staged (some hunks staged, some not), this may check
@@ -15,19 +16,21 @@
 set -e
 
 STAGED_PY_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+STAGED_IPYNB_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ipynb')
+STAGED_FILES=$(printf '%s\n%s\n' "$STAGED_PY_FILES" "$STAGED_IPYNB_FILES" | sed '/^$/d')
 
-if [ -z "$STAGED_PY_FILES" ]; then
+if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
 if command -v trntest-lint >/dev/null 2>&1; then
-    echo "$STAGED_PY_FILES" | xargs trntest-lint
+    echo "$STAGED_FILES" | xargs trntest-lint
 elif command -v docker >/dev/null 2>&1; then
     echo "pre-commit: 'trntest-lint' not on PATH, running it in Docker instead (may take a" >&2
     echo "moment to build the image on first use)..." >&2
-    echo "$STAGED_PY_FILES" | xargs docker compose -f "$REPO_ROOT/docker/docker-compose.yml" run --rm demo trntest-lint
+    echo "$STAGED_FILES" | xargs docker compose -f "$REPO_ROOT/docker/docker-compose.yml" run --rm demo trntest-lint
 else
     echo "pre-commit: neither 'trntest-lint' nor 'docker' found on PATH." >&2
     echo "Install Docker, or run: pip install -e '.[dev]'  (see README's Development setup section)" >&2

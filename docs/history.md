@@ -278,6 +278,67 @@ in-memory DataFrame) — deferred, since profiling showed ~2s of the ~6s from-co
 `fetch_frame_timing`'s XML parse and the rest is spread across many smaller costs; revisit if
 repeat-call latency within one process still matters.
 
+## Phase 11 (complete) — Replaced `nbstripout` with jupytext; dropped the GitHub Pages publish flow
+
+Motivated by wanting notebook code under the same `ruff`/`mypy` bar as the rest of the repo (not
+possible while the tracked notebook was raw `.ipynb` JSON) and by growing dissatisfaction with the
+`gh-pages` branch/`git subtree push` machinery `scripts/publish_gh_pages.sh` used just to make a
+rendered HTML copy viewable in a browser.
+
+- **jupytext pairing.** `notebooks/lunar_sat_sim_demo.ipynb` was paired with a `.py:percent`
+  twin (`jupytext --set-formats notebooks//ipynb,notebooks//py:percent`, inline metadata, no
+  `jupytext.toml`) — verified byte-identical code/markdown content pre- and post-migration (only
+  the new pairing-metadata line differed). `notebooks/lunar_sat_sim_demo.py` is now the file that
+  gets edited, diffed, and linted; the `.ipynb` is regenerated from it.
+- **Dropped `nbstripout` entirely**, including the docker-wrapped local git config it needed (see
+  the old "Gotcha" this replaced) and `.gitattributes`.
+- **Both notebook files are committed, with the `.ipynb` carrying real outputs** — realized
+  partway through this work that GitHub already renders `.ipynb` files natively in its repo
+  browser (markdown, code, and images) with no extra infrastructure, which made the entire
+  Pages/`docs/rendered`/`gh-pages`-branch/subtree-push stack (introduced back in Phase 7)
+  unnecessary. It existed purely to make HTML viewable, and `.ipynb` doesn't have that problem.
+  Also realized the "committing outputs bloats history" concern this had originally seemed to
+  avoid didn't actually hold: `docs/rendered/*.html` was already being committed straight to
+  `main` with embedded output images, paying the same cost under a different filename. Deleted
+  `scripts/publish_gh_pages.sh` and `docs/rendered/`.
+- **`scripts/run_notebook.sh`** (new) replaces the old publish script: regenerates the `.ipynb`
+  from the `.py` (`jupytext --to notebook`) and re-executes it in place
+  (`jupyter nbconvert --to notebook --execute --inplace`). Deliberately doesn't auto-commit,
+  unlike the old script — review and commit both files normally.
+- **`trntest-lint` gained a "notebook sync" check** (`src/trntest/_lint.py`), gated on staged
+  `notebooks/*.py`/`*.ipynb` files, read-only (never mutates files, only reports and points at the
+  fix — same philosophy as `ruff format --check`): (1) a `.py`/`.ipynb` pair must be staged
+  together, (2) their code/markdown content must match (compared via `jupytext --to py:percent`
+  written to a real file in the same directory, not `--output -`/stdout — piping to stdout was
+  tried first and silently drops the pairing-metadata header line jupytext otherwise writes,
+  which produced a false-positive divergence on every run), and (3) the `.ipynb`'s
+  `execution_count`s must be exactly `1, 2, 3, ...` with no gaps, a proxy for "produced by a real
+  `run_notebook.sh` run" rather than ad-hoc interactive cell tinkering. What this check
+  deliberately does **not** attempt: verifying output *freshness* (that outputs reflect the
+  current code) — that needs an actual re-execution, too slow for a pre-commit hook given the
+  SPICE/WMS/`sat_sim` calls involved, so it stays a documented discipline
+  (`scripts/run_notebook.sh` before every notebook commit) rather than a hard guarantee.
+  Git filters (what `nbstripout` used) were considered and ruled out for this whole check: a
+  clean/smudge filter transforms only the single file being staged and has no way to read or
+  write a second, paired file, so cross-file sync checking structurally has to be a hook, not a
+  filter.
+- Also found, while making `ruff format --check` pass on the migrated `.py`: it strips trailing
+  semicolons as "redundant" regardless of `ruff check` per-file-ignores (those don't affect the
+  formatter) — but a trailing `;` is exactly how Jupyter/IPython suppresses auto-display of a
+  cell's last expression (e.g. hiding a plot call's `Axes` repr), so it's meaningful here, unlike
+  in ordinary scripts. Notebook `.py` files are now linted (`ruff check`, with `E501`/`B018`/`E703`
+  per-file-ignores for markdown-prose line length, Jupyter's bare-expression display idiom, and
+  semicolon suppression respectively) but excluded from `ruff format --check`.
+
+**Verified**: `trntest-lint --all` passes; the paired-staged, structural-sync, and
+execution-count checks were each deliberately triggered (unpaired staging, a hand-edited `.py`,
+a hand-swapped `execution_count`) and confirmed to block with the documented fix command, then
+confirmed to pass again once fixed; `scripts/run_notebook.sh` was run end-to-end against a
+warm cache (~24s) and produced a clean, sequentially-numbered notebook; JupyterLab's contents API
+was queried directly and confirms it serves `notebooks/lunar_sat_sim_demo.py` with
+`"type": "notebook"` (via the bundled `jupyterlab-jupytext` extension), i.e. it opens as a live
+notebook, not a text file.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
