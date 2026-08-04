@@ -1,9 +1,9 @@
 # trntest — lunar remote sensing demo
 
-Generates a synthetic lunar satellite image, posed using the real LRO SPICE trajectory at the
-time of an actual LROC WAC image, rendered with NASA's Ames Stereo Pipeline (`sat_sim`) from real
-DEM/imagery pulled from the Lunaserv WMS server. See `docs/plan.md` for the full approach and
-status, and `CLAUDE.md` for how the docs in this repo are organized.
+Demonstrates various approaches for generating synthetic lunar satellite images for new camera
+models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories, rendered
+with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See `docs/plan.md`
+for the full approach and status, and `AGENTS.md` for how the docs in this repo are organized.
 
 The demo logic is the installable `trntest` Python package (`src/trntest/`); the notebook
 (`notebooks/lunar_sat_sim_demo.ipynb`) drives it via a small `Session` facade.
@@ -136,3 +136,12 @@ docs/rendered` strips that prefix, so the published page lands at the *root* of 
 environment — SPICE kernels, live NASA archive fetches, the ASP binaries — which RTD's build
 containers can't provide either, so it would only host a pre-executed copy same as this approach,
 at the cost of a whole Sphinx project for no practical gain.)
+
+## About this project
+
+This is a personal project to experiment with using coding agents like Claude Code. Although I
+work for NASA, this project was conducted on personal time with personal computing resources
+and no NASA internal data or code. (But it makes use of the excellent data that NASA provides
+publicly through services like the Planetary Data System!) The project code is licensed under
+the very permissive MIT No Attribution (MIT-0) license to make it as convenient as possible
+for anyone to reuse.

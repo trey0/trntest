@@ -8,7 +8,7 @@ the current docs also say so.
 
 ## Phase-by-phase history
 
-- **Phase 0 — Repo & Docker scaffolding.** `CLAUDE.md`, `docs/*.md`, `docker/Dockerfile`,
+- **Phase 0 — Repo & Docker scaffolding.** `AGENTS.md`, `docs/*.md`, `docker/Dockerfile`,
   `docker/docker-compose.yml`, `.dockerignore`, `README.md`. Docker Engine installed on host.
 - **Phase 1 — Base image.** GDAL 3.12.2 + ASP 3.7.0 (prebuilt Linux x86_64 binary, in
   `/opt/StereoPipeline`) + Python stack installed with `uv` into a venv at `/opt/venv`
@@ -265,13 +265,13 @@ warmth, then to large CK kernel-file parsing — both ruled out by checking file
 process-global state (SPICE's furnished-kernel tracking, `functools.cache`) carried over from call 1
 to call 2, making call 2 fast for reasons unrelated to disk caching. Isolating a true from-cold cost
 requires a fresh process (a fresh `docker compose run`) for each measurement — see the "Profiling"
-bullet in `CLAUDE.md`.
+bullet in `AGENTS.md`.
 
 **Verified**: `trntest-lint`/`pytest` (70 tests, post-removal) pass. Before/after `cProfile` of a
 from-cold `select_dataset(max_search_days=7)` (fresh Docker container each time, same real network
 + SPICE): 502.1s → 5.9s, same 81-images-across-12-orbits result both times. Also found and fixed,
 same pass: `diff.ipynb.textconv` had the same broken-container-path issue as the `nbstripout` clean
-filter (see `CLAUDE.md`) — `git diff` on any notebook silently showed no diff at all, even when one
+filter (see `AGENTS.md`) — `git diff` on any notebook silently showed no diff at all, even when one
 existed. Further caching layers discussed but not implemented (`functools.cache` on
 `camera.fetch_frame_timing`, splitting candidate evaluation from threshold filtering into a reusable
 in-memory DataFrame) — deferred, since profiling showed ~2s of the ~6s from-cold total is

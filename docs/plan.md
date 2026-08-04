@@ -47,7 +47,7 @@ product to this.
 | `session.py` | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 
 `notebooks/lunar_sat_sim_demo.ipynb` drives all of the above end to end — see `README.md` to run it,
-and CLAUDE.md's "Working conventions" for how to validate changes against it.
+and AGENTS.md's "Working conventions" for how to validate changes against it.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
