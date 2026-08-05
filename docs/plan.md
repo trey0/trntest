@@ -62,7 +62,13 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   manual framelet-stacking. The pipeline works end-to-end on real data, but hits a real, unresolved
   blocker (severe framelet-boundary striping in `mapproject`'s output, confirmed on two products,
   not an illumination/AOI artifact) — see `docs/history.md` Phase 12 and `docs/data-sources.md`'s
-  "ISIS3/CSM spike" section before re-investigating or re-deriving any of this.
+  "ISIS3/CSM spike" section before re-investigating or re-deriving any of this. Real (not just
+  docs-only) spike code now exists on branch `spike/wac-isis-framestitch` — `src/trntest/isis_wac.py`
+  and `notebooks/wac_isis_spike.py` step through EDR fetch → `lrowac2isis` → `spiceinit web=yes` →
+  `lrowaccal` → `framestitch` with inline images at each step, chasing the working hypothesis that
+  the striping is introduced at `framestitch` — scope currently stops there (no `isd_generate`/
+  `mapproject`/`sat_sim` yet). Not merged to `main`: this is unproven and adds a heavy new
+  toolchain (ISIS/ALE, via a `micromamba`-managed env in `docker/Dockerfile`, alongside ASP).
 
 ## Development history
 

@@ -378,6 +378,52 @@ limitation of ASP's current Pushframe CSM support. No `trntest` source was chang
 picking it back up means either continuing the artifact investigation (start from the "ISIS3/CSM
 spike" section in `docs/data-sources.md`) or deciding to shelve the idea and keep `wac.py` as-is.
 
+## Phase 13 (2026-08-05, spike, real code now — branch `spike/wac-isis-framestitch`) — ISIS/CSM WAC reprojection: first executable framestitch investigation notebook
+
+Phase 12's throwaway spike container was lost when the VPS hosting it was torn down without being
+saved — the findings survived (they'd been written up first), but the environment/code didn't.
+This phase rebuilds it as real, reusable, checked-in code (not a throwaway container) — the first
+time this spike has touched actual `trntest` source rather than just docs — landed on a branch, not
+`main`, since it's still unproven and adds a heavy new toolchain. Scope is deliberately narrower
+than Phase 12's full chain: stop after `framestitch` (the step suspected, per the working
+hypothesis, of introducing Phase 12's still-unresolved framelet-boundary striping), with a real
+inline image displayed after every step — Phase 12's investigation had been badly slowed by not
+being able to see intermediate steps at all.
+
+- **ISIS + ASP now coexist in one Docker image** (`docker/Dockerfile`, not a second
+  container/service): ISIS/ALE installed via a `micromamba`-managed conda env
+  (`/opt/conda/envs/isis`) alongside the existing `uv` venv and ASP's own binary install, all three
+  reachable via `PATH` for plain `subprocess.run([...])` calls from one Python process. A second
+  container was considered and rejected — the eventual goal is a notebook that walks through *both*
+  ISIS's steps and ASP's `mapproject`/`sat_sim` on the result, which two containers would make
+  needlessly awkward (cross-container `docker exec` plumbing for no real benefit).
+- **Corrected a wrong finding from Phase 12**: the "`--no-kernels` shrinks `base` to near-zero"
+  claim was wrong — a real `downloadIsisData base $ISISDATA --no-kernels` run pulled **20 GB**
+  (dominated by `base/dems/`, which isn't a "kernel" and isn't touched by that flag at all), and
+  `spiceinit web=yes` still failed outright without a handful of tiny local kernels (confirmed:
+  "Unable to load leadsecond file" with `base/kernels/lsk` empty) — contradicting Phase 12's "zero
+  local kernel files" framing for `base` specifically (its `lro/kernels/` claim was and remains
+  correct). Fixed with a narrow `--include` for just the small universal kernel subdirs (lsk/pck/
+  sclk/fk/ik/iak) instead of `--no-kernels` — measured **~5 MB**, not 20+ GB. See
+  `docs/data-sources.md`'s "ISIS3/CSM spike" section for the full correction.
+- **Also found and fixed, mid-notebook**: ISIS's NULL/LRS/LIS/HIS/HRS special pixels are
+  huge-magnitude (~±3.4e38) but *finite* float32 sentinels — `np.isfinite()` doesn't catch them, so
+  a naive contrast stretch or row-mean reduction silently overflows/washes out to near-blank.
+  `plotting.plot_raster()`'s new `valid_pixel_mask()` masks by magnitude threshold instead.
+- **Net result**: `notebooks/wac_isis_spike.py` runs end-to-end for real (EDR fetch →
+  `lrowac2isis` → `spiceinit web=yes` → `lrowaccal` → `framestitch`, `flip=False` for the default
+  product `M1329714703CE`/440) and displays real, recognizable lunar terrain (visible craters) at
+  every step, including a data-driven (not hardcoded) zoomed crop near real signal for inspecting
+  the framelet seam. Whether the striping is actually visible/attributable to `framestitch`
+  specifically is left for interactive follow-up in the notebook itself — not concluded by this
+  phase.
+
+**Status / next step for whoever picks this up**: the tooling now exists to actually see each
+step, unblocking the investigation Phase 12 got stuck on. Next: use the notebook interactively to
+inspect the stitched cube for the striping pattern at multiple locations/zoom levels, and decide
+whether it's visible pre-`mapproject` (implicating `framestitch` itself) or only appears once
+`mapproject` reprojects it (implicating that step instead, as Phase 12 originally assumed).
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

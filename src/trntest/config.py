@@ -20,10 +20,14 @@ from pathlib import Path
 CONFIG_PATH_ENV_VAR = "TRNTEST_CONFIG"
 CACHE_ROOT_ENV_VAR = "TRNTEST_CACHE_ROOT"
 OUTPUT_DIR_ENV_VAR = "TRNTEST_OUTPUT_DIR"
+SCRATCH_DIR_ENV_VAR = "TRNTEST_SCRATCH_DIR"
 DEFAULT_CONFIG_FILENAME = "trntest.toml"
 
 DEFAULT_CACHE_ROOT = Path("/workspace/cache")
 DEFAULT_OUTPUT_DIR = Path("/workspace/output")
+# Large, disposable intermediate files (e.g. the ISIS/CSM WAC reprojection spike's intermediate
+# cubes) -- not for final demo artifacts (that's output_dir) -- see docs/environment.md.
+DEFAULT_SCRATCH_DIR = Path("/workspace/scratch")
 
 DEFAULT_NAIF_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/"
 DEFAULT_LUNASERV_BASE_URL = "https://wms.im-ldi.com/lunaserv/lunaserv_stage?"
@@ -68,6 +72,7 @@ class TrntestConfig:
 
     cache_root: Path = DEFAULT_CACHE_ROOT
     output_dir: Path = DEFAULT_OUTPUT_DIR
+    scratch_dir: Path = DEFAULT_SCRATCH_DIR
 
     naif_base_url: str = DEFAULT_NAIF_BASE_URL
     lunaserv_base_url: str = DEFAULT_LUNASERV_BASE_URL
@@ -96,7 +101,7 @@ class TrntestConfig:
         return self.moon_radius_km * 1000.0
 
 
-_PATH_FIELDS = ("cache_root", "output_dir")
+_PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")
 
 
 def _resolve_config_file_path(path: str | Path | None) -> Path | None:
@@ -127,6 +132,8 @@ def _apply_env_overrides(config: TrntestConfig) -> TrntestConfig:
         config = dataclasses.replace(config, cache_root=Path(os.environ[CACHE_ROOT_ENV_VAR]))
     if OUTPUT_DIR_ENV_VAR in os.environ:
         config = dataclasses.replace(config, output_dir=Path(os.environ[OUTPUT_DIR_ENV_VAR]))
+    if SCRATCH_DIR_ENV_VAR in os.environ:
+        config = dataclasses.replace(config, scratch_dir=Path(os.environ[SCRATCH_DIR_ENV_VAR]))
     return config
 
 
@@ -139,8 +146,8 @@ def load_config(path: str | Path | None = None) -> TrntestConfig:
       3. `./trntest.toml` in the current working directory.
       4. Built-in defaults.
 
-    After that, `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR` env vars always override `cache_root`/
-    `output_dir` on top of whatever was resolved above.
+    After that, `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR`/`TRNTEST_SCRATCH_DIR` env vars always
+    override `cache_root`/`output_dir`/`scratch_dir` on top of whatever was resolved above.
     """
     config = TrntestConfig()
 

@@ -8,6 +8,7 @@ import numpy as np
 import rasterio
 import rasterio.errors
 import rasterio.transform
+import rasterio.windows
 
 from trntest import orientation, wac
 from trntest.camera import Camera
@@ -26,13 +27,68 @@ MARKER_STYLES = {
 }
 
 
-def _open_rendered_tif(rendered_tif_path):
-    """`rasterio.open` for the synthetic `sat_sim` render specifically -- it's a plain pinhole
-    render, not a georeferenced product, so it genuinely has no geotransform (expected, not a bug).
-    Suppresses just that one, otherwise-noisy, non-actionable warning."""
+# ISIS special pixels (NULL/LRS/LIS/HIS/HRS) are finite but huge-magnitude (~+-3.4e38) float32
+# sentinels -- `np.isfinite` doesn't catch them. Generic threshold rather than the exact 5 bit
+# patterns, since other fill-value conventions (e.g. `wac.MISSING_CONSTANT`) are similarly
+# huge-magnitude, not just ISIS's.
+_FILL_VALUE_MAGNITUDE_THRESHOLD = 1e37
+
+
+def valid_pixel_mask(data: np.ndarray) -> np.ndarray:
+    """True where `data` is finite and not a huge-magnitude fill-value sentinel."""
+    return np.isfinite(data) & (np.abs(data) < _FILL_VALUE_MAGNITUDE_THRESHOLD)
+
+
+def read_raster_band(path, band: int = 1, window: rasterio.windows.Window | None = None) -> np.ndarray:
+    """Read one band of any raster GDAL can open by path (GeoTIFF, ISIS `.cub`, ...), optionally
+    windowed to a crop. Shared by `plot_raster` and any notebook code that needs the raw array
+    directly (e.g. picking a crop window from real data), so both get the same warning suppression.
+
+    Two non-actionable, rasterio-internal warnings suppressed narrowly here (not module-wide):
+    `NotGeoreferencedWarning` is expected for ISIS `.cub`s at this pipeline stage (no geotransform
+    yet, not a bug), and the numpy-shape `DeprecationWarning` is from inside rasterio's own code."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
-        return rasterio.open(rendered_tif_path)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with rasterio.open(path) as src:
+            return src.read(band, window=window)
+
+
+def plot_raster(
+    path,
+    band: int = 1,
+    window: rasterio.windows.Window | None = None,
+    cmap: str = "gray",
+    stretch: bool = True,
+):
+    """Display one band of any raster GDAL can open by path (GeoTIFF, ISIS `.cub`, ...), optionally
+    windowed to a crop. Generic on purpose -- not ISIS-specific -- so it's reusable wherever a
+    notebook just needs to look at a raster file.
+
+    `stretch=True` (default) contrast-stretches to the data's own 2nd/98th percentile, excluding
+    both non-finite pixels and huge-magnitude fill-value sentinels (ISIS's NULL/LOW/HIGH special
+    pixels are finite but ~+-3.4e38, similar in spirit to `wac.MISSING_CONSTANT` -- `np.isfinite`
+    alone doesn't catch them) -- calibrated I/F values are small floats near zero, so leaving them
+    in wrecks the stretch (and, upstream, any `mean`/`sum` reduction can silently overflow)."""
+    data = read_raster_band(path, band=band, window=window)
+
+    valid = valid_pixel_mask(data)
+    # fill-value sentinels would otherwise overflow imshow's own float32 normalization
+    display_data = np.where(valid, data, np.nan)
+
+    vmin = vmax = None
+    if stretch:
+        finite = data[valid]
+        if finite.size:
+            vmin, vmax = np.percentile(finite, [2, 98])
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(display_data, cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_title(str(path))
+    ax.set_xlabel("sample")
+    ax.set_ylabel("line")
+    fig.tight_layout()
+    return fig
 
 
 def plot_dem_ortho(lunaserv_result: LunaservResult):
@@ -74,8 +130,7 @@ def plot_camera_footprint(lunaserv_result: LunaservResult, camera: Camera):
 
 
 def plot_synthetic_render(rendered_tif_path):
-    with _open_rendered_tif(rendered_tif_path) as src:
-        synthetic = src.read(1)
+    synthetic = read_raster_band(rendered_tif_path)
 
     fig = plt.figure(figsize=(5, 5))
     plt.imshow(synthetic, cmap="gray")
@@ -95,8 +150,7 @@ def plot_comparison(
 ):
     config = config or load_config()
 
-    with _open_rendered_tif(rendered_tif_path) as src:
-        synthetic = src.read(1)
+    synthetic = read_raster_band(rendered_tif_path)
 
     valid_mask = vis_mosaic != wac.MISSING_CONSTANT
     p2, p98 = np.percentile(vis_mosaic[valid_mask], [2, 98])
