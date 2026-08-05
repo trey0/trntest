@@ -6,12 +6,12 @@ in as plain Python values (no `lunaserv_result.txt` handoff file needed).
 
 import dataclasses
 import json
-import subprocess
 from pathlib import Path
 
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import LunaservResult
+from trntest.subprocess_utils import run_quiet
 
 
 @dataclasses.dataclass(frozen=True)
@@ -34,7 +34,7 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
     render_dir.mkdir(parents=True, exist_ok=True)
     render_prefix = render_dir / "run"
 
-    subprocess.run(
+    run_quiet(
         [
             "sat_sim",
             "--dem",
@@ -48,8 +48,7 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
             str(config.image_size),
             "-o",
             str(render_prefix),
-        ],
-        check=True,
+        ]
     )
 
     camera_stem = Path(camera.tsai_path).stem
@@ -60,7 +59,7 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
     # --camera-list -- convert the rendered image's exact camera to a CSM Frame model-state JSON
     # ("ISD sidecar") with cam_gen instead. --refine-intrinsics none keeps the pose/intrinsics exact
     # (no re-solving), so this is purely a format conversion of our already-computed SPICE pose.
-    subprocess.run(
+    run_quiet(
         [
             "cam_gen",
             str(rendered_tif),
@@ -72,8 +71,7 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
             "none",
             "-o",
             str(csm_json),
-        ],
-        check=True,
+        ]
     )
 
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)

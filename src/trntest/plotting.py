@@ -1,9 +1,12 @@
 """Matplotlib display helpers for the notebook. No SPICE/network/subprocess calls -- pure
 consumption of already-computed values, reading image files by path where needed."""
 
+import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+import rasterio.errors
 import rasterio.transform
 
 from trntest import orientation, wac
@@ -21,6 +24,15 @@ MARKER_STYLES = {
     "bottom_left": dict(marker="D", color="magenta"),
     "bottom_right": dict(marker="*", color="lime"),
 }
+
+
+def _open_rendered_tif(rendered_tif_path):
+    """`rasterio.open` for the synthetic `sat_sim` render specifically -- it's a plain pinhole
+    render, not a georeferenced product, so it genuinely has no geotransform (expected, not a bug).
+    Suppresses just that one, otherwise-noisy, non-actionable warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        return rasterio.open(rendered_tif_path)
 
 
 def plot_dem_ortho(lunaserv_result: LunaservResult):
@@ -62,7 +74,7 @@ def plot_camera_footprint(lunaserv_result: LunaservResult, camera: Camera):
 
 
 def plot_synthetic_render(rendered_tif_path):
-    with rasterio.open(rendered_tif_path) as src:
+    with _open_rendered_tif(rendered_tif_path) as src:
         synthetic = src.read(1)
 
     fig = plt.figure(figsize=(5, 5))
@@ -83,7 +95,7 @@ def plot_comparison(
 ):
     config = config or load_config()
 
-    with rasterio.open(rendered_tif_path) as src:
+    with _open_rendered_tif(rendered_tif_path) as src:
         synthetic = src.read(1)
 
     valid_mask = vis_mosaic != wac.MISSING_CONSTANT

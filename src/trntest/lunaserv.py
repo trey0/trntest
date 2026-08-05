@@ -5,7 +5,6 @@ and docs/caching.md.
 
 import dataclasses
 import math
-import subprocess
 from pathlib import Path
 
 import rasterio
@@ -13,6 +12,7 @@ import rasterio
 from trntest import cache
 from trntest.camera import Camera
 from trntest.config import DEFAULT_MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.subprocess_utils import run_quiet
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,7 +74,7 @@ def radius_to_elevation(radius_tif_path, elevation_tif_path, moon_radius_m: floa
 
 
 def hole_fill_dem(dem_path, filled_path):
-    subprocess.run(
+    run_quiet(
         [
             "dem_mosaic",
             str(dem_path),
@@ -82,8 +82,7 @@ def hole_fill_dem(dem_path, filled_path):
             "50",
             "-o",
             str(filled_path).removesuffix("-tile-0.tif"),
-        ],
-        check=True,
+        ]
     )
 
 

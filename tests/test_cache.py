@@ -68,4 +68,33 @@ def test_cached_get_uses_part_file_then_renames(tmp_path):
         dest = cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
 
     assert dest.exists()
-    assert not dest.with_suffix(dest.suffix + ".part").exists()
+    # Unique-per-call temp name (not a fixed dest.name + ".part" path) -- glob for any leftover.
+    assert list(dest.parent.glob(f"{dest.name}.*.part")) == []
+
+
+def test_cached_get_cleans_up_temp_file_on_failure(tmp_path):
+    cache_root = tmp_path / "cache"
+
+    def fake_get(url, stream, timeout, **kwargs):
+        response = mock.MagicMock()
+        response.raise_for_status = mock.Mock()
+
+        def raising_iter_content(chunk_size):
+            yield b"partial"
+            raise ConnectionError("simulated mid-download failure")
+
+        response.iter_content = raising_iter_content
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        return response
+
+    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
+        try:
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
+            raise AssertionError("expected ConnectionError")
+        except ConnectionError:
+            pass
+
+    dest = cache_root / "sub" / "f.bin"
+    assert not dest.exists()
+    assert list(dest.parent.glob(f"{dest.name}.*.part")) == []
