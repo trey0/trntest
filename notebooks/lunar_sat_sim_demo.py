@@ -25,7 +25,7 @@ import dataclasses
 import json
 
 import trntest
-from trntest import plotting
+from trntest import isis_wac, plotting
 
 session = trntest.Session()
 session.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -134,9 +134,23 @@ vis_mosaic = session.fetch_vis_mosaic(camera)
 plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, render_result.rendered_tif, config=session.config);
 
 # %% [markdown]
+# ## Phase 6: compare against a genuine ISIS/CSM-processed WAC image
+#
+# Phase 5's comparison uses `wac.py`'s manual framelet-stacking (hand-derived byte offsets into the CDR). `isis_wac.run_pipeline()` instead steps the same product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- a genuine camera-model-based alternative, not yet reprojected onto the DEM (`mapproject`, still an open item -- see `docs/plan.md`), so this is a plain side-by-side, not a tie-pointed comparison. `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant.
+#
+# `isis_wac.crop_window_for_camera()` picks the same real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) that `wac.fetch_vis_mosaic` above already uses, so both comparisons cover the same real ground area -- by construction, not by search. `plotting.plot_isis_comparison()` reuses the same north-up rotation and real-km extent scaling (Phase 5, above) that `plot_comparison` already applies -- the ISIS cube shares `wac.py`'s exact pixel-axis convention, so the same `rotations.k_crop` and physical-km scaling apply here too, not just to `wac.py`'s own crop.
+
+# %%
+stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
+
+# %%
+plotting.plot_isis_comparison(camera, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
+
+# %% [markdown]
 # ## Summary
 #
 # - Selected a real, illuminated LROC WAC EDR from a catalog-driven, multi-orbit dataset search (`trntest.dataset.select_dataset`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
 # - Built a `.tsai` Pinhole camera from that pose and rendered a synthetic 256x256 image with ASP's `sat_sim`, fed by real DEM/imagery pulled live from Lunaserv WMS for the camera's own computed ground footprint.
 # - Produced a CSM/"ISD" JSON sidecar for the rendered camera (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
 # - Compared against a properly band-separated crop of the real WAC CDR from the same part of the swath -- which required both de-interleaving WAC's push-frame format and discovering (then avoiding) a long shadowed stretch at the start of the original single-demo product (now handled generally by `select_dataset`'s illumination filtering).
+# - Also compared against the same real footprint processed through ISIS3's own pipeline (`isis_wac.run_pipeline`) instead of `wac.py`'s manual framelet-stacking -- a genuine camera-model-based alternative, not yet reprojected onto the DEM (see `docs/plan.md`'s open items for the still-unresolved framelet-boundary striping question this is investigating).

@@ -15,9 +15,13 @@ load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `sub
 import dataclasses
 from pathlib import Path
 
+import rasterio.windows
+
 from trntest import cache
+from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.subprocess_utils import run_quiet
+from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
 
 _BASE_KERNEL_INCLUDE = "{kernels/lsk/**,kernels/pck/**,kernels/sclk/**,kernels/fk/**,kernels/ik/**,kernels/iak/**}"
 
@@ -151,3 +155,31 @@ def run_framestitch(
         ]
     )
     return FramestitchResult(cub_path=out_path)
+
+
+def run_pipeline(camera: Camera, frame_timing: FrameTiming, config: TrntestConfig | None = None) -> FramestitchResult:
+    """Runs the full EDR-fetch-through-`framestitch` pipeline for the product `camera`/
+    `frame_timing` describe. `flip` is derived from `camera.reverse_crop_along_track` -- the same
+    real, SPICE-derived per-pass yaw-state signal `framestitch`'s FLIP needs to match (confirmed
+    twice in the original spike, on two products with opposite yaw states) -- not hardcoded
+    per-product like the spike notebook's own `FLIP = False`."""
+    config = config or load_config()
+    ensure_isisdata(config)
+    edr = fetch_edr_img(config)
+    split = run_lrowac2isis(edr, config)
+    even = run_lrowaccal(run_spiceinit(split.vis_even, config), config)
+    odd = run_lrowaccal(run_spiceinit(split.vis_odd, config), config)
+    return run_framestitch(even, odd, flip=camera.reverse_crop_along_track, config=config)
+
+
+def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
+    """The stitched cube preserves 14 lines per original EDR frame (confirmed empirically: cached
+    cubes for two real products both measure exactly nframes * 14 lines -- `lrowac2isis` does not
+    TDI-sum each frame down to one line, it keeps the same per-frame line structure `wac.py`'s raw
+    CDR byte-layout code already assumes) -- `wac.VIS_BLOCK_HEIGHT`, not 1. So both
+    `camera.center_frame_index` and `camera.n_frames_for_square_crop` need to be scaled by that
+    factor to land on the same real footprint `wac.fetch_vis_mosaic`'s own crop covers."""
+    height = camera.n_frames_for_square_crop * VIS_BLOCK_HEIGHT
+    center_line = camera.center_frame_index * VIS_BLOCK_HEIGHT
+    line_start = round(center_line - height / 2)
+    return rasterio.windows.Window(col_off=0, row_off=line_start, width=SAMPLES, height=height)

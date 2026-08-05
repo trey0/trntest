@@ -41,6 +41,7 @@ product to this.
 | `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint; antimeridian-safe. |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product. |
+| `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking. Not yet reprojected onto the DEM (`mapproject`, an open item below). |
 | `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. |
 | `orientation.py` | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | `plotting.py` | Comparison-figure plotting. |
@@ -57,18 +58,20 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   directly; sanity-check against the known GLD100/LOLA convention.
 - Whether Lunaserv's native projection is directly usable by `sat_sim` or a reprojection step is
   actually required after all.
-- **Open spike, not yet resolved**: whether a real WAC swath can be reprojected onto the DEM via a
+- **Open, not yet resolved**: whether a real WAC swath can be reprojected onto the DEM via a
   genuine ISIS/CSM camera model (`mapproject`) + `sat_sim`, as a principled alternative to `wac.py`'s
-  manual framelet-stacking. The pipeline works end-to-end on real data, but hits a real, unresolved
-  blocker (severe framelet-boundary striping in `mapproject`'s output, confirmed on two products,
-  not an illumination/AOI artifact) — see `docs/history.md` Phase 12 and `docs/data-sources.md`'s
-  "ISIS3/CSM spike" section before re-investigating or re-deriving any of this. Real (not just
-  docs-only) spike code now exists on branch `spike/wac-isis-framestitch` — `src/trntest/isis_wac.py`
-  and `notebooks/wac_isis_spike.py` step through EDR fetch → `lrowac2isis` → `spiceinit web=yes` →
-  `lrowaccal` → `framestitch` with inline images at each step, chasing the working hypothesis that
-  the striping is introduced at `framestitch` — scope currently stops there (no `isd_generate`/
-  `mapproject`/`sat_sim` yet). Not merged to `main`: this is unproven and adds a heavy new
-  toolchain (ISIS/ALE, via a `micromamba`-managed env in `docker/Dockerfile`, alongside ASP).
+  manual framelet-stacking. The pipeline works end-to-end on real data through `framestitch`, but
+  hits a real, unresolved blocker further downstream at `mapproject` (severe framelet-boundary
+  striping in its output, confirmed on two products, not an illumination/AOI artifact) — see
+  `docs/history.md` Phase 12 and `docs/data-sources.md`'s "ISIS3/CSM spike" section before
+  re-investigating or re-deriving any of this. `src/trntest/isis_wac.py` (merged to `main` in Phase
+  14 — ISIS/ALE now lives permanently in `docker/Dockerfile` via a `micromamba`-managed env,
+  alongside ASP) implements EDR fetch → `lrowac2isis` → `spiceinit web=yes` → `lrowaccal` →
+  `framestitch` — scope currently stops there, no `isd_generate`/`mapproject` wrapper yet.
+  `notebooks/lunar_sat_sim_demo.py`'s Phase 6 now displays this pipeline's output directly against
+  the synthetic render (same real footprint as Phase 5's `wac.py` comparison, via
+  `isis_wac.crop_window_for_camera`) for interactive inspection; `notebooks/wac_isis_spike.py`
+  remains the step-by-step version for isolating exactly which stage introduces an artifact.
 
 ## Development history
 

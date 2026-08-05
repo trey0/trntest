@@ -205,3 +205,49 @@ def plot_comparison(
 
     fig.tight_layout()
     return fig
+
+
+def plot_isis_comparison(
+    camera: Camera,
+    rendered_tif_path,
+    stitched_cub_path,
+    window: rasterio.windows.Window,
+    rotations: DisplayRotations,
+):
+    """Synthetic render next to a same-real-footprint crop of the ISIS-processed WAC image
+    (`isis_wac.run_pipeline`/`isis_wac.crop_window_for_camera`) -- not a tie-pointed comparison like
+    `plot_comparison`'s wac.py version, since the ISIS cube isn't reprojected onto the DEM yet
+    (no `mapproject` step -- see docs/plan.md's open items).
+
+    Applies the same north-up display rotation and real-km extent scaling `plot_comparison` already
+    uses, for the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent
+    rotation to display north-up, and WAC's along-track/cross-track pixel GSDs differ (the crop's
+    along-track axis is oversampled relative to cross-track -- see `crop_window_for_camera`), so a
+    plain 1:1 pixel `imshow` visibly stretches/compresses it. `rotations.k_crop` -- computed
+    purely from real SPICE geometry (`camera`/`frame_timing`), never from `wac.py`'s own pixel
+    array -- applies equally well here: the ISIS cube shares `wac.py`'s exact line/sample
+    convention (confirmed in `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking
+    order and `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
+    `camera.reverse_crop_along_track` signal `k_crop` itself depends on."""
+    synthetic = read_raster_band(rendered_tif_path)
+    real = read_raster_band(stitched_cub_path, window=window)
+    valid = valid_pixel_mask(real)
+    vmin, vmax = np.percentile(real[valid], [2, 98]) if valid.any() else (None, None)
+
+    synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
+    real_rot = np.rot90(np.where(valid, real, np.nan), rotations.k_crop)
+
+    synthetic_width_km = camera.cross_track_width_km
+    crop_width_km = camera.cross_track_width_km
+    crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 6))
+    axes[0].imshow(synthetic_rot, cmap="gray", extent=[0, synthetic_width_km, synthetic_width_km, 0])
+    axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
+    axes[1].imshow(real_rot, cmap="gray", vmin=vmin, vmax=vmax, extent=[0, crop_width_km, crop_height_km, 0])
+    axes[1].set_title("Real WAC (ISIS-processed, north-up)")
+    for ax in axes:
+        ax.set_xlabel("km")
+        ax.set_ylabel("km")
+    fig.tight_layout()
+    return fig

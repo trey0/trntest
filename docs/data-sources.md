@@ -220,13 +220,16 @@ holds for both):
   `camera.reverse_crop_along_track`, since which end of the mosaic is "forward in time" is
   pass-dependent (see above).
 
-## ISIS3/CSM spike: real-WAC DEM reprojection (prototype only, not adopted in `trntest` code)
+## ISIS3/CSM spike: real-WAC DEM reprojection
 
 Hands-on spike (see `docs/history.md` for the motivating discussion) validating whether a real WAC
 CDR swath can be reprojected onto the DEM via a genuine CSM camera model (`mapproject`) and
 re-rendered from a synthetic pose (`sat_sim --ortho`), as an alternative/complement to `wac.py`'s
-manual framelet-stacking approach. Run entirely in a throwaway container, **no `trntest` source
-changed** — recorded here so this isn't re-derived from scratch if picked up again.
+manual framelet-stacking approach. The `mapproject`/`sat_sim --ortho` half of this was run entirely
+in a throwaway container and never adopted into `trntest` source; the earlier part of the chain
+(EDR fetch through `framestitch`) *has* since been implemented for real as `src/trntest/isis_wac.py`
+(see `docs/history.md` Phases 13–14) and merged to `main` — recorded here so none of this needs to
+be re-derived from scratch if picked up again.
 
 - **Install**: `mamba create -n isis --override-channels -c usgs-astrogeology -c conda-forge
   --channel-priority flexible isis ale` — the plain `-c usgs-astro` channel name from older docs
@@ -270,7 +273,19 @@ changed** — recorded here so this isn't re-derived from scratch if picked up a
   (`*.uv.even.cub`, `*.vis.even.cub`, `*.uv.odd.cub`, `*.vis.odd.cub`). Confirmed via `catlab`:
   `vis.even.cub` is **704 samples × 7532 lines × 5 bands** — the 5 VIS filters come out as 5
   distinct ISIS cube bands already correctly separated, no manual byte-offset extraction needed
-  (unlike `wac.py`'s current hand-picked `VIS_BLOCK_OFFSET`/`VIS_BLOCK_HEIGHT`).
+  (unlike `wac.py`'s current hand-picked `VIS_BLOCK_OFFSET`).
+  **Line count, confirmed empirically (`isis_wac.crop_window_for_camera`)**: the cube preserves
+  **14 lines per original EDR frame** — exactly `wac.VIS_BLOCK_HEIGHT`, *not* 1 line/frame (an
+  earlier, wrong assumption briefly shipped in `crop_window_for_camera` before this was checked
+  against real data). Confirmed on two real products: `M1327210646CE` measures exactly `258 frames
+  × 14 = 3612` lines (its EDR label's own `nframes`, cross-checked directly), and this product's
+  `M1329714703CE` measures exactly `538 × 14 = 7532` lines. `lrowac2isis` does *not* TDI-sum each
+  frame down to a single output line — it keeps the same per-frame line structure `wac.py`'s own
+  raw-CDR byte-layout code already assumes, it just separates the 5 VIS bands automatically instead
+  of needing a manual byte offset. `even`/`odd` individually already carry the *full* frame count's
+  worth of lines each (not half) — `framestitch` deinterlaces/merges them into correct along-track
+  order, it doesn't concatenate two half-height inputs into a full-height one (confirmed: `stitched`
+  measures the same height as `even`/`odd` individually).
 - **`framestitch`'s `FLIP` is a real, per-pass manual decision, not automatic** — directly tested
   both values on `M1329714703CE` (this repo's documented non-mirrored/`k=1` reference product):
   `flip=false` produced a coherent, recognizable lunar surface; `flip=true` produced a scrambled,

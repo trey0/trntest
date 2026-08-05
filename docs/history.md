@@ -424,6 +424,57 @@ inspect the stitched cube for the striping pattern at multiple locations/zoom le
 whether it's visible pre-`mapproject` (implicating `framestitch` itself) or only appears once
 `mapproject` reprojects it (implicating that step instead, as Phase 12 originally assumed).
 
+## Phase 14 (2026-08-05) — Merged ISIS/CSM WAC pipeline into `main`; added a live comparison to the demo notebook
+
+Phase 13's `spike/wac-isis-framestitch` branch was merged into `main` — the framelet-boundary
+striping question is still open (Phase 13's own next step wasn't attempted here), but the decision
+was made to stop treating the pipeline as spike-only: `src/trntest/isis_wac.py` is real, working
+code, and the best way to keep investigating the striping is to see its output directly in the
+flagship demo notebook rather than only in a standalone investigation notebook.
+
+- **Merge conflict**: `main` had independently added near-identical warning-suppression code to
+  `src/trntest/plotting.py` (the notebook-warning-cleanup work, done after this branch diverged).
+  Resolved by keeping Phase 13's `read_raster_band`/`valid_pixel_mask`/`plot_raster` in full and
+  dropping `main`'s smaller, redundant `_open_rendered_tif` in favor of `read_raster_band`
+  (`src/trntest/_lint.py`'s equivalent addition merged automatically clean — same content, entirely
+  non-overlapping location).
+- **Deduplicated `isis_wac.py`'s own `_run_quiet`** against `subprocess_utils.run_quiet` (added on
+  `main`, after Phase 13 branched, so `isis_wac.py` couldn't reference it yet) — flagged as
+  follow-up work when both were written; this merge is that follow-up.
+- **Found and fixed a real image-bloat bug while rebuilding**: the merged image came out at
+  **15.8 GB**, not the ~4 GB measured in Phase 13 — `/opt/conda/pkgs` (micromamba's
+  download/extraction cache) was left uncleaned inside the image, roughly doubling the ISIS layer's
+  real size (measured: ~2 GB env + ~6 GB uncleaned pkgs cache). Fixed by adding `micromamba clean
+  --all --yes` to the *same* `RUN` layer as `micromamba create` (cleaning in a later layer doesn't
+  shrink an earlier one — Docker's layered filesystem).
+- **New reusable pipeline entry points** in `isis_wac.py`, added per code review rather than
+  inlining the steps into the notebook cell directly: `run_pipeline(camera, frame_timing, config)`
+  runs EDR-fetch-through-`framestitch` in one call, deriving `flip` from
+  `camera.reverse_crop_along_track` (not a hardcoded per-product constant like the spike notebook's
+  `FLIP = False` — this needs to work for whatever product `select_dataset()` live-selects, not
+  just one fixed reference product). `crop_window_for_camera(camera)` picks the same real-footprint
+  frame range (`camera.center_frame_index` ± half of `camera.n_frames_for_square_crop`) that
+  `wac.fetch_vis_mosaic` already uses for its own Phase 5 crop — both images cover the same real
+  ground area by construction (the synthetic camera's footprint is centered there in the first
+  place), so unlike Phase 13's spike notebook, no data-driven "guess the signal-rich window"
+  heuristic was needed at all.
+- **New `plotting.plot_isis_comparison`**: synthetic render next to the ISIS-processed crop, side
+  by side (not tie-pointed like `plot_comparison`'s `wac.py` version — the ISIS cube isn't
+  reprojected onto the DEM yet, no `mapproject`).
+- **Net result**: `notebooks/lunar_sat_sim_demo.py`'s new Phase 6 is two short cells
+  (`isis_wac.run_pipeline(...)` then `plotting.plot_isis_comparison(...)`) — real, live-selected-
+  product output, not the spike notebook's fixed default product.
+
+**Correction, same day**: the first real run's Phase 6 panel was flagged (by inspection) as far too
+short/non-square and showing no visible correspondence with the synthetic panel.
+`crop_window_for_camera`'s assumption that the stitched cube is ~one line per original EDR frame
+was wrong — checked directly against the cached cubes from that same run: `M1327210646CE` (the
+product actually used) measures exactly `258 frames × 14 = 3612` lines, and `M1329714703CE` (the
+older reference product, also cached) exactly `538 × 14 = 7532` — `lrowac2isis` preserves **14
+lines/frame** (`wac.VIS_BLOCK_HEIGHT`), not 1. Fixed by scaling both `camera.center_frame_index`
+and `camera.n_frames_for_square_crop` by that factor before computing the window. See
+`docs/data-sources.md`'s "ISIS3/CSM spike" section for the full empirical detail.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
