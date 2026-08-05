@@ -131,20 +131,20 @@ print(f"real crop: rotate {rotations.k_crop*90} deg for north-up (residual {rota
 
 # %%
 vis_mosaic = session.fetch_vis_mosaic(camera)
-plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, render_result.rendered_tif, config=session.config);
+plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, render_result.rendered_tif);
 
 # %% [markdown]
 # ## Phase 6: compare against a genuine ISIS/CSM-processed WAC image
 #
-# Phase 5's comparison uses `wac.py`'s manual framelet-stacking (hand-derived byte offsets into the CDR). `isis_wac.run_pipeline()` instead steps the same product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- a genuine camera-model-based alternative, not yet reprojected onto the DEM (`mapproject`, still an open item -- see `docs/plan.md`), so this is a plain side-by-side, not a tie-pointed comparison. `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant.
+# Phase 5's comparison uses `wac.py`'s manual framelet-stacking (hand-derived byte offsets into the CDR). `isis_wac.run_pipeline()` instead steps the same product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- a genuine camera-model-based alternative, not yet reprojected onto the DEM (`mapproject`, still an open item -- see `docs/plan.md`). `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant.
 #
-# `isis_wac.crop_window_for_camera()` picks the same real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) that `wac.fetch_vis_mosaic` above already uses, so both comparisons cover the same real ground area -- by construction, not by search. `plotting.plot_isis_comparison()` reuses the same north-up rotation and real-km extent scaling (Phase 5, above) that `plot_comparison` already applies -- the ISIS cube shares `wac.py`'s exact pixel-axis convention, so the same `rotations.k_crop` and physical-km scaling apply here too, not just to `wac.py`'s own crop.
+# `isis_wac.crop_window_for_camera()` picks the same real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) that `wac.fetch_vis_mosaic` above already uses, so both comparisons cover the same real ground area -- by construction, not by search. `plotting.plot_isis_comparison()` reuses the same north-up rotation and real-km extent scaling (Phase 5, above) that `plot_comparison` already applies -- the ISIS cube shares `wac.py`'s exact pixel-axis convention, so the same `rotations.k_crop` and physical-km scaling apply here too, not just to `wac.py`'s own crop. Phase 5's `tie_point_results` are reused directly, not recomputed -- `tie_points.py`'s crop-pixel projection was never CSM/ISD-based to begin with (pure SPICE frame-index geometry), and its coordinate origin/scaling exactly matches `crop_window_for_camera`'s, so the same points land correctly here with no new geometry code.
 
 # %%
 stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
 
 # %%
-plotting.plot_isis_comparison(camera, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
+plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
 
 # %% [markdown]
 # ## Summary

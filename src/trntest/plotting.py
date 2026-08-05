@@ -12,7 +12,6 @@ import rasterio.windows
 
 from trntest import orientation, wac
 from trntest.camera import Camera
-from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import LunaservResult
 from trntest.orientation import DisplayRotations
 
@@ -140,16 +139,29 @@ def plot_synthetic_render(rendered_tif_path):
     return fig
 
 
+def _plot_tie_point_marker(ax, name, px, py, k_rotation, height, width, width_km, height_km):
+    """Rotate (for north-up display) + scale to real km + plot one tie-point marker. Shared by
+    `plot_comparison` and `plot_isis_comparison` -- same math either way, just different
+    height/width (px and km) per panel."""
+    style = MARKER_STYLES[name]
+    px_r, py_r = orientation.rotate_pixel_coords(px, py, k_rotation, height, width)
+    ax.plot(
+        px_r / width * width_km,
+        py_r / height * height_km,
+        markersize=14,
+        markeredgecolor="black",
+        markeredgewidth=1.5,
+        **style,
+    )
+
+
 def plot_comparison(
     camera: Camera,
     tie_point_results: dict,
     vis_mosaic: np.ndarray,
     rotations: DisplayRotations,
     rendered_tif_path,
-    config: TrntestConfig | None = None,
 ):
-    config = config or load_config()
-
     synthetic = read_raster_band(rendered_tif_path)
 
     valid_mask = vis_mosaic != wac.MISSING_CONSTANT
@@ -181,27 +193,12 @@ def plot_comparison(
         ax.set_ylabel("km")
 
     for name, r in tie_point_results.items():
-        style = MARKER_STYLES[name]
         px, py = r["synthetic_px"]
-        px_r, py_r = orientation.rotate_pixel_coords(px, py, rotations.k_synthetic, h_syn, w_syn)
-        axes[0].plot(
-            px_r / config.image_size * synthetic_width_km,
-            py_r / config.image_size * synthetic_width_km,
-            markersize=14,
-            markeredgecolor="black",
-            markeredgewidth=1.5,
-            **style,
+        _plot_tie_point_marker(
+            axes[0], name, px, py, rotations.k_synthetic, h_syn, w_syn, synthetic_width_km, synthetic_width_km
         )
         col, row = r["crop_px"]
-        col_r, row_r = orientation.rotate_pixel_coords(col, row, rotations.k_crop, h_crop, w_crop)
-        axes[1].plot(
-            col_r / wac.SAMPLES * crop_width_km,
-            row_r / (n_frames * wac.VIS_BLOCK_HEIGHT) * crop_height_km,
-            markersize=14,
-            markeredgecolor="black",
-            markeredgewidth=1.5,
-            **style,
-        )
+        _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)
 
     fig.tight_layout()
     return fig
@@ -209,6 +206,7 @@ def plot_comparison(
 
 def plot_isis_comparison(
     camera: Camera,
+    tie_point_results: dict,
     rendered_tif_path,
     stitched_cub_path,
     window: rasterio.windows.Window,
@@ -228,12 +226,20 @@ def plot_isis_comparison(
     array -- applies equally well here: the ISIS cube shares `wac.py`'s exact line/sample
     convention (confirmed in `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking
     order and `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
-    `camera.reverse_crop_along_track` signal `k_crop` itself depends on."""
+    `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
+
+    `tie_point_results` (from `session.compute_tie_points`, already computed for Phase 5) are
+    reused as-is, not recomputed -- `tie_points.py`'s "crop_px" was never CSM/ISD-based to begin
+    with (pure SPICE frame-index geometry), and its row/col origin and `wac.VIS_BLOCK_HEIGHT`
+    scaling are exactly what `crop_window_for_camera` already uses, so the same pixel coordinates
+    land correctly in this window with no transformation."""
     synthetic = read_raster_band(rendered_tif_path)
     real = read_raster_band(stitched_cub_path, window=window)
     valid = valid_pixel_mask(real)
     vmin, vmax = np.percentile(real[valid], [2, 98]) if valid.any() else (None, None)
 
+    h_syn, w_syn = synthetic.shape
+    h_crop, w_crop = real.shape
     synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
     real_rot = np.rot90(np.where(valid, real, np.nan), rotations.k_crop)
 
@@ -249,5 +255,14 @@ def plot_isis_comparison(
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
+
+    for name, r in tie_point_results.items():
+        px, py = r["synthetic_px"]
+        _plot_tie_point_marker(
+            axes[0], name, px, py, rotations.k_synthetic, h_syn, w_syn, synthetic_width_km, synthetic_width_km
+        )
+        col, row = r["crop_px"]
+        _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)
+
     fig.tight_layout()
     return fig

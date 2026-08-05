@@ -475,6 +475,27 @@ lines/frame** (`wac.VIS_BLOCK_HEIGHT`), not 1. Fixed by scaling both `camera.cen
 and `camera.n_frames_for_square_crop` by that factor before computing the window. See
 `docs/data-sources.md`'s "ISIS3/CSM spike" section for the full empirical detail.
 
+**Second correction, same day**: `plot_isis_comparison` wasn't applying the north-up display
+rotation or the real-km `extent` scaling `plot_comparison` already uses for its own panels (WAC's
+along-track/cross-track pixel GSDs differ) — the synthetic panel showed ~180° rotated and the real
+panel was visibly stretched. Fixed by reusing `rotations.k_synthetic`/`k_crop` (from the same
+`compute_display_rotations` call Phase 5 already makes) and the same `extent=[0, width_km,
+height_km, 0]` pattern. Also shortened the real panel's title (was too long to render cleanly).
+
+**Third addition, same day**: considered generating a CSM/ISD sidecar for the stitched cube (via
+ALE's `isd_generate`) to enable a tie-pointed comparison like Phase 5's, but this turned out to be
+both unverified (the original spike's `isd_generate` recipe only ran against the *unstitched*
+even/odd cubes, never `framestitch`'s merged output) and unnecessary: `tie_points.py`'s crop-pixel
+projection was never CSM-based to begin with (pure SPICE frame-index geometry,
+`project_ground_to_crop_pixel`), and its row/col origin (`start_frame=config.target_frame_index`)
+and scaling (`wac.VIS_BLOCK_HEIGHT`) exactly match what `crop_window_for_camera` already computes.
+So Phase 5's already-computed `tie_point_results` are reused as-is on the ISIS panel — no ISD
+generation, no new geometry code. `plotting.py` gained a small shared
+`_plot_tie_point_marker` helper (de-duplicating the rotate+km-scale+plot logic both comparison
+functions now need) and lost the `config` parameter from `plot_comparison`/`plot_isis_comparison`
+(both had only used it for `config.image_size`, now passed as a plain `width`/`height` to the
+helper instead).
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
