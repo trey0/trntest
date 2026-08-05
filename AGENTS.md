@@ -49,15 +49,23 @@ this file). Then, as needed:
   ends up executing stale code. Don't bother building/publishing an Artifact for this kind of
   internal validation check — it's slower and not worth the token cost when the user can just view
   the live notebook themselves.
-- **Notebooks are jupytext-paired and both halves are committed.**
-  `notebooks/lunar_sat_sim_demo.py` (percent format) is the source of truth for review/diffing/
-  lint/IDE work; `notebooks/lunar_sat_sim_demo.ipynb` carries real, fully-executed outputs and is
-  committed too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and
-  outputs, including images), so no separate HTML/Pages publishing step exists anymore. The two
-  are paired via inline jupytext metadata (no `jupytext.toml`). Always edit through one of them
+- **Notebooks are jupytext-paired and both halves are committed.** There are two:
+  `notebooks/lunar_sat_sim_demo.py`/`.ipynb` (the flagship demo, all phases) and
+  `notebooks/wac_isis_spike.py`/`.ipynb` (the narrower ISIS/CSM `framestitch` investigation —
+  see `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
+  review/diffing/lint/IDE work; the `.ipynb` carries real, fully-executed outputs and is committed
+  too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,
+  including images), so no separate HTML/Pages publishing step exists anymore. The two halves of a
+  pair are linked via inline jupytext metadata (no `jupytext.toml`). Always edit through one of them
   (JupyterLab renders the `.py` as a live notebook via the bundled `jupyterlab-jupytext`
-  extension) and run `scripts/run_notebook.sh` before committing — see the pre-commit hook
-  note below for what is and isn't automatically checked.
+  extension) and run `scripts/run_notebook.sh <path/to/the/one/you/edited.py>` before committing —
+  see the pre-commit hook note below for what is and isn't automatically checked.
+- **New subprocess calls to ASP/ISIS binaries must use `trntest.subprocess_utils.run_quiet`**, not
+  raw `subprocess.run`. These tools are noisy by default (progress bars, library-init messages,
+  verbose logs) and inherit the calling process's own stdout/stderr, which floods a notebook cell
+  with output that isn't the caller's — `run_quiet` captures it and only surfaces it on failure.
+  `render.py`, `lunaserv.py`, and `isis_wac.py` all follow this pattern; a real, painful example of
+  what happens without it is in `docs/history.md`'s notebook-warnings-cleanup entries.
 - **Profiling**: use `cProfile`/`pstats` inside Docker (real SPICE/network) rather than guessing
   which optimization matters — see `docs/history.md` (Phase 10) for an example. When isolating a
   from-cold cost, compare **separate fresh `docker compose run` invocations**, not multiple calls
@@ -67,10 +75,13 @@ this file). Then, as needed:
   in a row in Phase 10 before the mistake was caught. Also: before attributing slowness to a cold
   network/disk cache, check `find <cache-dir> -newermt "-N minutes"` to confirm what was actually
   freshly fetched, rather than assuming.
-- `trntest-lint`'s notebook check verifies structural sync (the `.py`/`.ipynb` pair is staged
-  together and their code/markdown content matches) and a run-shape heuristic (the `.ipynb`'s
-  `execution_count`s look like one clean top-to-bottom execute, i.e. `1, 2, 3, ...` with no gaps —
-  the shape `scripts/run_notebook.sh` produces). It does **not** verify true output freshness
-  (that the outputs actually reflect the current code) — that would require re-executing the whole
-  pipeline, which is slow (SPICE/WMS/`sat_sim` calls). Always run `scripts/run_notebook.sh`
-  after editing notebook code, don't just rely on the hook passing.
+- `trntest-lint`'s notebook checks: structural sync (the `.py`/`.ipynb` pair is staged together —
+  unless the un-staged twin is already byte-identical to `HEAD`, e.g. a notebook re-run that only
+  refreshed outputs — and their code/markdown content matches), a run-shape heuristic (the
+  `.ipynb`'s `execution_count`s look like one clean top-to-bottom execute, i.e. `1, 2, 3, ...` with
+  no gaps — the shape `scripts/run_notebook.sh` produces), and a warning/error scan (the `.ipynb`'s
+  already-recorded cell outputs are checked for raised errors or warning-looking stream text —
+  heuristic, matches on literal "Warning"/"WARNING" substrings, not exhaustive). None of these
+  verify true output freshness (that the outputs actually reflect the current code) — that would
+  require re-executing the whole pipeline, which is slow (SPICE/WMS/`sat_sim`/ISIS calls). Always
+  run `scripts/run_notebook.sh` after editing notebook code, don't just rely on the hook passing.

@@ -19,6 +19,19 @@ Everything under `trntest_ws` — not just the git repo — gets archived, as lo
 actually gets run before teardown. So "will this survive" isn't really the question day to day;
 the question is where things belong.
 
+## Docker images don't survive either
+
+Like everything not under `trntest_ws`, the built Docker image itself isn't archived —
+`docker compose build` on a fresh VPS rebuilds it from `docker/Dockerfile` from scratch every
+session, regardless of how many times it was built on a prior (now-destroyed) VPS. Since the
+ISIS/ALE integration (`docs/history.md` Phases 13–14), this build is meaningfully heavier than it
+used to be: a `micromamba create` package solve + install (~1GB download) on top of the existing
+ASP tarball fetch. Budget real time for the first `docker compose build` of a new session — it's
+not instant. If that layer is ever touched again, note its own `micromamba clean --all --yes`
+gotcha (must run in the *same* `RUN` layer as `micromamba create`, or Docker's layered filesystem
+won't actually reclaim the space — cost a real 15.8GB→3GB image bloat the first time around; see
+the Dockerfile's own comment there).
+
 ## Where things belong: source vs. large output
 
 - **`src/trntest/`** is the git repo root — the project's public, clean, committed code. Only
