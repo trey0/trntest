@@ -1,10 +1,12 @@
 """`trntest-lint` console script: runs ruff format --check, ruff check, and mypy over Python
-files, plus a jupytext structural-sync check over any notebook files, either the whole repo
-(--all), an explicit file list, or files changed vs. HEAD (--diff, the default).
+files, plus a jupytext structural-sync check and a warning/error-output scan over any notebook
+files, either the whole repo (--all), an explicit file list, or files changed vs. HEAD (--diff, the
+default).
 """
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -127,6 +129,40 @@ def _check_notebook_sync(py_files: list[str], ipynb_files: list[str]) -> int:
     return 0 if ok else 1
 
 
+_WARNING_LINE = re.compile(r"Warning\b|\bWARNING\b")
+
+
+def _check_notebook_warnings(ipynb_files: list[str]) -> int:
+    """Scans each notebook's already-recorded cell outputs (reads the committed .ipynb -- doesn't
+    execute anything) for raised errors or warning-looking stream text, so a notebook that's noisy
+    or actually failing gets caught the same way the sync/execution_count checks already catch
+    structural drift. Heuristic, not exhaustive (only catches output text that literally contains
+    "Warning"/"WARNING", which covers Python's own `*Warning:` lines and GDAL/ISIS's own "Warning
+    N: ..." messages, but not every possible noisy-library convention) -- if a real subprocess/
+    library warning doesn't get flagged, extend the pattern rather than assuming this check is
+    exhaustive."""
+    ok = True
+    for nb in ipynb_files:
+        notebook = json.loads(Path(nb).read_text())
+        for i, cell in enumerate(notebook.get("cells", [])):
+            if cell.get("cell_type") != "code":
+                continue
+            for output in cell.get("outputs", []):
+                if output.get("output_type") == "error":
+                    print(
+                        f"trntest-lint: {nb} cell {i} raised {output.get('ename')}: "
+                        f"{output.get('evalue')} -- fix and re-run scripts/run_notebook.sh."
+                    )
+                    ok = False
+                elif output.get("output_type") == "stream":
+                    text = "".join(output.get("text", []))
+                    for line in text.splitlines():
+                        if _WARNING_LINE.search(line):
+                            print(f"trntest-lint: {nb} cell {i} output contains a warning: {line.strip()[:200]}")
+                            ok = False
+    return 0 if ok else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="trntest-lint")
     parser.add_argument("--all", action="store_true", help="check every .py/.ipynb file in the repo")
@@ -163,6 +199,7 @@ def main() -> int:
         results["mypy"] = subprocess.run(["mypy", "src/trntest"], check=False).returncode
     if any(f.startswith("notebooks/") for f in py_files) or ipynb_files:
         results["notebook sync"] = _check_notebook_sync(py_files, ipynb_files)
+        results["notebook warnings"] = _check_notebook_warnings(ipynb_files)
 
     for name, code in results.items():
         print(f"{name}: {'PASS' if code == 0 else 'FAIL'}")

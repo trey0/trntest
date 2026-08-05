@@ -243,13 +243,29 @@ changed** — recorded here so this isn't re-derived from scratch if picked up a
   (`lrolc_2019334_2020001_v01.bc`, `fdf29r_2019305_2019335_v01.bsp`, etc.) that were used remotely.
   ~14s/call. This is the key finding for avoiding a bulk kernel download. What's still needed
   locally: the mission-independent `base` area (real measured size **26 GB**, not the ~10 GB
-  estimated from secondhand docs — it includes generic multi-mission kernels like Neptune's SPK;
-  `--no-kernels` shrinks `base` to near-zero, since `spiceinit web=yes` covers the pointing/position
-  role) and `lro`'s non-kernel calibration files that `lrowaccal` needs (dark/flat cubes, measured
+  estimated from secondhand docs — it includes generic multi-mission kernels like Neptune's SPK)
+  and `lro`'s non-kernel calibration files that `lrowaccal` needs (dark/flat cubes, measured
   **~5 GB** via `downloadIsisData lro $ISISDATA --no-kernels`, includes NAC+WAC together — no
   narrower filter found). **Gotcha**: `downloadIsisData`'s `--dry-run` flag does not actually skip
   the transfer in this version (10.0.0) — real files were written to disk despite `--dry-run` being
   passed; don't rely on it to preview size before committing to a real download.
+  **Correction (from actually running this, not just estimating it — see `isis_wac.py`'s
+  `ensure_isisdata()`)**: the "`--no-kernels` shrinks `base` to near-zero" claim above was wrong.
+  `--no-kernels` only excludes the `ck/ek/fk/ik/iak/lsk/mk/pck/sclk/spk/tspk/dsk` kernel subdirs —
+  `base`'s ~26 GB (well, really ~20GB of it) is actually dominated by `base/dems/` (global shape
+  models), which isn't a "kernel" and isn't touched by the flag at all; a real `downloadIsisData
+  base $ISISDATA --no-kernels` run pulled the full 20 GB of `dems/`. None of that DEM data is
+  needed until `mapproject` (out of scope for the framestitch-only spike this module currently
+  covers). Worse, `spiceinit web=yes` genuinely does still need a handful of tiny,
+  generic/mission-independent kernels locally even with `--no-kernels` — confirmed by a real
+  failure ("Unable to load leadsecond file... No existing files found with a numerical version
+  matching [naif????.tls] in [.../base/kernels/lsk]") when `base/kernels/lsk` was empty. The
+  actually-minimal, correct fetch: `downloadIsisData base $ISISDATA --include
+  "{kernels/lsk/**,kernels/pck/**,kernels/sclk/**,kernels/fk/**,kernels/ik/**,kernels/iak/**}"` —
+  measured **~5 MB**, not 26 GB or even "near-zero" — skips `dems/`/`examples/`/`kernelTesting/`
+  entirely. Combined with the `lro` ~5 GB above, the real one-time cost for this notebook's scope
+  is **~5 GB total**, but via a completely different mechanism (a narrow `--include`, not
+  `--no-kernels`) than originally claimed.
 - **`lrowac2isis`** (EDR `.IMG` only, confirmed CDR is not accepted) splits into 4 cubes
   (`*.uv.even.cub`, `*.vis.even.cub`, `*.uv.odd.cub`, `*.vis.odd.cub`). Confirmed via `catlab`:
   `vis.even.cub` is **704 samples × 7532 lines × 5 bands** — the 5 VIS filters come out as 5

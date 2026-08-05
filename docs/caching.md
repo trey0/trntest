@@ -16,7 +16,17 @@ cache/
   naif/.../extras/mk/...
   lunaserv/<layer>/<bbox>_<width>x<height>_<format>.tif
   lroc_edr/<volume>/DATA/<subdir>/<doy>/WAC/<product>.*
+  isisdata/base/...   (ISIS's own mission-independent reference data)
+  isisdata/lro/...    (LRO/WAC calibration files)
 ```
+
+`isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
+`isis_wac.ensure_isisdata()` for the ISIS/CSM WAC reprojection spike (see
+`docs/data-sources.md`'s "ISIS3/CSM spike" section). Fully re-fetchable and safe to prune before
+archiving, same as the other three -- `downloadIsisData ... --no-kernels` keeps the real one-time
+download to ~5GB (not the ~30GB a plain, un-flagged `downloadIsisData` would pull), since
+`spiceinit web=yes` covers the pointing/position role the larger, un-flagged `base` download would
+otherwise be needed for.
 
 Fetch helpers (`src/trntest/cache.py`) check "does this local mirrored path already exist" before
 making any network request; if present, skip the request entirely.
