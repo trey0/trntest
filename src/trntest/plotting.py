@@ -165,8 +165,19 @@ def plot_comparison(
     synthetic = read_raster_band(rendered_tif_path)
 
     valid_mask = vis_mosaic != wac.MISSING_CONSTANT
-    p2, p98 = np.percentile(vis_mosaic[valid_mask], [2, 98])
-    display_mosaic = np.where(valid_mask, vis_mosaic, p2)  # fill missing edge columns with the low end of the stretch
+    # Match the real WAC crop's overall brightness to the synthetic render via a single
+    # multiplicative scale at the median -- not an affine/percentile stretch, which would remap the
+    # darkest/brightest values and stop reflecting the pipeline's actual relative brightness. Both
+    # panels are then displayed on the same fixed 0-255 scale (imshow's default auto-normalize to
+    # each panel's own min/max is itself an implicit stretch -- silent, but real -- which is what
+    # made the two panels' brightness levels incomparable before).
+    scale = np.median(synthetic[valid_pixel_mask(synthetic)]) / np.median(vis_mosaic[valid_mask])
+    # Scale only the valid pixels -- vis_mosaic's invalid entries hold wac.MISSING_CONSTANT (a
+    # huge-magnitude float32 sentinel, see wac.py), which overflows float32 if multiplied by scale.
+    scaled_valid = vis_mosaic[valid_mask] * scale
+    low_fill = np.percentile(scaled_valid, 2)
+    display_mosaic = np.full_like(vis_mosaic, low_fill)  # fill missing edge columns with the low end
+    display_mosaic[valid_mask] = scaled_valid
 
     # Both panels cover the same real square ground area (see docs/data-sources.md, "Current
     # image-pipeline algorithm"), but at different native pixel resolution per axis -- plot in real
@@ -184,10 +195,10 @@ def plot_comparison(
     h_crop, w_crop = display_mosaic.shape
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 6))
-    axes[0].imshow(synthetic_rot, cmap="gray", extent=[0, synthetic_width_km, synthetic_width_km, 0])
+    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_width_km, 0])
     axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
-    axes[1].imshow(mosaic_rot, cmap="gray", vmin=p2, vmax=p98, extent=[0, crop_width_km, crop_height_km, 0])
-    axes[1].set_title("Real WAC CDR, band-separated (I/F, contrast-stretched, north-up)")
+    axes[1].imshow(mosaic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
+    axes[1].set_title("Real WAC CDR, band-separated (brightness-matched to synthetic, north-up)")
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
