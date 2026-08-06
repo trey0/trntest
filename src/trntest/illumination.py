@@ -22,6 +22,40 @@ def sun_elevation_deg(ground_km: np.ndarray, et: float) -> float:
     return 90.0 - np.degrees(incidence_rad)
 
 
+def _azimuth_elevation_from_direction(direction: np.ndarray, lon_deg: float, lat_deg: float) -> tuple[float, float]:
+    """Azimuth (degrees clockwise from local north) and elevation (degrees above the local horizon)
+    of a unit `direction` vector (in the same frame `lon_deg`/`lat_deg` are expressed in), via an
+    exact local East-North-Up frame built from the ground point's lon/lat. Pure geometry, no SPICE
+    call -- split out from `sun_azimuth_elevation_deg` so it's unit-testable without furnished
+    kernels, matching this module's other pure-math functions (e.g. `terminator_offset_deg`)."""
+    lon_rad, lat_rad = np.radians(lon_deg), np.radians(lat_deg)
+    east = np.array([-np.sin(lon_rad), np.cos(lon_rad), 0.0])
+    north = np.array([-np.sin(lat_rad) * np.cos(lon_rad), -np.sin(lat_rad) * np.sin(lon_rad), np.cos(lat_rad)])
+    up = np.array([np.cos(lat_rad) * np.cos(lon_rad), np.cos(lat_rad) * np.sin(lon_rad), np.sin(lat_rad)])
+
+    e, n, u = np.dot(direction, east), np.dot(direction, north), np.dot(direction, up)
+    azimuth_deg = np.degrees(np.arctan2(e, n)) % 360.0
+    elevation_deg = np.degrees(np.arcsin(u))
+    return azimuth_deg, elevation_deg
+
+
+def sun_azimuth_elevation_deg(lon_deg: float, lat_deg: float, et: float) -> tuple[float, float]:
+    """Sun's azimuth (degrees clockwise from local north) and elevation (degrees above the local
+    horizon) at a MOON_ME lon/lat, for lighting a hillshade with the real sun geometry of a given
+    frame/epoch (see `lunaserv.fetch_dem_and_ortho`). SPICE has no single "local azimuth" call --
+    azimuth is inherently local-frame-relative -- so this uses the same real-ephemeris-vector idiom
+    as `spacecraft_lonlat_deg` (`spkpos`, not a derived/approximate direction), projected (via
+    `_azimuth_elevation_from_direction`) into an exact local East-North-Up frame. The Sun's ~150
+    million km distance makes its direction from the Moon's center effectively identical to its
+    direction from any surface point (parallax over a ~1737 km lunar radius is negligible), so no
+    separate surface-point ephemeris lookup is needed. Elevation is derived from this same local
+    frame (not `sun_elevation_deg`'s separate ellipsoid-normal method) so azimuth and elevation are
+    always mutually consistent."""
+    sun_dir, _ = spice.spkpos("SUN", et, "MOON_ME", "NONE", "MOON")
+    sun_dir = np.array(sun_dir) / np.linalg.norm(sun_dir)
+    return _azimuth_elevation_from_direction(sun_dir, lon_deg, lat_deg)
+
+
 def sub_solar_lonlat_deg(et: float) -> tuple[float, float]:
     """Sub-solar point's lon/lat (degrees) via SPICE's `subslr`."""
     spoint, _, _ = spice.subslr("NEAR POINT/ELLIPSOID", "MOON", et, "MOON_ME", "NONE", "LRO")

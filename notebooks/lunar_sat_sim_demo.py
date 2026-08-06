@@ -25,7 +25,9 @@ import dataclasses
 import json
 
 import trntest
-from trntest import isis_wac, plotting
+from trntest import plotting
+
+# isis_wac is unused while Phase 6 is temporarily disabled below -- re-add this import when re-enabling it.
 
 session = trntest.Session()
 session.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +62,7 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # %% [markdown]
 # ## Phase 3: DEM + ortho from Lunaserv WMS
 #
-# Fetch `luna_wac_global` (visible mosaic) and `luna_wac_dtm_numeric_meters_absolute` (GLD100 DEM, converted from planetocentric radius to elevation -- see `docs/data-sources.md`) for the footprint above, through the local cache.
+# Fetch `luna_wac_normalized_reflectance` (visible mosaic, despeckled and blended with a real-sun-lit hillshade -- see `docs/data-sources.md`) and `luna_wac_dtm_numeric_meters_absolute` (GLD100 DEM, converted from planetocentric radius to elevation) for the footprint above, through the local cache.
 
 # %%
 lunaserv_result = result.lunaserv_result
@@ -141,10 +143,13 @@ plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, rende
 # `isis_wac.crop_window_for_camera()` picks the same real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) that `wac.fetch_vis_mosaic` above already uses, so both comparisons cover the same real ground area -- by construction, not by search. `plotting.plot_isis_comparison()` reuses the same north-up rotation and real-km extent scaling (Phase 5, above) that `plot_comparison` already applies -- the ISIS cube shares `wac.py`'s exact pixel-axis convention, so the same `rotations.k_crop` and physical-km scaling apply here too, not just to `wac.py`'s own crop. Phase 5's `tie_point_results` are reused directly, not recomputed -- `tie_points.py`'s crop-pixel projection was never CSM/ISD-based to begin with (pure SPICE frame-index geometry), and its coordinate origin/scaling exactly matches `crop_window_for_camera`'s, so the same points land correctly here with no new geometry code.
 
 # %%
-stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
+# Temporarily disabled: the external ISIS SPICE web service (`spiceinit web=yes`) is currently
+# failing ("SPICE server returned incompatible SPICE data"), unrelated to this repo's own code --
+# confirmed non-transient (same failure on repeated runs). Re-enable once that service recovers.
+# stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
 
 # %%
-plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
+# plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
 
 # %% [markdown]
 # ## Summary

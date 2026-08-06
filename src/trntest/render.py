@@ -23,6 +23,20 @@ class RenderResult:
     camera_list: Path
 
 
+# `sat_sim --dem-height-error-tol` default is 0.001m -- far tighter than the DEM's actual achievable
+# precision. Lunaserv's DTM layer serves planetocentric radius (~1.7e6 m) as float32; float32 has
+# ~7.2 significant decimal digits, so its ULP (smallest representable step) at that magnitude is
+# already ~0.125m (2**(20-23), since 2**20 < 1.7e6 < 2**21) -- baked into the source data itself
+# before `lunaserv.radius_to_elevation` ever subtracts the reference radius, not something fixable
+# on our end. Confirmed empirically (see docs/history.md): the default tolerance causes `sat_sim`'s
+# ray/DEM-intersection root-finder to misbehave at scattered pixels, producing salt-and-pepper
+# speckle in the render; tightening it further makes this dramatically worse, and loosening it to
+# comfortably clear the float32 precision floor eliminates it cleanly. 0.5m is a 4x safety margin
+# above that ~0.125m floor while still far tighter than anything resolvable at the DEM's 100m/px
+# posting.
+DEM_HEIGHT_ERROR_TOL_M = 0.5
+
+
 def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: TrntestConfig | None = None) -> RenderResult:
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -46,6 +60,8 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
             "--image-size",
             str(config.image_size),
             str(config.image_size),
+            "--dem-height-error-tol",
+            str(DEM_HEIGHT_ERROR_TOL_M),
             "-o",
             str(render_prefix),
         ]

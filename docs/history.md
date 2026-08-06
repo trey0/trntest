@@ -496,6 +496,100 @@ functions now need) and lost the `config` parameter from `plot_comparison`/`plot
 (both had only used it for `config.image_size`, now passed as a plain `width`/`height` to the
 helper instead).
 
+## Phase 15 (2026-08-06) — Fixed `sat_sim` render speckle: ortho source switch + despeckle + real-sun hillshade
+
+The synthetic render showed sparse salt-and-pepper speckle (isolated bright/dark pixels,
+concentrated near crater rims). Investigated and rejected several theories before landing on the
+real cause and fix:
+
+- **Ruled out the DEM**: `hole_fill_dem` changed 0 pixels for the test product — the DEM was clean.
+- **Ruled out `sat_sim`'s ray/DEM-intersection tolerance** (`--dem-height-error-tol`): the artifact
+  is salt-and-pepper (both bright and dark single pixels) in otherwise-smooth neighborhoods, not the
+  shadow-acne/grazing-ray pattern that tolerance issue would produce.
+- **Ruled out WMS nodata mishandling** — tested two theories, both wrong: the server's own
+  `GetCapabilities` documents `0 = NoData` for this layer family (not white, as first guessed), and
+  more directly, requesting the exact AOI with `transparent=true` (both `image/png` and
+  `image/tiff` return a real alpha/mask band, confirmed by testing — not documented in the layer's
+  own capabilities entry) showed **alpha=255 everywhere** — zero actual NoData in this AOI. The
+  isolated bad pixels are genuinely part of the real `luna_wac_global` mosaic data, not missing data
+  filled by any convention.
+- **Root cause**: `luna_wac_global` (fetched raw and unfiltered in `lunaserv.py`, unlike the DEM
+  which already gets `dem_mosaic --hole-fill-length`) is composited from ~15,000 individual WAC
+  images with no evident per-pixel outlier rejection — ~16,000 isolated single-pixel outliers
+  (0.235% of pixels, deviation up to ~50 DN, 91% genuinely isolated not blob-edges), most likely
+  uncaught single-frame sensor/cosmic-ray noise.
+- **Evaluated alternate Lunaserv layers empirically** (fetched real test tiles for the same AOI,
+  not just read abstracts): `luna_wac_hapke_643nm` (median of ~140 repeat observations) has fewer
+  outliers but is visibly blurrier and introduces its own large saturation blowout on one bright
+  crater. `luna_wac_normalized_reflectance` (643nm, >100,000 images) has comparable resolution to
+  `luna_wac_global` with ~4x fewer outliers (0.059%, still 91.6% isolated single pixels) — chosen as
+  the new default (`config.lunaserv_ortho_layer`).
+- **Considered ISIS `lrowaccal`'s `SpecialPixels` correction** (confirmed via its XML docs: a real,
+  default-on, temperature/mode-matched known-bad-pixel mask) — confirmed inapplicable to the
+  Lunaserv mosaic: it's keyed to raw EDR detector geometry that no longer exists once ASU
+  composites/reprojects into the global mosaic. It's already correctly in use, by default, in the
+  unrelated `isis_wac.py` EDR pipeline (`run_lrowaccal`, no flags overridden) — consistent with that
+  pipeline's own comparison panel showing no similar speckle.
+- **Considered ISIS `noisefilter`** (a generic boxcar-tolerance outlier filter, confirmed available
+  via `std2isis`/`isis2std` round-trip) as a more "established" alternative to a hand-rolled numpy
+  filter — decided against it: proportionate given this is a display/render-texture concern, not
+  primary scientific analysis, and a round-trip through ISIS's environment/subprocess adds real
+  overhead for no clear accuracy benefit over a filter already validated against this exact data.
+- **Key discovery, found by reading `sat_sim`'s own docs before finalizing the fix**: `sat_sim`
+  applies **no illumination model of its own** — it "unproject[s] an ortho image into a given
+  camera... in the spirit of ISIS `map2cam`" via bicubic interpolation; the DEM is used purely for
+  ray/terrain-intersection geometry, not shading. This means all of the *previous* render's apparent
+  3-D relief came entirely from real (but arbitrary, uncontrolled, per-source-image) photographic
+  shading baked into `luna_wac_global` — not from any physically accurate simulation of the target
+  frame's real sun geometry. Switching to a flat/normalized-reflectance ortho would have made the
+  synthetic render itself go flat, not just a raw display panel — so a hillshade has to be baked into
+  the actual ortho fed to `sat_sim`.
+- **Fix**: lit that hillshade with the **real SPICE sun geometry** for the target frame's actual
+  acquisition epoch/AOI center, rather than an arbitrary fixed direction — added
+  `illumination.sun_azimuth_elevation_deg` (real `spkpos` ephemeris vector projected into an exact
+  local East-North-Up frame; SPICE has no single "local azimuth" convenience call). This is a real
+  improvement over the old behavior, whose relief direction was an inconsistent patchwork across
+  ~15,000 different source images' individual acquisition geometries.
+- **Net result (this part)**: `lunaserv.py`'s `fetch_dem_and_ortho` now despeckles the fetched ortho
+  (`despeckle`, a MAD-based local-outlier filter — flags a pixel only when it deviates from its own
+  *locally smooth* 3x3 neighborhood, so real large features like the blown-out crater are untouched
+  by design) and blends in the real-sun hillshade (`shade_ortho`, via
+  `matplotlib.colors.LightSource` — pure numpy, no new subprocess/dependency), writing one canonical
+  `ortho_shaded.tif` used by both `sat_sim` and every display panel. These are real, validated
+  improvements to the ortho's quality on their own merits — but see the correction below: they
+  turned out not to be the actual cause of the render speckle.
+
+**Correction, same day**: re-ran the full pipeline end-to-end after the above and the speckle was
+still there, essentially unchanged in position/density. Root-caused properly this time, by actually
+testing each hypothesis against the real render rather than reasoning from the ortho's own
+statistics:
+
+- Despeckling the *already-shaded* ortho a second time (catching anything the hillshade computation
+  itself might have introduced) changed real pixels in the ortho but **did not change the render at
+  all** when re-rendered from the doubled-despeckled file.
+- Added `--blur-sigma` (computed from the actual render/ortho GSD ratio, not guessed) on the theory
+  that `sat_sim`'s un-anti-aliased bicubic resampling was aliasing fine real hillshade detail during
+  the ~6x downsample from ortho resolution to render resolution. Tested directly: even a deliberately
+  huge `--blur-sigma=8` (3x the computed value) visibly softened overall texture but **left the
+  speckle dots completely unchanged** — ruling out aliasing as the mechanism.
+- Went back to the very first theory from earlier in this investigation (dismissed at the time as "a
+  stretch") and actually tested it directly: swept `--dem-height-error-tol` against the *same*
+  DEM/ortho/camera. Loosening it (0.1, 0.5) **eliminated the speckle cleanly**; tightening it
+  (0.00001) made it **dramatically worse** (many more, denser artifacts) — an unambiguous result in
+  both directions, not a subtle one. This is a real DEM-precision issue: Lunaserv's DTM layer serves
+  planetocentric radius (~1.7e6 m) as float32, whose ULP at that magnitude is already ~0.125m —
+  baked into the source data before `radius_to_elevation` ever runs, not fixable by changing that
+  subtraction's own precision. `sat_sim`'s default tolerance (0.001m) is ~100x tighter than the DEM
+  can actually resolve, and its ray/DEM-intersection root-finder doesn't degrade gracefully at that
+  mismatch.
+- **Actual fix**: `render.py`'s `run_sat_sim` now passes `--dem-height-error-tol 0.5` (a 4x margin
+  above the ~0.125m float32 floor). `--blur-sigma` was removed entirely — it had no measurable effect
+  on the real problem and only added unnecessary softening.
+- **Lesson**: the ortho-quality investigation (layer switch, despeckle, real-sun hillshade) was real,
+  valuable, well-evidenced work — but none of it addressed the actual bug, because the bug was never
+  in the ortho. Should have swept `--dem-height-error-tol` empirically at the very start (it was
+  proposed early on) rather than reasoning about why it seemed unlikely.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

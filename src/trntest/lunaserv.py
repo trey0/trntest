@@ -1,15 +1,19 @@
 """Fetch DEM + ortho imagery from Lunaserv WMS for the ground footprint computed by `camera.build_camera`,
-and prep the DEM for `sat_sim` (elevation, not raw radius; hole-filled). See docs/data-sources.md
-and docs/caching.md.
+and prep both for `sat_sim`: the DEM as elevation (not raw radius) and hole-filled, the ortho
+despeckled and blended with a real-sun-lit hillshade (`sat_sim` applies no illumination model of its
+own -- see docs/data-sources.md -- so any relief in the synthetic render has to already be in this
+ortho). See docs/data-sources.md and docs/caching.md.
 """
 
 import dataclasses
 import math
 from pathlib import Path
 
+import numpy as np
 import rasterio
+from matplotlib.colors import LightSource
 
-from trntest import cache
+from trntest import cache, illumination
 from trntest.camera import Camera
 from trntest.config import DEFAULT_MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.subprocess_utils import run_quiet
@@ -86,6 +90,64 @@ def hole_fill_dem(dem_path, filled_path):
     )
 
 
+def despeckle(data: np.ndarray, size: int = 3, n_mad: float = 6.0) -> np.ndarray:
+    """Replace isolated single-pixel outliers with their local neighborhood median, leaving smooth
+    terrain and large real features (e.g. a genuinely bright/saturated crater) untouched. A pixel is
+    flagged only when it deviates from its `size`x`size` neighborhood median by more than `n_mad`
+    scaled median-absolute-deviations *of that same neighborhood* -- this makes the threshold
+    self-scaling to local contrast, and specifically means a pixel next to a real edge/large feature
+    (where the neighborhood's own MAD is already high) is far less likely to be flagged than an
+    isolated pixel sitting in otherwise-smooth terrain. Validated against real fetched Lunaserv WAC
+    tiles (see docs/data-sources.md): ~90% of statistical outliers under this test are genuinely
+    isolated single pixels (no adjacent outlier), and a known real saturated-crater blob in that data
+    is untouched by design (its neighborhood MAD is not small)."""
+    pad = size // 2
+    padded = np.pad(data, pad, mode="edge")
+    neighborhood = np.lib.stride_tricks.sliding_window_view(padded, (size, size)).reshape(*data.shape, -1)
+    med = np.median(neighborhood, axis=-1)
+    mad = np.median(np.abs(neighborhood - med[..., None]), axis=-1) * 1.4826  # normal-consistent scale
+    is_outlier = np.abs(data.astype(np.float64) - med) > n_mad * np.maximum(mad, 1.0)
+    return np.where(is_outlier, med, data).astype(data.dtype)
+
+
+def shade_ortho(
+    ortho: np.ndarray, dem: np.ndarray, azimuth_deg: float, elevation_deg: float, cellsize_m: float
+) -> np.ndarray:
+    """Blend a hillshade -- lit from the real sun direction for this camera/epoch, computed from
+    `dem` -- onto `ortho`. `sat_sim` applies no illumination model of its own; it geometrically
+    reprojects whatever's already in the ortho (see docs/data-sources.md), so any relief in the
+    synthetic render has to come from here. A soft multiplicative blend (rather than a flat multiply)
+    keeps shadowed terrain from crushing to pure black."""
+    light = LightSource(azdeg=azimuth_deg, altdeg=elevation_deg)
+    hillshade = light.hillshade(dem.astype(np.float64), dx=cellsize_m, dy=cellsize_m)
+    ortho_norm = ortho.astype(np.float64) / 255.0
+    blended = ortho_norm * (0.5 + 0.5 * hillshade)
+    return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+
+
+def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path, config: TrntestConfig) -> None:
+    """Despeckle the raw fetched ortho and blend in a real-sun hillshade computed from the (already
+    hole-filled) DEM, writing the result to `output_path` -- the single ortho used by both `sat_sim`
+    and every display panel (see `fetch_dem_and_ortho`)."""
+    with rasterio.open(ortho_path) as src:
+        ortho = src.read(1)
+        profile = src.profile
+    with rasterio.open(dem_path) as src:
+        dem = src.read(1)
+
+    cleaned = despeckle(ortho)
+
+    center = camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
+    center_lon, center_lat = center
+    azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon, center_lat, camera.et)
+    shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
+
+    profile.update(count=1, dtype="uint8")
+    with rasterio.open(output_path, "w", **profile) as dst:
+        dst.write(shaded, 1)
+
+
 def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> LunaservResult:
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +157,7 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
     print(f"ROI bbox (lon/lat deg): {bbox}, size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
     ortho_path = cache.fetch_lunaserv_getmap(
-        "luna_wac_global",
+        config.lunaserv_ortho_layer,
         bbox,
         width,
         height,
@@ -121,8 +183,11 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
     dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
     hole_fill_dem(dem_elevation_path, dem_filled_path)
 
+    ortho_shaded_path = config.output_dir / "ortho_shaded.tif"
+    despeckle_and_shade_ortho(ortho_path, dem_filled_path, camera, ortho_shaded_path, config)
+
     return LunaservResult(
-        ortho=ortho_path,
+        ortho=ortho_shaded_path,
         dem=dem_filled_path,
         bbox=bbox,
         width=width,

@@ -32,6 +32,13 @@ DEFAULT_SCRATCH_DIR = Path("/workspace/scratch")
 DEFAULT_NAIF_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/"
 DEFAULT_LUNASERV_BASE_URL = "https://wms.im-ldi.com/lunaserv/lunaserv_stage?"
 DEFAULT_LUNASERV_SRS = "IAU2000:30100"
+# "LROC WAC 643 nm Normalized Reflectance" -- a >100,000-image photometric composite, not the raw
+# ~15,000-image "luna_wac_global" mosaic -- chosen for having ~4x fewer isolated single-pixel
+# outliers at comparable resolution (see docs/data-sources.md). sat_sim does no illumination
+# modeling of its own (pure geometric reprojection of whatever's in the ortho -- see
+# docs/data-sources.md), so lunaserv.fetch_dem_and_ortho blends a real-sun-lit hillshade onto this
+# layer rather than relying on any shading baked into the source imagery.
+DEFAULT_LUNASERV_ORTHO_LAYER = "luna_wac_normalized_reflectance"
 DEFAULT_LROC_BASE_URL = "https://pds.lroc.im-ldi.com/data/"
 DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
 DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
@@ -77,6 +84,7 @@ class TrntestConfig:
     naif_base_url: str = DEFAULT_NAIF_BASE_URL
     lunaserv_base_url: str = DEFAULT_LUNASERV_BASE_URL
     lunaserv_srs: str = DEFAULT_LUNASERV_SRS
+    lunaserv_ortho_layer: str = DEFAULT_LUNASERV_ORTHO_LAYER
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET
     lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET

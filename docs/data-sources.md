@@ -29,13 +29,63 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   common branch (relative to the first corner) before taking min/max, which can produce a bbox that
   extends slightly outside `[-180, 180]` — intentional, not a bug to "fix" by clamping.
 - Layers of interest:
-  - `luna_wac_global` — "LROC WAC Global 100m/px" visible mosaic (GLD100-projected WAC mosaic).
-    Global bbox `-180/-90/180/90`.
+  - `luna_wac_normalized_reflectance` — "LROC WAC 643 nm Normalized Reflectance," a >100,000-image
+    photometric composite. **The ortho layer this project actually fetches**
+    (`config.lunaserv_ortho_layer`), chosen over `luna_wac_global` on image-quality grounds (see
+    "Ortho layer noise" below). Global bbox `-180/-90/180/90`.
+  - `luna_wac_global` — "LROC WAC Global 100m/px" visible mosaic, composited from ~15,000 raw WAC
+    images (no evident per-pixel outlier rejection). No longer the default ortho source (see below)
+    but still a reasonable fallback/reference. Global bbox `-180/-90/180/90`.
+  - `luna_wac_hapke_321nm`/`_360nm`/`_415nm`/`_566nm`/`_604nm`/`_643nm`/`_689nm` — single-band,
+    Hapke-photometrically-normalized (fixed phase=incidence=60°, emission=0° geometry) median
+    composites over ~40 months of repeat observations (visible: ~136-140 observations/pixel).
+    `luna_wac_hapke_normalized` is just these three (321/415/689nm) stacked as an RGB composite, not
+    independently-processed data. Tested and **rejected** as the ortho source: visibly blurrier
+    (lower effective resolution) than `luna_wac_global`/`luna_wac_normalized_reflectance`, and
+    introduces its own large saturation-blowout artifact on at least one bright crater.
+  - `luna_wac_dtm_hillshade` — standalone grayscale GLD100 hillshade (no imagery). `luna_wac_dtm`/
+    `luna_exp_colorshade_gld100`/`luna_wac_alternate_color_flat` — "color shaded relief": hillshade
+    blended with an *elevation* color ramp (hypsometric tint), not real albedo/reflectance — a
+    topographic-map style product, not a photoreal one; not usable as a `sat_sim` ortho texture.
   - `luna_wac_dtm_numeric_meters_absolute` — GLD100 elevation, actual meters. This is the DEM fed
     to `sat_sim`.
   - Other candidates seen in capabilities if higher resolution is ever needed: `luna_nac_dtms`,
     `luna_pds_rdr_dtm`, per-Apollo-site DTMs/NAC mosaics (much higher res, smaller coverage).
 - Usage policy: free/open, but credit "NASA/GSFC/Arizona State University" per their FAQ.
+- **NoData convention**: this server documents `0 = NoData` for related layers (Clementine basemap:
+  "leaving 0 for NODATA"; GREDR: "set to NoData (0)") — not white, despite white being a common WMS
+  background-fill convention elsewhere. **Empirically confirmed reusable diagnostic**: requesting
+  `transparent=true` (undocumented in the layer capabilities entries themselves, but works) with
+  either `format=image/png` (returns 4-band RGBA) or `format=image/tiff` (returns 2-band gray+alpha)
+  yields a real alpha/mask band — `alpha=0` marks genuine NoData, distinct from real signal that
+  happens to be dark. Confirmed for a real fetched AOI: **zero actual NoData pixels** (alpha=255
+  everywhere), including at pixels with DN=0 — those are real dark/shadow signal, not missing data.
+- **Ortho layer noise ("hot pixels")**: `luna_wac_global` has ~16,000 isolated single-pixel outliers
+  per ~2600x2600px tile (0.235% of pixels; ~91% are genuinely isolated — no adjacent outlier pixel —
+  rather than part of a larger feature; typical deviation from the local neighborhood ±15-20 DN, not
+  saturated to 0/255). Confirmed via the NoData test above that these are **real signal, not
+  nodata** — most likely uncaught single-frame sensor/cosmic-ray noise from the ~15,000 source
+  images, since this mosaic (unlike the Hapke/normalized-reflectance composites) doesn't appear to
+  be a multi-observation composite. `luna_wac_normalized_reflectance` has the same *character* of
+  noise (~91.6% isolated) but ~4x fewer outliers (0.059%) — consistent with its much larger
+  (>100,000-image) source count suppressing, but not eliminating, single-frame noise.
+  `src/trntest/lunaserv.py`'s `despeckle()` (a MAD-based local-outlier filter, applied to whichever
+  layer is fetched) cleans the residual before the ortho is used for anything. A large real
+  saturated-crater feature seen in both `luna_wac_hapke_643nm` and `luna_wac_normalized_reflectance`
+  (a genuine high-albedo feature blown out under fixed-geometry photometric normalization, not
+  noise) is *not* touched by this filter by design — it fails the filter's "locally smooth
+  neighborhood" precondition, the same way a real crater rim/edge does.
+- **`lrowaccal`/ISIS `noisefilter` do not apply here.** ISIS's `lrowaccal` (used in
+  `src/trntest/isis_wac.py`) has a real, default-on `SpecialPixels` correction — a
+  temperature/mode-matched known-bad-detector-pixel mask — but it's keyed to raw EDR framelet
+  geometry, which no longer exists once ASU composites/reprojects thousands of frames into a global
+  mosaic; it cannot be applied post-hoc to `luna_wac_global`/`luna_wac_normalized_reflectance`. ISIS
+  `noisefilter` (a generic boxcar-tolerance outlier filter) *could* in principle be run on any raster
+  via `std2isis`/`isis2std` (both present in this project's Docker image), but was not used —
+  `lunaserv.despeckle()`'s in-process numpy filter was already validated against this exact data and
+  avoids the ISIS round-trip subprocess/environment overhead for what's a display/render-texture
+  concern, not primary scientific analysis. See `docs/history.md` Phase 15 for the full
+  investigation.
 
 ## ASP `sat_sim`
 
@@ -50,6 +100,29 @@ these choices were reached (including wrong turns), see `docs/history.md`.
 - Input DEM should have no holes (use `dem_mosaic --hole-fill-length`), extend well beyond the AOI.
   Fed in Lunaserv's **native** projection (avoids an extra `gdalwarp` resampling step); no evidence
   yet that `sat_sim` demands a local stereographic projection instead.
+- **`sat_sim` applies no illumination/shading model of its own.** Per its own docs, it
+  "unproject[s] an ortho image into a given camera... in the spirit of ISIS `map2cam`," generating
+  output pixels via bicubic interpolation of the `--ortho` input. The DEM is used purely for
+  ray/terrain-intersection *geometry* (which ground point a given camera ray hits) — the output
+  pixel value is a direct geometric resample of whatever's already in the ortho, with no per-ray
+  reflectance/sun-angle computation applied. Any relief/shading visible in a render is therefore
+  whatever was already baked into the ortho texture, not something `sat_sim` computes — see
+  "Lunaserv WMS" below for how this project supplies that shading (`lunaserv.shade_ortho`, lit with
+  real SPICE sun geometry, not relying on any shading baked into the source imagery, which was never
+  guaranteed to match the simulated frame's real sun angle in the first place).
+- **`--dem-height-error-tol`'s default (0.001m) is too tight for this project's DEM and causes
+  visible salt-and-pepper speckle** in the render (`sat_sim`'s ray/DEM-intersection root-finder
+  misbehaves at scattered pixels). Root cause: Lunaserv's DTM layer serves planetocentric radius
+  (~1.7e6 m) as float32, whose ULP (smallest representable step) at that magnitude is already
+  ~0.125m — baked into the source data itself, not something fixable in
+  `lunaserv.radius_to_elevation`'s own subtraction. **Confirmed empirically** (see `docs/history.md`
+  Phase 15): tightening the tolerance further makes the speckle dramatically worse (more, denser
+  artifacts), loosening it to comfortably clear that ~0.125m floor eliminates it cleanly — neither
+  outcome is subtle. `src/trntest/render.py`'s `DEM_HEIGHT_ERROR_TOL_M = 0.5` (a 4x margin above the
+  float32 floor) is what `run_sat_sim` actually passes. Two other theories were tested and ruled
+  out first: ortho-side noise/aliasing (despeckling the ortho, and even a large `--blur-sigma`, left
+  the speckle pattern essentially unchanged) and the ortho source layer's own quality (switching
+  layers changed the *baseline* noise level but not this specific artifact).
 - **`--save-as-csm` only applies when `sat_sim` generates its own cameras** — when using
   `--camera-list` with pre-existing `.tsai` files (this project's case), it's silently a no-op (only
   the rendered `.tif` is written, no camera file at all). To get the CSM/"ISD" JSON sidecar for a
