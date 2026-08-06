@@ -93,6 +93,42 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)
 
 
+def run_mapproject(
+    render_result: RenderResult, lunaserv_result: LunaservResult, config: TrntestConfig | None = None
+) -> Path:
+    """Reproject `render_result`'s synthetic image back onto the map using its own CSM sidecar --
+    the geometric inverse of `run_sat_sim`'s forward DEM+camera-to-image render, through the same
+    camera model, so the output lands back on real ground coordinates (not just a visually-similar
+    crop). `--ref-map` reads the projection and grid size from `lunaserv_result.dem` -- the same DEM
+    `run_sat_sim` rendered from -- so the output shares an exact pixel grid with every other raster
+    in `lunaserv_result` (the hillshade-based ortho included), letting them be overlaid directly with
+    no separate reprojection/alignment step. Confirmed empirically (see docs/data-sources.md): this
+    round trip aligns real terrain features pixel-precisely, as expected for going forward and back
+    through one consistent camera model. Opt-in/on-demand (not part of `dataset.generate_dataset`'s
+    default pipeline) -- a real ~4s subprocess call not every run needs."""
+    config = config or load_config()
+
+    camera_stem = render_result.rendered_tif.stem
+    render_dir = render_result.rendered_tif.parent
+    mapproj_tif = render_dir / f"{camera_stem}-mapproj.tif"
+
+    run_quiet(
+        [
+            "mapproject",
+            str(lunaserv_result.dem),
+            str(render_result.rendered_tif),
+            str(render_result.csm_json),
+            str(mapproj_tif),
+            "--ref-map",
+            str(lunaserv_result.dem),
+            "-t",
+            "csm",
+        ]
+    )
+
+    return mapproj_tif
+
+
 def read_csm_state(csm_json_path: str | Path) -> tuple[str, dict]:
     """The CSM state file's first line is a bare model-name string (not JSON) -- standard CSM
     "state string" convention; skip it before parsing. Returns (model_name, csm_state)."""

@@ -138,6 +138,33 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   frame (ECEF-equivalent), independent of the DEM/ortho's map projection. For the Moon this is the
   **Mean Earth (MOON_ME)** frame, matching USGS lunar cartographic conventions (GLD100/LOLA).
 
+## ASP `mapproject`
+
+- Docs: https://stereopipeline.readthedocs.io/en/latest/tools/mapproject.html
+- Syntax: `mapproject <dem> <camera-image> <camera-model> <output-image> [options]` — the geometric
+  inverse of `sat_sim`: instead of rendering an image from a DEM+camera, it reprojects an existing
+  image *back* onto the map using a DEM+camera. Accepts the `cam_gen`-produced CSM/ISD JSON sidecar
+  directly as `<camera-model>` with `-t csm` (confirmed working — no separate ISD-to-`.tsai`
+  conversion needed).
+- **`--ref-map <path>`**: reads the output projection *and* grid size from an existing mapprojected
+  image, rather than deriving them from `--t_srs`/`--tr`/`--mpp`/`--ppd`. Pointing this at the same
+  DEM used to produce the input image guarantees the output lands on that DEM's exact pixel
+  grid/projection — i.e. the same grid as any other raster derived from that DEM (this project's
+  `lunaserv.py` outputs, e.g. `LunaservResult.ortho`), with no separate reprojection/alignment step
+  needed to overlay them. This is what `render.run_mapproject` uses.
+- Output nodata is real `NaN` (confirmed empirically, `Float32` output by default) — not a
+  huge-magnitude sentinel like `wac.MISSING_CONSTANT` elsewhere in this codebase, and not something
+  `plotting.valid_pixel_mask`'s threshold check is needed for; ordinary NaN-aware handling
+  (`rioxarray`/matplotlib already treat NaN as transparent/masked) is sufficient.
+- **Round-trip alignment validated**: mapprojecting `sat_sim`'s own synthetic render back through its
+  own CSM sidecar (same DEM, same camera model, forward-then-inverse) overlays real terrain features
+  pixel-precisely against the hillshade-based ortho — confirmed visually (individual crater rims line
+  up across the full frame), consistent with going forward and back through one self-consistent
+  camera model. This is a different, much simpler case than the still-unresolved real-WAC
+  `mapproject` striping issue below ("ISIS3/CSM spike") — that pipeline mapprojects an
+  ISIS-processed *real* WAC cube (with real sensor/framelet-stacking artifacts feeding in), not a
+  clean synthetic render through its own exact camera model.
+
 ## LRO SPICE kernels (NAIF)
 
 - Archive root: `https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/`

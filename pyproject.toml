@@ -16,6 +16,8 @@ dependencies = [
     "rasterio",
     "matplotlib",
     "pandas",
+    "rioxarray",
+    "geopandas",
 ]
 
 [project.optional-dependencies]

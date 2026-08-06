@@ -9,6 +9,8 @@ import rasterio
 import rasterio.errors
 import rasterio.transform
 import rasterio.windows
+import rioxarray
+import xarray
 
 from trntest import orientation, wac
 from trntest.camera import Camera
@@ -275,5 +277,50 @@ def plot_isis_comparison(
         col, row = r["crop_px"]
         _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)
 
+    fig.tight_layout()
+    return fig
+
+
+def _open_raster_dataarray(path):
+    """`rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs
+    (e.g. multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
+    yields a `DataArray` -- assert that so mypy can narrow it, rather than a `# type: ignore`."""
+    opened = rioxarray.open_rasterio(path)
+    assert isinstance(opened, xarray.DataArray)
+    return opened.squeeze()
+
+
+def plot_overlay(
+    base_raster_path,
+    overlay_raster_path,
+    overlay_cmap: str = "gray",
+    overlay_alpha: float = 0.6,
+    title: str = "Overlay (geo-aligned)",
+):
+    """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
+    geographic coordinates in each file's own georeferencing drive the plot -- unlike
+    `plot_comparison`'s side-by-side panels (aligned only by matching real-km extent and a north-up
+    display rotation), this is genuine pixel-for-pixel geo-registration: both rasters are expected to
+    already share the same map grid (e.g. `render.run_mapproject`'s `--ref-map` output alongside
+    `LunaservResult.ortho`), not reprojected/aligned here. `overlay_cmap` defaults to `"gray"`
+    (matching the base) since the overlay is typically also a real image, not categorical/scalar
+    data -- a high-chroma colormap like `"inferno"` visually exaggerates what's actually a mild,
+    real brightness gradient (e.g. real-sun hillshade) into a distracting "rainbow" look."""
+    base = _open_raster_dataarray(base_raster_path)
+    overlay = _open_raster_dataarray(overlay_raster_path)
+
+    fig, ax = plt.subplots(figsize=(9, 9))
+    base.plot.imshow(ax=ax, cmap="gray", add_colorbar=False)
+    # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
+    # restoring the base's own (larger) extent afterward, the overlay's plot call (its extent is
+    # necessarily smaller, since it's the reprojected render, not the padded fetch AOI) would leave
+    # the view cropped to just the overlay, hiding the surrounding base context entirely.
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    overlay.plot.imshow(ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, add_colorbar=False)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_title(title)
+    ax.set_xlabel("longitude (deg)")
+    ax.set_ylabel("latitude (deg)")
     fig.tight_layout()
     return fig

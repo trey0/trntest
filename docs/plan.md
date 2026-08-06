@@ -39,12 +39,12 @@ product to this.
 | `catalog.py` | PDS ODE REST API client — lists real EDR/CDR products by time range, matches EDR↔CDR pairs. |
 | `dataset.py` | Public multi-image API: `select_dataset()` (catalog-driven selection), `generate_dataset()` (renders selected images through the single-image pipeline). |
 | `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint; antimeridian-safe. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
-| `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. |
+| `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product. |
 | `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking. Not yet reprojected onto the DEM (`mapproject`, an open item below). |
 | `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. |
 | `orientation.py` | Notebook-display-only north-up rotation (does not touch the sensor model). |
-| `plotting.py` | Comparison-figure plotting. |
+| `plotting.py` | Comparison-figure plotting. `plot_overlay` displays two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) via `rioxarray`, using each file's own real coordinates rather than pixel indices. |
 | `session.py` | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 
 `notebooks/lunar_sat_sim_demo.ipynb` drives all of the above end to end — see `README.md` to run it,
@@ -72,6 +72,10 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   the synthetic render (same real footprint as Phase 5's `wac.py` comparison, via
   `isis_wac.crop_window_for_camera`) for interactive inspection; `notebooks/wac_isis_spike.py`
   remains the step-by-step version for isolating exactly which stage introduces an artifact.
+- `geopandas` is a dependency (added alongside `rioxarray` for `plotting.plot_overlay`) with **no
+  concrete caller yet** — added ahead of need for a planned vector-layer overlay (e.g. the Robbins
+  crater database) on top of `plot_overlay`'s raster overlay, not yet implemented. Don't assume it's
+  unused/removable without checking for that follow-up first.
 
 ## Development history
 

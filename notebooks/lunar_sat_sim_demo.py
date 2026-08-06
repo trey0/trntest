@@ -152,6 +152,21 @@ plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, rende
 # plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
 
 # %% [markdown]
+# ## Phase 7: geo-aligned overlay of the synthetic render via `mapproject`
+#
+# `plot_comparison` above aligns its two panels only "in an ad hoc way" -- matched by real-km extent and a north-up display rotation, not true pixel-for-pixel geo-registration. This phase instead reprojects the synthetic render back onto the map with ASP's `mapproject`, using the exact CSM/ISD sidecar `cam_gen` already produced for it (`render_result.csm_json`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model. `--ref-map` (see `render.run_mapproject`) reads the projection and grid size from the same DEM the render came from, so the result shares an exact pixel grid with `lunaserv_result.ortho` (the hillshade-based base layer here) with no separate alignment step -- confirmed empirically to align real terrain features pixel-precisely, as expected for a round trip through one consistent camera model.
+#
+# `plotting.plot_overlay()` displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices.
+
+# %%
+mapproj_tif = session.run_mapproject(render_result, lunaserv_result)
+plotting.plot_overlay(
+    lunaserv_result.ortho,
+    mapproj_tif,
+    title="Synthetic render (mapprojected) over hillshade-based ortho",
+);
+
+# %% [markdown]
 # ## Summary
 #
 # - Selected a real, illuminated LROC WAC EDR from a catalog-driven, multi-orbit dataset search (`trntest.dataset.select_dataset`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
@@ -159,3 +174,4 @@ plotting.plot_comparison(camera, tie_point_results, vis_mosaic, rotations, rende
 # - Produced a CSM/"ISD" JSON sidecar for the rendered camera (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
 # - Compared against a properly band-separated crop of the real WAC CDR from the same part of the swath -- which required both de-interleaving WAC's push-frame format and discovering (then avoiding) a long shadowed stretch at the start of the original single-demo product (now handled generally by `select_dataset`'s illumination filtering).
 # - Also compared against the same real footprint processed through ISIS3's own pipeline (`isis_wac.run_pipeline`) instead of `wac.py`'s manual framelet-stacking -- a genuine camera-model-based alternative, not yet reprojected onto the DEM (see `docs/plan.md`'s open items for the still-unresolved framelet-boundary striping question this is investigating).
+# - Reprojected the synthetic render back onto the map with `mapproject`, through the same CSM/ISD sidecar camera model that generated it, and overlaid it on the hillshade-based ortho with `rioxarray` -- genuine pixel-for-pixel geo-registration (`render.run_mapproject`'s `--ref-map`), not just visual similarity, confirmed to align real terrain features precisely.

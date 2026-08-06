@@ -5,6 +5,7 @@ etc. as free functions (independently usable and unit-testable without construct
 """
 
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,10 @@ class Session:
     @_inherit_doc(render.run_sat_sim)
     def run_sat_sim(self, camera: Camera, lunaserv_result: LunaservResult) -> RenderResult:
         return render.run_sat_sim(camera, lunaserv_result, config=self.config)
+
+    @_inherit_doc(render.run_mapproject)
+    def run_mapproject(self, render_result: RenderResult, lunaserv_result: LunaservResult) -> Path:
+        return render.run_mapproject(render_result, lunaserv_result, config=self.config)
 
     @_inherit_doc(camera.fetch_frame_timing)
     def fetch_frame_timing(self) -> FrameTiming:

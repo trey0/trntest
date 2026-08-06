@@ -590,6 +590,43 @@ statistics:
   in the ortho. Should have swept `--dem-height-error-tol` empirically at the very start (it was
   proposed early on) rather than reasoning about why it seemed unlikely.
 
+## Phase 16 (2026-08-06) — Geo-aligned overlay visualization via `mapproject` round-trip
+
+`plot_comparison`'s side-by-side panels are only aligned "in an ad hoc way" (real-km extent + a
+north-up display rotation, not true pixel-for-pixel geo-registration). Added a genuine overlay
+visualization instead: reproject an image back onto the map with ASP `mapproject`, through the same
+CSM/ISD sidecar camera model that produced it, and display it directly over a base map layer with
+real shared geographic coordinates.
+
+- **Validated the core idea live before writing any code**: ran `mapproject <dem> <rendered.tif>
+  <csm.json> <out.tif> --ref-map <dem> -t csm` by hand against real cached files from a prior
+  session — `mapproject` accepted the `cam_gen`-produced CSM JSON directly (`-t csm`, no separate
+  ISD-to-`.tsai` conversion needed), and `--ref-map` pointed at the same DEM the render came from
+  put the output on that DEM's exact grid, so it overlays `LunaservResult.ortho` with zero extra
+  alignment work. Overlaying the result on the hillshade-based ortho showed individual crater rims
+  lining up pixel-precisely across the full frame — confirms the "should be equivalent up to
+  roundoff" prediction for a round trip through one consistent camera model (`sat_sim` forward:
+  DEM+camera→image; `mapproject` inverse: DEM+camera+image→map).
+- This is a **different, much simpler case** than the still-unresolved real-WAC `mapproject`
+  striping issue (Phase 12/`docs/data-sources.md`'s "ISIS3/CSM spike"): that pipeline mapprojects an
+  ISIS-processed *real* WAC cube (real sensor/framelet-stacking artifacts feeding in); this one
+  mapprojects a clean synthetic render through its own exact camera model. Worth being clear about
+  which case any future `mapproject` finding actually applies to.
+- **New API**: `render.run_mapproject(render_result, lunaserv_result, config)` (opt-in, not part of
+  `dataset.generate_dataset`'s default pipeline — a real ~4s subprocess call not every run needs);
+  `plotting.plot_overlay(base_raster_path, overlay_raster_path, ...)` displays two geo-aligned
+  rasters via `rioxarray`, using each file's own real coordinates. `mapproject`'s nodata is real
+  `NaN` (not a huge-magnitude sentinel like elsewhere in this codebase) — ordinary NaN-aware
+  handling is enough, no new masking logic needed. Both exposed on `Session` per the existing
+  one-line-delegator pattern. New notebook Phase 7 demonstrates the synthetic-render-over-hillshade
+  case.
+- **New dependencies**: `rioxarray` (used immediately by `plot_overlay`) and `geopandas` (added
+  ahead of need, per user decision to batch the one Docker rebuild both require, for a planned
+  vector-layer overlay — e.g. the Robbins crater database — on top of `plot_overlay`'s raster
+  overlay; not yet implemented, see `docs/plan.md`'s open items). Docker image rebuild was clean —
+  no GDAL-version friction between `geopandas`'s `pyogrio`/`fiona` backend and the system GDAL
+  already required by `rasterio`.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
