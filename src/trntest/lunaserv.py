@@ -116,12 +116,16 @@ def shade_ortho(
     """Blend a hillshade -- lit from the real sun direction for this camera/epoch, computed from
     `dem` -- onto `ortho`. `sat_sim` applies no illumination model of its own; it geometrically
     reprojects whatever's already in the ortho (see docs/data-sources.md), so any relief in the
-    synthetic render has to come from here. A soft multiplicative blend (rather than a flat multiply)
-    keeps shadowed terrain from crushing to pure black."""
+    synthetic render has to come from here. A direct multiply, not `0.5 + 0.5 * hillshade` (an
+    earlier version's artificial floor that halved the shading term's usable dynamic range and made
+    the render look washed out relative to real WAC imagery) -- terrain facing away from the sun
+    should be able to render genuinely dark, not floored at ~50% gray. This is still just local
+    per-facet (Lambertian) shading, not real cast-shadow occlusion from other terrain, which remains
+    out of scope (see docs/data-sources.md)."""
     light = LightSource(azdeg=azimuth_deg, altdeg=elevation_deg)
     hillshade = light.hillshade(dem.astype(np.float64), dx=cellsize_m, dy=cellsize_m)
     ortho_norm = ortho.astype(np.float64) / 255.0
-    blended = ortho_norm * (0.5 + 0.5 * hillshade)
+    blended = ortho_norm * hillshade
     return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
 
 
