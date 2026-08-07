@@ -13,6 +13,7 @@ load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `sub
 """
 
 import dataclasses
+import json
 from pathlib import Path
 
 import rasterio.windows
@@ -134,6 +135,7 @@ def run_lrowaccal(spiceinit_result: SpiceinitResult, config: TrntestConfig | Non
 @dataclasses.dataclass(frozen=True)
 class FramestitchResult:
     cub_path: Path
+    flip: bool  # the FLIP value framestitch was actually run with -- see run_isd_generate's docstring
 
 
 def run_framestitch(
@@ -162,7 +164,7 @@ def run_framestitch(
             f"FLIP={'TRUE' if flip else 'FALSE'}",
         ]
     )
-    return FramestitchResult(cub_path=out_path)
+    return FramestitchResult(cub_path=out_path, flip=flip)
 
 
 def run_pipeline(camera: Camera, frame_timing: FrameTiming, config: TrntestConfig | None = None) -> FramestitchResult:
@@ -193,10 +195,27 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
     (`interframe_delay`, the 259-sample pointing table, etc.) come out identical whether generated
     from this stitched cube or a single unstitched parity alone (see docs/data-sources.md). Despite
     that, which cube you actually reproject through this ISD matters a great deal -- see
-    `run_mapproject`'s docstring."""
+    `run_mapproject`'s docstring.
+
+    **Patches the ISD's `framelet_order_reversed` to match `stitched.flip`** -- `isd_generate`
+    always emits `false` here regardless of the cube's actual content (confirmed empirically: it
+    doesn't read `framestitch`'s own `DataFlipped` label field, which *does* correctly record
+    `FLIP=TRUE`/`FALSE`). Left at the wrong (always-`false`) default, `mapproject` assigns each
+    framelet the wrong pose whenever `flip=True` was actually used (any mirrored/`k=3` pass) --
+    confirmed empirically via a real product: severe venetian-blind-style banding at every framelet
+    boundary with the wrong value, gone entirely with the correct one (see docs/history.md's dated
+    entry). Two other ISD fields were also tested and ruled out as unrelated: `framelets_flipped`
+    (rigorously confirmed zero effect on `mapproject`'s output, byte-for-byte, on a fixed output
+    grid) and a uniform per-framelet internal line-order flip applied directly to the pixel data
+    (made the banding worse, introducing new ghosting)."""
     config = config or load_config()
     json_path = stitched.cub_path.with_suffix(".json")
     run_quiet(["isd_generate", "-i", str(stitched.cub_path), "-o", str(json_path)])
+    with open(json_path) as f:
+        isd = json.load(f)
+    isd["framelet_order_reversed"] = stitched.flip
+    with open(json_path, "w") as f:
+        json.dump(isd, f)
     return IsdGenerateResult(json_path=json_path)
 
 

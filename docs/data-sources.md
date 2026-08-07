@@ -519,3 +519,17 @@ huge-magnitude NULL sentinel (~-3.4e38) straight through into the output, with a
 set to match (confirmed via `gdalinfo`/`rasterio`). `plotting._open_raster_dataarray` now always
 passes `rioxarray.open_rasterio(path, masked=True)` to handle both cases uniformly — without it, the
 sentinel dominates `plot.imshow`'s automatic vmin/vmax and washes the real signal out to a flat gray.
+
+**Second related gotcha, found chasing a follow-up striping report (see `docs/history.md`'s Phase 21
+entry for the full investigation)**: ALE's `isd_generate` always emits `framelet_order_reversed:
+false`, regardless of the cube's actual content — it does not read `framestitch`'s own `DataFlipped`
+label field, which *does* correctly record whether `FLIP=TRUE`/`FALSE` was used. Left at the wrong
+(always-`false`) default, `mapproject` assigns each framelet the wrong pose whenever `flip=True` was
+actually used (any mirrored/`k=3` pass — see "Pass-dependent sensor axis convention" above) —
+confirmed empirically: severe venetian-blind-style banding at every framelet boundary with the wrong
+value, completely gone with the correct one, on the same real product/DEM. A separate, similarly-
+named field, `framelets_flipped` (within-framelet *line* order, not framelet *sequence* order), was
+also tested and rigorously ruled out as unrelated — patching it produced a byte-for-byte identical
+`mapproject` output on a fixed grid; ASP's implementation doesn't appear to consume that field at
+all. `isis_wac.run_isd_generate` now patches `framelet_order_reversed` to match the same `flip` value
+`framestitch` was run with (threaded through via `FramestitchResult.flip`).

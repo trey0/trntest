@@ -10,6 +10,7 @@ import numpy as np
 import rasterio
 import rasterio.errors
 import rasterio.features
+import rasterio.fill
 import rasterio.transform
 import rasterio.windows
 import rioxarray
@@ -365,6 +366,28 @@ def _valid_data_outline(raster_da):
     return shapely.geometry.MultiPolygon([shapely.geometry.Polygon(p.exterior) for p in parts])
 
 
+def _fill_overlay_nodata_for_display(overlay_da, max_search_distance: int = 10):
+    """Fill small nodata gaps in `overlay_da` for display, via GDAL's inverse-distance-weighted
+    `rasterio.fill.fillnodata` -- orientation-agnostic (unlike `_fill_dead_columns_for_display`'s
+    row-wise interpolation, which only helps gaps that are narrow *within a row*), needed here
+    because a `mapproject` output's real-but-sparse defects (e.g. the same framelet-boundary
+    dead-detector-columns `_fill_dead_columns_for_display` handles pre-reprojection -- see its
+    docstring) trace diagonal "dash" streaks once reprojected into map space, following the
+    sensor's ground track rather than the image's row/column axes. Confirmed empirically: a ~1%
+    dead-pixel rate this regular (the exact same ~56 columns recurring at every framelet boundary,
+    hundreds of times across a swath) reads as severe, dense-looking striping once mapprojected,
+    even though the raw fraction is small -- `max_search_distance` (pixels) only needs to bridge
+    those few-pixel-wide dashes, not the genuine, much larger nodata region outside the real
+    footprint entirely (left untouched, since it's far beyond this search radius)."""
+    filled = rasterio.fill.fillnodata(
+        overlay_da.values.astype(np.float32).copy(),
+        mask=(~np.isnan(overlay_da.values)).astype(np.uint8),
+        max_search_distance=max_search_distance,
+        smoothing_iterations=0,
+    )
+    return overlay_da.copy(data=filled)
+
+
 def plot_overlay(
     base_raster_path,
     overlay_raster_path,
@@ -373,6 +396,7 @@ def plot_overlay(
     title: str = "Overlay (geo-aligned)",
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
+    fill_overlay_nodata: bool = True,
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
     geographic coordinates in each file's own georeferencing drive the plot -- unlike
@@ -386,9 +410,13 @@ def plot_overlay(
     `show_overlay_outline` traces the overlay's real (non-NaN) footprint with `geopandas` and draws
     it as a vector outline -- useful both as a sanity check that the overlay is actually where it
     claims to be, and as a template for future vector-layer overlays (e.g. the Robbins crater
-    database; see `docs/plan.md`'s open items) on top of this same raster display."""
+    database; see `docs/plan.md`'s open items) on top of this same raster display.
+    `fill_overlay_nodata` applies `_fill_overlay_nodata_for_display` before the overlay is drawn --
+    display only (the outline above is still traced from the real, unfilled data, so it reflects the
+    genuine sensor footprint, not the filled result)."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
+    overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
 
     fig, ax = plt.subplots(figsize=(9, 9))
     base.plot.imshow(ax=ax, cmap="gray", add_colorbar=False)
@@ -397,7 +425,7 @@ def plot_overlay(
     # necessarily smaller, since it's the reprojected render, not the padded fetch AOI) would leave
     # the view cropped to just the overlay, hiding the surrounding base context entirely.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    overlay.plot.imshow(ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, add_colorbar=False)
+    overlay_display.plot.imshow(ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, add_colorbar=False)
     if show_overlay_outline:
         outline = _valid_data_outline(overlay)
         geopandas.GeoSeries([outline], crs=overlay.rio.crs).boundary.plot(

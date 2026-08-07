@@ -822,6 +822,59 @@ it seemed).
 - **Verified end-to-end**: full notebook re-run via `scripts/run_notebook.sh`; `trntest-lint` passes
   (format/check/mypy/notebook sync/notebook warnings).
 
+## Phase 21 (2026-08-07) — Phase 5B's "intense striping": missing nodata fill, AND a real flip bug
+
+User saw much more severe striping in the actual Phase 5B figure than Phase 20's own preview had
+suggested, asked to verify hole-filling was applied, and separately suspected individual framelets
+might need to be vertically flipped. Both turned out to be real, distinct, compounding problems.
+
+- **First fix -- missing nodata hole-fill**: `plotting.plot_overlay` had no nodata hole-filling at
+  all (unlike `plot_isis_comparison`, which gained `_fill_dead_columns_for_display` in Phase 19).
+  The underlying no-data density was unchanged from Phase 19's measurement (0.96% overall, same 56
+  columns recurring at every 14-line framelet boundary) -- Phase 20's own preview had understated how
+  this looks once mapprojected: each of those ~56 recurring dead columns traces its own thin dashed
+  streak through map space (following the sensor's ground track), and with 258 framelet cycles in
+  the swath, that reads as dense, "intense" striping at real display size despite the low raw
+  fraction. Added `plotting._fill_overlay_nodata_for_display` (`rasterio.fill.fillnodata`, GDAL's
+  inverse-distance-weighted inpainting -- orientation-agnostic, unlike
+  `_fill_dead_columns_for_display`'s row-wise approach, needed since a mapprojected raster's gaps
+  run along the ground track, not neatly row-wise anymore). Wired into `plot_overlay` as
+  `fill_overlay_nodata=True` (default on); the vector outline is still traced from the *unfilled*
+  data, so it reflects the genuine sensor footprint.
+- **This didn't fully explain the user's report** -- after the nodata fix, real (non-NaN) pixels
+  still showed clear banding at what looked like framelet boundaries. Investigated thoroughly before
+  finding the real cause:
+  - `framelets_flipped` ISD field: patched to `true`, re-ran `mapproject` on a *fixed* output grid
+    for a true pixel-level diff against the unpatched version -- **byte-for-byte identical**. This
+    field has no effect on `mapproject`'s geometry.
+  - Uniform per-framelet internal line-order flip (reversing all 14 lines of every framelet,
+    applied directly to the pixel data, bypassing the ISD entirely): made it worse, introducing a
+    new ghosting/doubling artifact.
+  - Alternating (even-parity-only, then odd-parity-only) internal line-order flip: no visible
+    change either way.
+  - Measured a real, smooth cross-track photometric gradient (~-0.008 to +0.016 I/F across the
+    704-sample FOV, computed per-column after subtracting each framelet's own median) -- but
+    subtracting it before mapprojecting ("destriping") didn't change the banding either.
+  - Compared the *same* crop in native image space (pre-`mapproject`): smooth, no periodic banding
+    at all -- confirming the banding is introduced by `mapproject`'s reprojection, not present in
+    the calibrated pixel values themselves in their original form.
+  - Confirmed the banding is real (present in actual valid, non-NaN pixels, highlighted directly
+    against nodata) -- not a `fillnodata` smearing artifact.
+  - **Root cause, found on user's insistence to keep pursuing the flip angle**: the *other*
+    untested ISD field, `framelet_order_reversed` (the framelet *sequence* order, distinct from
+    `framelets_flipped`'s within-framelet line order). Patched to `true` and re-ran on a fixed
+    output grid: **3.4M of 4.3M pixels differed** from the unpatched version -- a real, substantial
+    effect, unlike `framelets_flipped`. Rendered: the severe banding was completely gone, real
+    coherent terrain visible throughout. Root cause: `framestitch`'s `DataFlipped` label field (set
+    correctly from the `FLIP=TRUE` this mirrored/`k=3` product needs) is not read by `isd_generate`,
+    which always emits `framelet_order_reversed: false` regardless -- so `mapproject` was assigning
+    each framelet the wrong pose whenever `flip=True` was actually used.
+- **Fix**: `isis_wac.FramestitchResult` now carries its own `flip` value forward;
+  `run_isd_generate` patches the generated ISD's `framelet_order_reversed` to match it. Verified via
+  a full notebook re-run -- Phase 5B is now clean with no visible striping, 6A/6B unaffected (no
+  regression). `run_isd_generate`'s docstring records all three tested-and-ruled-out mechanisms
+  alongside the real fix, so this doesn't need re-deriving if a future product needs revisiting.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
