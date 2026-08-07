@@ -677,6 +677,39 @@ scale was off.
   local CRS), not lon/lat degrees — no other code read that field, so this didn't ripple further.
   `plotting.plot_overlay`'s axis labels updated from `"longitude/latitude (deg)"` to `"x/y (m,
   local projected CRS)"` to match.
+- **Follow-up**: the fixed overlay renders so seamlessly against the base that it was hard to
+  visually confirm it was even there. Added `plot_overlay(show_overlay_outline=True)` (default on):
+  traces the overlay raster's real (non-NaN) footprint via `rasterio.features.shapes` on its
+  valid-pixel mask, unions the resulting polygons and drops interior holes (isolated nodata
+  speckle, not meaningful outline content) with `shapely`, then draws the result as a red vector
+  boundary via `geopandas` — the first real use of the `geopandas` dependency added ahead-of-need in
+  Phase 16, and a working template for the still-unimplemented vector-layer overlay (e.g. Robbins
+  craters) mentioned there. `pyproject.toml`'s mypy overrides gained `geopandas.*`/`shapely.*`
+  (no type stubs published for either).
+
+## Phase 18 (2026-08-07) — Fixed `wac_isis_spike`'s `spiceinit` failure: `shape=ellipsoid`
+
+`notebooks/wac_isis_spike.py` (and the newer `isis_wac.py` pipeline it exercises) had never
+actually been run against a truly empty `$ISISDATA` cache before — every earlier "confirmed
+working" session had a `dems/` directory left over from an earlier, pre-correction full fetch. On a
+genuinely fresh cache (this session, a fresh ephemeral VPS with no restored `cache_root`), `spiceinit
+web=yes` failed: `USER ERROR NAIF DSK file
+[$base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub] does not exist`.
+
+- **Root cause**: `spiceinit`'s `SHAPE` parameter defaults to `*SYSTEM`, which resolves to a real
+  lunar DSK/DEM cube under `base/dems/` — the ~20 GB directory `ensure_isisdata()` deliberately
+  skips (see `docs/data-sources.md`'s ISIS3/CSM spike section; that section's "none of that DEM
+  data is needed until `mapproject`" claim was itself wrong, corrected there now). This bites well
+  before any terrain-intersection step, contrary to what was previously assumed.
+- **Fix**: `isis_wac.run_spiceinit` now passes `shape=ellipsoid` (confirmed via `spiceinit -h`:
+  `SHAPE = (ELLIPSOID, RINGPLANE, *SYSTEM, USER)`) — a plain reference ellipsoid, no DSK file
+  needed. Tested directly against both real cached `vis.even`/`vis.odd` cubes from a prior run
+  before touching the notebook; both succeed (`ShapeModel = Null` in the resulting label, in place
+  of a real DSK path). This module's scope stops at `framestitch` (no `isd_generate`/`mapproject`
+  precision-terrain step yet), so the simple ellipsoid is sufficient for now.
+- **Verified end-to-end**: re-ran `notebooks/wac_isis_spike.py` via `scripts/run_notebook.sh` from
+  the same fresh cache that originally hit the failure — full clean run, `trntest-lint` passes
+  (notebook sync included).
 
 ## Historical derivations
 

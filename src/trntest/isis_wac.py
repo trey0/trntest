@@ -105,8 +105,15 @@ class SpiceinitResult:
 
 
 def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> SpiceinitResult:
+    """`shape=ellipsoid` overrides ISIS's default (`SHAPE=*SYSTEM`), which resolves to a real lunar
+    DSK/DEM cube (e.g. `$base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub`) -- confirmed via a
+    real failure ("USER ERROR NAIF DSK file [...] does not exist") against `ensure_isisdata()`'s
+    deliberately dems/-free minimal fetch (see its docstring: `base`'s ~20GB is dominated by
+    `dems/`, skipped on purpose). This module's scope stops at `framestitch` (no `isd_generate`/
+    `mapproject` precision-terrain step yet -- see the module docstring), so the simple reference
+    ellipsoid is sufficient here; revisit this if/when real terrain intersection is added."""
     config = config or load_config()
-    run_quiet(["spiceinit", f"from={cub_path}", "web=yes"])
+    run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=ellipsoid"])
     return SpiceinitResult(cub_path=cub_path)
 
 

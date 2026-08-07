@@ -385,6 +385,17 @@ be re-derived from scratch if picked up again.
   entirely. Combined with the `lro` ~5 GB above, the real one-time cost for this notebook's scope
   is **~5 GB total**, but via a completely different mechanism (a narrow `--include`, not
   `--no-kernels`) than originally claimed.
+  **Second correction**: "none of that DEM data is needed until `mapproject`" (above) was also
+  wrong — `spiceinit`'s default `SHAPE=*SYSTEM` resolves to a real lunar DSK/DEM cube
+  (`$base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub`) even for plain pointing/calibration
+  (`lrowaccal`/`framestitch`), well before any terrain-intersection step. Confirmed by a real
+  failure ("USER ERROR NAIF DSK file [...] does not exist") the first time this module's minimal,
+  `dems/`-free fetch was actually exercised against a truly empty `$ISISDATA` cache — every earlier
+  "confirmed working" run had an already-populated `dems/` left over from an earlier full fetch,
+  masking the gap. Fix: `spiceinit ... shape=ellipsoid` (see `spiceinit -h`'s `SHAPE =
+  (ELLIPSOID, RINGPLANE, *SYSTEM, USER)`) — a plain reference ellipsoid, no DSK file needed, which
+  is sufficient for this module's current scope (still stops at `framestitch`, no real
+  terrain-intersection step yet); revisit if/when that changes.
 - **`lrowac2isis`** (EDR `.IMG` only, confirmed CDR is not accepted) splits into 4 cubes
   (`*.uv.even.cub`, `*.vis.even.cub`, `*.uv.odd.cub`, `*.vis.odd.cub`). Confirmed via `catlab`:
   `vis.even.cub` is **704 samples × 7532 lines × 5 bands** — the 5 VIS filters come out as 5
