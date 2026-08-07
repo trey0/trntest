@@ -88,6 +88,20 @@ def crop_footprint_corners(
     }
 
 
+def crop_footprint_corners_for_camera(
+    frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None
+) -> dict:
+    """Convenience wrapper around `crop_footprint_corners` for the common case (the real WAC crop's
+    own footprint for a given camera/config) -- unpacks `start_frame`/`n_frames`/`half_angle_rad` the
+    same way `compute_tie_points` already does, so callers (e.g. `plotting.plot_render_vs_basemap`)
+    don't need to re-derive them."""
+    config = config or load_config()
+    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
+    return crop_footprint_corners(
+        frame_timing, config.target_frame_index, camera.n_frames_for_square_crop, half_angle_rad
+    )
+
+
 def project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv) -> tuple:
     """Closed-form pinhole inverse: the synthetic image is one fixed camera, so this is exact and
     axis-agnostic (it just uses the real R directly)."""

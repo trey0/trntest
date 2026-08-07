@@ -875,6 +875,139 @@ might need to be vertically flipped. Both turned out to be real, distinct, compo
   regression). `run_isd_generate`'s docstring records all three tested-and-ruled-out mechanisms
   alongside the real fix, so this doesn't need re-deriving if a future product needs revisiting.
 
+## Phase 22 (2026-08-07) — Retired `wac.py` from the demo notebook; merged Phase 5A into Phase 5
+
+With `isis_wac.py` now producing a real, validated camera model end-to-end (Phase 20/21's fixes),
+user asked whether it dominates `wac.py`'s manual CDR framelet-stacking for the demo's purposes.
+Agreed it does for the actual goal (proving the render's pose is geometrically correct, not just
+visually similar) -- `wac.py`'s only advantage is being lower-dependency/more robust (no ISIS/ALE
+toolchain, no live `spiceinit web=yes` call, far fewer moving parts than the multi-stage
+`lrowac2isis`→`lrowaccal`→`framestitch`→`isd_generate` chain this session's Phases 18-21 spent
+finding and fixing real bugs in) -- not higher fidelity. Asked to rewrite Phase 5 accordingly.
+
+- Since Phase 6A (`plot_isis_comparison`, added in Phase 20) already did the same side-by-side
+  comparison + tie points that Phase 5A's `wac.py`-based `plot_comparison` did, just against
+  `isis_wac.py`'s data, switching Phase 5A to `isis_wac.py` would have made it a near-duplicate of
+  6A. Merged them instead: the old 5A's WAC/tie-point narrative + the old 6A's `isis_wac.run_pipeline`
+  call and `plot_isis_comparison` display now form a single **Phase 5**. `stitched` is computed once
+  there and reused by the geo-aligned overlay (renumbered **5B → 6A**); **6B** (synthetic render
+  overlay) is unchanged. `tie_point_results`/`rotations` needed no changes -- both were already pure
+  SPICE frame-index geometry with no dependency on which real-data pipeline produced the pixels
+  (confirmed by re-checking `tie_points.compute_tie_points`: it passes `camera.reverse_crop_along_track`
+  directly, never touches `wac.fetch_vis_mosaic`'s actual output).
+- `wac.py` itself is untouched -- still a real, tested module (`tests/test_wac_unpacking.py`), just
+  no longer called by either notebook. Not deleted: it's not dead code (has its own tests
+  independent of notebook usage), and there was no request to remove it, only to stop using it here.
+- Found and fixed a real, stale docstring while in the area: `plotting.plot_isis_comparison`'s first
+  paragraph claimed "not a tie-pointed comparison... since the ISIS cube isn't reprojected onto the
+  DEM yet" -- both false by the time this phase started (it's always plotted tie points; `mapproject`
+  support was added in Phase 20). Leftover from an early draft, never updated. Corrected.
+- Updated `docs/plan.md`'s architecture table and "Known open items" entry to reflect the current
+  state (`isis_wac.py` as the demo's sole real-WAC method, current Phase 5/6A/6B numbering) --
+  `docs/history.md`'s own Phase 20/21 entries describing the old 5A/5B/6A/6B numbering were left
+  untouched, since they're historical narrative describing what was true at the time, not current
+  state (see this doc's own header note).
+- Verified end-to-end via a full notebook re-run; `trntest-lint` passes (format/check/mypy/notebook
+  sync/notebook warnings).
+
+## Phase 23 (2026-08-07) — Reorganized around the demo's actual TRN-testing purpose
+
+User pushed back on Phase 22's renumbering ("5B renamed to 6A" felt like an unexplained mixup) and,
+in clarifying, revealed context that had never actually been written down anywhere: this demo's real
+purpose is generating **candidate test images for terrain-relative navigation (TRN) testing** (the
+repo is literally named `trntest`) -- the synthetic `sat_sim` render and the real, ISIS-processed WAC
+crop are two *candidate* TRN test images, and each needs its own geometry validated against a common
+reference (the hillshade basemap) in two styles: "A" (raw image quality, up to 90° rotation) and "B"
+(map projection, to really scrutinize alignment). `docs/plan.md`'s own "What this is" section never
+mentioned TRN at all -- a real documentation gap now fixed.
+
+- **Real inconsistency found in the process**: "A"-style (`plot_comparison`/`plot_isis_comparison`)
+  compared the synthetic render directly against the real WAC crop, while "B"-style (`plot_overlay`)
+  compared each against the basemap -- not actually the same comparison in two styles, as the "A/B"
+  naming implied. User chose to fix this properly: both styles should compare each candidate against
+  the *same* baseline (the basemap), keeping the direct candidate-vs-candidate comparison as its own
+  separate thing.
+- **New capability**: `plotting.plot_render_vs_basemap` -- the real "A"-style function. Takes a
+  render's own raw pixels (rotated north-up, no resampling) next to a plain pixel crop of the basemap
+  covering the same real footprint. The basemap crop needs *no* rotation (its local Orthographic CRS
+  is already north-referenced by construction, +Y = north) -- only the render does (fixed
+  sensor-pixel axes). The footprint-to-basemap-window conversion reuses `lunaserv.footprint_bbox_local_m`
+  directly (same function `fetch_dem_and_ortho` already uses to size the original WMS fetch) rather
+  than re-deriving equivalent logic.
+- **New capability**: `tie_points.crop_footprint_corners_for_camera` (+ `Session.crop_footprint_corners`)
+  -- the real WAC crop's own ground footprint, independently ray-traced from real SPICE geometry (not
+  assumed identical to the synthetic camera's own footprint), needed so `plot_render_vs_basemap` can
+  crop the *correct* matching basemap area for Phase 6A specifically.
+- **Notebook restructured** to match the TRN-testing framing directly: **Phase 5** = does the
+  synthetic render's geometry check out (5A raw-vs-basemap, 5B `mapproject`-vs-basemap overlay,
+  unchanged content from Phase 22's "6B"). **Phase 6** = does the real ISIS-processed WAC crop's
+  geometry check out (6A raw-vs-basemap [new], 6B `mapproject`-vs-basemap overlay, unchanged content
+  from Phase 22's "6A"/original "5B"). **Phase 7** = direct synthetic-vs-real-WAC quality comparison
+  with tie points (unchanged `plot_isis_comparison` call, just relocated and reframed as a
+  supplementary comparison rather than part of the geometry-check structure).
+- **Follow-up, same session**: user asked for 5A/6A to keep the tie-point markers `plot_comparison`/
+  `plot_isis_comparison` always had, and pointed out Phase 7 could then be explained simply as 5A's
+  and 6A's own render panels put together. Added tie-point support directly to
+  `plot_render_vs_basemap` (`tie_point_results`/`render_px_key` params): the render panel reuses the
+  existing pixel-coordinate + rotation technique (`_plot_tie_point_marker`); the basemap panel
+  (unrotated, already-georeferenced) instead projects each point's real `lonlat` straight into the
+  crop's own local-CRS offset via `lunaserv.orthographic_xy_m` -- no pixel coordinates needed there
+  at all. This moved `rotations` *and* `tie_point_results` to compute once, right after Phase 4,
+  since 5A/6A both now need both; Phase 7's own markdown was rewritten to describe it as literally
+  "5A's and 6A's own render panels put together" (plus `plot_isis_comparison`'s brightness-matching
+  and dead-pixel-fill, kept as real quality-of-life additions on top, not new geometry content).
+  Verified via another full notebook re-run: tie points visibly land on the same real terrain
+  features across all four panels (5A/6A's render + basemap sides).
+- **Regression caught, same session**: user noticed 6A's real WAC panel had the framelet-boundary
+  dead-pixel speckle back (the same pattern `_fill_dead_columns_for_display` fixed in
+  `plot_isis_comparison`, Phase 19). Root cause: `plot_render_vs_basemap` only ever masked invalid
+  pixels to NaN, never carried over the interpolation fill -- a real gap from building the new
+  function without checking `plot_isis_comparison`'s existing render-panel handling for the same
+  underlying data. Fixed by calling `_fill_dead_columns_for_display` on `render_array` before
+  display, matching `plot_isis_comparison`'s exact pattern -- a no-op for the synthetic render
+  (nothing to fill), confirmed via another full re-run that 5A's output was pixel-identical to
+  before, only 6A changed (speckle gone).
+- **Two more issues caught, same session**: user noticed 6A's real-WAC panel was suspiciously dark,
+  and that 6A's square crop didn't correspond to 6B's overlay extent (a long strip vs. a small
+  square).
+  - **6A darkness**: `plot_render_vs_basemap` displayed both panels with `imshow`'s default naive
+    min/max autoscale. Checked the stitched cube's actual pixel distribution directly
+    (`min=0.012, max=0.195, p99.9=0.107, p99.99=0.131` vs. a median around `0.048`) -- a handful of
+    extreme bright outlier pixels were stretching the autoscale wide enough to compress the real
+    terrain into roughly the bottom 20% of the display range. First fix used a 2nd/98th percentile
+    affine stretch (matching `plot_raster`'s), but the user flagged that as too aggressive: an affine
+    stretch (`vmin` = a data percentile) shifts the black point up, clipping genuinely dark-but-real
+    terrain to pure black. Changed to a **linear** stretch through 0 instead -- `vmin=0` always (a
+    true black point, not data-derived), `vmax` = the 99.9th percentile (not a naive max, so the same
+    handful of outlier pixels still don't wash out the rest, but a less aggressive cutoff than 98th)
+    -- applied independently to each panel, same as before.
+  - **6A-vs-6B extent mismatch**: `isis_wac.run_mapproject` reprojects `stitched` in full -- all 258
+    frames, not just the square crop 6A/Phase 7 use -- so 6B's `plot_overlay` was always showing that
+    entire long strip regardless of what 6A cropped. Rather than changing what gets mapprojected
+    (would mean cropping the cube before `isd_generate`, risking ISD/cube dimension mismatches), added
+    a `zoom_footprint_lonlat_deg` parameter to `plot_overlay` that restricts the *displayed* extent to
+    a given footprint's bounding box (`lunaserv.footprint_bbox_local_m`, same technique
+    `plot_render_vs_basemap` uses), wired to the already-computed `crop_footprint`.
+    - **First attempt was subtly wrong**: computed the bbox using `zoom_footprint_lonlat_deg`'s own
+      center as the local-CRS projection origin. `lunaserv.fetch_dem_and_ortho` centers the base/overlay
+      rasters' actual CRS on the *camera's* footprint center, not the crop's -- a real latent bug
+      (confirmed by checking the ortho tif's own CRS: `+lon_0=169.525773 +lat_0=38.404418`, the camera
+      center) that happened not to visibly manifest here because `crop_footprint_corners_for_camera`'s
+      ray-traced center turned out numerically identical to the camera's own center for this product
+      (verified directly). Fixed to derive the origin from `base.rio.crs.to_dict()`'s `lon_0`/`lat_0`
+      instead, so the zoom bbox is always computed in the same frame the rasters are actually plotted
+      in, regardless of whether the two centers happen to coincide.
+    - After the fix, re-examined 6B and initially misread a chunk of missing coverage on one side of
+      the crop (WAC's real swath, mapprojected, doesn't fill the entire axis-aligned crop bbox -- its
+      cross-track center drifts along the pass) as a bug. Checked the mapproject tif's actual valid-data
+      mask directly: 84% valid within the crop bbox, with the "missing" area a real, legitimate wedge
+      where the swath genuinely doesn't reach (confirmed row-by-row) -- not a coordinate-frame error.
+- Updated `docs/plan.md`'s "What this is"/"Status" sections and the `tie_points.py`/`plotting.py`
+  architecture rows to reflect all of the above.
+- Verified end-to-end via several full notebook re-runs (including one to confirm a small refactor
+  reusing `lunaserv.footprint_bbox_local_m` was byte-identical to the original inline computation);
+  `trntest-lint` passes throughout.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

@@ -2,12 +2,17 @@
 
 ## What this is
 
-Generates a synthetic lunar satellite image (with a CSM/"ISD" JSON camera sidecar) using NASA's
-Ames Stereo Pipeline (ASP) `sat_sim` tool, fed by real DEM + visible imagery pulled live from the
-Lunaserv WMS server — with the camera's pose derived from the **real LRO spacecraft trajectory**
-(NAIF SPICE kernels) at the time of a real LROC WAC image, so the synthetic 256x256 frame
-approximates the FOV of a real WAC swath and can be compared against it. This is a demo/exercise in
-AI-assisted coding on a real geospatial engineering task.
+Explores techniques for generating candidate test imagery for terrain-relative navigation (TRN)
+testing (hence the repo name) — images that could stand in for real spacecraft imagery when testing
+a TRN algorithm. Two candidate pipelines: a synthetic lunar satellite image (with a CSM/"ISD" JSON
+camera sidecar) generated via NASA's Ames Stereo Pipeline (ASP) `sat_sim` tool, fed by real DEM +
+visible imagery pulled live from the Lunaserv WMS server; and the same real footprint's actual LROC
+WAC image, processed through ISIS3's own EDR-to-calibrated-cube pipeline. Both share one thing that
+makes them usable as TRN test images at all: the camera pose is derived from the **real LRO
+spacecraft trajectory** (NAIF SPICE kernels) at the time of a real LROC WAC image, so each
+candidate's own geometry can be validated against a real hillshade-based basemap — two ways (a raw
+image-quality check, and a true pixel-for-pixel `mapproject` overlay) — rather than just asserted.
+This is a demo/exercise in AI-assisted coding on a real geospatial engineering task.
 
 All heavy tooling/build/test happens inside a Docker container (Ubuntu 24.04), built from the
 checked-in `docker/Dockerfile`, so it's reproducible off this host.
@@ -15,8 +20,11 @@ checked-in `docker/Dockerfile`, so it's reproducible off this host.
 ## Status
 
 The demo runs end-to-end and is stable: real LRO SPICE trajectory → posed synthetic camera →
-`sat_sim` render + CSM/ISD sidecar → compared (with explicit SPICE-derived tie points) against a
-properly band-separated, correctly-sized, correctly-posed crop of real WAC data. Packaged as an
+`sat_sim` render + CSM/ISD sidecar, and, from the same real footprint's EDR, ISIS3's own calibrated
+real-WAC product. Each candidate TRN test image's geometry is validated against a real hillshade
+basemap two ways — a raw, north-up-rotated quality check (`plotting.plot_render_vs_basemap`) and a
+true pixel-for-pixel `mapproject` overlay (`plotting.plot_overlay`) — and the two candidates are also
+compared directly against each other with explicit SPICE-derived tie points. Packaged as an
 installable library (`src/trntest/`) with config, tests, and style tooling.
 
 The **live default path is catalog-driven, not a single hardcoded product**: `select_dataset()`
@@ -40,11 +48,11 @@ product to this.
 | `dataset.py` | Public multi-image API: `select_dataset()` (catalog-driven selection), `generate_dataset()` (renders selected images through the single-image pipeline). |
 | `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint, in a per-camera local Orthographic CRS (`IAU2000:30166`, real Moon radius) centered on that footprint — genuinely isotropic meter pixels, unlike Lunaserv's native geographic grid. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
-| `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product. |
-| `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking, then reprojects the result onto the DEM via ALE's `isd_generate` + ASP's `mapproject` -- must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
-| `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. |
+| `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product via manual, hand-derived byte offsets. Superseded by `isis_wac.py` as the demo notebook's real-WAC comparison method (see the open items below) but left in place, untouched, with its own unit test coverage. |
+| `isis_wac.py` | Steps a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain -- then reprojects the result onto the DEM via ALE's `isd_generate` + ASP's `mapproject` -- must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
+| `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. `crop_footprint_corners`/`crop_footprint_corners_for_camera` independently ray-trace the real WAC crop's own ground footprint (not assumed identical to the synthetic camera's), for `plotting.plot_render_vs_basemap`. |
 | `orientation.py` | Notebook-display-only north-up rotation (does not touch the sensor model). |
-| `plotting.py` | Comparison-figure plotting. `plot_overlay` displays two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) via `rioxarray`, using each file's own real coordinates rather than pixel indices. |
+| `plotting.py` | Comparison-figure plotting. `plot_render_vs_basemap` is the "A"-style geometry check: a render's own raw pixels next to a plain crop of the hillshade basemap covering the same real footprint (no resampling, no rotation on the basemap side -- its local Orthographic CRS is already north-referenced), both optionally marked with the same SPICE-derived tie points. `plot_overlay` is the "B"-style check: two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) displayed via `rioxarray`, using each file's own real coordinates rather than pixel indices. `plot_isis_comparison` is the direct candidate-vs-candidate comparison (brightness-matched, dead-pixel-filled). |
 | `session.py` | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 
 `notebooks/lunar_sat_sim_demo.ipynb` drives all of the above end to end — see `README.md` to run it,
@@ -62,21 +70,24 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   directly from Lunaserv (`IAU2000:30166`, still a single WMS fetch, no separate `gdalwarp` step).
   See `docs/data-sources.md`'s Lunaserv WMS section and `docs/history.md`'s dated entry.
 - **Resolved**: whether a real WAC swath can be reprojected onto the DEM via a genuine ISIS/CSM
-  camera model (`mapproject`), as a principled alternative to `wac.py`'s manual framelet-stacking.
-  The previously-reported "severe framelet-boundary striping" (`docs/history.md` Phase 12,
-  `docs/data-sources.md`'s "ISIS3/CSM spike" section) turned out to be mostly a methodological
-  artifact, not a fundamental CSM Pushframe limitation: mapprojecting a lone even/odd parity cube
-  (each only ~50% populated — WAC alternates which nominal frame slot gets real data) leaves
-  `mapproject` to resample across that sparsity, producing the smearing. Mapprojecting the properly
-  interleaved *stitched* cube instead resolves the vast majority of it (31% valid coverage/no
-  recognizable terrain → 81% valid coverage/real craters throughout, same real product). `isis_wac.py`
-  now implements the full chain: EDR fetch → `lrowac2isis` → `spiceinit web=yes` → `lrowaccal` →
-  `framestitch` → `isd_generate` → `mapproject` (via `render.run_mapproject_image`, shared with the
-  synthetic render's own mapproject step). `notebooks/lunar_sat_sim_demo.py`'s Phase 5B/6A/6B
-  demonstrate this: 5B overlays the mapprojected real WAC on the hillshade base, 6A is the
-  side-by-side comparison against the synthetic render, 6B is the synthetic render's own
-  mapprojected overlay (5B/6B share `plotting.plot_overlay`). See `docs/data-sources.md`'s "ISIS3/CSM
-  spike" section and `docs/history.md`'s dated entry for the full investigation;
+  camera model (`mapproject`). The previously-reported "severe framelet-boundary striping"
+  (`docs/history.md` Phase 12, `docs/data-sources.md`'s "ISIS3/CSM spike" section) turned out to be
+  mostly a methodological artifact, not a fundamental CSM Pushframe limitation: mapprojecting a lone
+  even/odd parity cube (each only ~50% populated — WAC alternates which nominal frame slot gets real
+  data) leaves `mapproject` to resample across that sparsity, producing the smearing. Mapprojecting
+  the properly interleaved *stitched* cube instead resolves the vast majority of it (31% valid
+  coverage/no recognizable terrain → 81% valid coverage/real craters throughout, same real product).
+  `isis_wac.py` now implements the full chain: EDR fetch → `lrowac2isis` → `spiceinit web=yes` →
+  `lrowaccal` → `framestitch` → `isd_generate` → `mapproject` (via `render.run_mapproject_image`,
+  shared with the synthetic render's own mapproject step). Given a genuine, validated camera model
+  now exists end-to-end, `isis_wac.py` replaced `wac.py`'s manual framelet-stacking as the demo
+  notebook's real-WAC comparison method entirely (`wac.py` itself is untouched, still covered by its
+  own unit tests, just no longer used by either notebook — see `docs/history.md`'s dated entry for
+  the rationale). `notebooks/lunar_sat_sim_demo.py`'s Phase 5/6A/6B demonstrate the result: Phase 5 is
+  the side-by-side comparison against the synthetic render (with SPICE-derived tie points), 6A
+  overlays the mapprojected real WAC on the hillshade base, 6B is the synthetic render's own
+  mapprojected overlay (6A/6B share `plotting.plot_overlay`). See `docs/data-sources.md`'s "ISIS3/CSM
+  spike" section and `docs/history.md`'s dated entries for the full investigation;
   `notebooks/wac_isis_spike.py` remains the step-by-step version for isolating pipeline stages.
 - `geopandas` (added alongside `rioxarray` for `plotting.plot_overlay`) now has a concrete caller:
   `plot_overlay(show_overlay_outline=True)` traces the overlay raster's real (non-NaN) footprint and

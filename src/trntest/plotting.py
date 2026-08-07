@@ -18,7 +18,7 @@ import shapely.geometry
 import shapely.ops
 import xarray
 
-from trntest import orientation, wac
+from trntest import lunaserv, orientation, wac
 from trntest.camera import Camera
 from trntest.lunaserv import LunaservResult
 from trntest.orientation import DisplayRotations
@@ -260,9 +260,10 @@ def plot_isis_comparison(
     rotations: DisplayRotations,
 ):
     """Synthetic render next to a same-real-footprint crop of the ISIS-processed WAC image
-    (`isis_wac.run_pipeline`/`isis_wac.crop_window_for_camera`) -- not a tie-pointed comparison like
-    `plot_comparison`'s wac.py version, since the ISIS cube isn't reprojected onto the DEM yet
-    (no `mapproject` step -- see docs/plan.md's open items).
+    (`isis_wac.run_pipeline`/`isis_wac.crop_window_for_camera`) -- an ad hoc real-km/north-up
+    comparison, tie-pointed the same way `plot_comparison`'s wac.py version is (see below), not true
+    pixel-for-pixel geo-registration; for that, see `plot_overlay`'s `mapproject`-based overlay of
+    this same ISIS-processed cube (`isis_wac.run_mapproject`) instead.
 
     Applies the same north-up display rotation and real-km extent scaling `plot_comparison` already
     uses, for the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent
@@ -325,6 +326,107 @@ def plot_isis_comparison(
         col, row = r["crop_px"]
         _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)
 
+    fig.tight_layout()
+    return fig
+
+
+def plot_render_vs_basemap(
+    render_array: np.ndarray,
+    rotation_k: int,
+    render_width_km: float,
+    render_height_km: float,
+    footprint_lonlat_deg: dict,
+    base_raster_path,
+    title: str,
+    render_label: str,
+    tie_point_results: dict | None = None,
+    render_px_key: str = "synthetic_px",
+):
+    """Raw, north-up-rotated, real-km-scaled side-by-side of a render's own unprojected pixels
+    (`render_array` -- genuine sensor/render image quality, not a resampled reprojection) against a
+    plain pixel crop of the hillshade basemap (`base_raster_path`, e.g. `LunaservResult.ortho`)
+    covering the same real ground footprint. This is the "A"-style geometry check: a quick ad hoc
+    quality/rough-alignment look -- for true pixel-for-pixel geo-registration against the same
+    basemap, see `plot_overlay`'s "B"-style `mapproject`-based overlay instead.
+
+    `render_array` is passed through `_fill_dead_columns_for_display` before display, same as
+    `plot_isis_comparison`'s real panel -- a no-op for the synthetic render (no dead pixels to begin
+    with), but necessary for the real WAC crop: without it, the ~1% framelet-boundary dead-pixel
+    pattern (see docs/data-sources.md's ISIS3/CSM spike section) shows up as visible speckle.
+
+    `footprint_lonlat_deg` is the render's own real ground footprint (corners + center, matching
+    `Camera.footprint_lonlat_deg`'s shape) -- `Camera.footprint_lonlat_deg` itself for the synthetic
+    render, `tie_points.crop_footprint_corners()` for the real WAC crop (its own independently
+    ray-traced footprint, not assumed identical to the synthetic camera's). `lunaserv.footprint_bbox_local_m`
+    (already used to size the original WMS fetch -- see its docstring) converts the corners to the
+    basemap's own local Orthographic CRS (centered on this same footprint's own center, see
+    `lunaserv.fetch_dem_and_ortho`) to find the matching pixel window -- a plain windowed read, no
+    resampling. Unlike the render (fixed sensor-pixel axes, needing a pass-dependent rotation for
+    north-up display), the basemap crop needs no rotation: the local Orthographic CRS is already
+    north-referenced by construction (+Y = north).
+
+    `tie_point_results` (from `session.compute_tie_points`, see `plot_comparison`/
+    `plot_isis_comparison`'s identical dict shape) marks the same 5 ground points on both panels, if
+    given. On the render panel, `render_px_key` selects which of each point's two pre-computed pixel
+    coordinates applies (`"synthetic_px"` or `"crop_px"`) -- same technique `plot_comparison`/
+    `plot_isis_comparison` already use. On the basemap panel, each point's real `"lonlat"` is
+    projected directly into the crop's own local-CRS offset (`lunaserv.orthographic_xy_m`, same
+    center as the crop itself) -- no pixel coordinates needed there, since that panel is a plain,
+    unrotated crop of an already-georeferenced raster."""
+    center_lon, center_lat = footprint_lonlat_deg["center"]
+    minx, miny, maxx, maxy = lunaserv.footprint_bbox_local_m(footprint_lonlat_deg, center_lon, center_lat)
+
+    with rasterio.open(base_raster_path) as src:
+        window = rasterio.windows.from_bounds(minx, miny, maxx, maxy, transform=src.transform)
+        base_crop = src.read(1, window=window)
+
+    base_width_km = (maxx - minx) / 1000.0
+    base_height_km = (maxy - miny) / 1000.0
+
+    valid = valid_pixel_mask(render_array)
+    render_height, render_width = render_array.shape
+    render_filled = _fill_dead_columns_for_display(render_array, valid) if valid.any() else render_array
+    render_rot = np.rot90(render_filled, rotation_k)
+
+    # Linear stretch through 0 (vmin=0), not an affine min-max stretch -- an affine stretch
+    # (vmin=some low percentile) shifts the black point up, which clips genuinely dark-but-real
+    # terrain to pure black. Only vmax is derived from the data, from the 99.9th percentile (not a
+    # naive max) so a handful of extreme outlier pixels (e.g. a real saturated-crater highlight)
+    # don't pull it out far enough to make the bulk of genuine terrain look uniformly dark. Each
+    # panel stretched independently (unlike plot_isis_comparison's cross-panel brightness match),
+    # since this function doesn't assume the two panels share comparable units to begin with.
+    render_vmin, render_vmax = 0, np.nanpercentile(render_rot, 99.9)
+    base_vmin, base_vmax = 0, np.nanpercentile(base_crop, 99.9)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 6))
+    axes[0].imshow(
+        render_rot, cmap="gray", vmin=render_vmin, vmax=render_vmax, extent=[0, render_width_km, render_height_km, 0]
+    )
+    axes[0].set_title(f"{render_label} (north-up)")
+    axes[1].imshow(base_crop, cmap="gray", vmin=base_vmin, vmax=base_vmax, extent=[0, base_width_km, base_height_km, 0])
+    axes[1].set_title("Hillshade-based basemap (same real footprint)")
+    for ax in axes:
+        ax.set_xlabel("km")
+        ax.set_ylabel("km")
+
+    if tie_point_results:
+        for name, r in tie_point_results.items():
+            px, py = r[render_px_key]
+            _plot_tie_point_marker(
+                axes[0], name, px, py, rotation_k, render_height, render_width, render_width_km, render_height_km
+            )
+            lon, lat = r["lonlat"]
+            x, y = lunaserv.orthographic_xy_m(lon, lat, center_lon, center_lat)
+            axes[1].plot(
+                (x - minx) / 1000.0,
+                (maxy - y) / 1000.0,
+                markersize=14,
+                markeredgecolor="black",
+                markeredgewidth=1.5,
+                **MARKER_STYLES[name],
+            )
+
+    fig.suptitle(title)
     fig.tight_layout()
     return fig
 
@@ -397,6 +499,7 @@ def plot_overlay(
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
+    zoom_footprint_lonlat_deg: dict | None = None,
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
     geographic coordinates in each file's own georeferencing drive the plot -- unlike
@@ -413,7 +516,16 @@ def plot_overlay(
     database; see `docs/plan.md`'s open items) on top of this same raster display.
     `fill_overlay_nodata` applies `_fill_overlay_nodata_for_display` before the overlay is drawn --
     display only (the outline above is still traced from the real, unfilled data, so it reflects the
-    genuine sensor footprint, not the filled result)."""
+    genuine sensor footprint, not the filled result).
+
+    `zoom_footprint_lonlat_deg`, if given, restricts the displayed extent to that footprint's own
+    bounding box (via `lunaserv.footprint_bbox_local_m`, same technique `plot_render_vs_basemap`
+    uses) instead of the base's full extent -- needed when the overlay itself covers real ground far
+    beyond the specific footprint actually being compared (e.g. `isis_wac.run_mapproject` reprojects
+    the *entire* stitched cube, not just the square crop `isis_wac.crop_window_for_camera` restricts
+    the side-by-side comparison to -- without this, the overlay panel shows a long strip while the
+    matching side-by-side panel shows only a small square, confusingly mismatched extents for what's
+    meant to be the same comparison)."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
@@ -431,6 +543,20 @@ def plot_overlay(
         geopandas.GeoSeries([outline], crs=overlay.rio.crs).boundary.plot(
             ax=ax, color=overlay_outline_color, linewidth=1.5
         )
+    if zoom_footprint_lonlat_deg is not None:
+        # Must project into `base`'s own local-CRS origin (its `lon_0`/`lat_0`, i.e. the camera's
+        # overall footprint center that `lunaserv.fetch_dem_and_ortho` centered this CRS on) --
+        # *not* `zoom_footprint_lonlat_deg`'s own center. The crop's footprint center is a
+        # separately ray-traced point (see `tie_points.crop_footprint_corners`) that generally
+        # differs from the camera's, so using it as the projection origin here would compute a
+        # bbox in a different local-meters frame than the one `base`/`overlay` are actually plotted
+        # in -- silently offsetting the "zoomed" window from where the real data is, rather than
+        # sizing it correctly around it.
+        crs_params = base.rio.crs.to_dict()
+        xlim_min, ylim_min, xlim_max, ylim_max = lunaserv.footprint_bbox_local_m(
+            zoom_footprint_lonlat_deg, crs_params["lon_0"], crs_params["lat_0"]
+        )
+        xlim, ylim = (xlim_min, xlim_max), (ylim_min, ylim_max)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_title(title)

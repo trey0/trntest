@@ -64,6 +64,10 @@ class Session:
     def compute_tie_points(self, camera: Camera, frame_timing: FrameTiming) -> dict:
         return tie_points.compute_tie_points(frame_timing, camera, config=self.config)
 
+    @_inherit_doc(tie_points.crop_footprint_corners_for_camera)
+    def crop_footprint_corners(self, frame_timing: FrameTiming, camera: Camera) -> dict:
+        return tie_points.crop_footprint_corners_for_camera(frame_timing, camera, config=self.config)
+
     @_inherit_doc(orientation.compute_display_rotations)
     def compute_display_rotations(self, camera: Camera, frame_timing: FrameTiming) -> DisplayRotations:
         return orientation.compute_display_rotations(camera, frame_timing, config=self.config)
