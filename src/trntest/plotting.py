@@ -221,6 +221,34 @@ def plot_comparison(
     return fig
 
 
+def _fill_dead_columns_for_display(band: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Row-wise linear interpolation across invalid (no-data) pixels, for display only -- doesn't
+    touch the real calibrated data used anywhere else. Unlike `lunaserv.despeckle()` (a randomly-
+    scattered-outlier filter over otherwise-present values), ISIS's `lrowaccal` "SpecialPixels"
+    correction marks genuinely *missing* pixels at a small, fixed, deterministic set of detector
+    columns on each VIS framelet's first line (confirmed empirically: the exact same 56 columns
+    recur, unchanged, at every 14-line framelet boundary across a full cube -- see
+    docs/data-sources.md's ISIS3/CSM spike section) -- narrow (1-3 columns), within otherwise real,
+    locally-smooth rows, so a simple per-row linear fill across each gap is a reasonable, standard
+    dead-pixel-column interpolation. `np.interp` also handles the edge case (`column 0` has no left
+    neighbor -- always dead, see the same docs section) by clamping to the nearest valid value
+    rather than extrapolating."""
+    filled = band.copy()
+    cols = np.arange(band.shape[1])
+    for row in range(band.shape[0]):
+        row_valid = valid[row]
+        if row_valid.all():
+            continue
+        if not row_valid.any():
+            # no valid pixel anywhere in this row to interpolate from -- fall back to NaN
+            # (transparent), same as the pre-fill behavior, rather than leaving raw sentinel values
+            # unmasked.
+            filled[row] = np.nan
+            continue
+        filled[row, ~row_valid] = np.interp(cols[~row_valid], cols[row_valid], band[row, row_valid])
+    return filled
+
+
 def plot_isis_comparison(
     camera: Camera,
     tie_point_results: dict,
@@ -253,12 +281,16 @@ def plot_isis_comparison(
     synthetic = read_raster_band(rendered_tif_path)
     real = read_raster_band(stitched_cub_path, window=window)
     valid = valid_pixel_mask(real)
+    # vmin/vmax come from the real valid data, before any display-only fill -- the fill below is
+    # cosmetic (see _fill_dead_columns_for_display's docstring) and shouldn't skew the contrast
+    # stretch.
     vmin, vmax = np.percentile(real[valid], [2, 98]) if valid.any() else (None, None)
+    real_display = _fill_dead_columns_for_display(real, valid) if valid.any() else real
 
     h_syn, w_syn = synthetic.shape
     h_crop, w_crop = real.shape
     synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
-    real_rot = np.rot90(np.where(valid, real, np.nan), rotations.k_crop)
+    real_rot = np.rot90(real_display, rotations.k_crop)
 
     synthetic_width_km = camera.cross_track_width_km
     crop_width_km = camera.cross_track_width_km

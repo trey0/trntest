@@ -718,6 +718,36 @@ web=yes` failed: `USER ERROR NAIF DSK file
   failure was actually this same `dems/` gap manifesting differently, or it was transient/has since
   recovered — not distinguished, since the fix resolves both possibilities' symptom either way.
 
+## Phase 19 (2026-08-07) — Confirmed and cosmetically fixed Phase 6's framelet-boundary striping
+
+User asked whether the dotted/gridded "striping" visible in the newly-re-enabled Phase 6 comparison
+(the ISIS-processed real WAC panel, not the `mapproject`-stage striping investigated separately in
+Phase 12) might be a no-data issue.
+
+- **Confirmed empirically, directly from the stitched cube's pixel data** (not guessed): read
+  `M1327210646CE.vis.cal.stitched.cub` band 1 (3612 x 704) and checked `plotting.valid_pixel_mask`'s
+  criterion against it. Overall NULL fraction: 0.96%. Two distinct, fully deterministic components —
+  columns 0-1 NULL on every line (fixed detector-edge dead strip), and a fixed set of 56 specific
+  columns NULL only on the first line of every 14-line VIS framelet cycle (confirmed identical
+  column indices at 6 widely-separated cycles spanning the full cube — a real fixed hardware
+  bad-pixel mask, not noise). This is `lrowaccal`'s documented `SpecialPixels` correction (see
+  `docs/data-sources.md`'s "LROC WAC EDR/CDR products" section, new bullet) actually firing, exactly
+  as predicted there but not previously verified end-to-end.
+- Ruled out a display/downsampling artifact: rendered the same crop at native pixel-for-pixel
+  resolution (`interpolation='none'`) as well as heavily downsampled (matching the real comparison
+  figure's subplot size) — same grid pattern both times. The pattern reads as visually prominent
+  despite <1% density purely because it's so *regular* (identical phase/columns every 14-line
+  cycle), not because of any rendering/resampling artifact.
+- **Fix (display-only, per user's choice)**: added `plotting._fill_dead_columns_for_display` — a
+  simple row-wise linear interpolation across each narrow (1-3 column) gap, `np.interp` clamping
+  cleanly at the column-0 edge case (no left neighbor). Used only in `plot_isis_comparison`'s
+  display array; the contrast stretch (`vmin`/`vmax`) is still computed from the real, unfilled
+  valid data first, so the fill can't skew it. Doesn't touch `lrowaccal`'s actual calibrated output
+  or anything else that reads the cube. New tests in `tests/test_plotting.py` (interpolation,
+  edge-clamping, fully-valid passthrough, fully-invalid-row NaN fallback). Verified end-to-end via a
+  full notebook re-run — the grid pattern is gone from the displayed figure with no visible loss of
+  real detail.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

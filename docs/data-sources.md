@@ -272,6 +272,23 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   ~576 (of 704) samples in a UV line are padding, hence a big chunk of `missing_constant` values
   concentrated in the 8 UV lines of each 78-line frame; a pure-VIS 14-line block has only ~0.4%
   missing (a handful of bad/edge columns).
+- **`isis_wac.py`'s framestitched VIS cube: the "framelet-boundary striping" visible in
+  `plot_isis_comparison` is this same bad/edge-column phenomenon, confirmed empirically — a real,
+  deterministic, low-density no-data pattern, not a rendering bug.** Checked a full stitched cube
+  (`M1327210646CE`, 3612 lines x 704 samples): overall NULL fraction is only **0.96%**. Two
+  components: (1) **columns 0-1 are NULL on every single line** (100%) — a fixed detector-edge dead
+  strip; (2) on the **first line of every 14-line VIS framelet cycle**, a fixed set of **56 specific
+  columns** go NULL — confirmed identical (same 56 column indices) at 6 widely-separated cycles
+  spanning the full cube, i.e. a genuine fixed hardware bad-pixel mask (`lrowaccal`'s
+  temperature/mode-matched `SpecialPixels` correction, see the ISIS3/CSM spike section below), not
+  noise. Non-boundary lines are ~0.14% invalid (excl. the two edge columns) vs. **7.67%** on
+  boundary lines — a >50x contrast concentrated exactly at framelet seams, which is why such a
+  low overall density reads as a strong, regular visual "grid"/moiré pattern once
+  displayed — confirmed this isn't a downsampling artifact either (same pattern at native
+  resolution, `interpolation='none'`). `plotting._fill_dead_columns_for_display` now interpolates
+  across these narrow (1-3 column) gaps row-wise for display in `plot_isis_comparison` only — purely
+  cosmetic (contrast stretch is still computed from the real, unfilled valid data) — see
+  `docs/history.md`'s dated entry.
 - **Pass-dependent sensor axis convention** (formerly believed to be a fixed hardware property —
   see `docs/history.md`, Phase 9, for how this was found to be wrong): WAC's raw camera frame
   (`LRO_LROCWAC_VIS`) is body-fixed (no gimbal), and LRO performs periodic 180°-yaw-flip maneuvers
