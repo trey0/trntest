@@ -710,6 +710,13 @@ web=yes` failed: `USER ERROR NAIF DSK file
 - **Verified end-to-end**: re-ran `notebooks/wac_isis_spike.py` via `scripts/run_notebook.sh` from
   the same fresh cache that originally hit the failure — full clean run, `trntest-lint` passes
   (notebook sync included).
+- **Follow-up**: `notebooks/lunar_sat_sim_demo.py`'s own Phase 6 (`isis_wac.run_pipeline` against
+  the live demo product) had separately been commented out, for a different-sounding reason (the
+  cell's own comment blamed an external SPICE web service failure, "SPICE server returned
+  incompatible SPICE data") — re-enabled it now that `run_spiceinit` no longer needs `base/dems/`,
+  and it runs clean end-to-end too (re-ran the full flagship notebook). Either that external-service
+  failure was actually this same `dems/` gap manifesting differently, or it was transient/has since
+  recovered — not distinguished, since the fix resolves both possibilities' symptom either way.
 
 ## Historical derivations
 
