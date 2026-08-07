@@ -93,6 +93,35 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)
 
 
+def run_mapproject_image(
+    image_path: Path,
+    csm_json_path: Path,
+    output_path: Path,
+    lunaserv_result: LunaservResult,
+    config: TrntestConfig | None = None,
+) -> Path:
+    """Reproject any image back onto the map via its own CSM/ISD sidecar and ASP `mapproject`'s
+    `--ref-map` -- see `run_mapproject`'s docstring for the full rationale. The shared low-level
+    worker both `run_mapproject` (the synthetic render's own `cam_gen` sidecar) and
+    `isis_wac.run_mapproject` (the real, ISIS-processed WAC cube's ALE-derived ISD) use, so both
+    land on the exact same DEM grid with no separate alignment step."""
+    config = config or load_config()
+    run_quiet(
+        [
+            "mapproject",
+            str(lunaserv_result.dem),
+            str(image_path),
+            str(csm_json_path),
+            str(output_path),
+            "--ref-map",
+            str(lunaserv_result.dem),
+            "-t",
+            "csm",
+        ]
+    )
+    return output_path
+
+
 def run_mapproject(
     render_result: RenderResult, lunaserv_result: LunaservResult, config: TrntestConfig | None = None
 ) -> Path:
@@ -107,26 +136,12 @@ def run_mapproject(
     through one consistent camera model. Opt-in/on-demand (not part of `dataset.generate_dataset`'s
     default pipeline) -- a real ~4s subprocess call not every run needs."""
     config = config or load_config()
-
     camera_stem = render_result.rendered_tif.stem
     render_dir = render_result.rendered_tif.parent
     mapproj_tif = render_dir / f"{camera_stem}-mapproj.tif"
-
-    run_quiet(
-        [
-            "mapproject",
-            str(lunaserv_result.dem),
-            str(render_result.rendered_tif),
-            str(render_result.csm_json),
-            str(mapproj_tif),
-            "--ref-map",
-            str(lunaserv_result.dem),
-            "-t",
-            "csm",
-        ]
+    return run_mapproject_image(
+        render_result.rendered_tif, render_result.csm_json, mapproj_tif, lunaserv_result, config
     )
-
-    return mapproj_tif
 
 
 def read_csm_state(csm_json_path: str | Path) -> tuple[str, dict]:

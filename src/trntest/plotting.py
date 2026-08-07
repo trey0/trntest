@@ -5,6 +5,7 @@ import warnings
 
 import geopandas
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import numpy as np
 import rasterio
 import rasterio.errors
@@ -330,8 +331,15 @@ def plot_isis_comparison(
 def _open_raster_dataarray(path):
     """`rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs
     (e.g. multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
-    yields a `DataArray` -- assert that so mypy can narrow it, rather than a `# type: ignore`."""
-    opened = rioxarray.open_rasterio(path)
+    yields a `DataArray` -- assert that so mypy can narrow it, rather than a `# type: ignore`.
+    `masked=True` converts nodata to real NaN based on the file's own embedded `nodata` tag --
+    necessary because `mapproject`'s nodata convention depends on its *input* format: a synthetic
+    render (plain GeoTIFF source) comes out as real NaN already, but an ISIS `.cub` source (e.g. the
+    real-WAC overlay) carries ISIS's own huge-magnitude NULL sentinel (~-3.4e38) straight through
+    into the output, with a `nodata` tag set to match -- confirmed empirically: without `masked=True`
+    here, that sentinel dominates `plot.imshow`'s automatic vmin/vmax and washes the real 0.01-0.13
+    I/F signal out to a uniform flat gray."""
+    opened = rioxarray.open_rasterio(path, masked=True)
     assert isinstance(opened, xarray.DataArray)
     return opened.squeeze()
 
@@ -400,8 +408,13 @@ def plot_overlay(
     ax.set_title(title)
     # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
     # `lunaserv.fetch_dem_and_ortho`'s docstring for why (a genuinely isotropic-meter grid, unlike
-    # Lunaserv's native unprojected geographic layer).
-    ax.set_xlabel("x (m, local projected CRS)")
-    ax.set_ylabel("y (m, local projected CRS)")
+    # Lunaserv's native unprojected geographic layer). Displayed in km (matching
+    # `plot_comparison`/`plot_isis_comparison`'s real-km scaling) via a tick formatter -- the
+    # underlying data/geometry stay in meters (real CRS units), only the tick labels are rescaled.
+    km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.0f}")
+    ax.xaxis.set_major_formatter(km_formatter)
+    ax.yaxis.set_major_formatter(km_formatter)
+    ax.set_xlabel("Easting (km)")
+    ax.set_ylabel("Northing (km)")
     fig.tight_layout()
     return fig

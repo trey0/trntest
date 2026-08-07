@@ -760,6 +760,68 @@ Phase 12) might be a no-data issue.
   another full notebook re-run — the two panels now read as comparably bright at a glance, not just
   individually "nicely stretched."
 
+## Phase 20 (2026-08-07) — Solved the `mapproject`-stage framelet-boundary striping; new Phase 5B/6A/6B
+
+User asked to look into the *other*, more severe striping issue -- the one from the original ISIS3/
+CSM spike (Phase 12), where mapprojecting a real WAC cube onto the DEM produced severe periodic
+banding dominating ~80% of the frame, previously concluded to be "a structural/geometric artifact in
+the current CSM Pushframe stitching itself... not something fixable" (a genuine ASP/ALE limitation,
+it seemed).
+
+- **Reproduced live** (not just re-reading old docs): ran `isd_generate -i` + `mapproject -t csm`
+  against this session's own cached `M1327210646CE.vis.even.cal.cub` (a lone parity) and its real
+  DEM. Confirmed the striping directly: 31% valid coverage, output dominated by venetian-blind-style
+  dark smearing with almost no recognizable terrain -- each framelet's real content survived only as
+  a thin sliver, with the rest smeared into a large, mostly-featureless dark region. Checked the
+  ISD's own pose tables as a sanity check: `instrument_pointing`'s quaternion table already had 259
+  samples (≈ one per framelet, correctly structured, not naively one-per-line) -- so the input pose
+  data itself looked fine, pointing suspicion at *which pixel data* was being reprojected, not the
+  camera model's geometry.
+- **User asked a sharper, decisive question**: could this be related to `isis_wac.py`'s never-fully-
+  understood "even"/"odd" cube split, and needing to interleave them before generating the ISD?
+  Checked directly: at *every* single frame position in `vis.even.cal.cub`/`vis.odd.cal.cub`, exactly
+  one of the two has real (99% valid) data and the other is 100% NULL, in a perfect strict
+  alternation confirmed at 20 consecutive frames. So "even"/"odd" are **not** a same-frame split
+  (e.g. interlaced TDI rows, as might be guessed from the name) -- WAC genuinely only writes real
+  pixel data to alternating nominal frame slots; each parity cube alone is a temporally-sparse,
+  ~50%-populated sequence.
+- **Fix, confirmed decisively**: generated an ISD from the properly-interleaved `vis.cal.stitched.cub`
+  instead (same `isd_generate -i` call -- and its output parameters, e.g. `interframe_delay`, the
+  259-sample pointing table, came out byte-for-byte identical to the lone-parity ISD, confirming
+  `isd_generate` derives these from label metadata regardless of which pixels are populated) and
+  re-ran `mapproject` against it: **81% valid coverage, real craters visible throughout the frame**.
+  The dominant smearing artifact is gone; what remains is the same small, already-understood, ~1%
+  framelet-boundary dead-pixel speckle from Phase 19. The earlier "fundamental CSM Pushframe
+  limitation" conclusion was wrong -- it was mostly a case of mapprojecting a sparse, half-blank
+  input and letting ASP's resampling smear across the gaps.
+- **Second bug found along the way**: `plotting.plot_overlay`'s first live test of this (overlaying
+  the mapprojected real-WAC cube on the hillshade base) rendered as a flat, featureless gray block.
+  Root cause: `mapproject`'s nodata convention depends on its *input* format -- a synthetic render
+  (plain GeoTIFF source, Phase 16/17) comes out with real IEEE NaN nodata, but an ISIS `.cub` source
+  carries ISIS's own huge-magnitude NULL sentinel (~-3.4e38) straight through, with a `nodata` tag
+  set to match. `_open_raster_dataarray` was calling `rioxarray.open_rasterio` without `masked=True`,
+  so that sentinel dominated `plot.imshow`'s automatic vmin/vmax and washed the real 0.01-0.13 I/F
+  signal out to nothing. Fixed by always passing `masked=True` (a no-op for the already-NaN synthetic
+  case, so this fixes both without needing to distinguish them).
+- **New capability, `isis_wac.py`**: `run_isd_generate` (ALE's `isd_generate -i`, reading pointing/
+  timing from the label `run_spiceinit` already embedded) and `run_mapproject` (reprojects the
+  stitched cube via its own ISD) -- module docstring updated, no longer "spike"-scoped. `render.py`
+  gained `run_mapproject_image`, a generic low-level `mapproject --ref-map` worker factored out of
+  `run_mapproject` so both the synthetic-render and real-WAC mapproject paths share one
+  implementation.
+- **Notebook restructured** per user's plan: Phase 5 → **5A** (unchanged, `wac.py`-based side-by-side
+  comparison) plus new **5B** (real, ISIS-processed WAC mapprojected and overlaid on the hillshade
+  base -- the new capability above, demonstrated). Phase 6 → **6A** (unchanged ISIS side-by-side
+  comparison, now reuses 5B's already-computed `stitched` cube instead of recomputing it). Phase 7 →
+  **6B** (unchanged synthetic-render mapproject overlay). 5B and 6B share `plotting.plot_overlay`
+  directly. Per the same request, `plot_overlay`'s axis labels changed from raw meters ("x/y (m,
+  local projected CRS)") to km with a tick formatter ("Easting (km)"/"Northing (km)"), underlying
+  geometry unchanged -- affects both 5B and 6B since they share the function. Also dropped 6B's
+  `overlay_alpha=1.0` debug override (from Phase 17's CRS-bug diagnosis, long since resolved and
+  verified) back to the default `0.6`, since these cells were already being revisited.
+- **Verified end-to-end**: full notebook re-run via `scripts/run_notebook.sh`; `trntest-lint` passes
+  (format/check/mypy/notebook sync/notebook warnings).
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

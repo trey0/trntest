@@ -1,12 +1,12 @@
-"""ISIS3/CSM real-WAC reprojection spike -- steps a real WAC EDR through ISIS's own pipeline
+"""ISIS3/CSM real-WAC reprojection -- steps a real WAC EDR through ISIS's own pipeline
 (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) as a genuine-camera-model
-alternative to `wac.py`'s manual framelet-stacking. See docs/data-sources.md's "ISIS3/CSM spike"
-section and docs/history.md's Phase 12 for the full backstory and prior findings.
-
-Scoped only through `framestitch` -- no `isd_generate`/`mapproject` wrappers here yet, that's
-future work once the framelet-boundary striping this spike is chasing is understood. Only the VIS
-cubes are touched (`vis.even`/`vis.odd`); the UV cubes are irrelevant to a VIS-striping
-investigation.
+alternative to `wac.py`'s manual framelet-stacking, then (`run_isd_generate`/`run_mapproject`)
+reprojects the result onto the map via ALE's CSM Pushframe sensor model, same as `render.py` does
+for the synthetic render. See docs/data-sources.md's "ISIS3/CSM spike" section and docs/history.md's
+Phases 12/19 for the full backstory and prior findings -- in particular, `run_mapproject`'s
+docstring for why this must run against the stitched (interleaved) cube, not a lone even/odd
+parity. Only the VIS cubes are touched (`vis.even`/`vis.odd`); the UV cubes are irrelevant to a
+VIS-striping investigation.
 
 House style matches render.py: frozen dataclass results holding `Path`s, `config = config or
 load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `subprocess.run`).
@@ -17,9 +17,10 @@ from pathlib import Path
 
 import rasterio.windows
 
-from trntest import cache
+from trntest import cache, render
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
+from trntest.lunaserv import LunaservResult
 from trntest.subprocess_utils import run_quiet
 from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
 
@@ -177,6 +178,51 @@ def run_pipeline(camera: Camera, frame_timing: FrameTiming, config: TrntestConfi
     even = run_lrowaccal(run_spiceinit(split.vis_even, config), config)
     odd = run_lrowaccal(run_spiceinit(split.vis_odd, config), config)
     return run_framestitch(even, odd, flip=camera.reverse_crop_along_track, config=config)
+
+
+@dataclasses.dataclass(frozen=True)
+class IsdGenerateResult:
+    json_path: Path
+
+
+def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None = None) -> IsdGenerateResult:
+    """Generate a CSM Pushframe ISD (ALE's `isd_generate`) for the *stitched* cube. `-i`
+    (`--only_isis_spice`) reads pointing/timing directly from the label `run_spiceinit` already
+    embedded, per-parity, before `framestitch` -- confirmed empirically that `framestitch`'s merge
+    carries those groups through intact: the resulting ISD's geometry/timing parameters
+    (`interframe_delay`, the 259-sample pointing table, etc.) come out identical whether generated
+    from this stitched cube or a single unstitched parity alone (see docs/data-sources.md). Despite
+    that, which cube you actually reproject through this ISD matters a great deal -- see
+    `run_mapproject`'s docstring."""
+    config = config or load_config()
+    json_path = stitched.cub_path.with_suffix(".json")
+    run_quiet(["isd_generate", "-i", str(stitched.cub_path), "-o", str(json_path)])
+    return IsdGenerateResult(json_path=json_path)
+
+
+def run_mapproject(
+    stitched: FramestitchResult,
+    isd: IsdGenerateResult,
+    lunaserv_result: LunaservResult,
+    config: TrntestConfig | None = None,
+) -> Path:
+    """Reproject the real, ISIS-processed WAC cube back onto the map via its own CSM/ISD sidecar
+    (`run_isd_generate`) -- `render.run_mapproject_image` is the same low-level worker the synthetic
+    render's own mapproject step uses, so both land on the exact same DEM grid (`--ref-map`).
+
+    **Must be run against the stitched (interleaved) cube -- `stitched`, not a lone even/odd parity
+    in isolation.** Confirmed empirically (see docs/data-sources.md's "ISIS3/CSM spike" section):
+    WAC only writes real pixel data to alternating nominal frame slots (each parity cube is ~50%
+    populated, strictly alternating -- not a same-frame split like interlaced video fields, as might
+    be assumed from the name). Mapprojecting one parity alone leaves `mapproject` to resample across
+    that sparsity, producing severe venetian-blind-style smearing -- previously (wrongly) attributed
+    to a fundamental CSM Pushframe modeling limitation "not fully mature... artifacts at framelet
+    borders". Mapprojecting the properly-interleaved stitched cube instead resolves the vast
+    majority of it: measured 31% valid coverage with no recognizable terrain -> 81% valid coverage
+    with real craters visible throughout, same real product, same DEM."""
+    config = config or load_config()
+    mapproj_tif = stitched.cub_path.with_name(stitched.cub_path.stem + "-mapproj.tif")
+    return render.run_mapproject_image(stitched.cub_path, isd.json_path, mapproj_tif, lunaserv_result, config)
 
 
 def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:

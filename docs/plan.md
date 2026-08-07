@@ -41,7 +41,7 @@ product to this.
 | `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint, in a per-camera local Orthographic CRS (`IAU2000:30166`, real Moon radius) centered on that footprint — genuinely isotropic meter pixels, unlike Lunaserv's native geographic grid. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product. |
-| `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking. Not yet reprojected onto the DEM (`mapproject`, an open item below). |
+| `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking, then reprojects the result onto the DEM via ALE's `isd_generate` + ASP's `mapproject` -- must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
 | `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. |
 | `orientation.py` | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | `plotting.py` | Comparison-figure plotting. `plot_overlay` displays two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) via `rioxarray`, using each file's own real coordinates rather than pixel indices. |
@@ -61,24 +61,27 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   equator, not preserved by `--ref-map`) — fixed by requesting a per-camera local Orthographic CRS
   directly from Lunaserv (`IAU2000:30166`, still a single WMS fetch, no separate `gdalwarp` step).
   See `docs/data-sources.md`'s Lunaserv WMS section and `docs/history.md`'s dated entry.
-- **Open, not yet resolved**: whether a real WAC swath can be reprojected onto the DEM via a
-  genuine ISIS/CSM camera model (`mapproject`) + `sat_sim`, as a principled alternative to `wac.py`'s
-  manual framelet-stacking. The pipeline works end-to-end on real data through `framestitch`, but
-  hits a real, unresolved blocker further downstream at `mapproject` (severe framelet-boundary
-  striping in its output, confirmed on two products, not an illumination/AOI artifact) — see
-  `docs/history.md` Phase 12 and `docs/data-sources.md`'s "ISIS3/CSM spike" section before
-  re-investigating or re-deriving any of this. `src/trntest/isis_wac.py` (merged to `main` in Phase
-  14 — ISIS/ALE now lives permanently in `docker/Dockerfile` via a `micromamba`-managed env,
-  alongside ASP) implements EDR fetch → `lrowac2isis` → `spiceinit web=yes` → `lrowaccal` →
-  `framestitch` — scope currently stops there, no `isd_generate`/`mapproject` wrapper yet.
-  `notebooks/lunar_sat_sim_demo.py`'s Phase 6 now displays this pipeline's output directly against
-  the synthetic render (same real footprint as Phase 5's `wac.py` comparison, via
-  `isis_wac.crop_window_for_camera`) for interactive inspection; `notebooks/wac_isis_spike.py`
-  remains the step-by-step version for isolating exactly which stage introduces an artifact.
-- `geopandas` is a dependency (added alongside `rioxarray` for `plotting.plot_overlay`) with **no
-  concrete caller yet** — added ahead of need for a planned vector-layer overlay (e.g. the Robbins
-  crater database) on top of `plot_overlay`'s raster overlay, not yet implemented. Don't assume it's
-  unused/removable without checking for that follow-up first.
+- **Resolved**: whether a real WAC swath can be reprojected onto the DEM via a genuine ISIS/CSM
+  camera model (`mapproject`), as a principled alternative to `wac.py`'s manual framelet-stacking.
+  The previously-reported "severe framelet-boundary striping" (`docs/history.md` Phase 12,
+  `docs/data-sources.md`'s "ISIS3/CSM spike" section) turned out to be mostly a methodological
+  artifact, not a fundamental CSM Pushframe limitation: mapprojecting a lone even/odd parity cube
+  (each only ~50% populated — WAC alternates which nominal frame slot gets real data) leaves
+  `mapproject` to resample across that sparsity, producing the smearing. Mapprojecting the properly
+  interleaved *stitched* cube instead resolves the vast majority of it (31% valid coverage/no
+  recognizable terrain → 81% valid coverage/real craters throughout, same real product). `isis_wac.py`
+  now implements the full chain: EDR fetch → `lrowac2isis` → `spiceinit web=yes` → `lrowaccal` →
+  `framestitch` → `isd_generate` → `mapproject` (via `render.run_mapproject_image`, shared with the
+  synthetic render's own mapproject step). `notebooks/lunar_sat_sim_demo.py`'s Phase 5B/6A/6B
+  demonstrate this: 5B overlays the mapprojected real WAC on the hillshade base, 6A is the
+  side-by-side comparison against the synthetic render, 6B is the synthetic render's own
+  mapprojected overlay (5B/6B share `plotting.plot_overlay`). See `docs/data-sources.md`'s "ISIS3/CSM
+  spike" section and `docs/history.md`'s dated entry for the full investigation;
+  `notebooks/wac_isis_spike.py` remains the step-by-step version for isolating pipeline stages.
+- `geopandas` (added alongside `rioxarray` for `plotting.plot_overlay`) now has a concrete caller:
+  `plot_overlay(show_overlay_outline=True)` traces the overlay raster's real (non-NaN) footprint and
+  draws it as a vector boundary. A vector *data* layer (e.g. the Robbins crater database) on top of
+  this raster overlay is still a possible future extension, not yet implemented.
 
 ## Development history
 

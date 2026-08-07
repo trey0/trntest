@@ -491,3 +491,31 @@ instead of a hand-built polar-cap DEM, to rule out AOI-sizing as a confound:
   pose as the notebook's own `camera_frame94.tsai`) came out with real signal in every pixel except
   a narrow nodata sliver at one edge — unlike the first run's mostly-nodata result, confirming that
   problem was AOI sizing, not a fundamental gap in the approach.
+
+**Root cause found and fixed (2026-08-07, see `docs/history.md`'s dated entry)**: the "structural/
+geometric artifact in the current CSM Pushframe stitching itself, not something [fixable]" verdict
+above was wrong. The real cause: both runs above mapprojected a single **lone even/odd parity cube
+in isolation** — and "even"/"odd" turned out not to be a same-frame split (e.g. interlaced TDI rows),
+as the name might suggest, but genuine temporal alternation: confirmed empirically that at *every*
+single nominal frame slot, exactly one of `vis.even.cal.cub`/`vis.odd.cal.cub` has real (99% valid)
+pixel data and the other is 100% NULL. Mapprojecting one parity alone therefore reprojects a
+sparse, ~50%-populated sequence, and `mapproject`'s resampling smears real framelet content across
+the large real gaps between sparse valid data — producing exactly the severe venetian-blind banding
+described above. Mapprojecting the properly **interleaved, stitched** cube instead (same `isd_generate
+-i` ISD-generation call — its output geometry/timing parameters, e.g. `interframe_delay`, the
+259-sample pointing table, come out byte-for-byte identical regardless of which cube it's run
+against, confirming `isd_generate` reads these from label metadata, not from which pixels happen to
+be populated) resolves the vast majority of it: on `M1327210646CE`, 31% valid coverage with no
+recognizable terrain → **81% valid coverage with real craters visible throughout the frame**, same
+product, same DEM. What remains at that point is the small, already-understood, ~1%
+framelet-boundary dead-pixel pattern (see the "LROC WAC EDR/CDR products" section above), not this
+banding. `isis_wac.py`'s `run_isd_generate`/`run_mapproject` now implement this correctly (against
+`stitched`, never a lone parity) — see their docstrings.
+
+**Related gotcha, found via the fix above**: `mapproject`'s output nodata convention depends on its
+*input* format. A synthetic render (plain GeoTIFF source) comes out with real IEEE NaN nodata
+(as already documented under "ASP `mapproject`" above) — but an ISIS `.cub` source carries ISIS's own
+huge-magnitude NULL sentinel (~-3.4e38) straight through into the output, with a GDAL `nodata` tag
+set to match (confirmed via `gdalinfo`/`rasterio`). `plotting._open_raster_dataarray` now always
+passes `rioxarray.open_rasterio(path, masked=True)` to handle both cases uniformly — without it, the
+sentinel dominates `plot.imshow`'s automatic vmin/vmax and washes the real signal out to a flat gray.
