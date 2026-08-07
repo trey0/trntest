@@ -3,13 +3,17 @@ consumption of already-computed values, reading image files by path where needed
 
 import warnings
 
+import geopandas
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 import rasterio.errors
+import rasterio.features
 import rasterio.transform
 import rasterio.windows
 import rioxarray
+import shapely.geometry
+import shapely.ops
 import xarray
 
 from trntest import orientation, wac
@@ -290,12 +294,35 @@ def _open_raster_dataarray(path):
     return opened.squeeze()
 
 
+def _valid_data_outline(raster_da):
+    """The real-image (non-NaN) footprint of `raster_da` as a single Shapely geometry in the
+    raster's own real (already-georeferenced) coordinates -- e.g. `run_mapproject`'s output is
+    NaN outside the actual reprojected camera footprint (see docs/data-sources.md), so this traces
+    that footprint's true outline rather than the raster's full (padded, mostly-nodata) pixel grid.
+    Interior holes (isolated nodata pixels from real DEM ray-intersection speckle -- see
+    `render.DEM_HEIGHT_ERROR_TOL_M`'s docstring) are dropped: they're display noise, not meaningful
+    "outline" content."""
+    mask = ~np.isnan(raster_da.values)
+    polygons = [
+        shapely.geometry.shape(geom)
+        for geom, value in rasterio.features.shapes(
+            mask.astype(np.uint8), mask=mask, transform=raster_da.rio.transform()
+        )
+        if value == 1
+    ]
+    merged = shapely.ops.unary_union(polygons)
+    parts = merged.geoms if isinstance(merged, shapely.geometry.MultiPolygon) else [merged]
+    return shapely.geometry.MultiPolygon([shapely.geometry.Polygon(p.exterior) for p in parts])
+
+
 def plot_overlay(
     base_raster_path,
     overlay_raster_path,
     overlay_cmap: str = "gray",
     overlay_alpha: float = 0.6,
     title: str = "Overlay (geo-aligned)",
+    show_overlay_outline: bool = True,
+    overlay_outline_color: str = "red",
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
     geographic coordinates in each file's own georeferencing drive the plot -- unlike
@@ -305,7 +332,11 @@ def plot_overlay(
     `LunaservResult.ortho`), not reprojected/aligned here. `overlay_cmap` defaults to `"gray"`
     (matching the base) since the overlay is typically also a real image, not categorical/scalar
     data -- a high-chroma colormap like `"inferno"` visually exaggerates what's actually a mild,
-    real brightness gradient (e.g. real-sun hillshade) into a distracting "rainbow" look."""
+    real brightness gradient (e.g. real-sun hillshade) into a distracting "rainbow" look.
+    `show_overlay_outline` traces the overlay's real (non-NaN) footprint with `geopandas` and draws
+    it as a vector outline -- useful both as a sanity check that the overlay is actually where it
+    claims to be, and as a template for future vector-layer overlays (e.g. the Robbins crater
+    database; see `docs/plan.md`'s open items) on top of this same raster display."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
 
@@ -317,10 +348,18 @@ def plot_overlay(
     # the view cropped to just the overlay, hiding the surrounding base context entirely.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
     overlay.plot.imshow(ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, add_colorbar=False)
+    if show_overlay_outline:
+        outline = _valid_data_outline(overlay)
+        geopandas.GeoSeries([outline], crs=overlay.rio.crs).boundary.plot(
+            ax=ax, color=overlay_outline_color, linewidth=1.5
+        )
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_title(title)
-    ax.set_xlabel("longitude (deg)")
-    ax.set_ylabel("latitude (deg)")
+    # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
+    # `lunaserv.fetch_dem_and_ortho`'s docstring for why (a genuinely isotropic-meter grid, unlike
+    # Lunaserv's native unprojected geographic layer).
+    ax.set_xlabel("x (m, local projected CRS)")
+    ax.set_ylabel("y (m, local projected CRS)")
     fig.tight_layout()
     return fig

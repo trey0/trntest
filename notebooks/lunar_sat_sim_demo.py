@@ -163,6 +163,7 @@ mapproj_tif = session.run_mapproject(render_result, lunaserv_result)
 plotting.plot_overlay(
     lunaserv_result.ortho,
     mapproj_tif,
+    overlay_alpha=1.0,  # debug: fully opaque to see what mapproj_tif actually contains
     title="Synthetic render (mapprojected) over hillshade-based ortho",
 );
 

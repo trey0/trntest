@@ -21,7 +21,10 @@ from trntest.subprocess_utils import run_quiet
 
 @dataclasses.dataclass(frozen=True)
 class LunaservResult:
-    """DEM/ortho tiles fetched for a `Camera`'s footprint, as returned by `fetch_dem_and_ortho`."""
+    """DEM/ortho tiles fetched for a `Camera`'s footprint, as returned by `fetch_dem_and_ortho`.
+    `bbox` is in meters, in the per-camera local Orthographic CRS (`config.lunaserv_srs_template`)
+    both tiles were fetched in -- not lon/lat degrees (each `LunaservResult`'s tiles have their own
+    independent local CRS, centered on that camera's own footprint)."""
 
     ortho: Path
     dem: Path
@@ -51,18 +54,40 @@ def pad_bbox(bbox, fraction):
     return (minx - dx, miny - dy, maxx + dx, maxy + dy)
 
 
-def pixel_dims_for_gsd(bbox, target_gsd_m, moon_radius_m: float = DEFAULT_MOON_RADIUS_M):
-    """Choose width/height (pixels) so both axes sample at ~target_gsd_m, accounting for the
-    longitude/latitude physical-distance difference away from the equator (cos(lat) scaling)."""
-    minx, miny, maxx, maxy = bbox
-    lat_mid_rad = math.radians((miny + maxy) / 2.0)
-    m_per_deg_lat = math.radians(1.0) * moon_radius_m
-    m_per_deg_lon = m_per_deg_lat * math.cos(lat_mid_rad)
+def orthographic_xy_m(lon_deg, lat_deg, center_lon_deg, center_lat_deg, radius_m: float = DEFAULT_MOON_RADIUS_M):
+    """Forward spherical Orthographic projection (meters) of `(lon_deg, lat_deg)` relative to a
+    local tangent point `(center_lon_deg, center_lat_deg)` -- matches Lunaserv's `IAU2000:30166`
+    layer projection exactly (same formula, same Moon radius), so a bbox computed here lines up
+    with what the WMS server actually renders. Standard formula (e.g. Snyder 1987 eq. 20-3/20-4)."""
+    lon, lat = math.radians(lon_deg), math.radians(lat_deg)
+    lon0, lat0 = math.radians(center_lon_deg), math.radians(center_lat_deg)
+    x = radius_m * math.cos(lat) * math.sin(lon - lon0)
+    y = radius_m * (math.cos(lat0) * math.sin(lat) - math.sin(lat0) * math.cos(lat) * math.cos(lon - lon0))
+    return x, y
 
-    width_m = (maxx - minx) * m_per_deg_lon
-    height_m = (maxy - miny) * m_per_deg_lat
-    width_px = max(64, round(width_m / target_gsd_m))
-    height_px = max(64, round(height_m / target_gsd_m))
+
+def footprint_bbox_local_m(footprint_lonlat, center_lon_deg, center_lat_deg, radius_m: float = DEFAULT_MOON_RADIUS_M):
+    """Bounding box (minx, miny, maxx, maxy), in meters, of a camera's footprint corners under the
+    local Orthographic projection centered at `(center_lon_deg, center_lat_deg)` -- the metric
+    counterpart of `footprint_bbox_deg`, used to size the WMS request against Lunaserv's
+    `IAU2000:30166` local-CRS layers (see `fetch_dem_and_ortho`). No antimeridian-unwrapping
+    special case is needed here (unlike `footprint_bbox_deg`): the projection's own sin/cos terms
+    are already continuous across any longitude difference."""
+    corners = [v for v in footprint_lonlat.values() if v is not None]
+    xy = [orthographic_xy_m(lon, lat, center_lon_deg, center_lat_deg, radius_m) for lon, lat in corners]
+    xs = [x for x, _ in xy]
+    ys = [y for _, y in xy]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def pixel_dims_for_gsd(bbox, target_gsd_m):
+    """Choose width/height (pixels) so both axes sample at ~target_gsd_m. `bbox` is expected to
+    already be in physical meters (e.g. `footprint_bbox_local_m`'s output) -- unlike the old
+    lon/lat-degree bbox this replaced, no cos(lat) correction is needed here since the local
+    Orthographic CRS's axes are already isotropic in meters."""
+    minx, miny, maxx, maxy = bbox
+    width_px = max(64, round((maxx - minx) / target_gsd_m))
+    height_px = max(64, round((maxy - miny) / target_gsd_m))
     return width_px, height_px
 
 
@@ -156,9 +181,28 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    bbox = pad_bbox(footprint_bbox_deg(camera.footprint_lonlat_deg), config.dem_padding_fraction)
-    width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m, config.moon_radius_m)
-    print(f"ROI bbox (lon/lat deg): {bbox}, size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
+    center = camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
+    center_lon, center_lat = center
+    # A per-camera local Orthographic CRS (Lunaserv's `IAU2000:30166`, parametrized by this
+    # footprint's own center) rather than Lunaserv's native unprojected geographic grid
+    # (`IAU2000:30100`) -- the geographic grid's degree-pixels are anisotropic away from the
+    # equator (a degree of longitude covers less ground distance than a degree of latitude), and
+    # ASP's `mapproject --ref-map` (see `render.run_mapproject`) turned out not to preserve that
+    # anisotropy -- it copies the reference grid's x-resolution onto the y-axis too, silently
+    # stretching any `--ref-map`'d output vertically by up to `1/cos(lat)`. A local Orthographic
+    # projection has genuinely square meter pixels everywhere, so that mismatch (x-res != y-res on
+    # the reference grid) can't arise in the first place. Confirmed empirically (see
+    # docs/data-sources.md): `IAU2000:30166` reports the Moon's real 1,737,400 m radius (unlike the
+    # generic OGC `AUTO:42003` Orthographic code, which is hardcoded to Earth's WGS84 ellipsoid).
+    srs = config.lunaserv_srs_template.format(c_lon=center_lon, c_lat=center_lat)
+    bbox = pad_bbox(
+        footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m),
+        config.dem_padding_fraction,
+    )
+    width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m)
+    print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
+    print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
     ortho_path = cache.fetch_lunaserv_getmap(
         config.lunaserv_ortho_layer,
@@ -166,7 +210,7 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
         width,
         height,
         cache_root=config.cache_root,
-        srs=config.lunaserv_srs,
+        srs=srs,
         base_url=config.lunaserv_base_url,
         fmt="image/tiff",
     )
@@ -176,7 +220,7 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
         width,
         height,
         cache_root=config.cache_root,
-        srs=config.lunaserv_srs,
+        srs=srs,
         base_url=config.lunaserv_base_url,
         fmt="image/tiff; mode=32bit",
     )

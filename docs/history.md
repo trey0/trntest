@@ -627,6 +627,57 @@ real shared geographic coordinates.
   no GDAL-version friction between `geopandas`'s `pyogrio`/`fiona` backend and the system GDAL
   already required by `rasterio`.
 
+## Phase 17 (2026-08-07) — Fixed `plot_overlay`'s vertical distortion: switched to a local
+Orthographic CRS
+
+User noticed the Phase 16 overlay (viewed at `overlay_alpha=1.0` for clarity, up from the default
+`0.6`, specifically to make this easier to diagnose) looked like "a tiny portion of the image
+blown up to giant size" rather than a clean geo-aligned overlay, and suspected the map projection's
+scale was off.
+
+- **Root cause, confirmed empirically**: compared `rioxarray`'s view of the base ortho/DEM against
+  `run_mapproject`'s output for the same product. The base's resolution was `(0.0042093,
+  -0.0032980)` deg/px (correctly anisotropic — a degree of longitude covers less ground distance
+  than a degree of latitude at this product's ~38.4°N) but the `mapproject --ref-map` output's was
+  `(0.0042093, -0.0042093)` — **the same value on both axes**. ASP's `mapproject --ref-map` was
+  copying the reference grid's x-resolution onto the y-axis instead of preserving its actual
+  (different) y-resolution, stretching the reprojected overlay ~27.6% vertically
+  (`0.0042093/0.0032980 ≈ 1/cos(38.4°)`) relative to the base it's displayed against. This only
+  bites on a CRS whose degree-pixels are anisotropic (i.e. unprojected lon/lat away from the
+  equator) — a `--ref-map` reference grid with genuinely square pixels can't expose the bug, since
+  copying x onto y is then a no-op.
+- **Fix**: switched `lunaserv.fetch_dem_and_ortho` from Lunaserv's native unprojected geographic
+  grid (`IAU2000:30100`) to a **per-camera local Orthographic CRS** (`IAU2000:30166`, parametrized
+  by that camera footprint's own center lon/lat), still via a single WMS `GetMap` request — no
+  separate `gdalwarp` reprojection step added. This CRS has genuinely isotropic meter pixels
+  everywhere, so `mapproject --ref-map`'s x→y copying becomes harmless (x already equals the
+  correct y). Confirmed via a live GetMap + `gdalinfo` check that `IAU2000:30166` reports the Moon's
+  real 1,737,400 m radius — critical, since the generic OGC `AUTO:42003` Orthographic code (also
+  present in Lunaserv's `GetCapabilities`, and initially the more obvious choice) is hardcoded to
+  **Earth's** WGS84 ellipsoid (6,378,137 m) and would have silently misplaced every ground point by
+  the ~3.67x Earth/Moon radius ratio if used directly against lunar lon/lat — a much worse,
+  harder-to-notice bug than the one being fixed. `IAU2000:30166`/`30162`(+`scale`, Stereographic)
+  were found by diffing Lunaserv's `GetCapabilities` `<SRS>` list around the known-working
+  `IAU2000:30100`/`30101` entries — a parametrized `301xx` block (Moon) parallels a `199xx` block
+  (Mercury, ellipsoid 2,439,700 m) one digit over, both with placeholder `c_lon`/`c_lat`/`scale`
+  tokens for the parametrized entries.
+- **Verified end-to-end**: re-ran the full notebook after the fix; `mapproject --ref-map`'s output
+  resolution now matches the base to ~0.03% (residual is independent-axis pixel-count rounding, not
+  a systematic bug — an entirely different, much smaller-order effect). The overlay figure at
+  `overlay_alpha=1.0` now shows properly circular craters (not vertically squashed) and blends
+  seamlessly against the base ortho.
+- **Code changes**: `lunaserv.py` gained `orthographic_xy_m`/`footprint_bbox_local_m` (forward
+  spherical Orthographic projection, matching Lunaserv's own formula/radius so a locally-computed
+  bbox lines up with what the WMS server renders) and a simplified `pixel_dims_for_gsd` (no cos(lat)
+  correction needed against an already-isotropic metric bbox). `footprint_bbox_deg` is kept
+  (still used for a human-readable diagnostic print, still tested) even though it's no longer used
+  to size the WMS request. `config.py`'s `lunaserv_srs` field/`DEFAULT_LUNASERV_SRS` constant were
+  renamed to `lunaserv_srs_template`/`DEFAULT_LUNASERV_SRS_TEMPLATE` (now a `{c_lon}`/`{c_lat}`
+  format string, filled in per camera). `LunaservResult.bbox` is now in meters (that camera's own
+  local CRS), not lon/lat degrees — no other code read that field, so this didn't ripple further.
+  `plotting.plot_overlay`'s axis labels updated from `"longitude/latitude (deg)"` to `"x/y (m,
+  local projected CRS)"` to match.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current

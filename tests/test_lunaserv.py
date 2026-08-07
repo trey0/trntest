@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -24,6 +26,56 @@ def test_footprint_bbox_deg_skips_none_entries():
     footprint = {"a": (170.0, 40.0), "b": None, "c": (172.0, 41.0)}
     bbox = lunaserv.footprint_bbox_deg(footprint)
     assert bbox == pytest.approx((170.0, 40.0, 172.0, 41.0))
+
+
+def test_orthographic_xy_m_center_is_origin():
+    x, y = lunaserv.orthographic_xy_m(30.0, -12.0, center_lon_deg=30.0, center_lat_deg=-12.0)
+    assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-6)
+
+
+def test_orthographic_xy_m_small_offsets_match_arc_length():
+    # Near the tangent point, the projection is ~locally flat -- a small angular offset along one
+    # axis should map to ~radius * offset_rad along the matching axis, ~0 on the other.
+    radius_m = 1_737_400.0
+    x_lon, y_lon = lunaserv.orthographic_xy_m(1.0, 0.0, center_lon_deg=0.0, center_lat_deg=0.0, radius_m=radius_m)
+    assert x_lon == pytest.approx(radius_m * math.radians(1.0), rel=1e-4)
+    assert y_lon == pytest.approx(0.0, abs=1.0)
+
+    x_lat, y_lat = lunaserv.orthographic_xy_m(0.0, 1.0, center_lon_deg=0.0, center_lat_deg=0.0, radius_m=radius_m)
+    assert y_lat == pytest.approx(radius_m * math.radians(1.0), rel=1e-4)
+    assert x_lat == pytest.approx(0.0, abs=1.0)
+
+
+def test_footprint_bbox_local_m_symmetric_footprint():
+    radius_m = 1_737_400.0
+    center_lon, center_lat = 10.0, 5.0
+    footprint = {
+        "center": (center_lon, center_lat),
+        "top_left": (center_lon - 0.1, center_lat + 0.1),
+        "top_right": (center_lon + 0.1, center_lat + 0.1),
+        "bottom_left": (center_lon - 0.1, center_lat - 0.1),
+        "bottom_right": (center_lon + 0.1, center_lat - 0.1),
+    }
+    minx, miny, maxx, maxy = lunaserv.footprint_bbox_local_m(footprint, center_lon, center_lat, radius_m)
+    # Roughly symmetric around the origin (center) for a footprint symmetric in lon/lat.
+    assert minx == pytest.approx(-maxx, rel=1e-3)
+    assert miny == pytest.approx(-maxy, rel=1e-3)
+    assert maxx > 0
+    assert maxy > 0
+
+
+def test_footprint_bbox_local_m_skips_none_entries():
+    footprint = {"a": (10.0, 5.0), "b": None, "c": (10.2, 5.2)}
+    bbox = lunaserv.footprint_bbox_local_m(footprint, center_lon_deg=10.0, center_lat_deg=5.0)
+    assert len(bbox) == 4
+
+
+def test_pixel_dims_for_gsd_isotropic_for_square_bbox():
+    # Unlike the old lon/lat-degree version, a square meter bbox should give equal width/height --
+    # no cos(lat) correction needed since the local Orthographic CRS is already isotropic.
+    bbox = (-10_000.0, -10_000.0, 10_000.0, 10_000.0)
+    width_px, height_px = lunaserv.pixel_dims_for_gsd(bbox, target_gsd_m=100.0)
+    assert width_px == height_px == 200
 
 
 def test_despeckle_replaces_isolated_spike():

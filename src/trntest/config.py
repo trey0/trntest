@@ -31,7 +31,14 @@ DEFAULT_SCRATCH_DIR = Path("/workspace/scratch")
 
 DEFAULT_NAIF_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/"
 DEFAULT_LUNASERV_BASE_URL = "https://wms.im-ldi.com/lunaserv/lunaserv_stage?"
-DEFAULT_LUNASERV_SRS = "IAU2000:30100"
+# `IAU2000:30166` is Lunaserv's per-request-parametrized local Orthographic CRS (real Moon radius
+# 1,737,400 m, confirmed via a live GetMap + gdalinfo check -- see docs/data-sources.md) --
+# `{c_lon}`/`{c_lat}` are filled in per camera footprint (`lunaserv.fetch_dem_and_ortho`) with that
+# footprint's own center, so the fetched DEM/ortho tile has genuinely isotropic meter pixels
+# everywhere. Replaced the previously-used native unprojected geographic grid (`IAU2000:30100`),
+# whose degree-pixels are anisotropic away from the equator -- see `lunaserv.fetch_dem_and_ortho`'s
+# docstring for why that anisotropy matters (ASP `mapproject --ref-map` doesn't preserve it).
+DEFAULT_LUNASERV_SRS_TEMPLATE = "IAU2000:30166,9001,{c_lon:.6f},{c_lat:.6f}"
 # "LROC WAC 643 nm Normalized Reflectance" -- a >100,000-image photometric composite, not the raw
 # ~15,000-image "luna_wac_global" mosaic -- chosen for having ~4x fewer isolated single-pixel
 # outliers at comparable resolution (see docs/data-sources.md). sat_sim does no illumination
@@ -83,7 +90,7 @@ class TrntestConfig:
 
     naif_base_url: str = DEFAULT_NAIF_BASE_URL
     lunaserv_base_url: str = DEFAULT_LUNASERV_BASE_URL
-    lunaserv_srs: str = DEFAULT_LUNASERV_SRS
+    lunaserv_srs_template: str = DEFAULT_LUNASERV_SRS_TEMPLATE
     lunaserv_ortho_layer: str = DEFAULT_LUNASERV_ORTHO_LAYER
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET

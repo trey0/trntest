@@ -38,7 +38,7 @@ product to this.
 | `illumination.py` | Sun/orbit geometry via real SPICE functions — sun elevation/azimuth, sub-solar point, ascending-node search (`gfposc`). |
 | `catalog.py` | PDS ODE REST API client — lists real EDR/CDR products by time range, matches EDR↔CDR pairs. |
 | `dataset.py` | Public multi-image API: `select_dataset()` (catalog-driven selection), `generate_dataset()` (renders selected images through the single-image pipeline). |
-| `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint; antimeridian-safe. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
+| `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint, in a per-camera local Orthographic CRS (`IAU2000:30166`, real Moon radius) centered on that footprint — genuinely isotropic meter pixels, unlike Lunaserv's native geographic grid. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product. |
 | `isis_wac.py` | Alternative to `wac.py`: reprojects a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) instead of manual framelet-stacking. Not yet reprojected onto the DEM (`mapproject`, an open item below). |
@@ -56,8 +56,11 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
   directly; sanity-check against the known GLD100/LOLA convention.
-- Whether Lunaserv's native projection is directly usable by `sat_sim` or a reprojection step is
-  actually required after all.
+- **Resolved**: Lunaserv's native geographic projection is fine for `sat_sim`'s forward render, but
+  turned out to break the `mapproject --ref-map` round-trip (anisotropic degree-pixels away from the
+  equator, not preserved by `--ref-map`) — fixed by requesting a per-camera local Orthographic CRS
+  directly from Lunaserv (`IAU2000:30166`, still a single WMS fetch, no separate `gdalwarp` step).
+  See `docs/data-sources.md`'s Lunaserv WMS section and `docs/history.md`'s dated entry.
 - **Open, not yet resolved**: whether a real WAC swath can be reprojected onto the DEM via a
   genuine ISIS/CSM camera model (`mapproject`) + `sat_sim`, as a principled alternative to `wac.py`'s
   manual framelet-stacking. The pipeline works end-to-end on real data through `framestitch`, but

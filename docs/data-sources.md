@@ -11,17 +11,33 @@ these choices were reached (including wrong turns), see `docs/history.md`.
 - `GetCapabilities`: `?request=GetCapabilities&service=WMS&version=1.1.1`
 - Formats supported by GetMap include `image/tiff` and `image/tiff; mode=32bit` (float32 —
   needed for real elevation values, not a colorized/stretched render).
-- SRS: `IAU2000:30100` works for GetMap on both layers below and returns a plain geographic
-  (lon/lat, degrees) raster on a **sphere** of radius 1737400 m (GDAL reports it as an unprojected
-  `GEOGCRS`) — i.e. this is the layers' native, unprojected grid; no reprojection needed before
-  feeding `sat_sim`.
+- SRS: `IAU2000:30100` returns a plain geographic (lon/lat, degrees) raster on a **sphere** of
+  radius 1737400 m (GDAL reports it as an unprojected `GEOGCRS`) — the layers' native, unprojected
+  grid. **No longer what `src/trntest/lunaserv.py` actually requests** (see the local-CRS entry
+  below) but still useful as a plain lookup/degrees SRS if needed ad hoc.
+- **`fetch_dem_and_ortho` requests a per-camera local Orthographic CRS, not the native geographic
+  grid**: `IAU2000:30166,9001,{c_lon},{c_lat}` (`c_lon`/`c_lat` = that camera footprint's own
+  center, filled in via `config.lunaserv_srs_template`). Confirmed via a live GetMap + `gdalinfo`
+  check that this reports the Moon's real radius (`ELLIPSOID["unknown",1737400,0,...]`) and genuinely
+  isotropic meter pixels (`Pixel Size = (500.0, -500.0)` for a 500 m/px test request) — unlike the
+  generic OGC `AUTO:42003` Orthographic code, which is hardcoded to **Earth's** WGS84 ellipsoid
+  (`ELLIPSOID["WGS 84",6378137,...]`) and would silently misplace every ground point by the
+  Earth/Moon radius ratio (~3.67x) if used directly against lunar lon/lat. `IAU2000:30166` is one of
+  a parametrized family Lunaserv exposes per body/projection — discovered by diffing
+  `GetCapabilities`' `<SRS>` list around the known-working `IAU2000:30100`/`30101` entries (a
+  parallel `301xx` block mirrors a `199xx` Mercury block one digit over, with placeholder
+  `c_lon`/`c_lat`/`scale` tokens for the parametrized ones); `30162`/`30163` (`+scale`) are the
+  matching lunar Stereographic variants, untried here.
+  **Why the switch**: the native geographic grid's degree-pixels are anisotropic away from the
+  equator (a degree of longitude covers less ground distance than a degree of latitude); ASP's
+  `mapproject --ref-map` (see below) turned out not to preserve that anisotropy when reprojecting
+  onto it, silently stretching the output. A local Orthographic CRS has square meter pixels
+  everywhere, so that failure mode can't arise. See `docs/history.md`'s dated entry for the full
+  investigation.
 - **Gotcha:** `luna_wac_dtm_numeric_meters_absolute`'s pixel values are **planetocentric radius in
   meters** (~1.73-1.74 million), not height-above-datum. `src/trntest/lunaserv.py` subtracts the
   reference radius (`MOON_RADIUS_M = 1737400.0`) before handing the DEM to ASP. Feeding the raw
   radius values straight to ASP would silently double-count the planet's radius.
-- Near the poles, a lon/lat bbox is very non-square in physical km (1° longitude shrinks by
-  `cos(lat)`); `pixel_dims_for_gsd()` in `src/trntest/lunaserv.py` computes width/height from the
-  actual physical footprint size so both axes sample at the same ground resolution.
 - **Antimeridian:** LRO's near-polar orbit means a camera footprint can straddle ±180° longitude.
   GetMap handles an out-of-range bbox (e.g. `170,40,190,45`) correctly — same real pixel data as the
   in-range equivalent (`-190,40,-170,45`); longitude is treated cyclically, not clipped to
