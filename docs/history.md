@@ -747,6 +747,18 @@ Phase 12) might be a no-data issue.
   edge-clamping, fully-valid passthrough, fully-invalid-row NaN fallback). Verified end-to-end via a
   full notebook re-run — the grid pattern is gone from the displayed figure with no visible loss of
   real detail.
+- **Follow-up**: `plot_isis_comparison`'s own contrast stretch (`vmin`/`vmax` from a 2nd/98th
+  percentile of the real panel, each panel auto-normalized independently) had the same problem
+  `plot_comparison` was already fixed for (`cc7b369`, prior session): an affine/percentile stretch
+  independently renormalizes each panel's own contrast, hiding any real relative-brightness
+  difference between them — and here the two panels are on completely different numeric scales to
+  begin with (`real`, ISIS-calibrated I/F, ~0.01-0.2; `synthetic`, a rendered-texture brightness
+  value, ~0-255), not just different units of the same thing. Ported `plot_comparison`'s exact
+  technique: a single multiplicative scale at the median (`median(synthetic_valid) /
+  median(real_valid)`, computed over the real *unfilled* valid pixels so the dead-column fill above
+  can't skew it), both panels then displayed on the same fixed `vmin=0, vmax=255`. Verified via
+  another full notebook re-run — the two panels now read as comparably bright at a glance, not just
+  individually "nicely stretched."
 
 ## Historical derivations
 

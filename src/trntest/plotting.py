@@ -277,15 +277,25 @@ def plot_isis_comparison(
     reused as-is, not recomputed -- `tie_points.py`'s "crop_px" was never CSM/ISD-based to begin
     with (pure SPICE frame-index geometry), and its row/col origin and `wac.VIS_BLOCK_HEIGHT`
     scaling are exactly what `crop_window_for_camera` already uses, so the same pixel coordinates
-    land correctly in this window with no transformation."""
+    land correctly in this window with no transformation.
+
+    Brightness-matches the real panel to the synthetic one via the same single-multiplicative-
+    median-scale technique `plot_comparison` uses (see its docstring for the full rationale) -- not
+    an affine/percentile stretch, which would independently renormalize each panel's own contrast
+    and hide any real relative-brightness difference between them. Necessary here for the same
+    reason: the ISIS cube (`real`, calibrated I/F, ~0.01-0.2) and the synthetic render (`synthetic`,
+    a rendered-texture brightness value, ~0-255) are on entirely different numeric scales, not just
+    different units of the same thing."""
     synthetic = read_raster_band(rendered_tif_path)
     real = read_raster_band(stitched_cub_path, window=window)
     valid = valid_pixel_mask(real)
-    # vmin/vmax come from the real valid data, before any display-only fill -- the fill below is
-    # cosmetic (see _fill_dead_columns_for_display's docstring) and shouldn't skew the contrast
-    # stretch.
-    vmin, vmax = np.percentile(real[valid], [2, 98]) if valid.any() else (None, None)
-    real_display = _fill_dead_columns_for_display(real, valid) if valid.any() else real
+    real_filled = _fill_dead_columns_for_display(real, valid) if valid.any() else real
+    # Median computed over the real, un-filled valid pixels only (matching plot_comparison's
+    # technique exactly) -- the fill above is a display convenience for isolated dead columns
+    # (see _fill_dead_columns_for_display's docstring), not something that should influence the
+    # brightness match.
+    scale = np.median(synthetic[valid_pixel_mask(synthetic)]) / np.median(real[valid]) if valid.any() else 1.0
+    real_display = real_filled * scale
 
     h_syn, w_syn = synthetic.shape
     h_crop, w_crop = real.shape
@@ -297,10 +307,10 @@ def plot_isis_comparison(
     crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 6))
-    axes[0].imshow(synthetic_rot, cmap="gray", extent=[0, synthetic_width_km, synthetic_width_km, 0])
+    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_width_km, 0])
     axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
-    axes[1].imshow(real_rot, cmap="gray", vmin=vmin, vmax=vmax, extent=[0, crop_width_km, crop_height_km, 0])
-    axes[1].set_title("Real WAC (ISIS-processed, north-up)")
+    axes[1].imshow(real_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
+    axes[1].set_title("Real WAC (ISIS-processed, brightness-matched to synthetic, north-up)")
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
