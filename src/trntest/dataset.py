@@ -2,7 +2,12 @@
 catalog for a multi-orbit window with favorable illumination geometry and returns a throttled,
 illumination-filtered image list; `generate_dataset()` takes that list and generates real synthetic
 images for it, reusing the existing single-image pipeline (`camera.build_camera`,
-`lunaserv.fetch_dem_and_ortho`, `render.run_sat_sim`) unchanged, just parameterized per image.
+`lunaserv.fetch_dem_and_ortho`, `render.run_sat_sim`), just parameterized per image.
+`generate_dataset()` also computes each image's real WAC crop footprint
+(`tie_points.crop_footprint_corners_for_camera`) and passes it to `fetch_dem_and_ortho` so the
+DEM/ortho AOI is always sized to cover both the synthetic camera's own footprint and the real WAC
+crop's -- not just a notebook-local concern, since any caller of `generate_dataset()` may want to
+display the real WAC crop later (see `GenerationResult.crop_footprint`).
 """
 
 import dataclasses
@@ -11,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from trntest import camera, catalog, illumination, lunaserv, render, spice_kernels
+from trntest import camera, catalog, illumination, lunaserv, render, spice_kernels, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import LunaservResult
@@ -51,6 +56,9 @@ class GenerationResult:
     # tie-points/orientation calls downstream, e.g. in the notebook
     frame_timing: FrameTiming
     camera: Camera
+    crop_footprint: dict  # the real WAC crop's own footprint (tie_points.crop_footprint_corners_for_camera)
+    # -- computed once here (needed to size lunaserv_result's own AOI fetch below) and reused by
+    # Phase 6, rather than recomputed later
     lunaserv_result: LunaservResult
     render_result: RenderResult
 
@@ -304,7 +312,10 @@ def generate_dataset(
             )
             built_camera = camera.build_camera(per_image_config)
             frame_timing = camera.fetch_frame_timing(per_image_config)
-            lunaserv_result = lunaserv.fetch_dem_and_ortho(built_camera, per_image_config)
+            crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, built_camera, per_image_config)
+            lunaserv_result = lunaserv.fetch_dem_and_ortho(
+                built_camera, per_image_config, extra_footprint_lonlat_deg=crop_footprint
+            )
             render_result = render.run_sat_sim(built_camera, lunaserv_result, per_image_config)
         except Exception as exc:  # noqa: BLE001 -- one bad image shouldn't abort the whole batch
             print(f"generate_dataset: FAILED {product_id}: {exc}")
@@ -316,6 +327,7 @@ def generate_dataset(
                 config=per_image_config,
                 frame_timing=frame_timing,
                 camera=built_camera,
+                crop_footprint=crop_footprint,
                 lunaserv_result=lunaserv_result,
                 render_result=render_result,
             )

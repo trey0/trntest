@@ -54,6 +54,12 @@ def pad_bbox(bbox, fraction):
     return (minx - dx, miny - dy, maxx + dx, maxy + dy)
 
 
+def union_bbox(bbox1, bbox2):
+    minx1, miny1, maxx1, maxy1 = bbox1
+    minx2, miny2, maxx2, maxy2 = bbox2
+    return min(minx1, minx2), min(miny1, miny2), max(maxx1, maxx2), max(maxy1, maxy2)
+
+
 def orthographic_xy_m(lon_deg, lat_deg, center_lon_deg, center_lat_deg, radius_m: float = DEFAULT_MOON_RADIUS_M):
     """Forward spherical Orthographic projection (meters) of `(lon_deg, lat_deg)` relative to a
     local tangent point `(center_lon_deg, center_lat_deg)` -- matches Lunaserv's `IAU2000:30166`
@@ -177,7 +183,27 @@ def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path,
         dst.write(shaded, 1)
 
 
-def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> LunaservResult:
+def fetch_dem_and_ortho(
+    camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
+) -> LunaservResult:
+    """`extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
+    own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
+    crop footprint, which isn't always the same size/shape as the synthetic camera's own FOV. Keeps
+    the DEM/ortho fetch big enough to cover both Phase 5 and Phase 6's real ground needs in one
+    request, rather than risking a real-WAC display later running past the edge of what was
+    actually fetched here.
+
+    `extra_footprint_lonlat_deg` is a ray-traced estimate (`crop_footprint_corners`'s idealized
+    ±half-angle rays at exactly 2 along-track positions), not the real mapprojected WAC crop's own
+    actual extent (only knowable after `isis_wac.run_mapproject`, which itself needs this fetch to
+    already exist -- a genuine chicken-and-egg constraint the real crop can drift slightly past on
+    one edge). Tried doubling `dem_padding_fraction`'s effect specifically on this side to close
+    that gap -- confirmed empirically it doesn't actually help (the margin on the tight edge stayed
+    ~0 regardless of 261km vs. 410km total fetch width, since the drift is directional/asymmetric,
+    not just "not enough padding") while meaningfully increasing fetch time (a real WMS timeout hit
+    during testing) -- reverted. The remaining worst-case gap measured ~120m, close to a single
+    ~100m/px DEM pixel -- not the comfortable margin `pad_bbox` gives everywhere else, but not a
+    meaningfully visible nodata gap in practice either."""
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,10 +222,13 @@ def fetch_dem_and_ortho(camera: Camera, config: TrntestConfig | None = None) -> 
     # docs/data-sources.md): `IAU2000:30166` reports the Moon's real 1,737,400 m radius (unlike the
     # generic OGC `AUTO:42003` Orthographic code, which is hardcoded to Earth's WGS84 ellipsoid).
     srs = config.lunaserv_srs_template.format(c_lon=center_lon, c_lat=center_lat)
-    bbox = pad_bbox(
-        footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m),
-        config.dem_padding_fraction,
-    )
+    unpadded_bbox = footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m)
+    if extra_footprint_lonlat_deg is not None:
+        unpadded_bbox = union_bbox(
+            unpadded_bbox,
+            footprint_bbox_local_m(extra_footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m),
+        )
+    bbox = pad_bbox(unpadded_bbox, config.dem_padding_fraction)
     width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m)
     print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
     print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")

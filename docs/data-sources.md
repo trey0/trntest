@@ -442,6 +442,29 @@ be re-derived from scratch if picked up again.
   (bare model-name string on line 1, then JSON — see the `sat_sim`/ISD note above), ALE's
   `isd_generate` output is **plain, direct JSON** with `name_model` as a top-level key — no line to
   skip.
+- **`isd_generate -i` on an ISIS-`crop`ped Pushframe cube produces a wrong-but-plausible-looking
+  ISD** — confirmed empirically (see `docs/history.md`'s dated Phase 24 entry for the full
+  investigation): the generated `starting_ephemeris_time`/`ending_ephemeris_time`/
+  `center_ephemeris_time` and `instrument_pointing.ck_table_start_time`/`ck_table_end_time` all read
+  as if the crop still started at the *original*, pre-`crop` cube's first line — ISIS's `crop` app
+  (even with its default `PROPSPICE=true`) does not itself re-anchor a Pushframe cube's per-line
+  pointing cache to the new starting line (it does correctly update `ck_table_original_size` to the
+  cropped line count, just not the *start* time). Left unpatched, `mapproject`'s output lands on
+  completely wrong ground geometry (measured 0.44 pixel correlation against the known-good, same
+  real ground area from the full-cube mapproject; should be ~1.0) despite running without any error
+  and looking like plausible terrain. Neither re-running `spiceinit` on the cropped cube, nor
+  cropping earlier in the pipeline (the calibrated parity cubes, before `framestitch`, rather than
+  the stitched cube after) changes this — both produce the exact same wrong result, so the bug isn't
+  about pipeline ordering. **Fix** (`isis_wac.run_isd_generate`): patch the 5 scalar time fields
+  above by `time_offset_s = (line_offset / VIS_BLOCK_HEIGHT) * isd["interframe_delay"]` after
+  generation — the underlying `instrument_pointing.ephemeris_times`/`quaternions`/
+  `angular_velocities` arrays are untouched by `crop` (confirmed identical length before/after crop)
+  and still hold the entire pass's real, absolute-time-tagged samples, so correcting just the scalar
+  time fields is sufficient for the CSM model to interpolate the correct poses; fixed the
+  correlation to 0.999. **Also confirmed**: `lrowaccal` explicitly refuses to run on an
+  already-`crop`ped cube ("USER ERROR: This application can not be run on any image that has been
+  geometrically transformed ... or cropped") — cropping must happen after calibration/`framestitch`,
+  not before.
 - **`mapproject -t csm <dem> <cub> <json> <out>`** works directly against the unstitched per-parity
   cube + its own ISD (no separate stitched-cube pairing step needed for this) — confirmed on real
   data: ASP's bundled GDAL reads `.cub` natively (no `isis2gdal`/conversion needed for the DEM

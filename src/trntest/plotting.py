@@ -256,14 +256,16 @@ def plot_isis_comparison(
     tie_point_results: dict,
     rendered_tif_path,
     stitched_cub_path,
-    window: rasterio.windows.Window,
     rotations: DisplayRotations,
+    window: rasterio.windows.Window | None = None,
 ):
     """Synthetic render next to a same-real-footprint crop of the ISIS-processed WAC image
-    (`isis_wac.run_pipeline`/`isis_wac.crop_window_for_camera`) -- an ad hoc real-km/north-up
-    comparison, tie-pointed the same way `plot_comparison`'s wac.py version is (see below), not true
-    pixel-for-pixel geo-registration; for that, see `plot_overlay`'s `mapproject`-based overlay of
-    this same ISIS-processed cube (`isis_wac.run_mapproject`) instead.
+    (`isis_wac.crop_for_camera`) -- an ad hoc real-km/north-up comparison, tie-pointed the same way
+    `plot_comparison`'s wac.py version is (see below), not true pixel-for-pixel geo-registration;
+    for that, see `plot_overlay`'s `mapproject`-based overlay of this same ISIS-processed cube
+    (`isis_wac.run_mapproject`) instead. `window` is optional -- `stitched_cub_path` is typically
+    already `isis_wac.crop_for_camera`'s real, standalone crop cube (no further windowing needed);
+    pass a `rasterio.windows.Window` only if handed the full, uncropped stitched cube instead.
 
     Applies the same north-up display rotation and real-km extent scaling `plot_comparison` already
     uses, for the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent
@@ -499,7 +501,6 @@ def plot_overlay(
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
-    zoom_footprint_lonlat_deg: dict | None = None,
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
     geographic coordinates in each file's own georeferencing drive the plot -- unlike
@@ -516,47 +517,50 @@ def plot_overlay(
     database; see `docs/plan.md`'s open items) on top of this same raster display.
     `fill_overlay_nodata` applies `_fill_overlay_nodata_for_display` before the overlay is drawn --
     display only (the outline above is still traced from the real, unfilled data, so it reflects the
-    genuine sensor footprint, not the filled result).
+    genuine sensor footprint, not the filled result). Both base and overlay are displayed with a
+    `vmin=0`/`vmax=`99.9th-percentile linear stretch (same technique as `plot_render_vs_basemap`'s
+    "6A darkness" fix) rather than `imshow`'s naive min/max autoscale -- without it, a real calibrated
+    overlay's actual valid-data footprint can visually read as a thin sliver near `show_overlay_outline`'s
+    boundary line rather than the majority of the frame it actually covers, since the naive-autoscaled
+    overlay blends into the base almost invisibly at `overlay_alpha`.
 
-    `zoom_footprint_lonlat_deg`, if given, restricts the displayed extent to that footprint's own
-    bounding box (via `lunaserv.footprint_bbox_local_m`, same technique `plot_render_vs_basemap`
-    uses) instead of the base's full extent -- needed when the overlay itself covers real ground far
-    beyond the specific footprint actually being compared (e.g. `isis_wac.run_mapproject` reprojects
-    the *entire* stitched cube, not just the square crop `isis_wac.crop_window_for_camera` restricts
-    the side-by-side comparison to -- without this, the overlay panel shows a long strip while the
-    matching side-by-side panel shows only a small square, confusingly mismatched extents for what's
-    meant to be the same comparison)."""
+    `overlay_raster_path` is expected to already cover only the real ground footprint actually being
+    compared (e.g. `isis_wac.crop_for_camera`'s real, single crop cube run through
+    `isis_wac.run_mapproject`), the same way the synthetic render's own mapprojected overlay already
+    does (`sat_sim` only ever renders the camera's own FOV, never more) -- no view-restricting
+    parameter is needed here as a result. An earlier version of this function tried to paper over a
+    too-large overlay (the *entire* WAC swath, not just the crop) with a `zoom_footprint_lonlat_deg`
+    parameter that only restricted the displayed *view*, leaving `show_overlay_outline`'s trace still
+    running on the full un-clipped raster -- confirmed not to work (the outline still only showed a
+    partial cross-section of a much longer boundary, not a closed shape) and removed; see
+    `docs/history.md`'s dated entry for the full story."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
 
+    # Linear stretch through 0 (vmin=0, vmax=99.9th percentile), same technique/rationale as
+    # `plot_render_vs_basemap`'s "6A darkness" fix -- without it, `imshow`'s naive min/max autoscale
+    # (esp. on a real calibrated-I/F overlay, e.g. ~0.02-0.17 with a handful of brighter outliers)
+    # compresses the bulk of genuine overlay data down near black. At `overlay_alpha` blended over a
+    # much better-exposed base, that reads as a barely-visible tint.
+    base_vmin, base_vmax = 0, np.nanpercentile(base.values, 99.9)
+    overlay_vmin, overlay_vmax = 0, np.nanpercentile(overlay_display.values, 99.9)
+
     fig, ax = plt.subplots(figsize=(9, 9))
-    base.plot.imshow(ax=ax, cmap="gray", add_colorbar=False)
+    base.plot.imshow(ax=ax, cmap="gray", vmin=base_vmin, vmax=base_vmax, add_colorbar=False)
     # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
     # restoring the base's own (larger) extent afterward, the overlay's plot call (its extent is
     # necessarily smaller, since it's the reprojected render, not the padded fetch AOI) would leave
     # the view cropped to just the overlay, hiding the surrounding base context entirely.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    overlay_display.plot.imshow(ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, add_colorbar=False)
+    overlay_display.plot.imshow(
+        ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, vmin=overlay_vmin, vmax=overlay_vmax, add_colorbar=False
+    )
     if show_overlay_outline:
         outline = _valid_data_outline(overlay)
         geopandas.GeoSeries([outline], crs=overlay.rio.crs).boundary.plot(
             ax=ax, color=overlay_outline_color, linewidth=1.5
         )
-    if zoom_footprint_lonlat_deg is not None:
-        # Must project into `base`'s own local-CRS origin (its `lon_0`/`lat_0`, i.e. the camera's
-        # overall footprint center that `lunaserv.fetch_dem_and_ortho` centered this CRS on) --
-        # *not* `zoom_footprint_lonlat_deg`'s own center. The crop's footprint center is a
-        # separately ray-traced point (see `tie_points.crop_footprint_corners`) that generally
-        # differs from the camera's, so using it as the projection origin here would compute a
-        # bbox in a different local-meters frame than the one `base`/`overlay` are actually plotted
-        # in -- silently offsetting the "zoomed" window from where the real data is, rather than
-        # sizing it correctly around it.
-        crs_params = base.rio.crs.to_dict()
-        xlim_min, ylim_min, xlim_max, ylim_max = lunaserv.footprint_bbox_local_m(
-            zoom_footprint_lonlat_deg, crs_params["lon_0"], crs_params["lat_0"]
-        )
-        xlim, ylim = (xlim_min, xlim_max), (ylim_min, ylim_max)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_title(title)

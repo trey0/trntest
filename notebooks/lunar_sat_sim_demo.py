@@ -33,7 +33,7 @@ session.config.output_dir.mkdir(parents=True, exist_ok=True)
 # %% [markdown]
 # ## Phase 2: catalog-driven image selection + SPICE-derived camera pose
 #
-# `session.select_dataset()` queries the real LROC catalog (via the PDS Geosciences Node ODE REST API) for a multi-orbit window with favorable illumination geometry and good WAC data availability, and returns a throttled, illumination-filtered image list (see `trntest.dataset`/`trntest.illumination`). `session.generate_dataset(images, limit=1)` then poses a pinhole camera for the first selected image, using LRO's real position/orientation (from NAIF SPICE kernels, in the `MOON_ME` frame) at that instant, and runs the rest of the pipeline (DEM/ortho fetch, `sat_sim` render) in one call.
+# `session.select_dataset()` queries the real LROC catalog (via the PDS Geosciences Node ODE REST API) for a multi-orbit window with favorable illumination geometry and good WAC data availability, and returns a throttled, illumination-filtered image list (see `trntest.dataset`/`trntest.illumination`). `session.generate_dataset(images, limit=1)` then poses a pinhole camera for the first selected image, using LRO's real position/orientation (from NAIF SPICE kernels, in the `MOON_ME` frame) at that instant, and runs the rest of the pipeline (DEM/ortho fetch, `sat_sim` render) in one call. The DEM/ortho fetch AOI is sized to cover both the synthetic camera's own footprint *and* the real WAC crop's footprint (`GenerationResult.crop_footprint`, reused directly in Phase 6 below) in one request, so nothing displayed later runs past the edge of what was actually fetched here.
 
 # %%
 images = session.select_dataset(max_search_days=7)
@@ -45,6 +45,7 @@ result = results[0]
 
 camera = result.camera
 frame_timing = result.frame_timing
+crop_footprint = result.crop_footprint
 session = trntest.Session(config=result.config)
 
 print(json.dumps(dataclasses.asdict(camera), indent=2, default=str))
@@ -163,20 +164,19 @@ plotting.plot_overlay(
 # %% [markdown]
 # ## Phase 6: does the real, ISIS-processed WAC crop's geometry check out?
 #
-# The same two-style geometry check as Phase 5, for the other TRN test image candidate: a roughly square center crop of the product's real WAC EDR, processed through ISIS3's own pipeline instead of `sat_sim`. WAC is a push-frame camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS @ 14 TDI lines), and getting a usable, calibrated image out of the raw EDR takes real processing. `isis_wac.run_pipeline()` steps the product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain, not a hand-derived byte offset. `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant. The resulting `stitched` cube is reused for both 6A and 6B below.
+# The same two-style geometry check as Phase 5, for the other TRN test image candidate: a roughly square center crop of the product's real WAC EDR, processed through ISIS3's own pipeline instead of `sat_sim`. WAC is a push-frame camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS @ 14 TDI lines), and getting a usable, calibrated image out of the raw EDR takes real processing. `isis_wac.run_pipeline()` steps the product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain, not a hand-derived byte offset. `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant.
+#
+# `isis_wac.crop_for_camera()` then crops `stitched` (via ISIS's own `crop` app) down to the real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) -- a single, real "WAC crop" cube that both 6A (raw display, right below) and 6B (mapprojected, further below) derive from, the same way 5A/5B both already derive from one synthetic render with no special-casing. `crop_footprint` (from Phase 2's `result.crop_footprint` -- `tie_points.crop_footprint_corners_for_camera`'s independent ray-trace of that same crop's real ground footprint, computed inside `generate_dataset()` since it's also needed there to size the DEM/ortho fetch) is what `plot_render_vs_basemap` crops the matching basemap area to.
 
 # %%
 stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
-
-# %% [markdown]
-# `isis_wac.crop_window_for_camera()` picks the real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) this crop covers. `session.crop_footprint_corners()` independently ray-traces that same crop's real ground footprint (corners + center) from real SPICE geometry -- not assumed identical to the synthetic camera's own footprint -- for `plot_render_vs_basemap` to crop the matching basemap area.
+wac_crop = isis_wac.crop_for_camera(stitched, camera, session.config)
 
 # %%
-crop_footprint = session.crop_footprint_corners(frame_timing, camera)
 crop_width_km = camera.cross_track_width_km
 crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
 plotting.plot_render_vs_basemap(
-    plotting.read_raster_band(stitched.cub_path, window=isis_wac.crop_window_for_camera(camera)),
+    plotting.read_raster_band(wac_crop.cub_path),
     rotations.k_crop,
     crop_width_km,
     crop_height_km,
@@ -189,20 +189,19 @@ plotting.plot_render_vs_basemap(
 );
 
 # %% [markdown]
-# `isis_wac.run_isd_generate()` derives a CSM Pushframe ISD for `stitched` (ALE's `isd_generate`), and `isis_wac.run_mapproject()` reprojects it onto the DEM through that ISD -- the real-WAC counterpart to 5B's `mapproject`, sharing `plotting.plot_overlay` (same CRS, same styling).
+# `isis_wac.run_isd_generate()` derives a CSM Pushframe ISD for `wac_crop` (ALE's `isd_generate`), and `isis_wac.run_mapproject()` reprojects it onto the DEM through that ISD -- the real-WAC counterpart to 5B's `mapproject`, sharing `plotting.plot_overlay` (same CRS, same styling, no special-casing needed since `wac_crop` -- unlike the old full `stitched` cube -- already covers just the real footprint being compared).
 #
 # **Must run against the stitched (interleaved) cube, not a lone even/odd parity in isolation** -- WAC only writes real pixel data to alternating nominal frame slots (confirmed empirically: each parity cube is ~50% populated, strictly alternating, not a same-frame split despite the name), and mapprojecting one parity alone previously produced severe venetian-blind-style smearing that had been (wrongly) attributed to a fundamental CSM Pushframe modeling limitation. See `isis_wac.run_mapproject`'s docstring and `docs/data-sources.md`'s "ISIS3/CSM spike" section for the full investigation.
 #
-# `run_mapproject` reprojects `stitched` in full -- the *entire* real swath (258 frames), not just the square crop 6A/Phase 7 compare -- so `zoom_footprint_lonlat_deg=crop_footprint` restricts the displayed extent to that same crop's own footprint (computed above for 6A), for a fair side-by-side against 6A rather than a long strip against a small square.
+# `isis_wac.crop_for_camera()`'s crop needed its own fix for `run_isd_generate` to produce a *correct* ISD, not just a same-shaped one -- see that function's docstring for the full empirical finding (a real ~132s ephemeris-time offset ISIS's `crop` app doesn't itself correct for a Pushframe cube's per-line pointing cache).
 
 # %%
-wac_isd = isis_wac.run_isd_generate(stitched, session.config)
-wac_mapproj_tif = isis_wac.run_mapproject(stitched, wac_isd, lunaserv_result, session.config)
+wac_isd = isis_wac.run_isd_generate(wac_crop, session.config)
+wac_mapproj_tif = isis_wac.run_mapproject(wac_crop, wac_isd, lunaserv_result, session.config)
 plotting.plot_overlay(
     lunaserv_result.ortho,
     wac_mapproj_tif,
     title="Phase 6B: real ISIS-processed WAC (mapprojected) over hillshade-based basemap",
-    zoom_footprint_lonlat_deg=crop_footprint,
 );
 
 # %% [markdown]
@@ -211,7 +210,7 @@ plotting.plot_overlay(
 # Conceptually, just 5A's and 6A's own render panels (synthetic, real WAC crop -- same tie points, same north-up rotation, computed above) put together directly, for an easier side-by-side look at the two TRN test image candidates themselves, rather than each against the basemap. `plotting.plot_isis_comparison()` additionally brightness-matches the two panels (a single multiplicative scale, since the ISIS cube's calibrated I/F and the render's texture-brightness values are on entirely different numeric scales to begin with -- see its docstring) and interpolates across the real crop's small, known dead-pixel gaps for display -- both real quality-of-life improvements on top of what 5A/6A already show, not new geometry content.
 
 # %%
-plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, stitched.cub_path, isis_wac.crop_window_for_camera(camera), rotations);
+plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_tif, wac_crop.cub_path, rotations);
 
 # %% [markdown]
 # ## Summary
@@ -219,5 +218,5 @@ plotting.plot_isis_comparison(camera, tie_point_results, render_result.rendered_
 # - Selected a real, illuminated LROC WAC EDR from a catalog-driven, multi-orbit dataset search (`trntest.dataset.select_dataset`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
 # - Built a `.tsai` Pinhole camera from that pose and rendered a synthetic 256x256 image with ASP's `sat_sim`, fed by real DEM/imagery pulled live from Lunaserv WMS for the camera's own computed ground footprint. Produced a CSM/"ISD" JSON sidecar for it (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
 # - Validated the synthetic render's geometry against the hillshade-based basemap two ways (Phase 5): a raw, north-up-rotated quality check (5A), and a true pixel-for-pixel geo-registered overlay via `mapproject` through the render's own CSM sidecar (5B).
-# - Processed the same real footprint's WAC EDR through ISIS3's own pipeline (`isis_wac.run_pipeline`) -- a genuine camera-model-based real-WAC product (EDR fetch through calibration and framelet interleaving) -- and validated its geometry against the same basemap the same two ways (Phase 6): a raw quality check (6A), and a `mapproject` overlay through ALE's `isd_generate` ISD, against the stitched/interleaved cube specifically (6B).
+# - Processed the same real footprint's WAC EDR through ISIS3's own pipeline (`isis_wac.run_pipeline`) -- a genuine camera-model-based real-WAC product (EDR fetch through calibration and framelet interleaving) -- cropped it to the real footprint being compared (`isis_wac.crop_for_camera`), and validated that single crop's geometry against the same basemap the same two ways (Phase 6): a raw quality check (6A), and a `mapproject` overlay through ALE's `isd_generate` ISD (6B).
 # - Compared the two TRN test image candidates directly against each other, with explicit SPICE-derived tie points (Phase 7).

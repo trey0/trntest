@@ -136,6 +136,8 @@ def run_lrowaccal(spiceinit_result: SpiceinitResult, config: TrntestConfig | Non
 class FramestitchResult:
     cub_path: Path
     flip: bool  # the FLIP value framestitch was actually run with -- see run_isd_generate's docstring
+    line_offset: int = 0  # non-zero for a line-cropped sub-window of a larger stitched cube -- see
+    # crop_for_camera and run_isd_generate's docstring
 
 
 def run_framestitch(
@@ -207,13 +209,41 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
     entry). Two other ISD fields were also tested and ruled out as unrelated: `framelets_flipped`
     (rigorously confirmed zero effect on `mapproject`'s output, byte-for-byte, on a fixed output
     grid) and a uniform per-framelet internal line-order flip applied directly to the pixel data
-    (made the banding worse, introducing new ghosting)."""
+    (made the banding worse, introducing new ghosting).
+
+    **Also patches the ISD's ephemeris-time fields when `stitched.line_offset` is nonzero** (i.e.
+    `stitched` is `crop_for_camera`'s output, a line-cropped sub-window of a larger stitched cube,
+    not the full cube). Confirmed empirically: `isd_generate -i` on a cropped cube emits
+    `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` and
+    `instrument_pointing.ck_table_start_time`/`ck_table_end_time` as if the crop still started at
+    the *original* uncropped cube's first line -- ISIS's `crop` app does not itself re-anchor a
+    Pushframe cube's per-line pointing cache to the new starting line (it does correctly update
+    `ck_table_original_size` to the cropped line count, just not the *start* time). Left unpatched,
+    `mapproject` reconstructs completely wrong ground geometry: measured only 0.44 correlation
+    against the known-good full-cube mapproject's own pixels over the same real ground area. The
+    underlying `instrument_pointing.ephemeris_times`/`quaternions`/`angular_velocities` arrays
+    themselves are untouched by this -- they still hold the *entire* pass's real, absolute-time-
+    tagged samples (confirmed identical length before/after crop), so once the scalar time fields
+    above correctly reflect the crop's real start time, the CSM model interpolates the *correct*
+    poses out of that same full table for whichever absolute times the cropped lines actually
+    correspond to -- no need to slice the arrays themselves. Fixed the geometry to 0.999 correlation
+    in testing. `frame_offset = line_offset / wac.VIS_BLOCK_HEIGHT` (lines -> WAC frames, same
+    conversion `crop_window_for_camera` uses); `time_offset_s = frame_offset * isd["interframe_delay"]`
+    (ALE's own reported per-frame timing for this product, not a hardcoded instrument constant)."""
     config = config or load_config()
     json_path = stitched.cub_path.with_suffix(".json")
     run_quiet(["isd_generate", "-i", str(stitched.cub_path), "-o", str(json_path)])
     with open(json_path) as f:
         isd = json.load(f)
     isd["framelet_order_reversed"] = stitched.flip
+    if stitched.line_offset:
+        frame_offset = stitched.line_offset / VIS_BLOCK_HEIGHT
+        time_offset_s = frame_offset * isd["interframe_delay"]
+        isd["starting_ephemeris_time"] += time_offset_s
+        isd["ending_ephemeris_time"] += time_offset_s
+        isd["center_ephemeris_time"] += time_offset_s
+        isd["instrument_pointing"]["ck_table_start_time"] += time_offset_s
+        isd["instrument_pointing"]["ck_table_end_time"] += time_offset_s
     with open(json_path, "w") as f:
         json.dump(isd, f)
     return IsdGenerateResult(json_path=json_path)
@@ -255,3 +285,37 @@ def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
     center_line = camera.center_frame_index * VIS_BLOCK_HEIGHT
     line_start = round(center_line - height / 2)
     return rasterio.windows.Window(col_off=0, row_off=line_start, width=SAMPLES, height=height)
+
+
+def crop_for_camera(
+    stitched: FramestitchResult, camera: Camera, config: TrntestConfig | None = None
+) -> FramestitchResult:
+    """A single, real, persisted ISIS crop of `stitched` to `crop_window_for_camera(camera)`'s
+    window -- the one "WAC crop" both Phase 6A (raw display of `.cub_path` directly) and Phase 6B
+    (`run_isd_generate`/`run_mapproject` on this same result) consume, matching how Phase 5A/5B
+    already both derive from one synthetic render with no special-casing.
+
+    Returns a `FramestitchResult` (not a distinct type) with `line_offset` set to the crop's start
+    line (`window.row_off`) -- `run_isd_generate` uses this to correct the ISD's ephemeris-time
+    fields, which `crop` does not itself adjust for a Pushframe cube's per-line pointing cache (see
+    `run_isd_generate`'s docstring for the full empirical finding: uncorrected, this landed
+    `mapproject`'s output ~132s of real orbital motion away from the correct ground location, 0.44
+    correlation against the known-good full-cube result; corrected, 0.999).
+
+    `lrowaccal` (already run before this, in `run_pipeline`) explicitly refuses to run on a cropped
+    cube ("USER ERROR: This application can not be run on any image that has been geometrically
+    transformed ... or cropped") -- confirmed empirically -- so cropping must happen after
+    calibration/`framestitch`, on `stitched`, not earlier in the pipeline."""
+    config = config or load_config()
+    window = crop_window_for_camera(camera)
+    out_path = stitched.cub_path.with_name(stitched.cub_path.stem + ".crop.cub")
+    run_quiet(
+        [
+            "crop",
+            f"from={stitched.cub_path}",
+            f"to={out_path}",
+            f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
+            f"nlines={window.height}",
+        ]
+    )
+    return FramestitchResult(cub_path=out_path, flip=stitched.flip, line_offset=window.row_off)

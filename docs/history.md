@@ -1008,6 +1008,102 @@ mentioned TRN at all -- a real documentation gap now fixed.
   reusing `lunaserv.footprint_bbox_local_m` was byte-identical to the original inline computation);
   `trntest-lint` passes throughout.
 
+## Phase 24 (2026-08-08) — Fixed 6B for real: a single, correctly-cropped WAC image, not a display-layer zoom
+
+User reported 6B's mapprojected overlay "isn't displaying as desired": judging by the red overlay
+outline, the visible area contained only a small part of the overlay, crossing it diagonally rather
+than showing a closed shape. Getting to the real fix took three attempts.
+
+**Attempt 1 (real, but insufficient): contrast.** First ruled out an extent bug, since that was the
+most recent thing touched (Phase 23's `zoom_footprint_lonlat_deg`). Rebuilt the Docker image and
+re-ran the full notebook from cold (cache/output don't survive a VPS teardown -- see
+`docs/environment.md`) to get real, current intermediate files rather than trusting the stale
+committed notebook or reasoning from the plot alone. Directly measured the real mapproject tif's
+valid-data mask against the exact zoom bbox `plot_overlay` computed: 84.4% of the zoomed window was
+genuinely valid overlay data -- byte-for-byte the same figure Phase 23 already reported. Root cause
+found: `overlay_display.plot.imshow()` had no `vmin`/`vmax`, so `imshow`'s naive min/max autoscale
+compressed the real calibrated-I/F overlay (~0.02-0.17) down near black, blending almost invisibly
+into the base at `overlay_alpha=0.6` -- the same root cause as Phase 23's "6A darkness" bug, just
+never applied to `plot_overlay`. Fixed with the same `vmin=0`/`vmax=`99.9th-percentile stretch
+`plot_render_vs_basemap` already used, verified visually before applying it. **Real, worth keeping,
+but the user pointed out after seeing it that it didn't address the actual complaint** -- the outline
+still only crossed diagonally through the frame, not a closed shape.
+
+**Attempt 2 (also real, still insufficient): a second, explicit crop-footprint outline + view
+padding.** Re-examined what the red outline actually traces: `_valid_data_outline(overlay)`
+(`plotting.py`) draws the *entire* `overlay` raster's real valid-pixel footprint -- for 6B that's
+`isis_wac.run_mapproject`'s output covering the *entire* 258-frame WAC swath (~168km x ~255km
+measured), not just the ~149km-square crop being compared. `zoom_footprint_lonlat_deg` only ever
+called `ax.set_xlim`/`ax.set_ylim` -- it never restricted what geometry got traced, so no view sizing
+could make an unrelated, much-longer boundary render as a closed box. Drafted a plan to draw a
+*second* outline from the crop's own idealized footprint corners, with view padding, and got user
+sign-off to implement -- but before writing code, the user redirected: "they need to use the same
+image, and it really should have an ISD sidecar that is valid for the WAC crop." I.e. fix the
+*pipeline*, not the display: produce one real, cropped WAC image up front (mirroring how 5A/5B
+already both derive from one synthetic render with no special-casing) rather than patch `plot_overlay`
+again.
+
+**Attempt 3 (the real fix): crop the stitched cube, and fix `isd_generate`'s ephemeris-time bug for
+cropped input.** Added `isis_wac.crop_for_camera()`, cropping `stitched` (post-`framestitch`, via
+ISIS's own `crop` app) to `crop_window_for_camera`'s window -- `lrowaccal` explicitly refuses to run
+on a cropped image ("USER ERROR: This application can not be run on any image that has been
+geometrically transformed ... or cropped", confirmed empirically), so cropping has to happen after
+calibration, on the stitched cube, not earlier in the pipeline. First test of the obvious approach
+(`isd_generate -i` directly on the cropped cube, then `mapproject`) produced a *plausible-looking but
+wrong* result -- compared pixel-for-pixel against the same real ground region of the known-good
+full-cube mapproject (both share the same reference grid, no reprojection needed to compare): only
+0.44 correlation, should be ~1.0. Root cause, found by diffing the cropped cube's own generated ISD
+against the full cube's: `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time`
+and `instrument_pointing.ck_table_start_time`/`ck_table_end_time` all read as if the crop still
+started at the *original* uncropped cube's first line -- ISIS's `crop` app (even with the default
+`PROPSPICE=true`) does not itself re-anchor a Pushframe cube's per-line pointing cache to the new
+starting line (it does correctly update `ck_table_original_size` to the cropped line count, just not
+the *start* time). Tried re-running `spiceinit` on the cropped cube in case that would force a fresh,
+correctly-scoped recompute -- confirmed empirically it makes no difference (byte-identical wrong
+result) -- and tried cropping the calibrated parity cubes before `framestitch` instead of after --
+also confirmed empirically identical wrong result, so the bug isn't sensitive to which pipeline stage
+the crop happens at. Fix: after `isd_generate`, if the input was `crop_for_camera`'s output (nonzero
+`line_offset`), patch just the 5 scalar time fields above by `time_offset_s =
+(line_offset / VIS_BLOCK_HEIGHT) * isd["interframe_delay"]` (WAC frames -> real seconds, using ALE's
+own reported per-frame timing for this product, not a hardcoded constant) -- the same
+patch-the-JSON-after-generation technique `run_isd_generate` already used for `framelet_order_reversed`
+(see Phase 20-ish entries above). Deliberately does *not* touch the underlying
+`ephemeris_times`/`quaternions`/`angular_velocities` arrays -- confirmed these stay the *entire*
+pass's real, absolute-time-tagged samples regardless of crop (identical length before/after), so once
+the scalar time fields correctly reflect the crop's real start time, the CSM model interpolates the
+*correct* poses out of that same full table for whatever absolute times the cropped lines actually
+correspond to. Fixed the correlation to 0.999, confirmed visually as recognizable, correctly-aligned
+real terrain (no garbling/duplication).
+
+With `crop_for_camera`'s output usable end-to-end, `plot_overlay`'s `zoom_footprint_lonlat_deg`
+parameter (added in Phase 23, patched in Attempt 1 above) became entirely unnecessary and was
+**removed** -- 6B now calls `plot_overlay` exactly like 5B, no special-casing, and the existing,
+unchanged `_valid_data_outline` mechanism naturally traces a proper closed box because `overlay` is
+now genuinely crop-sized.
+
+Also (per user request, to guarantee no no-data gap in 6B's basemap): `dataset.generate_dataset()`
+now computes each image's real WAC crop footprint (`tie_points.crop_footprint_corners_for_camera`)
+*before* calling `lunaserv.fetch_dem_and_ortho`, and unions it into the DEM/ortho fetch AOI alongside
+the synthetic camera's own footprint (`lunaserv.union_bbox`, new). Tried additionally
+double-padding the crop side of that union to close a measured ~120m worst-case margin gap --
+confirmed empirically this doesn't actually help (the tight edge's margin stayed ~0 regardless of a
+261km vs. 410km total fetch, since the underlying drift is directional/asymmetric, not a "not enough
+padding" problem) while measurably increasing fetch time (hit a real WMS read-timeout during
+testing) -- reverted. The remaining ~120m gap is close to a single ~100m/px DEM pixel, not a
+meaningfully visible nodata gap in practice.
+
+Also restructured the notebook's Phase 6 cells per user preference (split compute from plotting
+where that enables reuse, rather than a strict one-liner-per-cell rule): `stitched =
+isis_wac.run_pipeline(...)` and `wac_crop = isis_wac.crop_for_camera(...)` are their own compute
+cell, consumed by separate 6A/6B plotting cells; `crop_footprint` moved to Phase 2 (now
+`GenerationResult.crop_footprint`, computed once inside `generate_dataset()`) instead of being
+recomputed via a `Session.crop_footprint_corners()` convenience method just before 6A -- that method
+had no remaining caller afterward and was removed.
+
+Verified via several full notebook re-runs from a live-rebuilt cache (never trusted the stale
+committed notebook or reasoning from a plot image alone at any step); `trntest-lint` and the full
+`pytest` suite (88 tests) pass.
+
 ## Historical derivations
 
 Detailed technical derivations referenced by the phase history above. All describe *how a current
