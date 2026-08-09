@@ -78,6 +78,26 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   every use of `camera.camera_pose_moon_me`/`build_camera`, not just Phase 6B — likely the same
   root cause behind other small, previously-unexplained position residuals throughout this
   notebook's geometry checks. See `docs/history.md`'s dated entry (Phase 25) for the full diagnosis.
+- **Open, investigate later: subtle stripe/crosshatch artifacts in the synthetic render, likely
+  from `shade_ortho`'s hillshade step.** User-reported (not yet investigated): faint stripes visible
+  on close zoom in the synthetic render, more noticeable in darker/shadowed areas; at least one case
+  showed crosshatching (stripes in two roughly-orthogonal directions); the stripes are *not* aligned
+  with the final image's own Cartesian axes, and individual lines look slightly curved rather than
+  straight. Confirmed by the user to not be present in the source ortho -- introduced by the
+  hillshading step (`lunaserv.shade_ortho`'s `matplotlib.colors.LightSource.hillshade(dem, ...)`
+  call), not `sat_sim` itself (`sat_sim` applies no illumination model of its own -- see
+  `shade_ortho`'s docstring). Not yet confirmed, but a plausible lead worth checking first: this
+  project already documented (`render.py`'s `DEM_HEIGHT_ERROR_TOL_M`) that Lunaserv's DTM layer's
+  float32 elevation encoding has a real, coarse quantization step (~0.125m ULP at this DEM's ~1.7e6m
+  radius magnitude) that's known to cause numerical artifacts elsewhere in this same pipeline
+  (`sat_sim`'s ray/DEM-intersection root-finder). `hillshade()` computes local slope via finite
+  differencing between adjacent DEM cells, and quantized elevation input is a classic cause of
+  "hillshade banding/terracing" artifacts in GIS tooling generally -- and DEM-grid-aligned artifacts
+  reprojected through `sat_sim`'s own oblique camera perspective would plausibly appear rotated/
+  curved in the final render rather than axis-aligned/straight, matching what was reported. First
+  diagnostic step for whoever picks this up: visualize the raw `hillshade` array alone (before
+  blending with the ortho, and before `sat_sim`'s reprojection) to confirm the artifact's presence/
+  orientation in DEM/map space directly.
 - **Resolved**: Lunaserv's native geographic projection is fine for `sat_sim`'s forward render, but
   turned out to break the `mapproject --ref-map` round-trip (anisotropic degree-pixels away from the
   equator, not preserved by `--ref-map`) — fixed by requesting a per-camera local Orthographic CRS
