@@ -64,6 +64,20 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
   directly; sanity-check against the known GLD100/LOLA convention.
+- **Open, investigate soon: `spice_kernels.py` is missing a CK kernel ISIS uses, causing a real
+  ~11-13km pointing discrepancy.** Diagnosed (not fixed) while validating Phase 6B's `cam2map`
+  switch: at the exact same instant, this project's own SPICE-based pointing
+  (`camera.camera_pose_moon_me`) and ISIS's own camera model (via `spiceinit web=yes`) disagree by
+  ~11km — confirmed not a `crop_for_camera` frame-selection bug (ISIS's own per-line time matches
+  `camera.frame_et()` to within 0.016s for the corresponding frames; it's the *pointing* that
+  differs, not the *timing*). Traced to `moc42r_2019304_2019335_v01.bc`, a second CK kernel ISIS's
+  `spiceinit web=yes` furnishes alongside the usual `lrolc_*` one (name suggests a mission-ops
+  reconstructed/refined attitude product) — `spice_kernels.py`'s `WAC_CK_PREFIXES = ("lrosc",
+  "lrolc")` never fetches it, and it isn't even present in the NAIF metakernel this project's own
+  code already parses, so it needs a different kernel source, not just an added prefix. Affects
+  every use of `camera.camera_pose_moon_me`/`build_camera`, not just Phase 6B — likely the same
+  root cause behind other small, previously-unexplained position residuals throughout this
+  notebook's geometry checks. See `docs/history.md`'s dated entry (Phase 25) for the full diagnosis.
 - **Resolved**: Lunaserv's native geographic projection is fine for `sat_sim`'s forward render, but
   turned out to break the `mapproject --ref-map` round-trip (anisotropic degree-pixels away from the
   equator, not preserved by `--ref-map`) — fixed by requesting a per-camera local Orthographic CRS
