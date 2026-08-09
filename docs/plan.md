@@ -41,7 +41,7 @@ product to this.
 |---|---|
 | `config.py` | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
 | `cache.py` | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see `docs/caching.md`. |
-| `spice_kernels.py` | Selects/downloads the minimal SPICE kernel set for a date, furnishes it (`fetch_and_furnish`, `furnish_spk_range`). |
+| `spice_kernels.py` | Selects/downloads the minimal SPICE kernel set for a date, furnishes it (`fetch_and_furnish`, `furnish_spk_range`). WAC CK (pointing) kernel selection defaults to asking a real ISIS `spiceinit` run what it resolves (`select_isis_wac_ck_kernels`, via `isis_wac.resolve_wac_ck_kernels`), falling back to a NAIF-metakernel-based heuristic (`select_naif_wac_ck_kernels`, deprecated but numerically equivalent) for dates outside that resolution's own coverage — see `docs/data-sources.md`. |
 | `camera.py` | Poses the synthetic camera from real SPICE trajectory/orientation data; `build_camera()`, `FrameTiming`/`fetch_frame_timing()` (EDR label parsing), sensor-axis convention (`boresight_rotation_k`). |
 | `illumination.py` | Sun/orbit geometry via real SPICE functions — sun elevation/azimuth, sub-solar point, ascending-node search (`gfposc`). |
 | `catalog.py` | PDS ODE REST API client — lists real EDR/CDR products by time range, matches EDR↔CDR pairs. |
@@ -64,20 +64,36 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
   directly; sanity-check against the known GLD100/LOLA convention.
-- **Open, investigate soon: `spice_kernels.py` is missing a CK kernel ISIS uses, causing a real
-  ~11-13km pointing discrepancy.** Diagnosed (not fixed) while validating Phase 6B's `cam2map`
-  switch: at the exact same instant, this project's own SPICE-based pointing
-  (`camera.camera_pose_moon_me`) and ISIS's own camera model (via `spiceinit web=yes`) disagree by
-  ~11km — confirmed not a `crop_for_camera` frame-selection bug (ISIS's own per-line time matches
-  `camera.frame_et()` to within 0.016s for the corresponding frames; it's the *pointing* that
-  differs, not the *timing*). Traced to `moc42r_2019304_2019335_v01.bc`, a second CK kernel ISIS's
-  `spiceinit web=yes` furnishes alongside the usual `lrolc_*` one (name suggests a mission-ops
-  reconstructed/refined attitude product) — `spice_kernels.py`'s `WAC_CK_PREFIXES = ("lrosc",
-  "lrolc")` never fetches it, and it isn't even present in the NAIF metakernel this project's own
-  code already parses, so it needs a different kernel source, not just an added prefix. Affects
-  every use of `camera.camera_pose_moon_me`/`build_camera`, not just Phase 6B — likely the same
-  root cause behind other small, previously-unexplained position residuals throughout this
-  notebook's geometry checks. See `docs/history.md`'s dated entry (Phase 25) for the full diagnosis.
+- **Resolved, with a corrected premise: the "missing CK kernel" pointing discrepancy doesn't
+  actually reproduce.** Originally diagnosed while validating Phase 6B's `cam2map` switch: at the
+  exact same instant, this project's own SPICE-based pointing (`camera.camera_pose_moon_me`) and
+  ISIS's own camera model (via `spiceinit web=yes`) appeared to disagree by ~11-13km, traced to a
+  second CK kernel (`moc42r_*.bc`, spacecraft bus attitude) that ISIS furnishes alongside the usual
+  `lrolc_*` one but that `spice_kernels.py`'s `WAC_CK_PREFIXES` never fetched. Built
+  `spice_kernels.select_isis_wac_ck_kernels`/`isis_wac.resolve_wac_ck_kernels` to fetch exactly the
+  kernel set a real `spiceinit` run resolves (rather than reimplementing USGS's own kernel-selection
+  algorithm — see `docs/data-sources.md`). **Direct re-verification then found the original premise
+  didn't hold**: comparing our SPICE computation against real `campt` output at several independent
+  points across the frame showed **zero** measurable pointing discrepancy, with or without `moc42r`
+  furnished — and separately, `moc42r` turns out to have **no effect at all** on
+  `camera.camera_pose_moon_me`'s computed pointing, because plain SPICE frame resolution for
+  `LRO_LROCWAC_VIS` (-85620) depends entirely on `lrolc`'s own direct CK segments for that frame ID,
+  never on the bus-attitude (-85000) kernel `moc42r`/`lrosc` provide (confirmed via a real
+  `SPICE(NOFRAMECONNECT)` failure when `lrolc` is omitted even with `moc42r` present). The true cause
+  of the originally-observed ~11-13km number was never pinned down — most likely conflated with the
+  *other*, since-fixed bug found in the same investigation (`cam2map`'s `WARPALGORITHM=AUTOMATIC`
+  striping issue, see the "Resolved" item below). The ISIS-kernel-matching mechanism was kept anyway
+  (`TrntestConfig.wac_ck_source`, default `"isis_resolved"`) for its own independent value — it makes
+  our furnished kernel set match ISIS's real resolution by construction rather than a hand-picked
+  prefix list, which is more principled/future-proof even though it isn't fixing a live bug. The
+  deprecated NAIF-metakernel path (`select_naif_wac_ck_kernels`) is confirmed numerically equivalent
+  and kept for reference/comparison — and is deliberately still used (forced via
+  `wac_ck_source="naif_metakernel"`) in `dataset.evaluate_candidate_image`'s per-candidate sweep,
+  since `isis_resolved`'s real-`spiceinit`-per-`edr_product` cost is fine for the handful of
+  deliberate final camera-pose calls elsewhere but was a genuine, confirmed O(candidates) performance
+  regression there (>100 candidates each triggering their own uncached ISIS pipeline run). See
+  `docs/history.md`'s dated entry for the full investigation,
+  including the real, decisive empirical tests that overturned the original diagnosis.
 - **Resolved**: the stripe/crosshatch artifact reported in the synthetic render (worse in
   darker/shadowed areas, sometimes crosshatched). Root cause turned out to be **Lunaserv's DTM WMS
   layer itself**, not the float32-quantization theory this item originally proposed (tested directly

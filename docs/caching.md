@@ -17,8 +17,9 @@ cache/
   lunaserv/<layer>/<bbox>_<width>x<height>_<format>.tif
   lroc_edr/<volume>/DATA/<subdir>/<doy>/WAC/<product>.*
   isisdata/base/...   (ISIS's own mission-independent reference data)
-  isisdata/lro/...    (LRO/WAC calibration files)
+  isisdata/lro/...    (LRO/WAC calibration files, and -- see below -- WAC CK kernels ISIS resolves)
   astropedia/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif   (one whole file, ~10GB -- see below)
+  isis_ck_resolution/<edr_product>.json   (persisted spiceinit CK resolution -- see below)
 ```
 
 `isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
@@ -55,6 +56,34 @@ bus reconstructed attitude) file for just that 10-day window is itself ~529 MB; 
 apparently samples at high angular rate. Skipping `lrodv`/`lrohg`/`lrosa` (still avoids ~4-5x more
 CK volume) and never touching kernels outside the target date range is what keeps this tractable at
 all — pulling a full year's CK data across all five flavors would be tens of GB.
+
+## WAC CK (pointing) kernel caching -- a different remote host, and a resolution-result cache
+
+`spice_kernels.py`'s live-default WAC CK source isn't the NAIF metakernel above at all --
+`select_isis_wac_ck_kernels`/`isis_wac.resolve_wac_ck_kernels` ask a real ISIS `spiceinit web=yes`
+run what it furnishes (see `docs/data-sources.md`'s "ISIS's own LRO kernel database" section for the
+full why). Two caching layers, both new:
+
+- **The actual kernel files** (`cache.fetch_isis_kernel`) come from USGS's own S3 bucket
+  (`asc-isisdata`), not NAIF -- cached under `isisdata/lro/kernels/ck/...`, deliberately the *same*
+  relative layout `$ISISDATA/lro/...` itself uses (not a new independent subtree), so a file cached
+  here already sits where a future local, non-web `spiceinit` run or a fuller `downloadIsisData lro`
+  fetch would expect to find it. `isis_wac.ensure_isisdata()`'s own `--include` filter deliberately
+  excludes `kernels/ck/` -- this is a narrow, additive exception living alongside it. Sizes are
+  comparable to (sometimes larger than) the NAIF `lrosc`/`lrolc` chunks above -- one `moc42r_*.bc`
+  30-day merge is ~1.7GB -- but `cached_get`'s existing streaming download handles this fine, no
+  special resumable-curl treatment needed (unlike the Astropedia case below).
+- **The resolution itself** -- *which* kernel filename(s) apply to this project's target
+  product/date -- is a separate, much smaller cache: `isis_ck_resolution/<edr_product>.json`, a tiny
+  JSON list of `kernels/ck/<filename>` paths, written after the first successful `spiceinit`
+  run and read (short-circuiting the whole `ensure_isisdata → fetch_edr_img → run_lrowac2isis →
+  run_spiceinit → catlab → parse` chain) on every subsequent call. This is deliberate, explicit
+  resilience: once resolved for this project's one fixed demo product, no code path needs to reach
+  the live `spiceinit` web service again -- only the plain HTTPS kernel-file download above matters
+  for ongoing runs, confirmed live (a second resolution call after the network path to the web
+  service is blocked still succeeds from cache). No retry/backoff around the `spiceinit` call itself
+  -- a cold-cache failure surfaces immediately rather than looping silently, per explicit user
+  direction ("I'd rather have a relatively prompt exception and manually retry later").
 
 ## Lunaserv WMS caching
 

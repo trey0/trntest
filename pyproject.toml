@@ -18,6 +18,7 @@ dependencies = [
     "pandas",
     "rioxarray",
     "geopandas",
+    "pvl",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,8 @@ dev = [
     "jupytext",
     "jupyterlab",
     "ipykernel",
+    "papermill",
+    "nbformat",
 ]
 
 [project.scripts]
@@ -83,5 +86,5 @@ warn_unused_configs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["spiceypy.*", "rasterio.*", "pandas.*", "geopandas.*", "shapely.*"]
+module = ["spiceypy.*", "rasterio.*", "pandas.*", "geopandas.*", "shapely.*", "pvl.*"]
 ignore_missing_imports = true

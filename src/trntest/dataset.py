@@ -85,13 +85,28 @@ def evaluate_candidate_image(edr_row: pd.Series, config: TrntestConfig, min_sun_
     """Pose the camera for `edr_row` at its midpoint-anchored crop, check sun elevation at the
     resulting image center (spherical-ish, via illumination.sun_elevation_deg), and return the new
     manifest columns if illuminated, else None. Uses the lower-level camera.py functions, not
-    build_camera(), so this never writes a .tsai file or touches Lunaserv during selection."""
+    build_camera(), so this never writes a .tsai file or touches Lunaserv during selection.
+
+    Forces `wac_ck_source="naif_metakernel"` on `per_row_config` -- `compute_n_frames_for_square_crop`
+    (via `anchor_start_frame_for_centered_crop`) calls `spice_kernels.fetch_and_furnish` once per
+    candidate row here, each with a *different* `edr_product` (this function is called once per
+    catalog candidate, potentially hundreds per search window). The live default
+    (`wac_ck_source="isis_resolved"`) resolves CK by running a real, uncached EDR-fetch +
+    `lrowac2isis` + `spiceinit` pipeline per distinct `edr_product` -- fine for the handful of
+    deliberate, final camera-pose computations elsewhere (`build_camera`, `isis_wac.run_pipeline`),
+    but a real O(candidates) blowup here (confirmed live: >100 candidates each triggering their own
+    ~15-30s ISIS round-trip in one `select_dataset()` sweep). Safe to force the cheap NAIF path for
+    this specific bulk/exploratory use: confirmed (`docs/history.md`'s Phase 27) that both sources
+    give numerically identical pointing for this product/date range -- `isis_resolved`'s only real
+    advantage is matching ISIS's own resolution by construction, not accuracy, so it isn't worth
+    paying for here."""
     per_row_config = dataclasses.replace(
         config,
         edr_volume=edr_row["volume"],
         edr_subdir=edr_row["subdir"],
         edr_doy=str(edr_row["doy"]),
         edr_product=edr_row["product"],
+        wac_ck_source="naif_metakernel",
     )
     frame_timing = camera.fetch_frame_timing(per_row_config)
     start_frame, crop_info = anchor_start_frame_for_centered_crop(frame_timing, per_row_config)

@@ -19,13 +19,19 @@ pointing/timing directly from the cube's own cached SPICE data, with no separate
 needed at all. `run_isd_generate`/`run_mapproject` (the CSM path) are kept below for reference/
 comparison, but are no longer used by the notebook.
 
-**Known residual, left undiagnosed-fix (documented, not chased further)**: even with the fixes
-above, the crop images ground truth ~11km from `tie_points.crop_footprint_corners_for_camera`'s
-independently ray-traced expectation, at the exact matched instant -- not a `crop_for_camera`
-frame-selection bug (verified via `campt`), but a genuine pointing discrepancy between this
-project's own SPICE computation (`camera.camera_pose_moon_me`) and ISIS's own camera model. Traced
-to a CK kernel (`moc42r_*.bc`) ISIS's `spiceinit web=yes` furnishes that `spice_kernels.py` doesn't
-fetch (and isn't in the NAIF metakernel it already parses) -- see docs/history.md's dated entry.
+**Resolved, with a corrected premise**: the crop images used to appear to ground truth ~11-13km from
+`tie_points.crop_footprint_corners_for_camera`'s independently ray-traced expectation, at the exact
+matched instant -- not a `crop_for_camera` frame-selection bug (verified via `campt`), attributed at
+the time to a genuine pointing discrepancy caused by a CK kernel (`moc42r_*.bc`) ISIS's `spiceinit
+web=yes` furnishes that `spice_kernels.py` didn't fetch. `resolve_wac_ck_kernels` (below) was built
+to fix exactly that -- asking a real `spiceinit` run directly rather than reimplementing kernel
+selection -- but direct re-verification against real `campt` output at several points found **no**
+discrepancy is actually reproducible, with or without that kernel (it turns out to have zero effect
+on this project's own SPICE pointing computation regardless -- see `docs/data-sources.md`'s "ISIS's
+own LRO kernel database" section for the full story). Kept as the live default anyway for its own
+independent value (matches ISIS's real kernel resolution by construction); the original ~11-13km
+number's true cause was never identified, most plausibly conflated with the `WARPALGORITHM` striping
+bug documented just below. See docs/history.md's Phase 27 for the full investigation.
 
 Only the VIS cubes are touched (`vis.even`/`vis.odd`); the UV cubes are irrelevant to a
 VIS-striping investigation.
@@ -36,8 +42,10 @@ load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `sub
 
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 
+import pvl
 import rasterio
 import rasterio.windows
 
@@ -140,6 +148,88 @@ def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> Spicei
     config = config or load_config()
     run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=ellipsoid"])
     return SpiceinitResult(cub_path=cub_path)
+
+
+def _resolved_wac_ck_cache_path(config: TrntestConfig) -> Path:
+    return config.cache_root / "isis_ck_resolution" / f"{config.edr_product}.json"
+
+
+def _catlab(cub_path: Path) -> str:
+    """Dump `cub_path`'s full PVL label as text, via ISIS's `catlab` app. Not run through
+    `run_quiet` -- that helper only captures stdout to discard it on success, but this call's entire
+    point is its stdout."""
+    result = subprocess.run(["catlab", f"from={cub_path}"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print(result.stdout, end="")
+        print(result.stderr, end="")
+        result.check_returncode()
+    return result.stdout
+
+
+def _strip_isis_alias_prefix(path: str) -> str:
+    """'$lro/kernels/ck/moc42r_....bc' -> 'kernels/ck/moc42r_....bc' -- ISIS's '$<mission>/' alias
+    prefix, stripped since `cache.isis_kernel_rel_path`/`cache.fetch_isis_kernel` already know the
+    mission root; this project only ever resolves LRO kernels via this path, so the alias itself
+    (always '$lro/' in practice here) doesn't need to be preserved or parametrized."""
+    return path.split("/", 1)[1]
+
+
+def _parse_ck_kernels_from_label(label_text: str) -> list[str]:
+    """Extract the CK (`.bc`) kernel path(s) from a spiceinit'd cube's `Kernels.InstrumentPointing`
+    label field. Confirmed live shape (see docs/history.md's dated entry): a list like `['Table',
+    '$lro/kernels/ck/lrolc_2019334_2020001_v01.bc', '$lro/kernels/ck/moc42r_2019334_2020001_v01.bc',
+    '$lro/kernels/fk/lro_frames_2014049_v01.tf']` -- both an `lrolc_*` and a `moc42r_*` kernel
+    together, confirming the original diagnosis (`spice_kernels.select_naif_wac_ck_kernels`'s
+    NAIF-metakernel-based selection was missing the second one). Skips the literal 'Table' marker and
+    the frame kernel entry (already covered by `spice_kernels.ALWAYS_KERNELS` -- same filename)."""
+    label = pvl.loads(label_text)
+    pointing = label["IsisCube"]["Kernels"]["InstrumentPointing"]
+    return [_strip_isis_alias_prefix(entry) for entry in pointing if "/kernels/ck/" in entry]
+
+
+def resolve_wac_ck_kernels(config: TrntestConfig | None = None) -> list[str]:
+    """Determine which CK (pointing) kernel(s) ISIS's own `spiceinit web=yes` actually furnishes for
+    this project's target WAC product/date, by running a real spiceinit against it and reading the
+    resulting cube's `Kernels` label -- rather than reimplementing USGS's own kernel-db selection
+    algorithm in Python. A real gap in that alternative was found and rejected this session: the
+    `lroc_kernels.db` route the algorithm would need is currently empty in USGS's bucket, even though
+    ISIS's own live resolution still furnishes an `lrolc`-equivalent kernel from somewhere -- asking
+    ISIS directly sidesteps needing to know how/why. See docs/history.md's dated entry for the full
+    diagnosis this fixes: `spice_kernels.select_naif_wac_ck_kernels` (deprecated, NAIF-metakernel-
+    based) was missing a second CK, `moc42r_*.bc`, that ISIS furnishes alongside the usual `lrolc_*`
+    one -- a confirmed ~11-13km pointing discrepancy.
+
+    Result is persisted to `cache_root/isis_ck_resolution/<edr_product>.json` after a successful
+    resolution, and read from there first on every call -- once resolved for this project's fixed
+    demo product, no code path needs to reach the live spiceinit web service again, only the plain
+    HTTPS kernel-file download (`cache.fetch_isis_kernel`) matters for ongoing runs. Deliberately no
+    retry/backoff around the `spiceinit` call itself -- a failure should surface immediately, not
+    loop silently; this persisted cache is the resilience mechanism, not automatic retry. A
+    genuinely new, never-before-resolved EDR product still needs the live web service reachable at
+    least once -- acceptable given this project's current fixed-date scope.
+
+    Reuses the four already-implemented pipeline steps below (`ensure_isisdata`, `fetch_edr_img`,
+    `run_lrowac2isis`, `run_spiceinit`) rather than any new ISIS-side code -- `kernels.0001.conf`
+    routes WAC-VIS and WAC-UV identically (confirmed live), so any one of the four output cubes
+    gives the same CK resolution; `vis_even` is picked arbitrarily.
+
+    Returns `kernels/ck/<filename>` paths (relative to USGS's S3 `usgs_data/lro/` prefix, matching
+    `cache.isis_kernel_rel_path`'s convention) -- there may be more than one."""
+    config = config or load_config()
+    cache_path = _resolved_wac_ck_cache_path(config)
+    if cache_path.exists():
+        result: list[str] = json.loads(cache_path.read_text())
+        return result
+
+    ensure_isisdata(config)
+    edr = fetch_edr_img(config)
+    stitch_inputs = run_lrowac2isis(edr, config)
+    spiceinit_result = run_spiceinit(stitch_inputs.vis_even, config)
+    ck_paths = _parse_ck_kernels_from_label(_catlab(spiceinit_result.cub_path))
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(ck_paths))
+    return ck_paths
 
 
 @dataclasses.dataclass(frozen=True)

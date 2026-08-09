@@ -24,6 +24,32 @@ def test_lunaserv_rel_path_non_tiff_format():
     assert rel.endswith(".png")
 
 
+def test_isis_kernel_rel_path():
+    assert cache.isis_kernel_rel_path("kernels/ck/moc42r_x.bc") == "isisdata/lro/kernels/ck/moc42r_x.bc"
+
+
+def test_fetch_isis_kernel_constructs_expected_url(tmp_path):
+    cache_root = tmp_path / "cache"
+    calls = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        calls.append(url)
+        response = mock.MagicMock()
+        response.raise_for_status = mock.Mock()
+        response.iter_content = mock.Mock(return_value=[b"data"])
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        return response
+
+    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
+        dest = cache.fetch_isis_kernel(
+            "kernels/ck/moc42r_x.bc", cache_root=cache_root, base_url="https://example.com/usgs_data/lro/"
+        )
+
+    assert calls == ["https://example.com/usgs_data/lro/kernels/ck/moc42r_x.bc"]
+    assert dest == cache_root / "isisdata" / "lro" / "kernels" / "ck" / "moc42r_x.bc"
+
+
 def test_lroc_rel_path():
     rel = cache.lroc_rel_path("LRO-L-LROC-2-EDR-V1.0", "LROLRC_0041C", "ESM4", "2019334", "M1329714703CE", "xml")
     assert rel == "LRO-L-LROC-2-EDR-V1.0/LROLRC_0041C/DATA/ESM4/2019334/WAC/M1329714703CE.xml"

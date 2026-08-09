@@ -110,6 +110,22 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
+# USGS's own S3-hosted LRO ISIS kernel-db tree -- the same source ISIS's own `spiceinit web=yes` (and
+# local, non-web spiceinit) draws from for LRO. Confirmed live: LRO's `rclone` remote
+# (`/opt/conda/envs/isis/etc/isis/rclone.conf`'s `[lro]` alias) has no `naif:` union, unlike
+# Dawn/Cassini/TGO -- LRO's ISIS kernel tree isn't proxied from NAIF at all, it's this bucket
+# directly, anonymously readable over plain HTTPS. See docs/data-sources.md for the full derivation.
+DEFAULT_ISIS_KERNEL_BASE_URL = "https://asc-isisdata.s3.us-west-2.amazonaws.com/usgs_data/lro/"
+
+# Which source resolves the WAC CK (pointing) kernel(s): "isis_resolved" (live default -- see
+# spice_kernels.select_isis_wac_ck_kernels) asks a real ISIS `spiceinit web=yes` run what it actually
+# furnishes, fixing a confirmed ~11-13km pointing discrepancy vs. the deprecated
+# "naif_metakernel" path (spice_kernels.select_naif_wac_ck_kernels, kept for reference/comparison --
+# see docs/history.md's dated entry). Not a silent fallback -- "isis_resolved" raises loudly if it
+# can't resolve a kernel for the target date, rather than risk reintroducing the discrepancy this
+# fixes.
+DEFAULT_WAC_CK_SOURCE = "isis_resolved"
+
 
 @dataclasses.dataclass(frozen=True)
 class TrntestConfig:
@@ -127,6 +143,8 @@ class TrntestConfig:
     lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see docstring above
     dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see docstring above
     astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
+    isis_kernel_base_url: str = DEFAULT_ISIS_KERNEL_BASE_URL
+    wac_ck_source: str = DEFAULT_WAC_CK_SOURCE  # "isis_resolved" | "naif_metakernel" (deprecated)
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET
     lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET

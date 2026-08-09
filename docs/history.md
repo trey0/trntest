@@ -1620,3 +1620,164 @@ concrete: genuine LOLA-derived polar DEMs from `pgda.gsfc.nasa.gov`/`imbrium.mit
 **5 m/px** near 87°S (LOLA ground tracks converge near the poles, giving far denser altimetry there
 than equatorial GLD100 — the source of the user's "ironic" observation that higher-res data exists
 right where Astropedia's coverage ends). See `docs/plan.md`'s open items.
+
+## Phase 27 (2026-08-09) — Chased the "missing CK" pointing discrepancy; built a real fix, then found the original bug wasn't reproducible
+
+Picked up `docs/plan.md`'s longest-standing open item: Phase 25 had diagnosed a ~11-13km pointing
+discrepancy between this project's own SPICE computation (`camera.camera_pose_moon_me`) and ISIS's
+own camera model (`spiceinit web=yes`), traced to a CK kernel (`moc42r_*.bc`) ISIS furnishes that
+`spice_kernels.py`'s `WAC_CK_PREFIXES = ("lrosc", "lrolc")` never fetched. The user's own framing
+going in: ISIS has a mechanism to resolve exactly which kernels an instrument/epoch needs and furnish
+them — could this project "ride along" with that mechanism instead of maintaining its own
+NAIF-metakernel-based heuristic, and might ISIS's kernel be better because it reflects a
+bundle-adjustment refinement based on the imagery?
+
+**Research: where ISIS actually gets `moc42r` from.** `spiceinit web=yes` calls USGS's own ALE-based
+SPICE web service (`https://astrogeology.usgs.gov/apis/ale/v0.9.1/spiceserver/`, found via
+`spiceinit.xml` inside the Docker image), which — like local, non-web `spiceinit` — resolves kernels
+via `kernels.*.db` PVL index files sourced entirely from USGS's own public S3 bucket (`asc-isisdata`).
+Confirmed via `/opt/conda/envs/isis/etc/isis/rclone.conf`: LRO's `rclone` remote has **no** `naif:`
+union (unlike Dawn/Cassini/TGO, which do) — LRO's entire ISIS kernel tree is NOT proxied from NAIF at
+all. `moc42r_*.bc` is real, public, and anonymously fetchable from that bucket (~1.7GB per ~30-day
+merge) — confirmed absent from every NAIF-hosted path checked. **Corrected the user's
+bundle-adjustment hypothesis**: both NAIF's `lrosc`/`lrolc` and USGS's `moc42r` are tagged
+`Type = Reconstructed` in ISIS's own kernel-db vocabulary, which has a distinctly higher `Smithed`
+tier for genuinely photogrammetric/bundle-adjusted products — never used for either. The better
+explanation (NAIF's own `ckinfo.txt` confirms `lrosc` is itself a merge of daily `moc42_*.bc` files):
+both are independently-built ~30-day merges of the *same* underlying raw telemetry, not one being
+inherently more accurate.
+
+**Design decision, made with the user via `AskUserQuestion`**: full replacement of the CK-selection
+mechanism, not a narrow one-file patch — but *how* to replace it turned out to have a real wrinkle.
+`kernels.0001.conf` routes WAC to two `.db` sources (`moc_kernels.????.db`, giving `moc42r`, and
+`lroc_kernels.????.db`, presumably the `lrolc`-equivalent role) — but the second route currently has
+**zero** matching files in the live bucket. Reimplementing USGS's own kernel-db selection logic in
+pure Python would therefore silently drop `lrolc` — a real regression. Rather than guess how ISIS's
+live resolution actually fills that gap, asked the user whether "ask ISIS itself" (run a real
+`spiceinit`, read its resolved `Kernels` label) was worth the cost — confirmed the WAC EDR `.IMG`
+`lrowac2isis` needs is only ~28MB and already fetched by `isis_wac.py`'s existing pipeline for
+unrelated reasons (not new download cost), just a new *architectural* coupling (SPICE kernel
+selection now depends on running the ISIS toolchain once). User chose this, the most robust option.
+
+**Implementation.** `isis_wac.resolve_wac_ck_kernels`: runs the existing pipeline
+(`ensure_isisdata` → `fetch_edr_img` → `run_lrowac2isis` → `run_spiceinit` on `vis_even` — any of the
+four parity cubes works, `kernels.0001.conf` routes WAC-VIS/WAC-UV identically) and reads the
+resulting cube's `Group = Kernels` label via ISIS's `catlab` app, parsed with the `pvl` library (new
+dependency — the format's real nested/duplicate-key structure isn't cleanly regex-able the way the
+flat NAIF metakernel manifest is). Confirmed live (`catlab` on a real spiceinit'd
+`M1329714703CE.vis.even.cub`): the `InstrumentPointing` field lists
+`(Table, $lro/kernels/ck/lrolc_2019334_2020001_v01.bc, $lro/kernels/ck/moc42r_2019334_2020001_v01.bc,
+$lro/kernels/fk/lro_frames_2014049_v01.tf)` — **both** kernels together, confirming the original
+diagnosis's "second kernel alongside the usual `lrolc_*` one" framing. Also directly falsified the
+Phase 25 record's specific filename: USGS's bucket had already re-merged `moc42r` again since that
+session (`moc42r_2019334_2020001_v01.bc` now, not `moc42r_2019304_2019335_v01.bc`) — a live,
+concrete demonstration of why "ask ISIS every time" beats hardcoding a filename found in a past
+session. Result is persisted to `cache/isis_ck_resolution/<edr_product>.json` (per the user's own
+resilience ask, addressed below) so the live web service is only ever hit once per distinct
+`edr_product`. New `cache.fetch_isis_kernel`/`isis_kernel_rel_path` fetch the actual `.bc` files from
+the S3 bucket, cached under `isisdata/lro/kernels/ck/...` — deliberately the same relative layout
+`$ISISDATA/lro/...` itself uses (the user's "share whatever cache they have" framing), not a new
+independent cache subtree. `spice_kernels.py` gained a `KernelRef(source, path)` dataclass (NAIF and
+USGS-S3 kernels now have different remote roots/cache conventions, so a bare path string can no
+longer say how to fetch itself), a new `select_isis_wac_ck_kernels` (live default, dispatched via
+`TrntestConfig.wac_ck_source`), and the old inline NAIF-metakernel CK-selection logic extracted into
+`select_naif_wac_ck_kernels` — kept, marked deprecated, not deleted (this repo's established
+precedent: `lunaserv.fetch_dem_native`, `isis_wac.run_isd_generate`/`run_mapproject`).
+
+**Resilience, per explicit user request mid-session**: "check whether we can easily make this
+pipeline robust to temporary outages in network or the ISIS services that spiceinit queries." The
+user specifically clarified this meant *warm-cache reuse should work fully offline*, not automatic
+retry — "I'd rather have a relatively prompt exception and manually retry later." Implemented purely
+via the persisted resolution cache (`isis_ck_resolution/<edr_product>.json`, checked before ever
+calling `spiceinit`) — deliberately **no** retry/backoff around the `spiceinit` subprocess call
+itself. Verified live: a second `resolve_wac_ck_kernels` call after the first hits the cache and never
+touches the network at all.
+
+**The trust-but-verify gate found a real bug in the fix's first draft.** Wired `verify_ck_coverage`
+(defined since an earlier phase, never actually called) into `fetch_and_furnish` as a hard assertion.
+Running the real demo notebook against it immediately caught a genuine design gap: `dataset.
+select_dataset()` calls `fetch_and_furnish` for its own wide date-range candidate search (e.g.
+2019-11-01), but `select_isis_wac_ck_kernels`'s resolution is tied to one fixed `edr_product`'s own
+narrow ~30-day coverage window (2019-11-30 through 2020-01-01) — a real, out-of-range failure, not a
+false alarm. Fixed by having `select_isis_wac_ck_kernels` filter the resolved kernel(s) to just those
+whose filename-encoded date range actually covers the requested date, and having `select_kernels_for`
+fall back to the deprecated NAIF path specifically for that "outside this product's own coverage"
+case (not a general silent-failure fallback) — justified by the numerical-equivalence finding below.
+
+**Direct empirical re-verification overturned the original diagnosis.** Before declaring success,
+checked whether furnishing `moc42r` actually changes anything: it doesn't. `spice.pxform
+('LRO_LROCWAC_VIS', 'MOON_ME', et)` gives byte-identical output whether `lrosc` or `moc42r` is the
+co-furnished bus-attitude kernel. Traced why: `spice.ckobj` shows `lrolc` carries **direct** CK
+segments for `-85620` (the WAC frame itself, not just an "offset" as the code's old comments assumed)
+— confirmed decisively by removing `lrolc` entirely (furnishing only `moc42r`) and getting a hard
+`SPICE(NOFRAMECONNECT)` failure, proving plain SPICE frame resolution for this camera never consults
+`-85000`/`moc42r` at all. Given that, directly re-ran the actual ISIS-vs-SPICE ground-truth
+comparison Phase 25 originally did (`campt`'s reported `SpacecraftPosition`/`LookDirectionCamera` at
+a real pixel, transformed via *our own* `pxform`-derived rotation and compared against `campt`'s own
+`LookDirectionBodyFixed`) at four independent points spread across the frame (lines 100–7000, various
+samples) — **all four agreed to sub-centimeter position and 0.000000° pointing**. No discrepancy of
+any kind is currently reproducible, with or without `moc42r`. The original ~11-13km number's true
+cause was never pinned down — most plausible explanation: it was conflated with the *other* real bug
+found in the same Phase 25 session (`cam2map`'s `WARPALGORITHM=AUTOMATIC` striping issue, fixed in
+that phase's own "Follow-up 1"), since both were being chased in the same investigation before either
+was isolated.
+
+**Outcome, per explicit user direction**: kept `select_isis_wac_ck_kernels`/
+`isis_wac.resolve_wac_ck_kernels` as the live default (`TrntestConfig.wac_ck_source =
+"isis_resolved"`) despite it not fixing a live bug — real, independent value in matching ISIS's own
+kernel resolution by construction (won't drift if USGS reshuffles its bucket again, as it already did
+mid-session) rather than a hand-picked NAIF prefix list. `docs/plan.md`'s open item rewritten to state
+this honestly: resolved, with a corrected premise, not "fixed an 11km bug."
+
+**Follow-up — the full notebook re-run caught a real, serious performance regression the earlier
+targeted tests missed.** The user's own instinct ("this is hanging") prompted a closer look at what
+was genuinely a 30+-minute, still-growing run: `docker exec`'s live process list showed a `spiceinit`
+subprocess for a *different* WAC product every time it was checked, and `cache/isis_ck_resolution/`
+had accumulated over 100 distinct `<edr_product>.json` files in under 30 minutes. Traced to
+`dataset.evaluate_candidate_image` (called once per catalog candidate during `select_dataset()`'s
+illumination sweep — potentially hundreds of times per search window) → `anchor_start_frame_for_
+centered_crop` → `camera.compute_n_frames_for_square_crop`, which unconditionally calls
+`spice_kernels.fetch_and_furnish` with a *per-candidate* config (a different `edr_product` every
+call). Since `resolve_wac_ck_kernels`'s persisted cache is keyed on `edr_product`, every single
+candidate was a guaranteed cache miss, each paying a full, uncached EDR-fetch + `lrowac2isis` +
+live `spiceinit` round-trip (~15-30s) that never existed before this session's change (the old
+NAIF-metakernel CK selection was a cheap HTTP GET + regex parse, indifferent to how many distinct
+products it was asked about). A static grep for `fetch_and_furnish(` call sites earlier in this same
+session had found this exact line (`camera.py:242`) but failed to trace that it's reachable
+transitively through `evaluate_candidate_image` — a reminder that grepping for a call site isn't the
+same as tracing its actual callers, especially through several layers of indirection.
+
+Fixed by forcing `wac_ck_source="naif_metakernel"` specifically on `evaluate_candidate_image`'s
+`per_row_config` — justified by this same phase's own proof that the two sources give numerically
+identical pointing, so there's no accuracy cost to using the cheap path for this specific
+high-volume, exploratory use, while leaving the `isis_resolved` default in place for the much
+smaller number of deliberate, final camera-pose computations (`build_camera`, once per selected
+image; `isis_wac.run_pipeline`, likewise). Verified directly: re-ran `select_dataset(max_search_days
+=7)` in isolation after the fix (81 candidates) and confirmed via `ls cache/isis_ck_resolution/ |
+wc -l`/`ls scratch/isis_wac/ | wc -l` that neither directory grew at all during the sweep — down
+from >100 new ISIS pipeline runs to zero. Full notebook re-run after the fix completed cleanly,
+`trntest-lint` clean, all 104 tests pass (10 new: `Kernels`-label parsing, `KernelRef` dispatch,
+persisted-cache-avoids-network, `cache.py` URL-construction).
+
+**Tooling follow-up, prompted directly by the above** — the runaway sweep only became diagnosable at
+all via `docker exec`-level process forensics (`ps aux`, `docker stats`, counting scratch dirs by
+hand), because `scripts/run_notebook.sh`'s `jupyter nbconvert --execute --inplace` buffers all
+output and only writes the `.ipynb` once, at the very end — a genuinely slow run and a truly hung
+one look identical from the outside. Switched to `papermill --log-output --no-progress-bar
+--request-save-on-cell-execute --autosave-cell-every 30`: streams live cell-by-cell output as it
+happens, and writes the `.ipynb` incrementally (not just once at the end) so even the file itself
+shows real progress mid-run. Papermill also writes its own `metadata.papermill` block per cell (in
+addition to the standard `metadata.execution` timing nbconvert already wrote) -- found this breaks
+`_check_notebook_sync`: jupytext embeds that extra block into the `.py:percent` cell marker line on
+round-trip, which the checked-in `.py` source never has, so every run failed the sync check until
+`scripts/strip_papermill_metadata.py` (using `nbformat`'s own read/write, not hand-rolled JSON, to
+avoid trading one spurious diff for another) strips it right after execution. Added
+`scripts/notebook_timing_report.py` to close a related, separate gap: per-cell timing is genuinely
+recorded (`metadata.execution`, by both nbconvert and papermill, by default), but invisible in any
+normal notebook view or in papermill's own live output — it now prints a per-cell duration table,
+slowest-first, both to the terminal and appended to a kept log
+(`scratch/notebook_runs/<name>_<timestamp>.log`, plus rolling `_latest.log`/`_previous.log`) so a
+slow run can be compared against its own history, not just eyeballed once and lost. Considered and
+rejected `jupyterlab-execute-timing` (the user's original ask) — it's a JupyterLab-UI-only
+extension, inert for this project's headless/scripted execution path, and redundant with timing data
+nbconvert/papermill already record natively.

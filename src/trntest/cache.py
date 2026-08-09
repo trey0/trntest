@@ -131,6 +131,26 @@ def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
     return dest
 
 
+def isis_kernel_rel_path(rel_path: str) -> str:
+    """rel_path like 'kernels/ck/moc42r_2019334_2020001_v01.bc' -> cache path under isisdata/lro/... --
+    deliberately mirrors $ISISDATA/lro/...'s own real layout (not a new independent subtree), so a
+    file cached here already sits where a future local (non-web) spiceinit run, or a fuller
+    `downloadIsisData lro` fetch, would expect to find it. `isis_wac.ensure_isisdata()`'s own
+    --include filter deliberately excludes kernels/ck/ -- this is a narrow, additive exception living
+    alongside it, not a change to it. See docs/data-sources.md for the USGS S3 bucket this mirrors."""
+    return f"isisdata/lro/{rel_path}"
+
+
+def fetch_isis_kernel(rel_path: str, cache_root: Path, base_url: str) -> Path:
+    """Fetch a kernel USGS's ISIS kernel database resolved (see spice_kernels.py's
+    `select_isis_wac_ck_kernels`), from USGS's public S3 bucket rather than NAIF's archive -- same
+    `cached_get` shape as `fetch_naif_kernel`. Confirmed live: a 30-day `moc42r_*` CK merge is
+    ~1.65 GiB, comparable to what `fetch_naif_kernel` already streams for `lrosc`/`lrolc` today
+    (~529MB/10-day chunk per docs/caching.md) -- no special resumable-curl handling needed here,
+    unlike `fetch_astropedia_gld100`'s ~10GB single-file case."""
+    return cached_get(f"{base_url}{rel_path}", isis_kernel_rel_path(rel_path), cache_root=cache_root)
+
+
 def lroc_rel_path(dataset: str, volume: str, subdir: str, doy: str, product: str, ext: str) -> str:
     return f"{dataset}/{volume}/DATA/{subdir}/{doy}/WAC/{product}.{ext}"
 

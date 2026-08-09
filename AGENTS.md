@@ -45,11 +45,18 @@ this file). Then, as needed:
   the outer workspace's `src/`, not inside this checkout).
 - When validating a change by running the notebook end-to-end, run `scripts/run_notebook.sh
   notebooks/lunar_sat_sim_demo.py` — it regenerates `notebooks/lunar_sat_sim_demo.ipynb` from the
-  tracked `.py` source and re-executes it in place, so the results are immediately visible by
-  opening that file in the user's already-running `docker compose up` Jupyter Lab server (no scp,
-  no separate step on their end). Always go through this script rather than a bare
-  `jupyter nbconvert --execute --inplace` when the `.py` may have changed — otherwise the `.ipynb`
-  ends up executing stale code. Don't bother building/publishing an Artifact for this kind of
+  tracked `.py` source and re-executes it in place (via `papermill --log-output`, not a bare
+  `jupyter nbconvert --execute` — streams live cell-by-cell progress/output and per-cell timing
+  instead of buffering everything until the run finishes or hangs; see docs/history.md's Phase 27
+  follow-up), so the results are immediately visible by opening that file in the user's
+  already-running `docker compose up` Jupyter Lab server (no scp, no separate step on their end).
+  Always go through this script rather than invoking a notebook runner directly when the `.py` may
+  have changed — otherwise the `.ipynb` ends up executing stale code. A per-cell timing report
+  prints at the end and is appended to a kept log (`scratch/notebook_runs/<name>_<timestamp>.log`,
+  plus rolling `_latest.log`/`_previous.log`) — check `_previous.log` if a run seems slower than
+  expected, or `docker exec`/`docker stats` on the running container if it seems to genuinely hang
+  (confirm real CPU/IO activity, not just elapsed time, before assuming something's actually stuck).
+  Don't bother building/publishing an Artifact for this kind of
   internal validation check — it's slower and not worth the token cost when the user can just view
   the live notebook themselves.
 - **Notebooks are jupytext-paired and both halves are committed.** There are two:

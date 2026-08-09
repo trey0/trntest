@@ -6,14 +6,19 @@ we treat the metakernel purely as a manifest: parse it, then download only:
 
   - the small kernels needed regardless of date (LSK, SCLK, PCK, the two lunar frame
     kernels, the LRO frames kernel, the LROC IK, and the DE421 planetary ephemeris), and
-  - the date-ranged CK/SPK files whose filename-encoded range covers our target day, and
-    only the CK "flavors" relevant to LROC WAC pointing (`lrosc` = spacecraft bus attitude,
-    `lrolc` = LROC-specific thermal offset of frame -85620) -- NOT `lrodv`/`lrohg`/`lrosa`
-    (maneuver/antenna/solar-array attitude, irrelevant here).
+  - the date-ranged SPK files whose filename-encoded range covers our target day, restricted
+    to LRO's own reconstructed-orbit prefix (`SPK_PREFIXES`), and
+  - the WAC CK (pointing) kernel(s) for our target day -- live default: asks a real ISIS
+    `spiceinit web=yes` run what it actually furnishes (`select_isis_wac_ck_kernels`), rather
+    than this module's own NAIF-metakernel-based heuristic (`select_naif_wac_ck_kernels`,
+    deprecated but numerically equivalent -- both give the same, ISIS-agreeing pointing;
+    `select_isis_wac_ck_kernels`'s own docstring has the full story on why this exists anyway).
+    Controlled by `TrntestConfig.wac_ck_source`.
 
 See docs/data-sources.md and docs/caching.md for the background.
 """
 
+import dataclasses
 import functools
 import re
 from datetime import datetime
@@ -37,7 +42,8 @@ ALWAYS_KERNELS = [
     "data/spk/de421.bsp",
 ]
 
-# CK filename prefixes relevant to LROC WAC pointing (see docs/data-sources.md).
+# CK filename prefixes relevant to LROC WAC pointing (see docs/data-sources.md) -- deprecated-path
+# only now (select_naif_wac_ck_kernels), see that function's docstring.
 WAC_CK_PREFIXES = ("lrosc", "lrolc")
 
 # SPK (trajectory) filename prefix -- LRO's own reconstructed orbit.
@@ -49,12 +55,27 @@ LRO_ID = -85
 LRO_SC_BUS_ID = -85000
 LRO_LROCWAC_ID = -85620
 
+
+@dataclasses.dataclass(frozen=True)
+class KernelRef:
+    """One kernel to fetch+furnish, tagged with which cache.py fetch function resolves it. NAIF
+    paths and USGS ISIS-kernel-db paths use different remote roots/cache-path conventions (see
+    cache.fetch_naif_kernel vs. cache.fetch_isis_kernel) -- a bare path string can no longer say
+    "how to fetch this," only "what local path it mirrors to." `path` is `source`'s own path
+    convention: "naif" -> archive-relative (e.g. 'data/ck/lrosc_..._v01.bc'); "isis_resolved" ->
+    'kernels/ck/<filename>', relative to USGS's S3 `usgs_data/lro/` prefix (see
+    cache.isis_kernel_rel_path)."""
+
+    source: str  # "naif" | "isis_resolved"
+    path: str
+
+
 # Tracks which date-ranged (CK/SPK) kernel paths are currently furnished, so fetch_and_furnish can
 # unload ones no longer needed before furnishing a new date's set -- see fetch_and_furnish's
 # docstring for why this matters. Process-global by necessity: SPICE's own kernel pool is itself
 # global per-process state, so this just mirrors it, rather than introducing new global state on
 # top of a purely-functional design.
-_loaded_date_ranged_kernels: set[str] = set()
+_loaded_date_ranged_kernels: set[KernelRef] = set()
 
 # Tracks every local kernel path currently furnished (ALWAYS_KERNELS included), so fetch_and_furnish
 # can skip re-furnishing a kernel it already loaded. This is NOT redundant with SPICE's own kernel
@@ -120,16 +141,99 @@ def select_date_ranged(
     return selected
 
 
-def select_kernels_for(target_dt: datetime, config: TrntestConfig) -> list[str]:
+def select_naif_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> list[str]:
+    """**Deprecated** -- kept for reference/comparison (see docs/history.md's dated entry). Selects
+    WAC CK kernels by parsing NAIF's yearly metakernel manifest and filtering to `WAC_CK_PREFIXES`
+    (`lrosc` = spacecraft bus attitude, `lrolc` = LROC-specific thermal offset of frame -85620).
+    Confirmed to disagree with ISIS's own camera model by ~11-13km: it never fetches a second CK,
+    `moc42r_*.bc`, that ISIS's `spiceinit web=yes` furnishes alongside the usual `lrolc_*` one (and
+    that kernel isn't even in the NAIF metakernel this function parses -- it lives only in USGS's own
+    S3-hosted ISIS kernel database, an entirely different source). Superseded by
+    `select_isis_wac_ck_kernels`, which asks a real `spiceinit` run directly instead of reimplementing
+    kernel selection. Left in place for direct A/B comparison, not for any accuracy reason -- both
+    `lrosc`/`lrolc` and `moc42r` are the same "Reconstructed" tier in ISIS's own kernel-db vocabulary,
+    no evidence one is more accurate than the other."""
     mk_path = latest_metakernel_url(target_dt.year, config.naif_base_url)
     mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
     all_paths = parse_metakernel(mk_local.read_text())
+    target_doy = doy_code(target_dt)
+    return select_date_ranged(all_paths, target_doy, "ck", prefixes=WAC_CK_PREFIXES)
+
+
+def select_isis_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> list[str]:
+    """Live default WAC CK source: asks a real ISIS `spiceinit web=yes` run what it actually
+    furnishes (`isis_wac.resolve_wac_ck_kernels`), rather than reimplementing USGS's own kernel-db
+    selection algorithm in Python -- a real gap was found in that alternative (the route it would
+    need, `lroc_kernels.db`, is currently empty in USGS's bucket, even though ISIS's live resolution
+    still furnishes an `lrolc`-equivalent kernel from somewhere). See docs/history.md's dated entry
+    for the full story, including a since-corrected premise: this mechanism was originally built to
+    fix a documented ~11-13km pointing discrepancy, but direct verification (comparing our SPICE
+    computation against real `campt` output at several points) found that discrepancy isn't
+    reproducible at all -- and that the extra kernel this mechanism adds (`moc42r_*.bc`, bus
+    attitude) has zero measurable effect on WAC pointing regardless (SPICE's frame resolution for
+    `LRO_LROCWAC_VIS` turns out to depend entirely on `lrolc`'s own direct CK segments for -85620,
+    confirmed via a `SPICE(NOFRAMECONNECT)` failure when `lrolc` isn't furnished even with `moc42r`
+    present). Kept anyway for its independent, real value: it makes our furnished kernel set match
+    ISIS's own resolution by construction, a more principled and future-proof design than hand-picked
+    filename prefixes, even though it doesn't move any currently-known number.
+
+    `isis_wac.resolve_wac_ck_kernels`'s resolution is tied to `config.edr_product` (a single fixed
+    EDR product, not an arbitrary requested epoch) -- filters the resolved kernel(s) to just the ones
+    whose filename-encoded date range actually covers `target_dt`, returning `[]` if none do (e.g.
+    `target_dt` falls well outside that one product's own narrow coverage window, as happens for
+    `dataset.select_dataset()`'s wide date-range searches) -- `select_kernels_for` falls back to the
+    deprecated NAIF path for that case, safe per the equivalence just confirmed."""
+    from trntest import isis_wac  # noqa: PLC0415 -- see docstring, avoids a circular import
 
     target_doy = doy_code(target_dt)
-    ck_paths = select_date_ranged(all_paths, target_doy, "ck", prefixes=WAC_CK_PREFIXES)
+    covered = []
+    for p in isis_wac.resolve_wac_ck_kernels(config):
+        m = DATE_RANGE_RE.search(p)
+        if m and int(m.group(1)) <= target_doy <= int(m.group(2)):
+            covered.append(p)
+    return covered
+
+
+def select_kernels_for(target_dt: datetime, config: TrntestConfig) -> list[KernelRef]:
+    if config.wac_ck_source == "isis_resolved":
+        ck_paths = select_isis_wac_ck_kernels(target_dt, config)
+        if ck_paths:
+            ck_refs = [KernelRef("isis_resolved", p) for p in ck_paths]
+        else:
+            # target_dt falls outside the one fixed EDR product's own resolved coverage window --
+            # not a resolution failure, an expected case for wide date-range searches (see
+            # select_isis_wac_ck_kernels's docstring). Confirmed safe to fall back to the deprecated
+            # NAIF path here specifically: both sources give numerically identical pointing (see that
+            # docstring's "since-corrected premise" note), so this isn't reintroducing any known gap.
+            ck_paths = select_naif_wac_ck_kernels(target_dt, config)
+            ck_refs = [KernelRef("naif", p) for p in ck_paths]
+    elif config.wac_ck_source == "naif_metakernel":
+        ck_paths = select_naif_wac_ck_kernels(target_dt, config)
+        ck_refs = [KernelRef("naif", p) for p in ck_paths]
+    else:
+        raise ValueError(
+            f"unknown wac_ck_source {config.wac_ck_source!r} -- expected 'isis_resolved' or 'naif_metakernel'"
+        )
+    if not ck_refs:
+        raise RuntimeError(f"no WAC CK kernel resolved for {target_dt!r} via wac_ck_source={config.wac_ck_source!r}")
+
+    mk_path = latest_metakernel_url(target_dt.year, config.naif_base_url)
+    mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
+    all_paths = parse_metakernel(mk_local.read_text())
+    target_doy = doy_code(target_dt)
     spk_paths = select_date_ranged(all_paths, target_doy, "spk", prefixes=SPK_PREFIXES)
 
-    return ALWAYS_KERNELS + ck_paths + spk_paths
+    return [KernelRef("naif", p) for p in ALWAYS_KERNELS] + ck_refs + [KernelRef("naif", p) for p in spk_paths]
+
+
+def _fetch_kernel_ref(ref: KernelRef, config: TrntestConfig) -> str:
+    if ref.source == "naif":
+        return str(cache.fetch_naif_kernel(ref.path, cache_root=config.cache_root, base_url=config.naif_base_url))
+    if ref.source == "isis_resolved":
+        return str(
+            cache.fetch_isis_kernel(ref.path, cache_root=config.cache_root, base_url=config.isis_kernel_base_url)
+        )
+    raise ValueError(f"unknown KernelRef.source {ref.source!r}")
 
 
 def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) -> list[str]:
@@ -147,27 +251,28 @@ def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) 
     long-running process calling this once per sampled epoch (e.g.
     illumination.find_ascending_node_crossings) would otherwise hit quickly."""
     config = config or load_config()
-    kernel_paths = select_kernels_for(target_dt, config)
-    always_paths = set(ALWAYS_KERNELS)
-    needed_date_ranged = set(kernel_paths) - always_paths
+    kernel_refs = select_kernels_for(target_dt, config)
+    always_refs = {KernelRef("naif", p) for p in ALWAYS_KERNELS}
+    needed_date_ranged = set(kernel_refs) - always_refs
 
-    for stale_path in _loaded_date_ranged_kernels - needed_date_ranged:
-        stale_local = str(
-            cache.fetch_naif_kernel(stale_path, cache_root=config.cache_root, base_url=config.naif_base_url)
-        )
+    for stale_ref in _loaded_date_ranged_kernels - needed_date_ranged:
+        stale_local = _fetch_kernel_ref(stale_ref, config)
         spice.unload(stale_local)
         _loaded_kernels.discard(stale_local)
     _loaded_date_ranged_kernels.clear()
     _loaded_date_ranged_kernels.update(needed_date_ranged)
 
-    local_paths = [
-        str(cache.fetch_naif_kernel(p, cache_root=config.cache_root, base_url=config.naif_base_url))
-        for p in kernel_paths
-    ]
+    local_paths = [_fetch_kernel_ref(ref, config) for ref in kernel_refs]
     for lp in local_paths:
         if lp not in _loaded_kernels:
             spice.furnsh(lp)
             _loaded_kernels.add(lp)
+    ck_paths_furnished = [r.path for r in kernel_refs if "/ck/" in r.path]
+    if not verify_ck_coverage(LRO_LROCWAC_ID, spice.utc2et(target_dt.strftime("%Y-%m-%dT%H:%M:%S.%f"))):
+        raise RuntimeError(
+            f"furnished CK kernels {ck_paths_furnished!r} do not actually cover {target_dt!r} for "
+            f"frame {LRO_LROCWAC_ID} -- trust-but-verify failed"
+        )
     return local_paths
 
 
