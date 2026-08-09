@@ -465,6 +465,13 @@ be re-derived from scratch if picked up again.
   already-`crop`ped cube ("USER ERROR: This application can not be run on any image that has been
   geometrically transformed ... or cropped") — cropping must happen after calibration/`framestitch`,
   not before.
+  **Correction: the 0.999 correlation above was a false positive**, measured on too small a sample.
+  A user's manual visual inspection of the actual notebook output later caught real remaining
+  defects (a 3-region gap in the valid-data mask, a real position offset) that this project's own
+  automated checks had missed. Deeper investigation (see the "ISIS `cam2map` real-WAC reprojection"
+  section below and `docs/history.md`'s dated entry) traced the true root cause to a bug in
+  `usgscsm`'s own `groundToImage` implementation, not fixable by any ISD field patch — this whole
+  ISD-authoring approach was abandoned in favor of ISIS's native `cam2map`.
 - **`mapproject -t csm <dem> <cub> <json> <out>`** works directly against the unstitched per-parity
   cube + its own ISD (no separate stitched-cube pairing step needed for this) — confirmed on real
   data: ASP's bundled GDAL reads `.cub` natively (no `isis2gdal`/conversion needed for the DEM
@@ -556,3 +563,131 @@ also tested and rigorously ruled out as unrelated — patching it produced a byt
 `mapproject` output on a fixed grid; ASP's implementation doesn't appear to consume that field at
 all. `isis_wac.run_isd_generate` now patches `framelet_order_reversed` to match the same `flip` value
 `framestitch` was run with (threaded through via `FramestitchResult.flip`).
+
+## `usgscsm`'s `groundToImage` bug for Pushframe sensors, and the ISIS `cam2map` fix
+
+The 0.999-correlation "fix" documented above (patching the cropped cube's ISD ephemeris-time
+fields) was a false positive, caught by a user's manual visual inspection of the actual notebook
+output (a 3-region gap in the valid-data mask, plus a real ~33-35km position offset from the
+synthetic render's own overlay) — this project's own automated checks (a too-small correlation
+sample, and `mapproject_single --query-pixel`, which turned out to be unreliable for this sensor
+model even on the known-good full cube) had missed both. Full investigation (see
+`docs/history.md`'s dated entry for the blow-by-blow):
+
+- **Consulted Laura, Mapel & Hare 2020** ("Planetary Sensor Models Interoperability Using the
+  Community Sensor Model Specification", DOI 10.1029/2019EA000713) at the user's suggestion. Found
+  it doesn't actually cover Pushframe sensors — Table 2 lists only framing (MDIS, ISS, Dawn) and
+  line-scan (LROC-NAC, CTX, HRSC, Kaguya TC) sensors, and the paper's own conclusion lists "push
+  frame sensors" under future work. It did usefully confirm (Table 1's field descriptions) that
+  `center_ephemeris_time` shouldn't matter independently of `starting_ephemeris_time`/
+  `ending_ephemeris_time` — later confirmed to be exactly right, and *why*, from the C++ source
+  directly (see below).
+- **Version mismatch caught early**: this container ships `libusgscsm.so.2.0.1`, which differs
+  meaningfully from the `main` branch on GitHub. Re-fetched the actual `2.0.1` tag before drawing
+  any conclusions from source.
+- **Traced the real mechanism**: `UsgsAstroPushFrameSensorModel::getImageTime()` computes
+  `m_startingEphemerisTime + 0.5*exposureDuration + frameletNumber*interframeDelay`, then
+  subtracts `m_centerEphemerisTime` before returning — i.e. all downstream position/quaternion
+  lookups work in *time relative to center*, and since `m_t0Ephem`/`m_t0Quat` (the position/
+  quaternion tables' own anchor times) are built the same way (`table's own absolute start time -
+  center_ephemeris_time`), `center_ephemeris_time` algebraically cancels out of every interpolation
+  index. This is why patching it alone had "zero effect" in earlier testing — not a mystery, just
+  arithmetic. `starting_ephemeris_time` is the one scalar field that actually matters (it doesn't
+  cancel), and it needs to be the crop's real absolute start time — confirmed independently via
+  `campt` (ISIS's own native camera model) reporting the crop's own line-1/line-980
+  `EphemerisTime` matching the naive/"forward" expectation to within 0.02s.
+- **Isolated the real bug**: a controlled 2x2 test (touching `ck_table_start_time`/`ck_table_end_time`
+  vs. not, crossed with "forward"/physically-correct vs. "backward"/empirically-hacked
+  `starting_ephemeris_time`) showed `ck_table_start_time`/`ck_table_end_time` have **zero** effect
+  on `mapproject`'s output either way (byte-identical results) — ruling out the leading ISD-field
+  hypothesis entirely. Only the timing direction mattered, and neither direction produced correct
+  content: a direct correlation check against the known-good full-cube reference, *at the crop's
+  own true location* (no shift search needed), gave only ~0.40 either way, and a ±5km shift search
+  barely moved it (0.44 peak) — ruling out a pure translation error.
+  **`cam_test`** (`--cam1`/`--cam2` set to the *same* camera, an image→ground→image round-trip
+  self-consistency check) showed a real, non-random defect: median ~67px error on the 70-framelet
+  crop vs. ~17px on the full 258-framelet cube, and — the decisive test — iterating the same
+  transform repeatedly never converged to a stable fixed point, just drifted monotonically toward
+  the image boundary. That rules out "found a different but valid answer" (which would show up as
+  a stable fixed point after 1-2 iterations) in favor of genuine non-convergence.
+- **Root cause, confirmed from source**: `UsgsAstroPushFrameSensorModel::groundToImage` does *not*
+  do a continuous per-pixel solve. It does an **unbracketed secant search over discrete framelet
+  index** (`startFramelet=0`, `endFramelet=numFramelets-1`, up to 20 iterations,
+  `offset = endDistance*(endFramelet-startFramelet)/(endDistance-startDistance)`) to find which
+  framelet's along-track center is closest to a target ground point — with no check that a root is
+  actually bracketed, and no monotonicity guarantee for `calcFrameDistance` (plausible given real
+  ground-coverage overlap between adjacent Pushframe exposures). A 70-framelet crop gives this
+  search a much shorter, more numerically fragile baseline than the full cube's 258 framelets.
+  Confirmed this is exactly what ASP's `mapproject` calls, once per output pixel: `mapproject_single.cc`'s
+  `demPixToCamPix()` calls `camera_model->point_to_pixel(xyz)`, and ASP's `CsmModel::point_to_pixel()`
+  (`CsmModel.cc`) calls `m_gm_model->groundToImage(...)` directly.
+  **Not just a crop-size issue**: cross-checking `cam2map`'s own reprojection of the crop against
+  its reprojection of the *full* cube (same tool, same projection, only the input line range
+  differs) gave 0.9999986 correlation over their full overlap — but the old ASP/CSM full-cube
+  reference (`M1327210646CE.vis.cal.stitched-mapproj.tif`) only agrees with either at ~0.2-0.4,
+  meaning the long-trusted "known-good" full-cube reference used throughout this notebook's earlier
+  validation was itself measurably affected by this bug, just less severely.
+- **Fix: bypass `usgscsm`/CSM/ASP `mapproject` entirely for the real WAC crop.** ISIS's own native
+  camera model (reads pointing/timing directly from the cube's cached SPICE data, completely
+  separate C++ implementation from `usgscsm`) has no such issue — confirmed via `campt` at the
+  crop's center and all 4 edges (all resolve cleanly, no errors/NaNs) and `cam2map`'s own output
+  contiguity (a clean row-by-row valid-fraction profile, no gaps, unlike the old CSM crop's
+  3-region defect). This is very likely also why real LROC WAC global mosaics (which predate
+  `usgscsm`, ~2018+) are solid: they almost certainly go through ISIS's native Pushframe model and
+  `cam2map`, not the newer generic CSM plugin.
+- **Getting `cam2map` onto the same coordinate system as the rest of the pipeline**: ISIS supports
+  Orthographic projection natively (`$ISISROOT/appdata/templates/maps/orthographic.map`). Verified
+  ISIS's implementation agrees with GDAL/PROJ's `+proj=ortho` to sub-micrometer precision for
+  matching center lat/lon and spherical radius (cross-checked `cam2map`+`campt` against `pyproj`'s
+  own forward projection at a real test pixel — first attempt at this check used `mappt`'s
+  `coordsys=map` option and got wildly wrong numbers, traced to a tool-usage mistake: that option's
+  reported X/Y reflects the `FROM` cube's own native projection, not the override, confirmed by
+  back-computing the reported value against the `FROM` cube's own grid parameters). Two real
+  gotchas found getting `cam2map` to actually use the custom map file: `PIXRES` defaults to
+  `CAMERA` (auto-derives resolution from the image), silently ignoring the map file's own
+  `PixelResolution` unless explicitly set to `PIXRES=map`; and `gdal_translate` on the resulting
+  cube prints a `PROJ: proj_create_from_name` error to stderr (an ISIS/GDAL `PROJ_LIB` environment
+  mismatch) that's harmless — confirmed the output CRS/transform are correct despite it, and the
+  process still exits 0.
+  **Deliberately not pixel-grid-aligned** to `LunaservResult`'s own raster (no `UpperLeftCornerX`/
+  `UpperLeftCornerY` pinning, no post-hoc `gdalwarp`/resampling pass) — `plotting.plot_overlay`
+  composites both rasters via their own real georeferenced coordinates (`rioxarray`/`xarray`), not
+  a shared pixel grid, so matching *projection* (verified above) is sufficient; a separate
+  resampling pass would have reintroduced exactly the kind of interpolation-quality/subtle-
+  misalignment risk this whole detour was meant to avoid.
+- **`cam2map`'s own `WARPALGORITHM=AUTOMATIC` default introduces real striping for this sensor**,
+  found via a user's manual visual check the automated correlation checks above had missed (a
+  correlation check only sees pixels valid in *both* rasters — it can't detect matching coverage
+  gaps). ISIS's docs recommend `AUTOMATIC` specifically for push frame cameras (it picks
+  `FORWARDPATCH` with `PATCHSIZE` locked to the full framelet height, 14px, "to ensure the patch
+  size does not cross multiple framelets") — but that same doc also says a patch is silently
+  dropped if its 4-corner affine fit isn't within 0.1px of the camera model's own computation, and
+  that check was failing for roughly half the framelets here (confirmed on the *full* cube too, not
+  crop-specific — a raw boolean-grid dump of the output, not a coarse row/column average, is what
+  actually revealed the real diagonal gap bands; coarse averaging was too blunt to catch it).
+  **Fix**: explicit `WARPALGORITHM=forwardpatch PATCHSIZE=4` — verified coverage went from ~47% to
+  ~71% (matching the crop's real footprint, no more gaps) with content correlation still excellent
+  (0.9954, vs. 0.9999986 at the broken default — the small drop is patch-fit noise, not a real
+  regression).
+- **Position residual — real, diagnosed, left as a known residual per user direction (not a
+  centroid artifact, and not an off-by-one in `crop_window_for_camera`)**. Even after the fixes
+  above, the crop's designated center pixel (checked directly via `campt`, not just an aggregate
+  valid-pixel centroid) genuinely images ground ~11km from `crop_footprint`'s independently
+  ray-traced center, despite both using the exact same frame-index formula. Ruled out a
+  frame-selection bug first: reconstructed ISIS's own per-line time formula from three exact
+  frame-boundary `campt` queries and confirmed `crop_window_for_camera` selects exactly the
+  intended chronological frame range, correctly reflecting `framestitch`'s line-order reversal for
+  this product's `flip=True` — ISIS's per-line time matches `camera.frame_et()` to within 0.016s
+  for the corresponding frames. The actual cause: at that same matched instant, our own
+  SPICE-based pointing (`camera.camera_pose_moon_me`, via `spice.pxform`) and ISIS's own camera
+  model disagree by ~11km. ISIS's `spiceinit web=yes` furnishes a second CK kernel,
+  `moc42r_2019304_2019335_v01.bc`, that `spice_kernels.py`'s `WAC_CK_PREFIXES = ("lrosc", "lrolc")`
+  never fetches — and it isn't even present in the NAIF metakernel our own code already parses, so
+  it's not a simple missing-prefix fix; it would need an entirely different kernel source.
+- **Also tried and ruled out**: ASP `mapproject -t isis` (uses ISIS's own native sensor model
+  instead of `usgscsm`/CSM, given a plain `.cub` with no separate ISD sidecar) as a possible
+  simpler alternative to the hand-written PVL + `cam2map` approach above. Tested directly against
+  the same crop cube — immediately rejected: `"ERROR: Unusual input file... Seems to have Isis
+  camera type 1. Check your data. Maybe it will work with CSM."` ASP's own ISIS session wrapper
+  doesn't support this camera type (Pushframe) at all, not a flag/workaround issue. `cam2map`
+  remains the only working native-ISIS reprojection path found for this sensor.

@@ -1289,3 +1289,157 @@ already-rendered/extracted arrays.
   images already shared the same axis convention. The nonzero residual reflects that this pass's
   along-track direction isn't exactly north-south — the best achievable result under the "only
   multiples of 90°, no mirroring" constraint, not a bug.
+
+## Phase 25 (2026-08-09) — Found and worked around a real `usgscsm` bug: Phase 24's "fix" was a false positive
+
+Phase 24's fix (patching a cropped cube's ISD ephemeris-time fields, 0.999 correlation) shipped and
+was committed. The user then manually inspected the actual notebook output and found real, still-
+present defects Phase 24's own checks had missed: the overlay had **three disconnected regions**
+(a genuine gap, not a display artifact) instead of one contiguous shape, and sat measurably left of
+where Phase 5B's synthetic-render overlay landed. The user explicitly redirected away from more
+self-directed visual interpretation ("your visual perception analyzing images is a bit suspect... prefer
+to ask me to check it manually") and toward reading real source rather than guessing — this phase is
+the resulting investigation.
+
+**Consulted the paper the user found** (Laura, Mapel & Hare 2020, DOI 10.1029/2019EA000713,
+specifically "Table 2 Continued"). Turned out not to cover Pushframe sensors at all — Table 2 lists
+only framing/line-scan sensors, and the paper's conclusion lists "push frame sensors" as future
+work. It did usefully confirm `center_ephemeris_time`'s Table 1 description (`t0_ephemeris`/
+`t0_quaternion` given "relative to center image time") — which turned out to exactly explain an
+earlier-session finding that had looked like a contradiction (see below). Fetching the paper itself
+was also an early obstacle: Wiley's bot detection blocked every automated attempt (`WebFetch`, `curl`
+with browser headers, Unpaywall/Semantic Scholar lookups all confirmed it's genuinely open access,
+just inaccessible programmatically) — the user manually placed the PDF in the workspace instead.
+
+**Re-derived the actual mechanism from source, catching a version mismatch first**: this
+container's `libusgscsm.so.2.0.1` differs meaningfully from `usgscsm`'s `main` branch on GitHub —
+re-fetched the real `2.0.1` tag before trusting anything read from it. Traced
+`UsgsAstroPushFrameSensorModel::getImageTime()`: it computes an absolute time from
+`m_startingEphemerisTime`/`frameletNumber`/`interframeDelay`, then **subtracts
+`m_centerEphemerisTime`** before returning — every downstream lookup works in time-relative-to-center.
+Since the position/quaternion tables' own anchor times (`m_t0Ephem`/`m_t0Quat`) are built the same
+way, `center_ephemeris_time` **algebraically cancels out** of every interpolation index — this is
+why an earlier empirical test (setting it to `0.0`) had shown "zero effect": not a mystery, just
+arithmetic, and exactly consistent with the paper's Table 1 description once traced through.
+`starting_ephemeris_time` is the one field that doesn't cancel and must be right; confirmed via
+`campt` (ISIS's own, unrelated camera model) that the "naive"/physically-correct value was right
+all along, to within 0.02s.
+
+**Isolated the real bug with a controlled 2×2 test**: crossing "touch `ck_table_start_time`/
+`ck_table_end_time`" against "forward vs. backward `starting_ephemeris_time`" showed the `ck_table_*`
+fields have **zero** effect on `mapproject`'s output (byte-identical either way) — the leading
+hypothesis, eliminated. Only the timing direction mattered for output *shape*, but neither produced
+correct *content*: a direct correlation check against the known-good full-cube reference, at the
+crop's own true (no-shift) location, gave only ~0.40 either way, and a ±5km shift search barely
+moved it (0.44 peak) — ruling out a simple translation error.
+
+**The decisive test was `cam_test`'s image→ground→image round-trip, iterated**: comparing a camera
+model against *itself* should recover the same pixel almost exactly. It didn't (median ~67px error
+on the 70-framelet crop vs. ~17px on the full 258-framelet cube) — but critically, chaining the same
+transform repeatedly (feed the recovered pixel back in) never converged to a stable fixed point; it
+drifted monotonically toward the image boundary. A genuine "found a different but valid answer"
+(e.g. an adjacent overlapping framelet) would show up as a stable fixed point within 1-2 iterations;
+this didn't, ruling that theory out and pointing at real non-convergence.
+
+**Root cause, confirmed from source**: `UsgsAstroPushFrameSensorModel::groundToImage` does an
+**unbracketed secant search over discrete framelet index** — starts from `[0, numFramelets-1]`,
+up to 20 iterations of `offset = endDistance*(endFramelet-startFramelet)/(endDistance-startDistance)`,
+with no check that a root is actually bracketed and no monotonicity guarantee for the underlying
+`calcFrameDistance` (plausible given real ground-coverage overlap between adjacent Pushframe
+exposures). A 70-framelet crop gives this a much shorter, more fragile baseline than the full
+cube's 258. Confirmed (via ASP's own source, `mapproject_single.cc`'s `demPixToCamPix()` →
+`CsmModel::point_to_pixel()` → `m_gm_model->groundToImage()`) that this is exactly what
+`mapproject` calls once per output pixel.
+
+**Not just a crop-size problem**: cross-checking `cam2map`'s reprojection of the crop against its
+reprojection of the *full* cube (same tool, same projection, only the input differs) gave 0.9999986
+correlation over their full overlap — but the old ASP/CSM full-cube reference used throughout this
+notebook's earlier validation only agrees with either at ~0.2-0.4. The "known-good" reference this
+whole project had trusted for comparison was itself measurably affected by this bug, just less
+severely than the crop.
+
+**Fix: bypass `usgscsm`/CSM/ASP `mapproject` entirely for the real WAC crop**, using ISIS's own
+native camera model (a completely separate C++ implementation, reads pointing/timing straight from
+the cube's cached SPICE data) via `cam2map`. Confirmed clean via `campt` at the crop's center and
+all 4 edges (no errors/NaNs anywhere) and `cam2map`'s own output contiguity (smooth row-by-row
+valid-fraction profile, no gaps — unlike the old CSM crop's 3-region defect). This is very likely
+also why real LROC WAC global mosaics (which predate `usgscsm`) are solid: they almost certainly go
+through ISIS's native Pushframe model, not the newer CSM plugin.
+
+Getting `cam2map` onto the same real-world coordinate system as the rest of the pipeline needed one
+more verification step: confirmed ISIS's native Orthographic projection agrees with GDAL/PROJ's
+`+proj=ortho` to sub-micrometer precision for matching center/radius (a first attempt at this check,
+via `mappt`'s `coordsys=map` option, gave wildly wrong numbers — traced to a tool-usage mistake, not
+a real discrepancy: that option's reported X/Y reflects the `FROM` cube's own native projection, not
+the override, caught by back-computing the reported value against the `FROM` cube's own grid).
+`isis_wac._orthographic_map_pvl()` clones `LunaservResult`'s own local Orthographic CRS (center
+lat/lon, spherical Moon radius, pixel resolution) into an ISIS PVL map file for `cam2map` to target.
+Two gotchas along the way: `cam2map`'s `PIXRES` parameter defaults to `CAMERA` (silently ignores the
+map file's own `PixelResolution` unless explicitly set to `PIXRES=map`), and `gdal_translate` on the
+resulting cube prints a `PROJ: proj_create_from_name` stderr error (an ISIS/GDAL `PROJ_LIB`
+environment mismatch) that's harmless — confirmed the output CRS/transform are correct despite it.
+Deliberately **not** pixel-grid-aligned to `LunaservResult`'s own raster (no `UpperLeftCorner`
+pinning, no follow-up `gdalwarp`/resampling pass) — `plotting.plot_overlay` composites both rasters
+via their own real georeferenced coordinates, not a shared pixel grid, so matching projection is
+sufficient, and a resampling pass would have reintroduced exactly the interpolation-quality risk
+this whole detour was meant to avoid.
+
+`isis_wac.py` changes: `crop_for_camera` no longer generates an ISD at all (ISIS's native model
+needs none — the cropped cube is already fully self-describing) and dropped its `frame_timing`
+parameter accordingly. `run_mapproject_for_crop` (the CSM path) was replaced by
+`run_cam2map_for_crop`. `run_isd_generate`/`run_mapproject` (the full-cube CSM functions) are kept
+in the module for reference/comparison but are no longer called by the notebook, with docstrings
+updated to record the newly-found limitation.
+
+**Verified end-to-end after the switch**: re-ran the full notebook from cold. Phase 6B's row-by-row
+valid-fraction profile is smooth and contiguous (no gaps, unlike before). Position relative to
+Phase 5B's synthetic-render overlay improved substantially (~13km residual, down from ~33-35km).
+`docs/plan.md` and `docs/data-sources.md` both got correction entries alongside the original
+(now-known-wrong) claims, per this repo's convention of recording wrong turns rather than rewriting
+history. **Both remaining points below turned out to need real follow-up** — the "not chased
+further" framing originally written here was premature; the user's own manual check caught a real
+issue the numeric checks above had missed.
+
+**Follow-up 1 — striping, found by the user's manual check.** The user reported the 6B overlay
+showing ~36 alternating stripes of data/nodata at what looked like framelet boundaries. Confirmed
+the *source* cube (pre-`cam2map`) is ~99% valid across all 5 bands — no striping there — so this was
+being introduced by `cam2map`'s own rasterization, not present in the pixel data. A raw boolean-grid
+dump of the output (not a coarse row/column average, which is too coarse to see this) showed real,
+wide diagonal bands of missing data matching individual framelets tilted into map space. Root cause:
+`cam2map`'s `WARPALGORITHM=AUTOMATIC` (ISIS's own docs recommend this *specifically* for push frame
+cameras) locks the patch size to the full framelet height (14px) and silently drops any patch whose
+affine-fit isn't within 0.1px of the camera model's own computation — that check was failing for
+roughly half the framelets at this map resolution, confirmed present on the *full* cube too (not
+crop-specific), which is why the earlier crop-vs-full correlation check hadn't caught it (both were
+missing data at the same spots, so wherever both *did* have data, they still agreed almost
+perfectly — that check validated content correctness, not coverage completeness). Fix: explicit
+`WARPALGORITHM=forwardpatch PATCHSIZE=4` (small patches fit their local affine transform accurately
+enough to pass). Verified: coverage went from ~47% to ~71% (no more gaps) with content correlation
+still excellent (0.9954, vs. 0.9999986 at the broken default — the small drop is patch-fit noise,
+not a regression). Re-verified in the real pipeline output after the fix, not just the scratch test.
+
+**Follow-up 2 — the ~13km position offset was real, not a centroid artifact.** Directly compared
+`campt`'s reading at the crop's own designated center pixel against `crop_footprint`'s independently
+ray-traced center (which use the *same* frame-index formula) and found they genuinely disagree by
+~11km, not just the valid-pixel centroid. Ruled out an off-by-one/reversed-frame-range bug in
+`crop_window_for_camera` first (the user's own hypothesis, worth taking seriously): reconstructed
+ISIS's own per-line time formula from three exact frame-boundary `campt` queries and confirmed the
+crop window selects exactly the intended chronological frame range, correctly accounting for
+`framestitch`'s line-order reversal (`flip=True` for this product) — ISIS's per-line time matches
+our own `frame_et()` to within 0.016s for the corresponding frames, so the *timing/frame-selection*
+side is correct. The actual cause: at that same matched instant, our own SPICE-based pointing
+computation (`camera.camera_pose_moon_me`) and ISIS's own camera model disagree by ~11km. Traced to
+ISIS's `spiceinit web=yes` pulling in a second CK kernel, `moc42r_2019304_2019335_v01.bc` (name
+suggests a mission-ops-reconstructed attitude product), that `spice_kernels.py`'s own
+`WAC_CK_PREFIXES = ("lrosc", "lrolc")` never fetches — confirmed this kernel isn't even listed in
+the NAIF metakernel our own code already parses, so it's not a simple missing-prefix fix; it needs
+a different kernel source entirely. **Left as a known, documented residual per user direction** —
+real, diagnosed, but out of scope to chase further right now.
+
+**Also tried, and ruled out empirically**: the user asked whether ASP's `mapproject -t isis` (uses
+ISIS's own native sensor model instead of `usgscsm`/CSM, given a plain `.cub` with no separate ISD)
+might be a simpler alternative to the hand-written PVL + `cam2map` approach above. Tested directly
+against the same crop cube: `mapproject` immediately rejected it — `"ERROR: Unusual input file...
+Seems to have Isis camera type 1. Check your data. Maybe it will work with CSM."` — ASP's own ISIS
+session wrapper doesn't support this camera type (Pushframe), full stop, not a flag/workaround
+issue. `cam2map` remains the only working native-ISIS path found for this sensor.

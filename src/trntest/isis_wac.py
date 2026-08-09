@@ -1,11 +1,33 @@
-"""ISIS3/CSM real-WAC reprojection -- steps a real WAC EDR through ISIS's own pipeline
+"""ISIS3 real-WAC reprojection -- steps a real WAC EDR through ISIS's own pipeline
 (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) as a genuine-camera-model
-alternative to `wac.py`'s manual framelet-stacking, then (`run_isd_generate`/`run_mapproject`)
-reprojects the result onto the map via ALE's CSM Pushframe sensor model, same as `render.py` does
-for the synthetic render. See docs/data-sources.md's "ISIS3/CSM spike" section and docs/history.md's
-Phases 12/19 for the full backstory and prior findings -- in particular, `run_mapproject`'s
-docstring for why this must run against the stitched (interleaved) cube, not a lone even/odd
-parity. Only the VIS cubes are touched (`vis.even`/`vis.odd`); the UV cubes are irrelevant to a
+alternative to `wac.py`'s manual framelet-stacking, then (`crop_for_camera`/`run_cam2map_for_crop`)
+reprojects the cropped result onto the map via ISIS's own *native* Pushframe camera model and
+`cam2map` -- not ALE's CSM ISD + ASP's `mapproject`, which `render.py` uses for the synthetic
+render. See docs/data-sources.md's "ISIS3/CSM spike" section and docs/history.md's Phases 12/19/24
+for the full backstory, and the dated entry documenting *why* the CSM path was abandoned for this
+specific use: `usgscsm`'s `UsgsAstroPushFrameSensorModel::groundToImage` (the function ASP's
+`mapproject` calls once per output pixel, via `CsmModel::point_to_pixel`) does an unbracketed
+secant search over framelet index that's measurably unreliable for Pushframe images -- severely so
+for a short crop (confirmed via `cam_test` round-trip self-consistency: ~67px median error on a
+70-framelet crop vs. ~17px on the full 258-framelet cube, and a chained-iteration test showing the
+crop case never converges to a stable fixed point at all), and non-negligibly even on the *full*
+cube (confirmed: `cam2map`'s output on the crop agrees with `cam2map`'s output on the full cube to
+0.9999986 correlation over their full overlap, while the old ASP/CSM full-cube reference only
+agrees with either at ~0.2-0.4). ISIS's own native camera model has no such issue (confirmed via
+`campt` at the crop's center and all 4 edges, and `cam2map`'s own output contiguity) -- it reads
+pointing/timing directly from the cube's own cached SPICE data, with no separate ISD/sidecar file
+needed at all. `run_isd_generate`/`run_mapproject` (the CSM path) are kept below for reference/
+comparison, but are no longer used by the notebook.
+
+**Known residual, left undiagnosed-fix (documented, not chased further)**: even with the fixes
+above, the crop images ground truth ~11km from `tie_points.crop_footprint_corners_for_camera`'s
+independently ray-traced expectation, at the exact matched instant -- not a `crop_for_camera`
+frame-selection bug (verified via `campt`), but a genuine pointing discrepancy between this
+project's own SPICE computation (`camera.camera_pose_moon_me`) and ISIS's own camera model. Traced
+to a CK kernel (`moc42r_*.bc`) ISIS's `spiceinit web=yes` furnishes that `spice_kernels.py` doesn't
+fetch (and isn't in the NAIF metakernel it already parses) -- see docs/history.md's dated entry.
+
+Only the VIS cubes are touched (`vis.even`/`vis.odd`); the UV cubes are irrelevant to a
 VIS-striping investigation.
 
 House style matches render.py: frozen dataclass results holding `Path`s, `config = config or
@@ -16,6 +38,7 @@ import dataclasses
 import json
 from pathlib import Path
 
+import rasterio
 import rasterio.windows
 
 from trntest import cache, render
@@ -136,8 +159,6 @@ def run_lrowaccal(spiceinit_result: SpiceinitResult, config: TrntestConfig | Non
 class FramestitchResult:
     cub_path: Path
     flip: bool  # the FLIP value framestitch was actually run with -- see run_isd_generate's docstring
-    line_offset: int = 0  # non-zero for a line-cropped sub-window of a larger stitched cube -- see
-    # crop_for_camera and run_isd_generate's docstring
 
 
 def run_framestitch(
@@ -211,39 +232,17 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
     grid) and a uniform per-framelet internal line-order flip applied directly to the pixel data
     (made the banding worse, introducing new ghosting).
 
-    **Also patches the ISD's ephemeris-time fields when `stitched.line_offset` is nonzero** (i.e.
-    `stitched` is `crop_for_camera`'s output, a line-cropped sub-window of a larger stitched cube,
-    not the full cube). Confirmed empirically: `isd_generate -i` on a cropped cube emits
-    `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` and
-    `instrument_pointing.ck_table_start_time`/`ck_table_end_time` as if the crop still started at
-    the *original* uncropped cube's first line -- ISIS's `crop` app does not itself re-anchor a
-    Pushframe cube's per-line pointing cache to the new starting line (it does correctly update
-    `ck_table_original_size` to the cropped line count, just not the *start* time). Left unpatched,
-    `mapproject` reconstructs completely wrong ground geometry: measured only 0.44 correlation
-    against the known-good full-cube mapproject's own pixels over the same real ground area. The
-    underlying `instrument_pointing.ephemeris_times`/`quaternions`/`angular_velocities` arrays
-    themselves are untouched by this -- they still hold the *entire* pass's real, absolute-time-
-    tagged samples (confirmed identical length before/after crop), so once the scalar time fields
-    above correctly reflect the crop's real start time, the CSM model interpolates the *correct*
-    poses out of that same full table for whichever absolute times the cropped lines actually
-    correspond to -- no need to slice the arrays themselves. Fixed the geometry to 0.999 correlation
-    in testing. `frame_offset = line_offset / wac.VIS_BLOCK_HEIGHT` (lines -> WAC frames, same
-    conversion `crop_window_for_camera` uses); `time_offset_s = frame_offset * isd["interframe_delay"]`
-    (ALE's own reported per-frame timing for this product, not a hardcoded instrument constant)."""
+    Only valid for the *full*, uncropped stitched cube -- generating one via this same
+    `isd_generate -i` call directly against a cropped cube was tried and found to give wrong
+    geometry, which further investigation traced to a real bug in `usgscsm`'s `groundToImage`
+    (see the module docstring) rather than anything fixable in the ISD itself. `crop_for_camera`'s
+    real WAC crop no longer uses an ISD at all -- see `run_cam2map_for_crop`."""
     config = config or load_config()
     json_path = stitched.cub_path.with_suffix(".json")
     run_quiet(["isd_generate", "-i", str(stitched.cub_path), "-o", str(json_path)])
     with open(json_path) as f:
         isd = json.load(f)
     isd["framelet_order_reversed"] = stitched.flip
-    if stitched.line_offset:
-        frame_offset = stitched.line_offset / VIS_BLOCK_HEIGHT
-        time_offset_s = frame_offset * isd["interframe_delay"]
-        isd["starting_ephemeris_time"] += time_offset_s
-        isd["ending_ephemeris_time"] += time_offset_s
-        isd["center_ephemeris_time"] += time_offset_s
-        isd["instrument_pointing"]["ck_table_start_time"] += time_offset_s
-        isd["instrument_pointing"]["ck_table_end_time"] += time_offset_s
     with open(json_path, "w") as f:
         json.dump(isd, f)
     return IsdGenerateResult(json_path=json_path)
@@ -268,7 +267,14 @@ def run_mapproject(
     to a fundamental CSM Pushframe modeling limitation "not fully mature... artifacts at framelet
     borders". Mapprojecting the properly-interleaved stitched cube instead resolves the vast
     majority of it: measured 31% valid coverage with no recognizable terrain -> 81% valid coverage
-    with real craters visible throughout, same real product, same DEM."""
+    with real craters visible throughout, same real product, same DEM.
+
+    **Not fully accurate even at full-cube size.** Later investigation (see the module docstring)
+    found `usgscsm`'s `groundToImage` -- which this ultimately calls into, once per output pixel --
+    has a real, if size-dependent, self-consistency weakness. Confirmed via `cam2map` cross-check:
+    ISIS's own native reprojection of this same cube agrees with itself (crop vs. full) to
+    0.9999986 correlation, but only agrees with *this* function's output at ~0.2-0.4. Kept for
+    reference/comparison; `run_cam2map_for_crop` is the accurate path now."""
     config = config or load_config()
     mapproj_tif = stitched.cub_path.with_name(stitched.cub_path.stem + "-mapproj.tif")
     return render.run_mapproject_image(stitched.cub_path, isd.json_path, mapproj_tif, lunaserv_result, config)
@@ -287,20 +293,20 @@ def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
     return rasterio.windows.Window(col_off=0, row_off=line_start, width=SAMPLES, height=height)
 
 
-def crop_for_camera(
-    stitched: FramestitchResult, camera: Camera, config: TrntestConfig | None = None
-) -> FramestitchResult:
-    """A single, real, persisted ISIS crop of `stitched` to `crop_window_for_camera(camera)`'s
-    window -- the one "WAC crop" both Phase 6A (raw display of `.cub_path` directly) and Phase 6B
-    (`run_isd_generate`/`run_mapproject` on this same result) consume, matching how Phase 5A/5B
-    already both derive from one synthetic render with no special-casing.
+@dataclasses.dataclass(frozen=True)
+class CropResult:
+    cub_path: Path
 
-    Returns a `FramestitchResult` (not a distinct type) with `line_offset` set to the crop's start
-    line (`window.row_off`) -- `run_isd_generate` uses this to correct the ISD's ephemeris-time
-    fields, which `crop` does not itself adjust for a Pushframe cube's per-line pointing cache (see
-    `run_isd_generate`'s docstring for the full empirical finding: uncorrected, this landed
-    `mapproject`'s output ~132s of real orbital motion away from the correct ground location, 0.44
-    correlation against the known-good full-cube result; corrected, 0.999).
+
+def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: TrntestConfig | None = None) -> CropResult:
+    """A single, real, persisted ISIS crop of `stitched` to `crop_window_for_camera(camera)`'s
+    window -- the one "WAC crop" output product both Phase 6A (raw display of `.cub_path` directly)
+    and Phase 6B (`run_cam2map_for_crop`) consume, matching how Phase 5A/5B already both derive from
+    one synthetic render with no special-casing. No separate ISD/sidecar is generated here (unlike
+    an earlier version of this function) -- ISIS's own native camera model reads pointing/timing
+    directly from the cube's own cached SPICE data, so the cropped cube is already fully
+    self-describing; see the module docstring for why the CSM/ISD route was abandoned instead of
+    fixed.
 
     `lrowaccal` (already run before this, in `run_pipeline`) explicitly refuses to run on a cropped
     cube ("USER ERROR: This application can not be run on any image that has been geometrically
@@ -318,4 +324,103 @@ def crop_for_camera(
             f"nlines={window.height}",
         ]
     )
-    return FramestitchResult(cub_path=out_path, flip=stitched.flip, line_offset=window.row_off)
+    return CropResult(cub_path=out_path)
+
+
+def _orthographic_map_pvl(lunaserv_result: LunaservResult) -> str:
+    """Builds an ISIS PVL "Mapping" group cloning `lunaserv_result`'s own local Orthographic CRS
+    (see `LunaservResult`'s docstring: `config.lunaserv_srs_template`, centered on this camera's own
+    footprint) -- same center lat/lon, spherical Moon radius, and pixel resolution -- so
+    `cam2map`'s output (`run_cam2map_for_crop`) lands in the *same projected coordinate system* as
+    `lunaserv_result.dem`/`.ortho`. Verified empirically (not assumed) that ISIS's own Orthographic
+    projection implementation agrees with GDAL/PROJ's `+proj=ortho` to sub-micrometer precision for
+    matching center/radius parameters, via `cam2map`+`campt` cross-checked against `pyproj`'s own
+    forward projection at a real test pixel (see docs/history.md's dated entry).
+
+    Deliberately does *not* pin `UpperLeftCornerX`/`UpperLeftCornerY` to match
+    `lunaserv_result`'s own pixel grid -- `cam2map`'s output is left free to auto-size to the crop's
+    own footprint (`DEFAULTRANGE=CAMERA` in `run_cam2map_for_crop`). This is safe because
+    `plotting.plot_overlay` composites both rasters via their own real georeferenced coordinates
+    (`rioxarray`/`xarray`), not a shared pixel grid -- so the two rasters only need to agree on the
+    *projection*, not share pixel-for-pixel alignment. Avoiding a shared-grid requirement also
+    avoids needing a separate resampling/warping pass after `cam2map` (which would risk the exact
+    kind of interpolation-quality/subtle-misalignment issues this whole detour was trying to avoid
+    in the first place)."""
+    with rasterio.open(lunaserv_result.dem) as src:
+        proj = src.crs.to_dict()
+        resolution = src.res[0]
+    return (
+        "Group = Mapping\n"
+        "  ProjectionName     = Orthographic\n"
+        f"  CenterLatitude     = {proj['lat_0']} <degrees>\n"
+        f"  CenterLongitude    = {proj['lon_0']} <degrees>\n"
+        "  TargetName         = Moon\n"
+        f"  EquatorialRadius   = {float(proj['R'])} <meters>\n"
+        f"  PolarRadius        = {float(proj['R'])} <meters>\n"
+        "  LatitudeType       = Planetocentric\n"
+        "  LongitudeDirection = PositiveEast\n"
+        "  LongitudeDomain    = 360\n"
+        f"  PixelResolution    = {resolution} <meters/pixel>\n"
+        "End_Group\n"
+    )
+
+
+def run_cam2map_for_crop(
+    crop: CropResult, lunaserv_result: LunaservResult, config: TrntestConfig | None = None
+) -> Path:
+    """Reprojects `crop` onto the map via ISIS's own native `cam2map` -- the real-WAC counterpart to
+    5B's `mapproject`, but through ISIS's native Pushframe camera model instead of ASP/CSM (see the
+    module docstring for why). `_orthographic_map_pvl` clones `lunaserv_result`'s own projection so
+    the output shares the same real-world coordinate system (not pixel grid -- see that function's
+    docstring) as `lunaserv_result.ortho`, letting `plotting.plot_overlay` composite them directly.
+
+    `PIXRES=map` is required -- `cam2map`'s `PIXRES` parameter defaults to `CAMERA` (auto-derives
+    resolution from the image itself), which *silently ignores* the map file's own `PixelResolution`
+    otherwise (confirmed empirically: without it, output resolution came out as the camera's native
+    ~184m/px, not the requested ~100m/px). `DEFAULTRANGE=camera` auto-sizes the output extent to the
+    crop's own real footprint, matching how `sat_sim`/`mapproject` never render more than the
+    camera's own FOV either.
+
+    **`WARPALGORITHM=forwardpatch PATCHSIZE=4`, not the `AUTOMATIC` default.** ISIS's own docs say
+    `AUTOMATIC` is "recommended... for push frame cameras" (it picks `FORWARDPATCH` with
+    `PATCHSIZE` set to the full framelet height, 14, specifically so a patch never crosses a
+    framelet boundary) -- but confirmed empirically this leaves large, real diagonal gaps at this
+    map resolution: `AUTOMATIC`'s patches fit an affine transform per patch from its four corners,
+    and *silently drop* any patch whose affine fit isn't within 0.1px of the camera model's own
+    computation (per `cam2map -help`'s parameter docs) -- a 14-line-tall patch apparently fails that
+    check for roughly half the framelets here (confirmed present even on the *full*, uncropped cube,
+    not just the crop -- see the module docstring). A much smaller `PATCHSIZE=4` (explicit
+    `FORWARDPATCH`, since `PATCHSIZE` is locked/ignored under `AUTOMATIC`) fits each small patch
+    accurately enough to pass that check everywhere tested: overall valid coverage went from ~47%
+    to ~71% (matching the crop's own real footprint, no more diagonal gaps), while content stayed
+    essentially identical (crop-vs-full correlation 0.9954 with this patch size, vs. 0.9999986 at
+    the default -- both excellent; the tiny drop is patch-fit noise, not a correctness regression).
+
+    Converts the resulting multi-band cube (WAC VIS carries 5 filter bands) to a single-band GeoTIFF
+    via `gdal_translate -b 1`, matching this pipeline's existing band-1 convention
+    (`plotting.read_raster_band`'s default, and what ASP's own `mapproject` picked automatically:
+    "Detected multi-band image. Only the first band will be used."). `gdal_translate` prints a
+    `PROJ: proj_create_from_name` error to stderr here (an ISIS/GDAL `PROJ_LIB` environment mismatch)
+    -- confirmed harmless: the output CRS/transform were verified correct (matching
+    `lunaserv_result`'s own projection exactly) despite it, and the process still exits 0."""
+    config = config or load_config()
+    map_path = crop.cub_path.with_suffix(".ortho.map")
+    map_path.write_text(_orthographic_map_pvl(lunaserv_result))
+
+    mapproj_cub = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.cub")
+    run_quiet(
+        [
+            "cam2map",
+            f"from={crop.cub_path}",
+            f"map={map_path}",
+            f"to={mapproj_cub}",
+            "pixres=map",
+            "defaultrange=camera",
+            "warpalgorithm=forwardpatch",
+            "patchsize=4",
+        ]
+    )
+
+    mapproj_tif = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.tif")
+    run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(mapproj_tif)])
+    return mapproj_tif

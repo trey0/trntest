@@ -262,8 +262,8 @@ def plot_isis_comparison(
     """Synthetic render next to a same-real-footprint crop of the ISIS-processed WAC image
     (`isis_wac.crop_for_camera`) -- an ad hoc real-km/north-up comparison, tie-pointed the same way
     `plot_comparison`'s wac.py version is (see below), not true pixel-for-pixel geo-registration;
-    for that, see `plot_overlay`'s `mapproject`-based overlay of this same ISIS-processed cube
-    (`isis_wac.run_mapproject`) instead. `window` is optional -- `stitched_cub_path` is typically
+    for that, see `plot_overlay`'s `cam2map`-based overlay of this same ISIS-processed cube
+    (`isis_wac.run_cam2map_for_crop`) instead. `window` is optional -- `stitched_cub_path` is typically
     already `isis_wac.crop_for_camera`'s real, standalone crop cube (no further windowing needed);
     pass a `rasterio.windows.Window` only if handed the full, uncropped stitched cube instead.
 
@@ -496,7 +496,7 @@ def plot_overlay(
     base_raster_path,
     overlay_raster_path,
     overlay_cmap: str = "gray",
-    overlay_alpha: float = 0.6,
+    overlay_alpha: float = 1.0,
     title: str = "Overlay (geo-aligned)",
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
@@ -524,9 +524,15 @@ def plot_overlay(
     boundary line rather than the majority of the frame it actually covers, since the naive-autoscaled
     overlay blends into the base almost invisibly at `overlay_alpha`.
 
+    `overlay_alpha` defaults to fully opaque (`1.0`), not a blend -- per explicit user feedback, a
+    partial blend (the original default, `0.6`) makes it genuinely hard to tell which pixels are the
+    overlay's own content versus the base showing through, especially when debugging a
+    not-yet-fully-correct overlay (exactly when that distinction matters most). `show_overlay_outline`
+    still marks the overlay's real footprint boundary regardless of alpha.
+
     `overlay_raster_path` is expected to already cover only the real ground footprint actually being
     compared (e.g. `isis_wac.crop_for_camera`'s real, single crop cube run through
-    `isis_wac.run_mapproject`), the same way the synthetic render's own mapprojected overlay already
+    `isis_wac.run_cam2map_for_crop`), the same way the synthetic render's own mapprojected overlay already
     does (`sat_sim` only ever renders the camera's own FOV, never more) -- no view-restricting
     parameter is needed here as a result. An earlier version of this function tried to paper over a
     too-large overlay (the *entire* WAC swath, not just the crop) with a `zoom_footprint_lonlat_deg`
