@@ -118,19 +118,33 @@ def plot_dem_ortho(lunaserv_result: LunaservResult):
 
 
 def plot_camera_footprint(lunaserv_result: LunaservResult, camera: Camera):
+    """Camera footprint's real ground coverage (the 4 corner rays' Moon intersections, connected
+    into a closed quad) over the Lunaserv ortho mosaic. Reprojects `camera.footprint_lonlat_deg`
+    (plain geographic lon/lat) into the ortho's own local Orthographic CRS via `geopandas`/`pyproj`
+    (one `.to_crs()` call), then plots both in real georeferenced coordinates -- not the previous
+    version's manual `rasterio.transform.rowcol(ortho_transform, lon, lat)`, which passed raw lon/lat
+    *degrees* straight in as if they were already the ortho's own local-CRS *meters*, collapsing
+    every point near the map's center once the ortho switched from a native lon/lat grid to a local
+    per-camera CRS (see docs/history.md's dated entry)."""
     with rasterio.open(lunaserv_result.ortho) as src:
         ortho = src.read(1)
-        ortho_transform = src.transform
+        ortho_crs = src.crs
+        bounds = src.bounds
+
+    moon_geographic_crs = "+proj=longlat +R=1737400 +no_defs"
+    min_polygon_points = 3
+    corners = [camera.footprint_lonlat_deg[name] for name in ("top_left", "top_right", "bottom_right", "bottom_left")]
+    corners = [c for c in corners if c is not None]
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(ortho, cmap="gray")
-    for name, lonlat in camera.footprint_lonlat_deg.items():
-        if lonlat is None:
-            continue
-        lon, lat = lonlat
-        row, col = rasterio.transform.rowcol(ortho_transform, lon, lat)
-        ax.plot(col, row, "o", color="red" if name == "center" else "yellow")
-        ax.annotate(name, (col, row), color="white", fontsize=8)
+    ax.imshow(ortho, cmap="gray", extent=(bounds.left, bounds.right, bounds.bottom, bounds.top))
+    if len(corners) >= min_polygon_points:
+        footprint = geopandas.GeoSeries([shapely.geometry.Polygon(corners)], crs=moon_geographic_crs)
+        footprint.to_crs(ortho_crs).boundary.plot(ax=ax, color="yellow", linewidth=1.5)
+    center_lonlat = camera.footprint_lonlat_deg["center"]
+    if center_lonlat is not None:
+        center = geopandas.GeoSeries([shapely.geometry.Point(center_lonlat)], crs=moon_geographic_crs)
+        center.to_crs(ortho_crs).plot(ax=ax, color="red", markersize=30)
     ax.set_title("Camera footprint over Lunaserv ortho mosaic")
     fig.tight_layout()
     return fig
