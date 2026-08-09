@@ -46,7 +46,7 @@ product to this.
 | `illumination.py` | Sun/orbit geometry via real SPICE functions — sun elevation/azimuth, sub-solar point, ascending-node search (`gfposc`). |
 | `catalog.py` | PDS ODE REST API client — lists real EDR/CDR products by time range, matches EDR↔CDR pairs. |
 | `dataset.py` | Public multi-image API: `select_dataset()` (catalog-driven selection), `generate_dataset()` (renders selected images through the single-image pipeline). Also computes each image's real WAC crop footprint (`tie_points.crop_footprint_corners_for_camera`) and passes it to `lunaserv.fetch_dem_and_ortho` so the DEM/ortho AOI covers both the synthetic camera's footprint and the real WAC crop's — exposed on `GenerationResult.crop_footprint` for reuse (e.g. by the notebook's Phase 6). |
-| `lunaserv.py` | Fetches DEM + ortho imagery from Lunaserv WMS for a camera's footprint (optionally unioned with an extra footprint via `union_bbox`, see `dataset.py`), in a per-camera local Orthographic CRS (`IAU2000:30166`, real Moon radius) centered on that footprint — genuinely isotropic meter pixels, unlike Lunaserv's native geographic grid. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
+| `lunaserv.py` | Fetches ortho imagery from Lunaserv WMS and the DEM from USGS Astropedia's flat-file GLD100 (`fetch_dem_astropedia`/`reproject_astropedia_elevation_to_local_grid` — Lunaserv's own DTM layer has a real, unfixable-client-side artifact, see `docs/data-sources.md`), both reprojected onto one shared per-camera local Orthographic CRS (real Moon radius) centered on that camera's footprint (optionally unioned with an extra footprint via `union_bbox`, see `dataset.py`) — genuinely isotropic meter pixels either way. `fetch_dem_native`/`reproject_dem_to_local_grid` (the deprecated Lunaserv-DEM path) are kept for reference/comparison, no longer called by the default pipeline. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product via manual, hand-derived byte offsets. Superseded by `isis_wac.py` as the demo notebook's real-WAC comparison method (see the open items below) but left in place, untouched, with its own unit test coverage. |
 | `isis_wac.py` | Steps a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain. `crop_for_camera` then crops the stitched cube (ISIS's own `crop` app) down to the real footprint being compared -- a single, real "WAC crop" cube both the notebook's raw-pixel display and `run_cam2map_for_crop` consume, with no special-casing. `run_cam2map_for_crop` reprojects it onto the DEM via ISIS's own *native* Pushframe camera model (`cam2map`, using a PVL map file cloned from `LunaservResult`'s own local Orthographic CRS) rather than ASP's `mapproject`/CSM -- a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors made the CSM route unusable for a crop this size (see `docs/history.md`'s dated entry). `run_isd_generate`/`run_mapproject` (the old CSM path) are kept for reference/comparison but no longer used. Must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
@@ -78,26 +78,31 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   every use of `camera.camera_pose_moon_me`/`build_camera`, not just Phase 6B — likely the same
   root cause behind other small, previously-unexplained position residuals throughout this
   notebook's geometry checks. See `docs/history.md`'s dated entry (Phase 25) for the full diagnosis.
-- **Open, investigate later: subtle stripe/crosshatch artifacts in the synthetic render, likely
-  from `shade_ortho`'s hillshade step.** User-reported (not yet investigated): faint stripes visible
-  on close zoom in the synthetic render, more noticeable in darker/shadowed areas; at least one case
-  showed crosshatching (stripes in two roughly-orthogonal directions); the stripes are *not* aligned
-  with the final image's own Cartesian axes, and individual lines look slightly curved rather than
-  straight. Confirmed by the user to not be present in the source ortho -- introduced by the
-  hillshading step (`lunaserv.shade_ortho`'s `matplotlib.colors.LightSource.hillshade(dem, ...)`
-  call), not `sat_sim` itself (`sat_sim` applies no illumination model of its own -- see
-  `shade_ortho`'s docstring). Not yet confirmed, but a plausible lead worth checking first: this
-  project already documented (`render.py`'s `DEM_HEIGHT_ERROR_TOL_M`) that Lunaserv's DTM layer's
-  float32 elevation encoding has a real, coarse quantization step (~0.125m ULP at this DEM's ~1.7e6m
-  radius magnitude) that's known to cause numerical artifacts elsewhere in this same pipeline
-  (`sat_sim`'s ray/DEM-intersection root-finder). `hillshade()` computes local slope via finite
-  differencing between adjacent DEM cells, and quantized elevation input is a classic cause of
-  "hillshade banding/terracing" artifacts in GIS tooling generally -- and DEM-grid-aligned artifacts
-  reprojected through `sat_sim`'s own oblique camera perspective would plausibly appear rotated/
-  curved in the final render rather than axis-aligned/straight, matching what was reported. First
-  diagnostic step for whoever picks this up: visualize the raw `hillshade` array alone (before
-  blending with the ortho, and before `sat_sim`'s reprojection) to confirm the artifact's presence/
-  orientation in DEM/map space directly.
+- **Resolved**: the stripe/crosshatch artifact reported in the synthetic render (worse in
+  darker/shadowed areas, sometimes crosshatched). Root cause turned out to be **Lunaserv's DTM WMS
+  layer itself**, not the float32-quantization theory this item originally proposed (tested directly
+  and ruled out) -- a real, axis-aligned periodic artifact confirmed baked into Lunaserv's own native
+  DTM tile via FFT/periodicity analysis, present regardless of requested resolution, CRS, or
+  resampling kernel, and not fixable client-side (the server exposes no resampling control and no
+  backing-store metadata). Fixed by switching the live default DEM source to USGS Astropedia's
+  flat-file GLD100 distribution instead (confirmed, via the same FFT diagnostic and direct user
+  inspection of a real reprojected render, to have none of Lunaserv's artifact). See
+  `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry
+  for the full investigation -- including several dead ends (a notch filter, a native-ppd sweep, a
+  GDAL approximate-transformer tolerance check) worth reading before re-deriving them from scratch.
+- **Open, future enhancement: Astropedia's GLD100 only covers ±79° latitude** (`lunaserv.
+  ASTROPEDIA_MAX_ABS_LATITUDE_DEG`) -- `fetch_dem_and_ortho` raises rather than silently falling back
+  to the deprecated, artifact-affected Lunaserv path for any camera footprint that needs data beyond
+  it, so a catalog-driven selection landing near either pole currently just fails outright for that
+  image. NASA's VIRA project (`github.com/nasa/vira`, `scripts/download_dems.sh`) points at genuinely
+  higher-resolution *polar* DEM data for exactly this gap -- real LOLA-derived polar mosaics from
+  `pgda.gsfc.nasa.gov`/`imbrium.mit.edu`, down to 5 m/px near 87°S (LOLA ground tracks converge near
+  the poles, giving denser altimetry there than equatorial GLD100 -- ironically *better* resolution
+  right where Astropedia's coverage ends, not worse). Not implemented -- would need its own flat-file
+  fetch/caching (a different host/product per polar region, `curl`-based like
+  `cache.fetch_astropedia_gld100`, likely a comparable one-time size) and a coverage-based dispatch
+  in `fetch_dem_and_ortho` (Astropedia inside ±79°, a polar LOLA product beyond it) rather than the
+  current hard latitude guard.
 - **Resolved**: Lunaserv's native geographic projection is fine for `sat_sim`'s forward render, but
   turned out to break the `mapproject --ref-map` round-trip (anisotropic degree-pixels away from the
   equator, not preserved by `--ref-map`) — fixed by requesting a per-camera local Orthographic CRS

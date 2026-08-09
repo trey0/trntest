@@ -195,18 +195,30 @@ def main() -> int:
         # affect `ruff check`, not the formatter), so notebook files are linted but not
         # format-checked.
         format_files = [f for f in py_files if not f.startswith("notebooks/")]
+        # `--force-exclude`: ruff's own `[tool.ruff] exclude` (e.g. `old_notebooks/`, a frozen
+        # archive genuinely out of scope for lint -- see its own README.md) only applies during
+        # ruff's own directory discovery, not when files are passed explicitly on the command line
+        # like this -- without this flag, an untracked/changed file under an excluded directory
+        # would still get linted.
         if format_files:
             results["ruff format --check"] = subprocess.run(
-                ["ruff", "format", "--check", *format_files], check=False
+                ["ruff", "format", "--check", "--force-exclude", *format_files], check=False
             ).returncode
         # mypy always runs against the whole package, never scoped to a partial file list --
         # restricting mypy's own inputs is a known footgun when a changed file imports an
         # unmodified sibling module mypy then can't fully check in isolation.
-        results["ruff check"] = subprocess.run(["ruff", "check", *py_files], check=False).returncode
+        results["ruff check"] = subprocess.run(["ruff", "check", "--force-exclude", *py_files], check=False).returncode
         results["mypy"] = subprocess.run(["mypy", "src/trntest"], check=False).returncode
-    if any(f.startswith("notebooks/") for f in py_files) or ipynb_files:
-        results["notebook sync"] = _check_notebook_sync(py_files, ipynb_files)
-        results["notebook warnings"] = _check_notebook_warnings(ipynb_files)
+    # Scoped to `notebooks/` only, matching `py_files`'s own filtering inside `_check_notebook_sync`
+    # (`notebook_py = [f for f in py_files if f.startswith("notebooks/")]`) -- without this,
+    # `old_notebooks/` (a frozen archive genuinely out of scope for lint, see its own README.md)
+    # would still get pairing-checked whenever its .ipynb files are passed explicitly (e.g. the
+    # pre-commit hook, which lints exactly the staged file list, not `--diff` mode's own
+    # `notebooks/`-agnostic untracked-file detection).
+    notebook_ipynb_files = [f for f in ipynb_files if f.startswith("notebooks/")]
+    if any(f.startswith("notebooks/") for f in py_files) or notebook_ipynb_files:
+        results["notebook sync"] = _check_notebook_sync(py_files, notebook_ipynb_files)
+        results["notebook warnings"] = _check_notebook_warnings(notebook_ipynb_files)
 
     for name, code in results.items():
         print(f"{name}: {'PASS' if code == 0 else 'FAIL'}")

@@ -18,6 +18,7 @@ cache/
   lroc_edr/<volume>/DATA/<subdir>/<doy>/WAC/<product>.*
   isisdata/base/...   (ISIS's own mission-independent reference data)
   isisdata/lro/...    (LRO/WAC calibration files)
+  astropedia/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif   (one whole file, ~10GB -- see below)
 ```
 
 `isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
@@ -59,3 +60,25 @@ all — pulling a full year's CK data across all five flavors would be tens of G
 
 Cache `GetMap` responses keyed by `(layer, bbox, width, height, format)` — deterministic enough that
 re-running any script/notebook cell for the same ROI hits the local cache, not the network.
+
+## Astropedia GLD100 caching — a real exception to "just a sliver"
+
+Unlike everything above, `cache.fetch_astropedia_gld100` downloads and caches **the entire ~10GB
+flat file**, not a per-request sliver (see `docs/data-sources.md`'s "Astropedia GLD100 flat file"
+section for why: the file isn't a Cloud-Optimized GeoTIFF, so a remote windowed read pulls full-width
+row strips rather than a small tile — confirmed too slow to repeat per-camera). This is a genuinely
+different caching shape than the rest of this project, worth calling out explicitly:
+
+- **Not built on `cached_get`** — a stable (not per-call-unique) partial-file path, `curl -C -`-based
+  resume, and *not* deleting the partial file on failure (the opposite of `cached_get`'s behavior) —
+  see `cache.fetch_astropedia_gld100`'s own docstring for the full reasoning. Confirmed empirically:
+  interrupting a real download mid-transfer and re-running resumes from the exact byte offset, not
+  from zero.
+- **Archive/restore cost**: per `docs/environment.md`, `archive.sh` tars the *entire* `trntest_ws`
+  directory including `cache/` — this one file adds ~10GB to that tarball (and the scp transfer time
+  that implies) unless deliberately deleted before archiving. The previous largest single cache
+  component (`isisdata/`) was ~5GB spread across many small files; this is double that in one file.
+  Not a blocker — the download itself is a real, if one-time, cost regardless of whether it's
+  archived or re-fetched fresh each session — but genuinely worth knowing before running `archive.sh`
+  without thinking about it, unlike the rest of this project's cache contents, which are small enough
+  not to matter either way.

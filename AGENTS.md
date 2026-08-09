@@ -17,6 +17,9 @@ this file). Then, as needed:
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above
   also say so.
+- `old_notebooks/` — archived, frozen investigation notebooks (real executed `.ipynb` output kept,
+  not re-run or kept in sync going forward — see its own `README.md`). Useful when a `docs/history.md`
+  entry references one and you want the actual plots/reasoning trail, not just the narrative summary.
 - `docs/environment.md` — the ephemeral VPS/archive-restore workflow this repo is developed under:
   what survives a teardown, and why spike/experimental source (`src/scratch/`) and large file
   output (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must be kept in separate locations.

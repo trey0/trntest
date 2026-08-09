@@ -9,6 +9,7 @@ pass them down explicitly.
 """
 
 import os
+import subprocess
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -89,6 +90,45 @@ def fetch_lunaserv_getmap(
     url = base_url + urllib.parse.urlencode(params)
     rel_path = lunaserv_rel_path(layer, bbox, width, height, fmt)
     return cached_get(url, rel_path, cache_root=cache_root)
+
+
+def astropedia_rel_path(url: str) -> str:
+    """astropedia/<filename> -- a single named file, unlike the other fetch helpers' per-request-
+    parametrized paths (there's only ever one Astropedia GLD100 file, not one per bbox/resolution)."""
+    return f"astropedia/{url.rsplit('/', maxsplit=1)[-1]}"
+
+
+def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
+    """Download and cache Astropedia's flat-file GLD100 DEM (~10GB, see docs/data-sources.md) once,
+    resumably.
+
+    Deliberately *not* built on `cached_get` above -- that function downloads to a freshly
+    uniquely-named temp file every call and deletes it on any failure, both correct for small WMS
+    tiles but actively wrong for one huge file: a fresh random name each attempt gives `curl -C -`
+    nothing to resume *from*, and deleting a mostly-complete download on a transient failure would
+    throw away exactly the progress being protected. Uses a stable `<dest>.part` path instead, and
+    deliberately leaves it in place on failure for the next call to resume from.
+
+    `curl -C -` (continue-at), not a hand-rolled `requests` Range-header implementation: `curl` is
+    already a Docker image dependency (see `docker/Dockerfile`'s ASP tarball fetch), and its resume
+    support is mature and well-tested -- confirmed empirically against this exact file/server (not
+    just assumed from curl's own docs), see `docs/history.md`'s dated entry. Not run through
+    `subprocess_utils.run_quiet` (that helper is scoped to ASP/ISIS binary calls) -- curl's own
+    progress meter has real, live value for a transfer this size, unlike a quick ASP tool call's
+    noise, so it's left to print directly rather than captured."""
+    dest = cache_root / astropedia_rel_path(base_url)
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.parent / (dest.name + ".part")
+    result = subprocess.run(["curl", "-fL", "-C", "-", "-o", str(partial), base_url], check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"curl failed (exit {result.returncode}) downloading {base_url} -- "
+            f"partial download kept at {partial} for the next call to resume from"
+        )
+    partial.rename(dest)
+    return dest
 
 
 def lroc_rel_path(dataset: str, volume: str, subdir: str, doy: str, product: str, ext: str) -> str:

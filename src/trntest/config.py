@@ -75,8 +75,40 @@ DEFAULT_WAC_VIS_COLOR_FOV_DEG = 61.4
 DEFAULT_MOON_RADIUS_KM = 1737.4
 DEFAULT_MOON_RADIUS_M = DEFAULT_MOON_RADIUS_KM * 1000.0
 
+# Working-grid resolution (the per-camera local Orthographic CRS both the ortho and the final,
+# locally-reprojected DEM share) -- despite the name, this no longer also governs the DEM's own
+# *fetch* resolution from Lunaserv (see `dem_native_ppd`/`lunaserv_dem_srs` below); it's fetched
+# separately, at its own real native resolution, then reprojected onto this working grid.
 DEFAULT_DEM_TARGET_GSD_M = 100.0
 DEFAULT_DEM_PADDING_FRACTION = 0.3
+
+# Deprecated -- Lunaserv's native, unprojected geographic grid for the Moon. Only used by
+# `lunaserv.fetch_dem_native`/`lunaserv.reproject_dem_to_local_grid` (the pre-Astropedia DEM path,
+# kept for reference/comparison, no longer called by `fetch_dem_and_ortho`'s default path -- see
+# `docs/history.md`'s dated entry). Superseded because a second, axis-aligned crosshatch artifact
+# was confirmed baked into Lunaserv's own native DTM tile itself (FFT-confirmed, present regardless
+# of requested ppd/CRS/resampling kernel) -- not fixable client-side, since Lunaserv exposes no
+# resampling control (confirmed via several vendor GetMap parameter probes, all ignored) and no
+# backing-store metadata. `dem_native_ppd`/`lunaserv_dem_srs` remain valid config for that deprecated
+# path specifically, not for the live default (`astropedia_gld100_url` below).
+DEFAULT_LUNASERV_DEM_SRS = "IAU2000:30100"
+# Confirmed empirically (FFT/periodicity analysis of a live resolution sweep, and independently by
+# `luna_wac_dtm_numeric_meters_absolute`'s own `GetCapabilities` abstract, which states "available
+# at 128 ppd in the same tiled format as the GLD100"): this is the real native resolution ceiling
+# of Lunaserv's global numeric DTM layer, regardless of which CRS a request uses.
+DEFAULT_DEM_NATIVE_PPD = 128.0
+
+# Live default DEM source: USGS Astropedia's flat-file GLD100 distribution, not Lunaserv's WMS.
+# Confirmed empirically (`gdalinfo` + a live windowed pull + the same FFT/periodicity diagnostic that
+# found Lunaserv's artifact): a genuine 100.0 m/px, Int16, Equidistant Cylindrical (lon_0=180)
+# GeoTIFF, 79 deg N to 79 deg S coverage (`gdalinfo`'s own corner coordinates: 79d0'6.57" both ways),
+# ~10 GB. Shows none of Lunaserv's artifact at the frequencies it was confirmed elevated at. Not a
+# Cloud-Optimized GeoTIFF (`Block=109165x1` -- row-strip, not 2D-tiled), so a remote windowed
+# `/vsicurl/` read pulls full-width row strips rather than a small tile (~64s for one small AOI in
+# testing) -- `cache.fetch_astropedia_gld100` downloads and caches the whole file locally once
+# instead (resumable via `curl -C -`), after which local windowed reads are fast. See
+# `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry.
+DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -92,6 +124,9 @@ class TrntestConfig:
     lunaserv_base_url: str = DEFAULT_LUNASERV_BASE_URL
     lunaserv_srs_template: str = DEFAULT_LUNASERV_SRS_TEMPLATE
     lunaserv_ortho_layer: str = DEFAULT_LUNASERV_ORTHO_LAYER
+    lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see docstring above
+    dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see docstring above
+    astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET
     lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET

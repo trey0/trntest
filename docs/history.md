@@ -1443,3 +1443,180 @@ against the same crop cube: `mapproject` immediately rejected it — `"ERROR: Un
 Seems to have Isis camera type 1. Check your data. Maybe it will work with CSM."` — ASP's own ISIS
 session wrapper doesn't support this camera type (Pushframe), full stop, not a flag/workaround
 issue. `cam2map` remains the only working native-ISIS path found for this sensor.
+
+## Phase 26 (2026-08-09) — The stripe/crosshatch artifact: root-caused as a Lunaserv server problem, fixed by switching DEM source to Astropedia
+
+`docs/plan.md`'s open item (subtle stripe/crosshatch artifacts in the synthetic render, worse in
+darker areas) turned into this session's longest single investigation — several real fixes attempted
+against the wrong layer of the problem before the actual root cause (and simplest fix) emerged.
+Built a reusable FFT/periodicity diagnostic toolkit along the way (`periodicity_report`,
+`power_at_freq_and_angle`, `db_above_trend_at_freq`, `annotated_fft_plot` — now archived in
+`old_notebooks/stripe_debug.py`, see its own docstrings for the exact methodology) that's worth
+reusing for any future artifact-hunting in this pipeline.
+
+**Starting diagnosis**: `fetch_dem_and_ortho` requested the DTM layer
+(`luna_wac_dtm_numeric_meters_absolute`) from Lunaserv in a per-camera rotated local Orthographic
+CRS at `dem_target_gsd_m` (100 m/px). A live resolution sweep (50/100/200/300/400/500/700/1000 m/px,
+same bbox/CRS) showed a strong periodic artifact locked to ~2 pixels of *whatever resolution was
+requested* (+14 to +40 dB above the natural terrain power spectrum) at or finer than 300 m/px,
+vanishing between 300 and 400 m/px and replaced by a real, resolution-invariant ~18.6 km terrain
+feature — the signature of server-side resampling past real detail, not real DEM content. Cross-
+checked against the layer's own `GetCapabilities` abstract ("available at 128 ppd") and independent
+web research into GLD100's real tiling: Lunaserv's DTM layer serves the coarser of GLD100's two
+native tiers (128 ppd/~237 m), not the finer 256 ppd/~118 m tier.
+
+**First fix (a real, validated improvement, later superseded)**: fetch the DTM in Lunaserv's native,
+unrotated geographic CRS (`IAU2000:30100`) at 128 ppd — no server-side reprojection at all — then
+reproject locally via `rasterio.warp.reproject` onto the same per-camera local Orthographic grid the
+ortho already uses. Validated first with a small standalone spike before touching the real pipeline
+(confirmed `rasterio.warp.reproject` could open/warp the native CRS via a generic PROJ4 string,
+`+proj=longlat +R=<moon radius>`, without needing GDAL to recognize Lunaserv's `IAU2000:*` codes by
+name) — this removed the original near-Nyquist checkerboard cleanly (confirmed via the same FFT
+diagnostic against the real pipeline output, not just the spike).
+
+**A second, different artifact survived the first fix.** The user visually caught it in the
+notebook's zoomed hillshade crop: axis-aligned to the image, straight lines, regular spacing —
+unlike the first artifact, which wasn't aligned to the final image's own axes and looked slightly
+curved. What followed was a long chase, each step genuinely tested against the real numbers (not
+assumed), several of them real but ultimately insufficient improvements:
+
+- **Computing the hillshade near-native-resolution before the final upsample** ("Option A" in the
+  investigation): `LightSource.hillshade()` just computes `np.gradient` on elevation for a per-pixel
+  normal, then a dot product against the sun direction — so differentiating an already-2.4x-upsampled
+  elevation array amplifies any reconstruction ripple, while differentiating near-native resolution
+  and only upsampling the smooth, bounded hillshade *scalar* afterward shouldn't. Real, substantial
+  effect on one component (~490 m wavelength, ~370x power reduction with a bilinear final-stage
+  kernel) but the user still saw visible crosshatch.
+- **Resampling kernel choice for the final upsample**: bilinear beat cubic and lanczos for this
+  specific case (tested directly, not assumed).
+- **GDAL's approximate-transformer `tolerance`** (`rasterio.warp.reproject`'s `tolerance`, maps to
+  `gdalwarp -et` — by default GDAL transforms only 3 points per output scanline and linearly
+  approximates the rest, a plausible source of geometric ripple for a genuinely curved transform).
+  Tested `tolerance=0` (exact per-pixel transform): only a ~20-25% improvement, not the fix.
+- **A frequency-targeted notch filter**, once the artifact's precise frequency/direction was known
+  (see below): a real, substantial improvement (~12-26x power reduction) via a filter that only
+  touches those two specific frequencies rather than broadly suppressing everything above a cutoff
+  like a Gaussian blur does. The user flagged two real problems with it anyway: visible crosshatch
+  still remained in the most sensitive areas (the darkest part of a large crater), and a legitimate
+  overfitting concern — a notch tuned to one image's specific geometry wouldn't generalize to others
+  (e.g. the X/Y frequency split depends on the camera's own latitude, since it turned out to come
+  from the native DEM grid's real anisotropy — see below).
+- **A live native-ppd sweep** (64/80/96/112/128 ppd through the full pipeline): best at ~112 ppd, but
+  the user reported the crosshatch "still apparent at all ppd values... modestly improved at 112" —
+  "It's maddening that the WMS server is a black box from this perspective."
+
+**Getting the frequency right took two corrections.** The first quantitative read (mis-targeted,
+~952 m one axis) turned out to be wrong — a properly-annotated 2D FFT plot (concentric circles at
+labeled real-world wavelengths, angle gridlines, built specifically so the user could read off the
+real peak directly rather than trusting Claude's own guess at which bin mattered — see the standing
+feedback on this) let the user correct it twice: first to ~290-380 m (a real but secondary signal),
+then back to the original ~950 m (X) / ~1200 m (Y) — genuinely the dominant one, just harder to
+separate from "a mess of junk near the middle" on a first look. The **X vs. Y wavelength difference
+turned out to have a precise explanation**: the native DEM fetch is anisotropic in real meters (128
+pixels per *degree* in both lon and lat, but a degree of longitude covers less real ground than a
+degree of latitude away from the equator) — computed exactly: 236.9 m north-south vs. 185.7 m
+east-west at this camera's ~38.4°N latitude, ratio 1.275, matching the observed wavelength ratio
+1200/950 = 1.263 almost exactly.
+
+**Root cause, finally confirmed properly** (a corrected, per-axis FFT check — the first attempt used
+an *averaged* isotropic native pixel spacing, which doesn't correctly test an anisotropic array on
+either axis, and wrongly found nothing): the raw native Lunaserv tile itself shows a real,
+consistent **+4.1 dB (X) / +4.0 dB (Y)** anomaly at exactly the observed frequencies, on both axes —
+this is baked into Lunaserv's own native 128 ppd tile, not introduced by this project's own
+reprojection. A live ppd sweep (32 through 256 ppd, both a "fixed real-world wavelength" and a
+"fixed number of native pixels" hypothesis tested directly) then showed the artifact's signature is
+weakest around ppd~64-96 and grows above that — consistent with Lunaserv's own server doing *its
+own* internal resampling from a true backing resolution coarser than the 128 ppd its layer abstract
+claims, the same mistake this project had already fixed on its own end, just one layer further
+upstream, and not something reachable from the client side: no response headers or TIFF metadata
+reveal Lunaserv's backing store, and 5 different vendor `GetMap` parameter names were all confirmed
+ignored (byte-identical responses) — no resampling-method control exists.
+
+**Decision: switch the DEM source to USGS Astropedia's flat-file GLD100 distribution.**
+Confirmed live via `gdalinfo` on the real file
+(`https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif`): genuine
+100.0 m/pixel (not 128 ppd/~237 m), Int16 real elevation (not planetocentric radius, `Min=-9091
+Max=10761`, `NoData=-32768`), 79°N-79°S coverage (`gdalinfo`'s own corner coordinates:
+79°0'6.57" both ways), ~10 GB, Equidistant Cylindrical projection (`lon_0=180`, standard parallel 0).
+Not a Cloud-Optimized GeoTIFF (`Block=109165x1` — row-strip layout, not 2D-tiled), confirmed via a
+real windowed `/vsicurl/` pull: ~64s for one small AOI (pulls full-width row strips, not a small
+tile). The same FFT diagnostic run against that real pulled AOI found **none** of Lunaserv's
+artifact (X: -5.2 dB, Y: +5.0 dB, both at/below the natural trend) — confirming it's specific to
+Lunaserv's serving pipeline, not the underlying GLD100 terrain data. It does have its own, different,
+near-Nyquist artifact (~143-149 m, +26-27 dB) almost certainly from the file's own Int16 (1 m step)
+elevation quantization — the user confirmed directly (inspecting `notebooks/astropedia_check.py`'s
+real reprojected hillshade, now `old_notebooks/astropedia_check.py`) that this isn't visually
+apparent and didn't want it addressed. Also checked and ruled out: the finer 256 ppd/~118 m GLD100
+tier exists only as 8 quadrangle tiles covering just ±60° latitude (narrower than this 100 m/px
+file's ±79°) — not worth the coverage tradeoff.
+
+**Implementation**: `fetch_dem_native`/`reproject_dem_to_local_grid` (the Lunaserv-native path from
+earlier in this phase) kept, marked deprecated in their own docstrings — the same "kept for
+reference/comparison, no longer used" precedent this project already established for
+`isis_wac.py`'s old CSM path. `reproject_dem_to_local_grid`'s warp core was factored into a private
+`_reproject_raster_to_local_grid` helper (parametrized by source CRS/transform rather than
+hardcoding geographic-degree assumptions) so the new Astropedia path (`fetch_dem_astropedia`,
+`reproject_astropedia_elevation_to_local_grid`) shares it without duplicating the
+`rasterio.warp.reproject` boilerplate — confirmed the deprecated function's own behavior is
+byte-for-byte unchanged (its existing tests pass with zero modifications). New
+`lunaserv.astropedia_coverage_bbox_deg`/`ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0` raise a clear
+exception for any camera footprint needing data outside Astropedia's real coverage — no silent
+fallback to the deprecated, artifact-affected Lunaserv path.
+
+**Caching the whole ~10 GB file, resumably**: per the user's explicit direction ("take the hit and
+just grab the whole 10 GB data set, but make sure we grab it only once" + real resume robustness
+against an imperfect network). Checked two Python libraries before settling on the approach: `pooch`
+(a common scientific-Python data-fetching library) turned out, on reading its actual
+`HTTPDownloader` source, to have **no** resume support at all — opens the destination `"w+b"` and
+always overwrites from scratch; `pypdl` does support real resume but is a smaller,
+less-established `aiohttp`-based multi-segment library, more new-dependency weight than the user
+wanted. Landed on shelling out to `curl -fL -C -` (`curl` is already a Docker image dependency, used
+for the ASP tarball fetch) — `cache.fetch_astropedia_gld100` is deliberately *not* built on the
+existing `cached_get` helper, because two of `cached_get`'s own design choices (a fresh
+uniquely-named temp file every call, and deleting it on any failure) are exactly correct for small
+WMS tiles but actively defeat resume for one huge file. Uses a stable `<dest>.part` path instead,
+and leaves it in place on failure. **Verified for real, not just assumed from `curl`'s own docs**:
+started the real ~10 GB download, killed the container mid-transfer at byte 931,119,104, reran, and
+`curl` logged `** Resuming transfer from byte position 931119104` — an exact match — then completed
+the remaining ~8.87 GB. Confirmed the "only once" contract too (a second call after completion
+returned in 0.00s).
+
+**One more thing checked before calling this done, not assumed**: Astropedia's Int16 (1 m step)
+elevation encoding is coarser than Lunaserv's float32 (~0.125 m ULP) that `render.py`'s
+`DEM_HEIGHT_ERROR_TOL_M = 0.5` was originally tuned for (see Phase 15) — a real question of whether
+that tolerance might now be too tight again, reintroducing `sat_sim` ray-intersection speckle with
+the new, coarser data. Checked directly: rendered the same real camera/DEM/ortho at
+`--dem-height-error-tol` 0.5/1.0/2.0/4.0, measuring each render's isolated-single-pixel-outlier rate
+(`lunaserv.despeckle`'s own outlier test, used purely as a measurement here). All four came out
+~0.444-0.447% — no meaningful difference, unlike Phase 15's original sweep (order-of-magnitude
+swings in both directions) — no change needed.
+
+**Validation**: the full real pipeline (`fetch_dem_and_ortho` against a real camera) ran end to end
+using the new path, producing the same `LunaservResult` shape every existing consumer expects, with
+the FFT diagnostic confirming the output matches what was validated in the notebook (only the
+already-accepted ~350-375 m quantization artifact, no trace of Lunaserv's crosshatch). All 18
+existing `test_lunaserv.py` tests pass unchanged (confirming the deprecated path's behavior really
+is untouched); 4 new tests cover the latitude guard and the Astropedia reprojection path. The full
+demo notebook (`scripts/run_notebook.sh notebooks/lunar_sat_sim_demo.py`) ran clean end to end
+(17 cells, sequential execution, zero errors) via the live catalog-driven default. `trntest-lint`
+passes (`ruff check`'s `--force-exclude` had to be added to `_lint.py`'s ruff invocations — ruff's
+own `exclude` config, added for the new `old_notebooks/` archive directory below, doesn't apply to
+explicitly-passed file paths without that flag, which is how `_lint.py` invokes ruff for its
+changed/untracked-file diff mode).
+
+**Archived the investigation notebooks** (`stripe_debug.py`/`.ipynb`, `astropedia_check.py`/`.ipynb`)
+to a new top-level `old_notebooks/` directory, per the user's explicit request: these are genuinely
+useful diagnostic records (the real executed plots, not just code) but won't be kept in sync going
+forward, unlike this repo's two real tracked notebook pairs. For each, the **`.ipynb` is the source
+of truth** (already-executed output preserved) and the paired `.py` was derived *from* it via
+`jupytext --to py:percent` — the reverse of this repo's normal direction. `old_notebooks/README.md`
+describes each; `AGENTS.md` points at the folder. `pyproject.toml`'s `[tool.ruff] exclude` now lists
+`old_notebooks` to keep it genuinely out of ongoing lint scope, matching how `_lint.py`'s own
+notebook-pairing checks already only scan `notebooks/`.
+
+**Left for later, not implemented**: Astropedia's ±79° coverage gap. The user pointed at NASA's VIRA
+project (`github.com/nasa/vira`, `scripts/download_dems.sh`) as reference — confirmed real and
+concrete: genuine LOLA-derived polar DEMs from `pgda.gsfc.nasa.gov`/`imbrium.mit.edu`, down to
+**5 m/px** near 87°S (LOLA ground tracks converge near the poles, giving far denser altimetry there
+than equatorial GLD100 — the source of the user's "ironic" observation that higher-res data exists
+right where Astropedia's coverage ends). See `docs/plan.md`'s open items.

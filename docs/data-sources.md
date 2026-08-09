@@ -5,7 +5,21 @@ kernel layout, byte layouts, and known gotchas. Consult before writing new code 
 external systems; update this file (not just code comments) when a concrete choice changes. For *how*
 these choices were reached (including wrong turns), see `docs/history.md`.
 
-## Lunaserv WMS (DEM + visible imagery)
+## Lunaserv WMS (visible imagery; DEM path deprecated)
+
+**DEM fetching from this server is deprecated** — see "Astropedia GLD100 flat file" below for the
+live default DEM source, and `docs/history.md`'s dated entry for the full investigation. Summary:
+Lunaserv's DTM layer (`luna_wac_dtm_numeric_meters_absolute`) has a real, axis-aligned crosshatch
+artifact baked into its own native tile (FFT-confirmed present regardless of requested ppd, CRS, or
+resampling kernel) — not fixable client-side, since the server exposes no resampling control
+(confirmed via several vendor `GetMap` parameter probes, all ignored) and no backing-store metadata.
+`src/trntest/lunaserv.py`'s `fetch_dem_native`/`reproject_dem_to_local_grid` still implement the
+native-CRS-fetch-plus-local-reprojection approach that fixed an *earlier*, different artifact from
+this same server (see below) — kept for reference/comparison, no longer called by
+`fetch_dem_and_ortho`'s default path. Everything below this deprecation note that's DTM-specific
+(the local-CRS SRS discussion, the planetocentric-radius gotcha, the DTM layer list) describes that
+deprecated path; the **ortho fetch** (`luna_wac_normalized_reflectance` et al., further down) is
+unaffected and still current.
 
 - Endpoint: `https://wms.im-ldi.com/lunaserv/lunaserv_stage?` (WMS 1.1.1). Run by ASU/LROC.
 - `GetCapabilities`: `?request=GetCapabilities&service=WMS&version=1.1.1`
@@ -15,29 +29,31 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   radius 1737400 m (GDAL reports it as an unprojected `GEOGCRS`) — the layers' native, unprojected
   grid. **No longer what `src/trntest/lunaserv.py` actually requests** (see the local-CRS entry
   below) but still useful as a plain lookup/degrees SRS if needed ad hoc.
-- **`fetch_dem_and_ortho` requests a per-camera local Orthographic CRS, not the native geographic
-  grid**: `IAU2000:30166,9001,{c_lon},{c_lat}` (`c_lon`/`c_lat` = that camera footprint's own
-  center, filled in via `config.lunaserv_srs_template`). Confirmed via a live GetMap + `gdalinfo`
-  check that this reports the Moon's real radius (`ELLIPSOID["unknown",1737400,0,...]`) and genuinely
-  isotropic meter pixels (`Pixel Size = (500.0, -500.0)` for a 500 m/px test request) — unlike the
-  generic OGC `AUTO:42003` Orthographic code, which is hardcoded to **Earth's** WGS84 ellipsoid
-  (`ELLIPSOID["WGS 84",6378137,...]`) and would silently misplace every ground point by the
-  Earth/Moon radius ratio (~3.67x) if used directly against lunar lon/lat. `IAU2000:30166` is one of
-  a parametrized family Lunaserv exposes per body/projection — discovered by diffing
-  `GetCapabilities`' `<SRS>` list around the known-working `IAU2000:30100`/`30101` entries (a
-  parallel `301xx` block mirrors a `199xx` Mercury block one digit over, with placeholder
-  `c_lon`/`c_lat`/`scale` tokens for the parametrized ones); `30162`/`30163` (`+scale`) are the
-  matching lunar Stereographic variants, untried here.
+- **`fetch_dem_and_ortho` requests the ortho in a per-camera local Orthographic CRS, not the native
+  geographic grid** (still current — this is about the ortho fetch; the deprecated DEM path used the
+  same CRS for the DEM too, see below): `IAU2000:30166,9001,{c_lon},{c_lat}` (`c_lon`/`c_lat` = that
+  camera footprint's own center, filled in via `config.lunaserv_srs_template`). Confirmed via a live
+  GetMap + `gdalinfo` check that this reports the Moon's real radius
+  (`ELLIPSOID["unknown",1737400,0,...]`) and genuinely isotropic meter pixels (`Pixel Size = (500.0,
+  -500.0)` for a 500 m/px test request) — unlike the generic OGC `AUTO:42003` Orthographic code,
+  which is hardcoded to **Earth's** WGS84 ellipsoid (`ELLIPSOID["WGS 84",6378137,...]`) and would
+  silently misplace every ground point by the Earth/Moon radius ratio (~3.67x) if used directly
+  against lunar lon/lat. `IAU2000:30166` is one of a parametrized family Lunaserv exposes per
+  body/projection — discovered by diffing `GetCapabilities`' `<SRS>` list around the known-working
+  `IAU2000:30100`/`30101` entries (a parallel `301xx` block mirrors a `199xx` Mercury block one digit
+  over, with placeholder `c_lon`/`c_lat`/`scale` tokens for the parametrized ones); `30162`/`30163`
+  (`+scale`) are the matching lunar Stereographic variants, untried here.
   **Why the switch**: the native geographic grid's degree-pixels are anisotropic away from the
   equator (a degree of longitude covers less ground distance than a degree of latitude); ASP's
   `mapproject --ref-map` (see below) turned out not to preserve that anisotropy when reprojecting
   onto it, silently stretching the output. A local Orthographic CRS has square meter pixels
   everywhere, so that failure mode can't arise. See `docs/history.md`'s dated entry for the full
   investigation.
-- **Gotcha:** `luna_wac_dtm_numeric_meters_absolute`'s pixel values are **planetocentric radius in
-  meters** (~1.73-1.74 million), not height-above-datum. `src/trntest/lunaserv.py` subtracts the
-  reference radius (`MOON_RADIUS_M = 1737400.0`) before handing the DEM to ASP. Feeding the raw
-  radius values straight to ASP would silently double-count the planet's radius.
+- **Gotcha (deprecated DEM path only):** `luna_wac_dtm_numeric_meters_absolute`'s pixel values are
+  **planetocentric radius in meters** (~1.73-1.74 million), not height-above-datum —
+  `lunaserv.radius_to_elevation` subtracted the reference radius (`MOON_RADIUS_M = 1737400.0`) before
+  handing the DEM to ASP. Astropedia's GLD100 file (the live default DEM source) already serves real
+  elevation directly — no equivalent subtraction needed or performed for that path.
 - **Antimeridian:** LRO's near-polar orbit means a camera footprint can straddle ±180° longitude.
   GetMap handles an out-of-range bbox (e.g. `170,40,190,45`) correctly — same real pixel data as the
   in-range equivalent (`-190,40,-170,45`); longitude is treated cyclically, not clipped to
@@ -63,10 +79,20 @@ these choices were reached (including wrong turns), see `docs/history.md`.
     `luna_exp_colorshade_gld100`/`luna_wac_alternate_color_flat` — "color shaded relief": hillshade
     blended with an *elevation* color ramp (hypsometric tint), not real albedo/reflectance — a
     topographic-map style product, not a photoreal one; not usable as a `sat_sim` ortho texture.
-  - `luna_wac_dtm_numeric_meters_absolute` — GLD100 elevation, actual meters. This is the DEM fed
-    to `sat_sim`.
-  - Other candidates seen in capabilities if higher resolution is ever needed: `luna_nac_dtms`,
-    `luna_pds_rdr_dtm`, per-Apollo-site DTMs/NAC mosaics (much higher res, smaller coverage).
+  - `luna_wac_dtm_numeric_meters_absolute` — GLD100 elevation, actual meters. **Deprecated as a DEM
+    source** (see this section's top note and "Astropedia GLD100 flat file" below) — confirmed
+    served at a real, coarser-than-advertised ~128 ppd/~237 m ceiling regardless of requested
+    resolution/CRS, with a further, unfixable-client-side axis-aligned artifact baked into the tile
+    itself.
+  - Surveyed every other DTM/DEM-ish layer this server advertises looking for a finer global
+    alternative before giving up on Lunaserv entirely: `luna_nac_dtms`/`luna_pds_rdr_dtm` are vector
+    *footprint-index* shapefiles (not raster DEM layers) pointing at scattered individual LROC NAC
+    stereo DTMs — real, much higher resolution where they exist, but local/opportunistic coverage,
+    incompatible with this project's catalog-driven, essentially-anywhere-on-the-Moon image
+    selection. Per-Apollo-site DTMs/NAC mosaics (one even advertised at 50 cm/px) have the same
+    coverage problem, just smaller still. No global layer here is finer than what's already deprecated
+    above — the problem was never *which* Lunaserv layer, it was that no Lunaserv layer at this
+    resolution exists for arbitrary lunar coverage; see the Astropedia section below for what does.
 - Usage policy: free/open, but credit "NASA/GSFC/Arizona State University" per their FAQ.
 - **NoData convention**: this server documents `0 = NoData` for related layers (Clementine basemap:
   "leaving 0 for NODATA"; GREDR: "set to NoData (0)") — not white, despite white being a common WMS
@@ -103,6 +129,64 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   concern, not primary scientific analysis. See `docs/history.md` Phase 15 for the full
   investigation.
 
+## Astropedia GLD100 flat file (live default DEM source)
+
+- URL: `https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif`
+  (`config.astropedia_gld100_url`). Hosted by USGS Astrogeology's Astropedia service — a static flat
+  file, not a WMS/WCS/any dynamic-subsetting service (checked: USGS's own Astro WMS at
+  `planetarymaps.usgs.gov/cgi-bin/mapserv` doesn't carry GLD100 at any resolution, only LOLA/Kaguya
+  shaded relief; no WMS anywhere serves this file's data).
+- **Confirmed specs, via live `gdalinfo` on the real file** (not taken from the filename/product page
+  at face value): `Size is 109165, 47912`, `Pixel Size = (100.000000000000000,-100.000000000000000)`
+  — genuinely **100.0 m/pixel**, not the 128 ppd/~237 m Lunaserv's own DTM layer actually serves.
+  `Type=Int16` (integer meters, not float32 — real elevation values directly, `Min=-9091 Max=10761`,
+  `NoData Value=-32768`) — **not planetocentric radius**, unlike Lunaserv's layer; no
+  `radius_to_elevation`-style subtraction needed or performed for this path
+  (`reproject_astropedia_elevation_to_local_grid` reprojects the elevation values as-is).
+  Coverage confirmed via the same `gdalinfo` output's corner coordinates: 79°0'6.57"N to
+  79°0'6.57"S — `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0` encodes this exactly, and
+  `lunaserv.astropedia_coverage_bbox_deg` raises rather than silently falling back to the deprecated
+  Lunaserv path for any camera footprint that needs data outside it.
+- CRS: a Moon-specific Equidistant Cylindrical ("Equirectangular") `PROJCRS`, standard parallel 0,
+  central meridian 180° (`ELLIPSOID["Moon_localRadius",1737400,0,...]` — confirmed the real Moon
+  radius, same check applied to Lunaserv's SRS codes above). `reproject_astropedia_elevation_to_local_grid`
+  reads this directly from the file's own embedded `crs`/`transform` (`rasterio.open(path).crs`) rather
+  than hardcoding the PROJ4 parameters by hand — unlike Lunaserv's GetMap responses, this file's
+  embedded georeferencing is trustworthy.
+- **Not a Cloud-Optimized GeoTIFF**: `gdalinfo` reports `Band 1 Block=109165x1` — row-strip internal
+  layout (one TIFF strip per full-width row), not 2D-tiled. A remote windowed read via GDAL's
+  `/vsicurl/` (HTTP range requests) therefore pulls full-width row strips for any AOI, not a small
+  tile — confirmed empirically: one small AOI pull took ~64s. **Confirmed the same artifact-absence
+  result on a real downloaded/reprojected AOI regardless** (the file's row-strip layout is a
+  performance concern, not a data-quality one).
+- **Caching**: `cache.fetch_astropedia_gld100` downloads and caches the **entire ~10 GB file locally
+  once** (confirmed: final size 10,461,394,351 bytes), rather than repeated remote windowed reads —
+  after which local windowed reads (`reproject_astropedia_elevation_to_local_grid`) are fast (no
+  network, no row-strip-over-HTTP penalty). Resumable: `curl -fL -C - -o <stable .part path> <url>`
+  (not built on `cache.cached_get` — see that function's own docstring for why: `cached_get`'s
+  per-call-unique-temp-filename and delete-on-failure behavior, both correct for small WMS tiles,
+  actively defeat resume for one huge file). **Confirmed empirically, not just assumed from `curl`'s
+  own docs**: interrupted a real download mid-transfer (killed the container at 931,119,104 bytes),
+  reran, and `curl` logged `** Resuming transfer from byte position 931119104` — exact match, then
+  completed the remaining ~8.87 GB. See `docs/environment.md`/`docs/caching.md` for the cache-footprint
+  size tradeoff this introduces for the ephemeral-VPS archive/restore workflow.
+- **Also checked and ruled out for now**: the finer 256 ppd/~118.45 m GLD100 tier (documented on
+  Astropedia's own product page: `Pixel Resolution: 118.45058759 m/pixel`, `Scale: 256 ppd`) exists
+  only as 8 quadrangle tiles covering just ±60° latitude — narrower coverage than this 100 m/px
+  file's ±79°, for a resolution gain not otherwise validated as necessary. Not pursued; see
+  `docs/plan.md`'s open items for the >±79° polar case instead (a different, better real option
+  exists there — LOLA-derived polar DEMs down to 5 m/px, via NASA's VIRA project).
+- **Known DEM-precision follow-up, checked and cleared**: switching from Lunaserv's float32
+  planetocentric-radius encoding (~0.125 m ULP, the reason `render.DEM_HEIGHT_ERROR_TOL_M = 0.5`
+  exists — see the `ASP sat_sim` section below) to this file's coarser Int16 (1 m step) encoding
+  raised a real question of whether that same tolerance might now be too tight again, reintroducing
+  `sat_sim` ray-intersection speckle. Checked directly: rendered the same real camera/DEM/ortho at
+  `--dem-height-error-tol` of 0.5 (current default), 1.0, 2.0, and 4.0, measuring each render's
+  isolated-single-pixel-outlier rate (`lunaserv.despeckle`'s own outlier test, used as a pure
+  measurement here, not applied) — all four came out ~0.444-0.447%, no meaningful difference, unlike
+  Phase 15's original tolerance sweep (order-of-magnitude swings in both directions). No change
+  needed to `DEM_HEIGHT_ERROR_TOL_M`.
+
 ## ASP `sat_sim`
 
 - Docs: https://stereopipeline.readthedocs.io/en/latest/tools/sat_sim.html
@@ -114,8 +198,10 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   sidecar" — technically a CSM *state* file, not a from-scratch ISD; double check at implementation
   time whether this distinction matters for whatever downstream tooling consumes it.
 - Input DEM should have no holes (use `dem_mosaic --hole-fill-length`), extend well beyond the AOI.
-  Fed in Lunaserv's **native** projection (avoids an extra `gdalwarp` resampling step); no evidence
-  yet that `sat_sim` demands a local stereographic projection instead.
+  Fed in the per-camera local Orthographic projection (the same grid the ortho shares — see
+  `fetch_dem_and_ortho`), not either DEM source's own native projection — both the deprecated
+  Lunaserv-native path and the live Astropedia path reproject locally before `sat_sim` ever sees the
+  DEM; no evidence `sat_sim` demands a local stereographic projection instead.
 - **`sat_sim` applies no illumination/shading model of its own.** Per its own docs, it
   "unproject[s] an ortho image into a given camera... in the spirit of ISIS `map2cam`," generating
   output pixels via bicubic interpolation of the `--ortho` input. The DEM is used purely for
@@ -135,7 +221,10 @@ these choices were reached (including wrong turns), see `docs/history.md`.
   Phase 15): tightening the tolerance further makes the speckle dramatically worse (more, denser
   artifacts), loosening it to comfortably clear that ~0.125m floor eliminates it cleanly — neither
   outcome is subtle. `src/trntest/render.py`'s `DEM_HEIGHT_ERROR_TOL_M = 0.5` (a 4x margin above the
-  float32 floor) is what `run_sat_sim` actually passes. Two other theories were tested and ruled
+  float32 floor) is what `run_sat_sim` actually passes. Derived against Lunaserv's float32 data, but
+  re-checked (not just assumed still valid) after switching the live default DEM source to
+  Astropedia's coarser Int16 encoding — see "Astropedia GLD100 flat file"'s own precision note above;
+  no change needed. Two other theories were tested and ruled
   out first: ortho-side noise/aliasing (despeckling the ortho, and even a large `--blur-sigma`, left
   the speckle pattern essentially unchanged) and the ortho source layer's own quality (switching
   layers changed the *baseline* noise level but not this specific artifact).

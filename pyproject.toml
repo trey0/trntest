@@ -42,6 +42,12 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# old_notebooks/ is a frozen archive of throwaway diagnostic notebooks (real executed output kept,
+# not re-run or kept in sync going forward -- see its own README.md) -- genuinely out of scope for
+# ongoing lint, not just a one-time pass. `_lint.py`'s own notebook pairing/sync checks already
+# exclude it by only scanning `notebooks/`; this does the same for the general ruff format/check
+# pass, which otherwise picks up any new/changed .py file regardless of directory.
+exclude = ["old_notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "PL"]

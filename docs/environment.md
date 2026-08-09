@@ -50,6 +50,13 @@ Everything outside `src/` — `cache/`, `output/`, `scratch/` — is explicitly 
 at any time, to save space before an `archive.sh` run or just to clean up. A fresh session should
 never assume prior contents of these dirs are still there.
 
+**One real exception worth knowing before deleting on autopilot**: `cache/astropedia/` holds a
+single ~10GB DEM file (see `docs/caching.md`'s "Astropedia GLD100 caching" section) — still safe to
+delete (it's fully re-fetchable), but re-fetching it is a genuine, non-trivial one-time cost, unlike
+the rest of `cache/`'s small, fast-to-refetch WMS tiles/kernels. Worth deciding deliberately whether
+to keep it archived (bigger tarball/scp) or delete-and-re-download-next-session, not just deleting it
+reflexively along with everything else in a space-saving pass.
+
 ## Why the separation matters
 
 An in-progress spike (the ISIS/CSM `mapproject` investigation tracked as an open item in
