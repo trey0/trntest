@@ -2043,3 +2043,43 @@ reported bug was about the live demo's actual mid-latitude candidate, now fully 
 Verified: 118 passing tests (new: `crop_footprint_corners_for_camera`'s inset-margin logic, mocked),
 `trntest-lint` clean, full notebook re-run via `scripts/run_notebook.sh`, and direct visual
 confirmation of Phase 6A showing all 5 tie points correctly placed.
+
+## Phase 31 (2026-08-10) — Fixed Phase 3's DEM corner nodata: two independently-padded bboxes were never guaranteed to cover each other
+
+The user spotted nodata sentinel values (~-3e38) right at the corners of Phase 3's displayed GLD100
+DEM — visually, like the valid data was "supposed to cover the whole map but just barely missed the
+corners because it was warped slightly."
+
+That description was exactly right. `fetch_dem_and_ortho` computes the destination working grid's
+bbox (`bbox`, in the per-camera local-Orthographic CRS, meters) by padding the camera footprint's own
+meters-space bbox by `dem_padding_fraction` (30% by default). Separately, `fetch_dem_astropedia` (via
+the old `astropedia_coverage_bbox_deg`) computed the *source* AOI to read from the local Astropedia
+GLD100 file by padding the *same* footprint's degree-space bbox by the *same* fraction — but
+independently, in a different coordinate system. Confirmed live, directly, before touching any code:
+built a real candidate, computed both bboxes, then inverse-projected the destination grid's own four
+corners back to lon/lat and checked them against the fetched degree bbox — **all four fell outside
+it**, by up to ~5km in some directions. The root cause: a square's diagonal corners sit `sqrt(2)` (~41%)
+farther from center than its edge midpoints, so two bboxes independently padded by the same
+*fraction*, in two different coordinate systems, aren't the same shape at all — the degree-space
+padding was undershooting the meters-space grid's corners regardless of how generous the fraction
+was, since the fraction was never actually being checked against what it needed to cover.
+
+**Fix**: `lunaserv.astropedia_coverage_bbox_deg` no longer pads the footprint's degree bbox
+independently. It now takes the destination grid's own bbox (`dst_bbox_m`, already computed by
+`fetch_dem_and_ortho`) directly and derives the degree-space AOI from it via
+`rasterio.warp.transform_bounds` (which densely samples the whole boundary, not just the 4 corners,
+so it's robust to any residual asymmetry between corners and edges), plus a small additional
+`DEM_FETCH_SAFETY_MARGIN_FRACTION` (2%) purely for the resampling kernel's own footprint (bilinear
+needs real neighbor samples just past the exact destination edge to interpolate cleanly). There's now
+only one padded bbox driving both the fetch and the destination grid, so the two can no longer
+silently disagree. `fetch_dem_astropedia`'s signature changed to match (`dst_bbox_m, center_lon_deg,
+center_lat_deg, config` instead of `camera, config, extra_footprint_lonlat_deg`) -- `extra_footprint_
+lonlat_deg` was already being unioned into `dst_bbox_m` by `fetch_dem_and_ortho` before this call, so
+passing it separately here was redundant as well as part of the bug.
+
+Live-validated: re-ran the real pipeline and checked every pixel of the resulting DEM for nodata --
+zero, anywhere, including 5x5 blocks at all four corners specifically (previously nonzero at all
+four). `trntest-lint` clean, full pytest suite green (new/rewritten `test_lunaserv.py` coverage,
+including a direct regression test that transforms `dst_bbox_m`'s own corners through the returned
+degree bbox and asserts they're inside it -- the exact geometric property the old implementation
+didn't have), full notebook re-run via `scripts/run_notebook.sh`.

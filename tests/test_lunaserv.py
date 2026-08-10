@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_bounds as transform_from_bounds
+from rasterio.warp import transform as warp_transform
 
 from trntest import lunaserv
+from trntest.config import DEFAULT_MOON_RADIUS_M
 
 
 def test_footprint_bbox_deg_no_wraparound():
@@ -158,24 +160,39 @@ def test_reproject_dem_to_local_grid_preserves_constant_field(tmp_path):
 
 
 def test_astropedia_coverage_bbox_deg_within_range():
-    footprint = {"center": (10.0, 5.0), "corner": (10.2, 5.2)}
-    bbox = lunaserv.astropedia_coverage_bbox_deg(footprint, dem_padding_fraction=0.3)
+    dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
+    bbox = lunaserv.astropedia_coverage_bbox_deg(dst_bbox_m, 10.0, 5.0, DEFAULT_MOON_RADIUS_M)
     assert len(bbox) == 4
+    minlon, minlat, maxlon, maxlat = bbox
+    assert minlon < 10.0 < maxlon
+    assert minlat < 5.0 < maxlat
 
 
 def test_astropedia_coverage_bbox_deg_raises_beyond_max_latitude():
-    footprint = {"center": (10.0, 85.0), "corner": (10.2, 85.2)}
+    dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
     with pytest.raises(ValueError, match="beyond Astropedia"):
-        lunaserv.astropedia_coverage_bbox_deg(footprint, dem_padding_fraction=0.3)
+        lunaserv.astropedia_coverage_bbox_deg(dst_bbox_m, 10.0, 85.0, DEFAULT_MOON_RADIUS_M)
 
 
-def test_astropedia_coverage_bbox_deg_considers_extra_footprint():
-    footprint = {"center": (10.0, 5.0)}
-    extra_footprint = {"far": (10.0, 85.0)}
-    with pytest.raises(ValueError, match="beyond Astropedia"):
-        lunaserv.astropedia_coverage_bbox_deg(
-            footprint, dem_padding_fraction=0.0, extra_footprint_lonlat_deg=extra_footprint
-        )
+def test_astropedia_coverage_bbox_deg_covers_dst_bbox_corners():
+    """Regression test for the real corner-nodata bug this function's rewrite fixed (see
+    docs/history.md's dated entry): the returned degree bbox, transformed back through the same
+    local-Orthographic projection, must fully cover `dst_bbox_m`'s own corners, not just its
+    center -- independently padding a degree-space bbox around the raw footprint (the old approach)
+    used to undershoot them."""
+    center_lon, center_lat = 10.0, 5.0
+    dst_bbox_m = (-80000.0, -60000.0, 90000.0, 70000.0)  # deliberately asymmetric, not a plain square
+    minlon, minlat, maxlon, maxlat = lunaserv.astropedia_coverage_bbox_deg(
+        dst_bbox_m, center_lon, center_lat, DEFAULT_MOON_RADIUS_M
+    )
+
+    ortho_crs = f"+proj=ortho +lon_0={center_lon} +lat_0={center_lat} +R={DEFAULT_MOON_RADIUS_M} +units=m +no_defs"
+    geo_crs = f"+proj=longlat +R={DEFAULT_MOON_RADIUS_M} +no_defs"
+    minx, miny, maxx, maxy = dst_bbox_m
+    lons, lats = warp_transform(ortho_crs, geo_crs, [minx, maxx, minx, maxx], [miny, miny, maxy, maxy])
+    for lon, lat in zip(lons, lats, strict=True):
+        assert minlon <= lon <= maxlon
+        assert minlat <= lat <= maxlat
 
 
 def _write_astropedia_style_tif(path, elevation_value, bbox_m, width, height, moon_radius_m):

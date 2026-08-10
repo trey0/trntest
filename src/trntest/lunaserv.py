@@ -284,19 +284,36 @@ def reproject_dem_to_local_grid(
 ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0
 
 
+DEM_FETCH_SAFETY_MARGIN_FRACTION = 0.02
+
+
 def astropedia_coverage_bbox_deg(
-    footprint_lonlat_deg: dict, dem_padding_fraction: float, extra_footprint_lonlat_deg: dict | None = None
+    dst_bbox_m: tuple, center_lon_deg: float, center_lat_deg: float, moon_radius_m: float
 ) -> tuple:
-    """Padded degree bbox for an Astropedia DEM AOI (same combine-before-unwrap-then-pad pattern as
-    `fetch_dem_native`, for the same antimeridian-safety reason -- see its own docstring), plus the
+    """The real lon/lat degree bbox needed to fully cover `dst_bbox_m` (the local-Orthographic
+    working grid's own bbox, meters -- see `fetch_dem_and_ortho`) once reprojected, plus a small
+    extra `DEM_FETCH_SAFETY_MARGIN_FRACTION` pad for the resampling kernel's own footprint (bilinear
+    needs real neighbor samples just past the exact destination edge, not just up to it) -- and the
     coverage guard: raises `ValueError` if the result extends beyond `ASTROPEDIA_MAX_ABS_LATITUDE_DEG`.
-    No automatic fallback to the deprecated Lunaserv path -- a caller that wants one has to ask for it
-    explicitly."""
-    combined_footprint = dict(footprint_lonlat_deg)
-    if extra_footprint_lonlat_deg is not None:
-        combined_footprint.update({f"extra_{k}": v for k, v in extra_footprint_lonlat_deg.items()})
-    deg_bbox = pad_bbox(footprint_bbox_deg(combined_footprint), dem_padding_fraction)
-    minlon, minlat, maxlon, maxlat = deg_bbox
+
+    **Derived directly from `dst_bbox_m`'s own boundary** (`rasterio.warp.transform_bounds` densely
+    samples the whole edge, not just the 4 corners), *not* by independently padding a degree-space
+    bbox around the footprint's own corners the way this function used to. Confirmed live (see
+    docs/history.md's dated entry) that two independently-padded bboxes -- one in degrees, one in
+    local-Orthographic meters, as this function and `fetch_dem_and_ortho`'s own `dst_bbox_m` used to
+    compute separately -- aren't guaranteed to cover each other: a square's diagonal corners are
+    ~41% farther from center than its edge midpoints, so an independent degree-space padding, even a
+    generous one, can undershoot the destination grid's own corners -- leaving small but real nodata
+    triangles exactly there, regardless of how large `dem_padding_fraction` is, since that padding
+    was never the thing being undershot. Deriving the degree bbox from `dst_bbox_m` directly instead
+    makes that mismatch structurally impossible: there's only one padded bbox now, not two.
+
+    No automatic fallback to the deprecated Lunaserv path -- a caller that wants one has to ask for
+    it explicitly."""
+    padded_bbox_m = pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION)
+    geo_crs = f"+proj=longlat +R={moon_radius_m} +no_defs"
+    ortho_crs = f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={moon_radius_m} +units=m +no_defs"
+    minlon, minlat, maxlon, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
     if minlat < -ASTROPEDIA_MAX_ABS_LATITUDE_DEG or maxlat > ASTROPEDIA_MAX_ABS_LATITUDE_DEG:
         raise ValueError(
             f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) extends "
@@ -306,24 +323,28 @@ def astropedia_coverage_bbox_deg(
             "but has its own known, unfixed artifact -- see docs/history.md's dated entry -- and isn't "
             "used automatically here."
         )
-    return deg_bbox
+    return minlon, minlat, maxlon, maxlat
 
 
 def fetch_dem_astropedia(
-    camera: Camera, config: TrntestConfig, extra_footprint_lonlat_deg: dict | None = None
+    dst_bbox_m: tuple, center_lon_deg: float, center_lat_deg: float, config: TrntestConfig
 ) -> tuple[Path, tuple]:
     """Live default DEM source: ensure Astropedia's flat-file GLD100 DEM is downloaded/cached locally
     (`cache.fetch_astropedia_gld100` -- the whole ~10GB file, once, resumably; see its own docstring
     for why this doesn't fetch a remote AOI window directly: the file isn't a Cloud-Optimized
     GeoTIFF, so a remote windowed read pulls full-width row strips, confirmed slow in testing).
 
-    Returns the local cached file path plus the padded degree bbox (`astropedia_coverage_bbox_deg`,
-    which also raises if the footprint needs data outside the file's real coverage) --
-    `reproject_astropedia_elevation_to_local_grid` needs the bbox to know which AOI window to read
-    from the (large, local) file."""
-    deg_bbox = astropedia_coverage_bbox_deg(
-        camera.footprint_lonlat_deg, config.dem_padding_fraction, extra_footprint_lonlat_deg
-    )
+    `dst_bbox_m` is `fetch_dem_and_ortho`'s own already-padded (and, if applicable, already unioned
+    with `extra_footprint_lonlat_deg`) local-Orthographic working-grid bbox -- passed in directly
+    (not re-derived from the raw camera footprint) so there's exactly one padded AOI decision, not
+    two independent ones (see `astropedia_coverage_bbox_deg`'s docstring for why that used to cause
+    real corner nodata gaps).
+
+    Returns the local cached file path plus the degree bbox that covers it
+    (`astropedia_coverage_bbox_deg`, which also raises if the footprint needs data outside the
+    file's real coverage) -- `reproject_astropedia_elevation_to_local_grid` needs the bbox to know
+    which AOI window to read from the (large, local) file."""
+    deg_bbox = astropedia_coverage_bbox_deg(dst_bbox_m, center_lon_deg, center_lat_deg, config.moon_radius_m)
     path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
     return path, deg_bbox
 
@@ -525,7 +546,7 @@ def fetch_dem_and_ortho(
     # the deprecated Lunaserv-native path below), then `reproject_astropedia_elevation_to_local_grid`
     # reads just this AOI from the local file and reprojects it onto this same local-CRS grid --
     # already real elevation (not planetocentric radius), so `radius_to_elevation` is skipped.
-    astropedia_path, astropedia_deg_bbox = fetch_dem_astropedia(camera, config, extra_footprint_lonlat_deg)
+    astropedia_path, astropedia_deg_bbox = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
     dem_elevation_path = config.output_dir / "dem_elevation.tif"
     reproject_astropedia_elevation_to_local_grid(
         astropedia_path,
