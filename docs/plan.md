@@ -217,9 +217,12 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   tie points now resolve on the real default candidate (was 2-3 of 5), confirmed visually in Phase
   6A. A separate, more extreme near-polar test candidate (~-81 to -83° latitude) still drops some
   points — the axis-aligned lon/lat bounding-box approximation this module's whole point-selection
-  approach relies on breaks down that close to a pole (severe longitude convergence); not fixed here,
-  a real but distinct limitation from the one this item was about. See `docs/history.md`'s dated
-  entry.
+  approach relies on breaks down that close to a pole (severe longitude convergence). **Accepted, not
+  a bug to fix**: tie points are a debug/QA overlay, not a correctness-critical output —
+  `resolve_crop_pixels` already degrades gracefully (drops individual points with a warning, only
+  raises if literally none resolve), which is the right behavior for a candidate this display doesn't
+  suit well, rather than something to chase with more geometry machinery. See `docs/history.md`'s
+  dated entry.
 
 ## Development history
 
