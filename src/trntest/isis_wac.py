@@ -42,6 +42,7 @@ load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `sub
 
 import dataclasses
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -187,6 +188,23 @@ def _parse_ck_kernels_from_label(label_text: str) -> list[str]:
     return [_strip_isis_alias_prefix(entry) for entry in pointing if "/kernels/ck/" in entry]
 
 
+def _spiceinit_vis_even_cube(config: TrntestConfig) -> Path:
+    """The spiceinit'd `vis_even` cube -- needed by `resolve_wac_ck_kernels`, which only needs this
+    cube's real, spiceinit-resolved label (pointing/timing/camera model), not calibrated pixel data.
+    Idempotent: reuses the file on disk if it already exists rather than re-running
+    `lrowac2isis`/`spiceinit`, which aren't themselves idempotent (ISIS apps refuse to overwrite an
+    existing `to=` output)."""
+    edr = fetch_edr_img(config)
+    out_prefix = _spike_dir(config) / edr.img_path.stem
+    vis_even_path = out_prefix.with_name(out_prefix.name + ".vis.even.cub")
+    if vis_even_path.exists():
+        return vis_even_path
+    ensure_isisdata(config)
+    stitch_inputs = run_lrowac2isis(edr, config)
+    run_spiceinit(stitch_inputs.vis_even, config)
+    return stitch_inputs.vis_even
+
+
 def resolve_wac_ck_kernels(config: TrntestConfig | None = None) -> list[str]:
     """Determine which CK (pointing) kernel(s) ISIS's own `spiceinit web=yes` actually furnishes for
     this project's target WAC product/date, by running a real spiceinit against it and reading the
@@ -221,11 +239,8 @@ def resolve_wac_ck_kernels(config: TrntestConfig | None = None) -> list[str]:
         result: list[str] = json.loads(cache_path.read_text())
         return result
 
-    ensure_isisdata(config)
-    edr = fetch_edr_img(config)
-    stitch_inputs = run_lrowac2isis(edr, config)
-    spiceinit_result = run_spiceinit(stitch_inputs.vis_even, config)
-    ck_paths = _parse_ck_kernels_from_label(_catlab(spiceinit_result.cub_path))
+    cub_path = _spiceinit_vis_even_cube(config)
+    ck_paths = _parse_ck_kernels_from_label(_catlab(cub_path))
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(ck_paths))
@@ -280,19 +295,71 @@ def run_framestitch(
     return FramestitchResult(cub_path=out_path, flip=flip)
 
 
-def run_pipeline(camera: Camera, frame_timing: FrameTiming, config: TrntestConfig | None = None) -> FramestitchResult:
-    """Runs the full EDR-fetch-through-`framestitch` pipeline for the product `camera`/
-    `frame_timing` describe. `flip` is derived from `camera.reverse_crop_along_track` -- the same
-    real, SPICE-derived per-pass yaw-state signal `framestitch`'s FLIP needs to match (confirmed
-    twice in the original spike, on two products with opposite yaw states) -- not hardcoded
-    per-product like the spike notebook's own `FLIP = False`."""
+def run_pipeline(flip: bool, frame_timing: FrameTiming, config: TrntestConfig | None = None) -> FramestitchResult:
+    """Runs the full EDR-fetch-through-`framestitch` pipeline for this product. `flip` should be
+    `camera.reverse_crop_along_track` -- the same real, SPICE-derived per-pass yaw-state signal
+    `framestitch`'s FLIP needs to match (confirmed twice in the original spike, on two products with
+    opposite yaw states) -- not hardcoded per-product like the spike notebook's own `FLIP = False`.
+    Takes the bare `bool` rather than a full `Camera` so this can run *during* `camera.build_camera`
+    itself (which needs a real stitched cube to pose the camera correctly -- see that function's
+    docstring) without a circular data dependency on the `Camera` it's still constructing.
+
+    Idempotent at two levels, since `build_camera()` and this notebook's own explicit Phase 6 call
+    both reach this for the same product: (1) if the final stitched cube already exists, returns it
+    directly, no ISIS calls at all; (2) if just `lrowac2isis`'s split already exists (e.g.
+    `spice_kernels.fetch_and_furnish`'s default `isis_resolved` CK resolution already ran it as a
+    side effect, via `resolve_wac_ck_kernels`/`_spiceinit_vis_even_cube`), reuses those files rather
+    than re-running `lrowac2isis` (confirmed unsafe to call twice -- ISIS apps refuse to overwrite
+    an existing `to=` output; `spiceinit`, unlike `lrowac2isis`, is confirmed idempotent -- safe to
+    re-run on an already-spiceinit'd cube, same result -- so it's never specially guarded here)."""
     config = config or load_config()
     ensure_isisdata(config)
     edr = fetch_edr_img(config)
-    split = run_lrowac2isis(edr, config)
+    out_prefix = _spike_dir(config) / edr.img_path.stem
+    stitched_path = out_prefix.with_name(out_prefix.name + ".vis.cal.stitched.cub")
+    if stitched_path.exists():
+        return FramestitchResult(cub_path=stitched_path, flip=flip)
+
+    vis_even_path = out_prefix.with_name(out_prefix.name + ".vis.even.cub")
+    vis_odd_path = out_prefix.with_name(out_prefix.name + ".vis.odd.cub")
+    if vis_even_path.exists() and vis_odd_path.exists():
+        split = Lrowac2IsisResult(
+            uv_even=out_prefix.with_name(out_prefix.name + ".uv.even.cub"),
+            vis_even=vis_even_path,
+            uv_odd=out_prefix.with_name(out_prefix.name + ".uv.odd.cub"),
+            vis_odd=vis_odd_path,
+        )
+    else:
+        split = run_lrowac2isis(edr, config)
+
     even = run_lrowaccal(run_spiceinit(split.vis_even, config), config)
     odd = run_lrowaccal(run_spiceinit(split.vis_odd, config), config)
-    return run_framestitch(even, odd, flip=camera.reverse_crop_along_track, config=config)
+    return run_framestitch(even, odd, flip=flip, config=config)
+
+
+def ground_point_at_pixel(cub_path: Path, sample: float, line: float) -> tuple[float, float]:
+    """Image-to-ground lookup via ISIS's own `campt`, against the cube's real, embedded camera
+    model -- the reverse direction of `ground_to_image_pixel`. Returns `(lon_deg, lat_deg)`
+    (`PositiveEast360Longitude`/`PlanetocentricLatitude`). `allowoutside=true`: unlike
+    `ground_to_image_pixel`'s use case (does a *chosen* ground point actually land in the crop?),
+    here the pixel is already known to be a real coordinate in `cub_path`'s own cube -- no
+    "did this even land inside the image" question to answer, so no need for a failure signal."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={cub_path}",
+            "type=image",
+            f"sample={sample}",
+            f"line={line}",
+            "format=pvl",
+            "allowoutside=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ground_point = pvl.loads(result.stdout)["GroundPoint"]
+    return float(ground_point["PositiveEast360Longitude"]), float(ground_point["PlanetocentricLatitude"])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -415,6 +482,78 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
         ]
     )
     return CropResult(cub_path=out_path)
+
+
+@dataclasses.dataclass(frozen=True)
+class GroundToImageModel:
+    """Which camera-model authority `ground_to_image_pixel` should query for a given crop, and why --
+    see `resolve_ground_to_image_model`."""
+
+    cub_path: Path
+    name_model: str
+    used_csm: bool
+
+
+def resolve_ground_to_image_model(
+    stitched: FramestitchResult, crop: CropResult, config: TrntestConfig | None = None
+) -> GroundToImageModel:
+    """Resolve which camera-model authority ground-to-image queries (`ground_to_image_pixel`, used by
+    `tie_points.resolve_crop_pixels`) should go through for this crop -- the same resolution order
+    `run_cam2map_for_crop` already settled on for the DEM-reprojection path, generalized into real,
+    reusable logic instead of a one-off decision: (1) try building a CSM ISD sidecar for the *full*
+    stitched cube (`run_isd_generate` is only valid there, not on a cropped cube -- see its own
+    docstring) and inspect its real `name_model`; (2) if it resolves to a Pushframe sensor,
+    `usgscsm`'s `groundToImage` is known unreliable for that class of camera (see this module's
+    docstring) -- fall back to the crop's own native, SPICE-embedded camera model, queried directly
+    (no CSM/ISD involved); (3) otherwise, the CSM model is safe to use -- attach it to a private copy
+    of the crop via ISIS's own `csminit`, so the crop's own native-model queries elsewhere (e.g.
+    `run_cam2map_for_crop`) aren't affected by this copy's attached CSM state.
+
+    Not hardcoded to "WAC-VIS is Pushframe, always use the native model" -- for this project's real
+    WAC product it always resolves that way (confirmed live: `run_isd_generate`'s ISD reports
+    `name_model = "USGS_ASTRO_PUSH_FRAME_SENSOR_MODEL"`), but deriving it from a real ISD each call
+    keeps this correct if this pipeline is ever pointed at a different, non-Pushframe instrument,
+    rather than baking today's answer in as a permanent assumption."""
+    config = config or load_config()
+    isd = run_isd_generate(stitched, config)
+    name_model = json.loads(isd.json_path.read_text())["name_model"]
+    if "PUSH_FRAME" in name_model:
+        return GroundToImageModel(cub_path=crop.cub_path, name_model=name_model, used_csm=False)
+
+    csm_cub_path = crop.cub_path.with_name(crop.cub_path.stem + ".csm.cub")
+    shutil.copy(crop.cub_path, csm_cub_path)
+    run_quiet(["csminit", f"from={csm_cub_path}", f"isd={isd.json_path}"])
+    return GroundToImageModel(cub_path=csm_cub_path, name_model=name_model, used_csm=True)
+
+
+def ground_to_image_pixel(model: GroundToImageModel, lon_deg: float, lat_deg: float) -> tuple[float, float] | None:
+    """Ground-to-image lookup via ISIS's own `campt`, against whichever cube/camera-model
+    `resolve_ground_to_image_model` decided is authoritative -- a genuine ground-truth query through
+    a validated tool, not a hand-derived approximation (see `tie_points.py`'s module docstring for why
+    this replaced a hand-rolled SPICE projection for the real WAC crop). Returns `(sample, line)` in
+    ISIS's own 1-based, pixel-center convention, or `None` if the ground point doesn't project into
+    this cube (confirmed live: `allowoutside=false` gives a clean, distinguishable failure -- "not
+    inside cube" for a point outside the crop's own extent, "no surface intersection" for one outside
+    the camera's view entirely -- rather than silently extrapolating past either boundary)."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={model.cub_path}",
+            "type=ground",
+            f"latitude={lat_deg}",
+            f"longitude={lon_deg}",
+            "format=pvl",
+            "allowoutside=false",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    label = pvl.loads(result.stdout)
+    ground_point = label["GroundPoint"]
+    return float(ground_point["Sample"]), float(ground_point["Line"])
 
 
 def _orthographic_map_pvl(lunaserv_result: LunaservResult) -> str:

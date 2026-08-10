@@ -1,4 +1,4 @@
-"""SPICE-derived tie points between the synthetic sat_sim render and the real WAC CDR crop.
+"""Tie points between the synthetic sat_sim render and the real WAC CDR crop.
 
 Both images are ultimately projections of the same real WAC-VIS camera geometry (the synthetic one
 at a single fixed pose; the real crop across many real poses, one per frame -- see
@@ -7,17 +7,32 @@ die's "5" pattern: 4 corners + center of the shared ground area) and projects ea
 images' pixel coordinates, so the comparison figure can show explicit, geometry-derived tie points
 rather than relying on the eye to judge alignment.
 
-Procedure:
+Procedure (split into two stages -- see `select_tie_points`/`resolve_crop_pixels`):
 1. Get each image's own ground footprint (a quadrilateral in lon/lat).
 2. Find each image's own "inscribed" axis-aligned lon/lat bounding box (a box entirely inside that
    quadrilateral) -- see `inscribed_bbox` for the (deliberately approximate) method.
 3. Intersect the two boxes -> the ground area both images actually cover.
 4. Pick 5 points in that shared box, well clear of its edges (10% margin), in the die's "5"/X
    pattern (4 corners + center).
-5. Project each point into both images' pixel coordinates using their real camera models: a
-   closed-form pinhole inverse for the synthetic image (single fixed pose); a small root-find over
-   frame index for the real crop (it mixes many real poses, one per frame -- see
-   `project_ground_to_crop_pixel`).
+5. Project each point into both images' pixel coordinates:
+   - synthetic image: a closed-form pinhole inverse (`project_ground_to_synthetic_pixel`), from the
+     exact fixed pose that rendered it -- this is exact, not an approximation of some other "real"
+     camera model, so it's untouched by the change below.
+   - real WAC crop: **a real ISIS `campt` ground-to-image query** (`isis_wac.ground_to_image_pixel`,
+     via `isis_wac.resolve_ground_to_image_model`) against the actual, already-produced crop cube --
+     not a hand-rolled SPICE approximation. `project_ground_to_crop_pixel`/`_crop_pixel_at_frame`
+     (below) are the **deprecated** predecessor: a frame-index bisection over `camera.py`'s SPICE
+     pose, kept for reference/comparison only. Switched because it measurably disagreed with the
+     real, cube-embedded camera model -- confirmed live on this project's actual default candidate: a
+     ~92-96px (out of 994 total lines, ~10%) along-track discrepancy, and 2 of the 5 SPICE-chosen die5
+     points weren't even visible to the real camera at all under its own real geometry. Steps 1-4
+     above (point *selection*) are unaffected and still use the SPICE-approximate footprint -- that's
+     only ever used to pick plausible candidate points, not to place them; step 5 is where accuracy
+     actually matters, and that's what moved to a validated tool. Because step 5's real crop_px
+     requires the real WAC crop cube to already exist (a comparatively expensive ISIS pipeline run),
+     point selection (`select_tie_points`) still runs early/cheaply as before, and pixel resolution
+     against the real crop (`resolve_crop_pixels`) runs later, once `isis_wac.crop_for_camera`'s
+     output exists -- see the notebook for the call ordering.
 
 Axis note (see docs/data-sources.md): empirically, the WAC-VIS camera frame's **X axis is
 along-track** and **Y axis is cross-track** for LRO's actual mounted/flown orientation -- opposite
@@ -31,7 +46,7 @@ import numpy as np
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import wac
+from trntest import isis_wac, wac
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -93,7 +108,7 @@ def crop_footprint_corners_for_camera(
 ) -> dict:
     """Convenience wrapper around `crop_footprint_corners` for the common case (the real WAC crop's
     own footprint for a given camera/config) -- unpacks `start_frame`/`n_frames`/`half_angle_rad` the
-    same way `compute_tie_points` already does, so callers (e.g. `plotting.plot_render_vs_basemap`)
+    same way `select_tie_points` already does, so callers (e.g. `plotting.plot_render_vs_basemap`)
     don't need to re-derive them."""
     config = config or load_config()
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
@@ -120,7 +135,11 @@ def _crop_pixel_at_frame(
     ground_km: np.ndarray,
     half_angle_rad: float,
 ) -> tuple:
-    """Cross-track column (real pinhole formula, cross-track = camera Y) + row (linear frame-to-row
+    """**Deprecated** -- superseded by `isis_wac.ground_to_image_pixel` for the real WAC crop (see
+    this module's docstring for why). Kept for reference/comparison only, not called by
+    `select_tie_points`/`resolve_crop_pixels`.
+
+    Cross-track column (real pinhole formula, cross-track = camera Y) + row (linear frame-to-row
     mapping) for a ground point, given the along-track-matching frame index has already been found.
     `reverse` must match `wac.fetch_vis_mosaic`'s own `camera_pose.reverse_crop_along_track` for
     this same product/pose (see its docstring) -- when the mosaic's frames were stacked in reverse
@@ -147,7 +166,11 @@ def project_ground_to_crop_pixel(
     tol: float = 1e-6,
     max_iter: int = 60,
 ) -> tuple:
-    """The real crop mixes many real poses (one per frame), so finding which pixel a ground point
+    """**Deprecated** -- superseded by `isis_wac.ground_to_image_pixel` for the real WAC crop (see
+    this module's docstring for why). Kept for reference/comparison only, not called by
+    `select_tie_points`/`resolve_crop_pixels`.
+
+    The real crop mixes many real poses (one per frame), so finding which pixel a ground point
     falls on requires locating which frame's along-track position it matches. Bisects over frame
     index for where the along-track (camera X) component crosses zero -- monotonic over this short
     span (confirmed empirically, see docs/data-sources.md). `reverse` -- see
@@ -246,8 +269,15 @@ def die5_points(bbox: tuple, margin_frac: float = 0.1) -> dict:
     }
 
 
-def compute_tie_points(frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None) -> dict:
-    """Returns {name: {"lonlat": (lon, lat), "synthetic_px": (px, py), "crop_px": (col, row)}}."""
+def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None) -> dict:
+    """Pick 5 real ground points visible in both images (die's-5 pattern -- see this module's
+    docstring) and project each into the synthetic image's exact pixel coordinates. Doesn't need the
+    real WAC crop cube to exist yet -- only `crop_footprint_corners`'s SPICE-approximate footprint,
+    used solely to pick plausible candidate points, not to place them (see this module's docstring
+    for why that distinction matters). Call `resolve_crop_pixels` once the real crop exists
+    (`isis_wac.crop_for_camera`'s output) to fill in each point's real `crop_px`.
+
+    Returns {name: {"lonlat": (lon, lat), "synthetic_px": (px, py)}} -- no "crop_px" yet."""
     config = config or load_config()
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     n_frames = camera.n_frames_for_square_crop
@@ -274,21 +304,47 @@ def compute_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntes
     for name, (lon, lat) in points.items():
         ground_km = lonlat_to_ground_km(lon, lat, config.moon_radius_km)
         px, py = project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv)
-        col, row = project_ground_to_crop_pixel(
-            frame_timing,
-            config.target_frame_index,
-            n_frames,
-            camera.reverse_crop_along_track,
-            ground_km,
-            half_angle_rad,
-        )
 
         image_size = config.image_size
         assert 0 <= px < image_size and 0 <= py < image_size, f"tie point {name} outside synthetic image: ({px}, {py})"
-        assert 0 <= col < wac.SAMPLES and 0 <= row < n_frames * wac.VIS_BLOCK_HEIGHT, (
-            f"tie point {name} outside CDR crop: ({col}, {row})"
-        )
 
-        results[name] = {"lonlat": (lon, lat), "synthetic_px": (px, py), "crop_px": (col, row)}
+        results[name] = {"lonlat": (lon, lat), "synthetic_px": (px, py)}
 
     return results
+
+
+def resolve_crop_pixels(tie_points: dict, model: "isis_wac.GroundToImageModel") -> dict:
+    """Fill in each selected tie point's real `crop_px`, via a genuine ISIS `campt` ground-to-image
+    query against the actual WAC crop (`model`, from `isis_wac.resolve_ground_to_image_model`) -- see
+    this module's docstring for why this replaced the deprecated SPICE-only projection below.
+    Converts ISIS's 1-based, pixel-center `Sample`/`Line` convention to this project's existing
+    0-based, pixel-corner convention (`- 0.5`, matching `project_ground_to_synthetic_pixel`'s
+    `cu = image_size / 2.0`-style pinhole formulas) so both images' tie points plot consistently.
+
+    Points the real camera doesn't actually see are dropped (with a printed warning), not raised --
+    confirmed live this happens for real, plausible die5 points (`select_tie_points`'s footprint
+    estimate is only ever approximate, see the module docstring); only raises if *none* of the points
+    resolve, since that would mean something is fundamentally wrong, not just an edge case in the
+    approximate footprint."""
+    resolved = {}
+    dropped = []
+    for name, info in tie_points.items():
+        lon, lat = info["lonlat"]
+        pixel = isis_wac.ground_to_image_pixel(model, lon, lat)
+        if pixel is None:
+            dropped.append(name)
+            continue
+        sample, line = pixel
+        resolved[name] = {**info, "crop_px": (sample - 0.5, line - 0.5)}
+
+    if not resolved:
+        raise RuntimeError(
+            "none of the selected tie points project into the real WAC crop -- "
+            "select_tie_points's approximate footprint may be badly wrong for this candidate"
+        )
+    if dropped:
+        print(
+            f"tie_points.resolve_crop_pixels: {len(dropped)} of {len(tie_points)} tie point(s) don't "
+            f"project into the real WAC crop under its actual camera model, dropped: {dropped}"
+        )
+    return resolved

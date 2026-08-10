@@ -60,14 +60,14 @@ def test_fetch_frame_timing_delegates_with_config():
     assert result == "timing-sentinel"
 
 
-def test_compute_tie_points_delegates_with_swapped_arg_order():
+def test_select_tie_points_delegates_with_swapped_arg_order():
     """Session standardizes on (camera, frame_timing), but the underlying free function keeps its
     original (frame_timing, camera) order -- this test pins that translation."""
     config = TrntestConfig()
     session = Session(config=config)
-    with mock.patch("trntest.session.tie_points.compute_tie_points") as mock_fn:
+    with mock.patch("trntest.session.tie_points.select_tie_points") as mock_fn:
         mock_fn.return_value = "tie-points-sentinel"
-        result = session.compute_tie_points("camera-sentinel", "timing-sentinel")
+        result = session.select_tie_points("camera-sentinel", "timing-sentinel")
     mock_fn.assert_called_once_with("timing-sentinel", "camera-sentinel", config=config)
     assert result == "tie-points-sentinel"
 

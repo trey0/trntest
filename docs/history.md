@@ -1781,3 +1781,199 @@ slow run can be compared against its own history, not just eyeballed once and lo
 rejected `jupyterlab-execute-timing` (the user's original ask) — it's a JupyterLab-UI-only
 extension, inert for this project's headless/scripted execution path, and redundant with timing data
 nbconvert/papermill already record natively.
+## Phase 28 (2026-08-10) — Fixed Phase 6A's real tie-point misalignment: switched the WAC-crop side to a genuine ISIS `campt` ground-to-image query
+
+The user noticed Phase 6A's real WAC crop was systematically misaligned from its own tie points:
+real features (craters, etc.) consistently sat *south* of their matching marker, while the same
+feature in the basemap panel landed right on its marker — a directional, systematic effect, not
+marker noise.
+
+**First hypothesis, ruled out by direct code reading**: `usgscsm`'s known `groundToImage` bug
+(Phase 25). Doesn't apply here — Phase 6A never reprojects the crop at all (raw pixel display,
+fixed north-up rotation only); reprojection only happens in Phase 6B, which already uses ISIS's
+native `cam2map`, not `usgscsm`.
+
+**Real cause**: `tie_points.py`'s WAC-crop tie-point pixel locations (`project_ground_to_crop_pixel`)
+were computed via a hand-rolled SPICE frame-index bisection — deliberately decoupled, by original
+design, from whatever pipeline actually produced the crop's real pixels. Confirmed empirically, live,
+on this project's actual default candidate at the time (`M1329714703CE`, a near-polar, ~-80 to -82°
+latitude target): comparing the old SPICE-projected `crop_px` against real ISIS `campt` ground-truth
+for the same 5 die5 points showed a consistent ~92-96px along-track offset (out of 994 total lines,
+~10%) for the 3 points that projected at all — and **2 of the 5 points didn't project into the real
+crop at all** ("no surface intersection" under the crop's actual, real camera model).
+
+The user's fix direction, after seeing this: stop approximating — compute the WAC-crop tie points the
+same way `isis_wac.run_cam2map_for_crop` already does, via ISIS's own real, cube-embedded camera
+model, using `campt`'s `coordtype=GROUND` mode (confirmed live: `campt from=<cub> type=ground
+latitude=... longitude=... allowoutside=false` returns a `GroundPoint` PVL group with `Sample`/`Line`
+— ISIS's standard 1-based, pixel-center convention — or a clean, distinguishable failure ["not inside
+cube" vs. "no surface intersection"] rather than silently extrapolating).
+
+**Broader unification, at the user's direction**: rather than special-case WAC-VIS, generalized the
+same resolution order 6B's `cam2map` switch already established into reusable logic
+(`isis_wac.resolve_ground_to_image_model`): (1) try building a CSM ISD sidecar for the full stitched
+cube (`isd_generate`, same tool 5B's `mapproject` uses) and inspect its real `name_model`; (2) if it
+resolves to a Pushframe sensor — confirmed live: `name_model = "USGS_ASTRO_PUSH_FRAME_SENSOR_MODEL"`
+— `usgscsm`'s `groundToImage` is known unreliable for that class of camera (Phase 25), so fall back
+to the crop's own native, embedded camera model, queried directly; (3) otherwise, attach the CSM
+model via ISIS's own `csminit` to a private copy of the crop and query that instead. Not hardcoded to
+"WAC is always Pushframe" — deriving it from a real ISD each call keeps the logic correct if this
+pipeline is ever pointed at a different, non-Pushframe instrument. For WAC-VIS this always takes the
+Pushframe branch today.
+
+Considered, and explicitly declined for this pass (user's call): also unifying Phase 5's synthetic-
+render tie points through the identical mechanism. Turned out the premise for why this would be
+*hard* was wrong — `render.py`'s `run_sat_sim` already produces a valid CSM/ISD sidecar via `cam_gen`
+on every run (this goes back to Phase 4; nothing needed to be built from scratch), it's just never
+been *used* for anything. But Phase 5's current closed-form pinhole tie-point projection is already
+exact (it's literally the same math/pose that rendered the image, not an approximation of some other
+"real" model), so there's no correctness gap to close there — deferred as a separate, lower-priority
+follow-up.
+
+`tie_points.compute_tie_points` was split into two stages, since the real crop must exist before its
+pixels can be queried, but point *selection* (die5 pattern, still SPICE-approximate — only ever used
+to pick plausible candidates, not to place them) doesn't need it and should stay cheap/early:
+`select_tie_points` (point selection + exact synthetic-image projection, unchanged timing) and
+`resolve_crop_pixels` (real `campt` query against the actual crop, called once `isis_wac.
+crop_for_camera`'s output exists). A die5 point the real camera doesn't actually see is dropped with
+a printed warning, not a hard failure — confirmed live this happens for real, plausible points near
+the poles, where the SPICE-approximate footprint used for *selection* can be off by enough to pick a
+point outside the real camera's actual view; `resolve_crop_pixels` only raises if *none* of the 5
+points resolve. The deprecated SPICE-only functions (`project_ground_to_crop_pixel`,
+`_crop_pixel_at_frame`) are kept for reference/comparison, matching this repo's established
+precedent for superseded code.
+
+Verified: live comparison of old-vs-new `crop_px` on the real default candidate (numbers above);
+`trntest-lint` clean; full pytest suite green (new coverage: `ground_to_image_pixel`'s PVL-parsing
+and failure signaling, `resolve_ground_to_image_model`'s Pushframe/non-Pushframe branching via
+mocked `isd_generate`/`csminit`, `resolve_crop_pixels`'s merge/drop/raise logic); full notebook
+re-run via `scripts/run_notebook.sh` end to end, on a freshly catalog-selected candidate (this
+notebook's default path re-queries the real catalog each run, so it wasn't the same product as the
+diagnosis above) — resolved cleanly, no crash, Phase 6A's tie points visibly land on the matching
+real craters.
+
+**Honest limitation, worth flagging rather than hiding**: on that same fresh run, only 2 of the 5
+die5 points survived (`bottom_left`/`bottom_right`; `top_left`/`top_right`/`center` all failed to
+project), a higher drop rate than the diagnosis candidate's 3-of-5. `select_tie_points`'s point-
+selection footprint is still the SPICE approximation this whole investigation found isn't reliable
+for the real crop — it's only ever been intended to pick plausible *candidates*, but a drop rate
+this high across the last two real candidates tried suggests it may be running consistently tight/
+marginal, not just occasionally off. `resolve_crop_pixels`'s graceful-degrade design (drop + warn,
+raise only if literally none survive) absorbs this without breaking the notebook, but if a future
+candidate drops 4 or 5 of 5, the visual check becomes uselessly sparse. A natural, currently
+unimplemented follow-up: rebuild `select_tie_points`'s point-selection footprint itself from a real
+`campt` image-to-ground query at the crop's own 4 corners (the reverse direction of this fix), so
+points are chosen from where the real camera actually looks rather than an approximation of it —
+noted in `docs/plan.md` as a candidate future item, not done here (kept in scope to the crop-side
+*projection* fix the user actually asked for).
+## Phase 29 (2026-08-10) — Traced the WAC-crop misalignment to its real root: not a tilt, not a timing bug, but posing the synthetic camera from the wrong ground point entirely
+
+Follow-up to Phase 28's tie-point fix: the user asked to debug the *underlying* footprint mismatch
+directly -- specifically, whether the real, map-projected WAC crop's bounds roughly match the
+synthetic render's bounds. They didn't.
+
+**Investigation, step by step:**
+
+1. **Real footprint bounds genuinely disagree.** Comparing `isis_wac.run_cam2map_for_crop`'s real
+   output bounds against the SPICE-approximate footprint (`camera.footprint_lonlat_deg`/
+   `tie_points.crop_footprint_corners`) on the actual selected candidate: the real WAC footprint was
+   ~11-15% *larger* in every direction than the approximation -- not a rounding-scale difference.
+2. **The exact center point is off by ~6-12km** (varying by candidate), confirmed via direct `campt`
+   query at the same physical pixel/time the SPICE approximation claims is "center."
+3. **Position and attitude were both ruled out as the cause.** At the *exact* matching ephemeris
+   time (found by bisecting/regressing `campt`'s own reported `EphemerisTime` against ours),
+   SPICE's position matched ISIS's real position to 0.6m, and a Wahba/Kabsch rotation fit from real
+   `campt` `LookDirectionCamera`/`LookDirectionBodyFixed` correspondences reproduced our own SPICE
+   `pxform` attitude to 0.0000 degrees, including on a held-out point. So the full pose (position +
+   attitude) is exactly right at any given instant -- ruling out an SPK/CK/frame-kernel bug.
+4. **A real, roughly-constant ~5-6 degree angular gap remained anyway.** `LookDirectionCamera` at
+   the naively-assumed "center" pixel isn't `[0,0,1]` -- confirmed to hold at a near-constant angle
+   across a wide line range (bisecting for where it crosses zero found no crossing at all, just a
+   slow drift from ~0.102 to ~0.095 over 200 lines) and similar in magnitude on two very different
+   candidates (5.75 vs 5.15 degrees, one flipped/`reverse_crop_along_track`, one not). That
+   signature -- frame-relative, not time- or geometry-dependent -- ruled *in* a fixed
+   hardware/calibration offset and ruled *out* a line-selection or timing bug as the primary cause
+   (an earlier side-investigation into a genuine ~0.3-1.4s `frame_et` timing offset, initially
+   suspected as the culprit, turned out to be a real but secondary effect -- correcting for it via
+   direct ET-matching left the ~11km residual essentially unchanged).
+5. **Checked whether plain SPICE has this number anywhere** before resorting to an empirical fit:
+   `spice.getfov(-85621)` reports boresight exactly `[0,0,1]`; the five per-filter frames
+   (`LRO_LROCWAC_VIS_FILTER_1..5`, IDs -85631..-85635, found in the real IAK
+   `lro_instrumentAddendum_v05.ti`, which this project doesn't otherwise furnish) are confirmed
+   *untilted* relative to the generic VIS frame (`pxform` between them is identity to <0.001
+   degrees); the IAK's own `-85621` entries are light-time/CK-frame config only, no geometric
+   override. Whatever correction ISIS's native Pushframe camera model applies internally isn't
+   reproducible from any SPICE-visible kernel data this project furnishes or could furnish.
+
+**First fix attempt -- built, integrated, and *empirically found not to work*.** Given the
+"fixed, frame-relative offset" signature, the natural first idea was a constant correction
+rotation, derived once via the same Wahba fit and applied to `camera.camera_pose_moon_me`'s raw
+SPICE attitude (`isis_wac.resolve_wac_vis_boresight_correction`, threaded through
+`camera_pose_moon_me`/`ground_track_step_km`/`km_per_frame`/`compute_n_frames_for_square_crop`/
+`tie_points.crop_footprint_corners` via a new `TrntestConfig.apply_wac_vis_boresight_correction`
+flag). Fully implemented, tested (mocked unit tests, all passing), linted clean -- and then
+*live-validated against real `campt` ground truth before declaring it done* (a deliberate practice
+after this exact kind of thing went wrong earlier in the session): the discrepancy was completely
+unchanged (11.68km, was ~10-12km; 6.86km, was ~6.75km). The persisted correction matrix itself was
+checked directly: 0.47 degrees from identity -- essentially a no-op.
+
+**Why it couldn't have worked, in hindsight**: step 3 above already proved the *attitude* (full
+rotation matrix) is exactly correct. A Wahba fit from real correspondences can only ever re-derive
+whatever rotation is *actually true* -- so fitting one from data where the true rotation already
+equals our own SPICE computation necessarily gives `correction = R_naive⁻¹ @ R_true ≈ identity`, by
+construction. The real bug was never in the rotation matrix at all -- it's that pixel `[0,0,1]`
+(image cross-track/along-track center) simply isn't *any specific real pixel's* look direction in a
+way expressible as a small rotation without that rotation being a no-op. This was a genuine
+conceptual error (conflating "attitude is wrong" with "our assumed principal point/target pixel is
+wrong") caught only by insisting on live validation rather than trusting the mechanism because it
+was clever. Reverted cleanly (confirmed back to 111 passing tests, clean lint, matching the prior
+commit's baseline) before building the real fix.
+
+**The actual fix**: stop deriving "the crop's center" from a boresight ray at all. `camera.
+build_camera()` now runs the real WAC pipeline (`isis_wac.run_pipeline`) before finalizing the
+synthetic camera's attitude, queries ISIS's own real camera model for the true ground point at the
+crop's actual center pixel (`isis_wac.ground_point_at_pixel`, `campt`'s image-to-ground direction --
+the reverse of `ground_to_image_pixel`, used at `sample=SAMPLES/2`, `line=center_frame_index *
+VIS_BLOCK_HEIGHT` -- exactly `crop_window_for_camera`'s own window-center line, so this lines up
+with wherever the eventual displayed crop centers regardless of `flip`: window *boundaries* are a
+pure translation computed the same way either way; `flip` only reorders *content* within them, so
+no separate flip-handling was actually needed here despite earlier suspicion), and re-aims the
+boresight directly at that real point (`camera.look_at_rotation`: exact target boresight, roll/other
+axes kept close to the original SPICE attitude via Gram-Schmidt). Camera *position* is untouched
+(already proven exactly correct); only *what it points at* changes.
+
+**A real architectural cost, paid deliberately**: `isis_wac.run_pipeline`'s signature changed from
+taking a full `Camera` to a bare `flip: bool`, specifically to break the circular data dependency
+(`build_camera` now needs to call it *before* the `Camera` it used to require exists). Made
+idempotent at two levels (final stitched cube exists -> return it; just the `lrowac2isis` split
+exists, e.g. as a side effect of `spice_kernels.fetch_and_furnish`'s default CK resolution -> reuse
+it, don't re-run `lrowac2isis`), since both `build_camera()` and the notebook's own explicit Phase 6
+call now reach it for the same product -- confirmed live that `spiceinit` is safe to re-run
+(idempotent, same result) but `lrowac2isis`/`framestitch` are not (refuse to overwrite existing
+output), so only the latter needed guarding. Net effect: `build_camera()` now costs a real
+~10-20s more (the `lrowaccal`+`framestitch` steps the existing CK-resolution side effect doesn't
+already cover) -- a deliberate trade of a real, bounded, one-time cost for actual accuracy, not
+introduced casually.
+
+**Deliberately out of scope, still**: `tie_points.crop_footprint_corners` (used for die5
+point-*selection* and DEM/ortho AOI sizing) is untouched -- still the SPICE approximation, still
+only meant to pick plausible candidates/size a generous-enough fetch area, not to place anything
+precisely. See Phase 28's own deferred-item note; unaffected by this fix.
+
+**Validated**: live re-check after the real fix landed -- both test candidates now show *exactly*
+0.000000km residual between the synthetic camera's own boresight ground point and independent real
+`campt` ground truth at the same target pixel (by construction, since that's literally the target --
+a build-correctness check, not fresh independent proof of the underlying finding, which step 3's
+Wahba/position work already established rigorously). Rotation matrix confirmed still a valid
+orthonormal rotation (`R^T R = I`, `det(R) = 1`). Full `session.generate_dataset()` real flow
+(catalog selection through `sat_sim` render) succeeded end-to-end with no errors. `trntest-lint`
+clean, full pytest suite green (new coverage: `look_at_rotation`/`off_nadir_and_slant_range`'s pure
+geometry, `ground_point_at_pixel`'s PVL parsing, `run_pipeline`'s reuse-existing-cube idempotency
+path), full notebook re-run via `scripts/run_notebook.sh`.
+
+**Likely connects back to Phase 25/27's original, never-fully-explained ~11-13km number**: both
+used the same kind of comparison (`tie_points.crop_footprint_corners_for_camera`'s SPICE-approximate
+"center" vs. real `campt` ground truth) this investigation now shows is expected to disagree by
+almost exactly that magnitude, independent of the CK-kernel question Phase 27 chased. Not
+re-verified against that exact original scenario, so stated as a plausible connection, not a closed
+loop.

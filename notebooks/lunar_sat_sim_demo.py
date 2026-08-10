@@ -25,7 +25,7 @@ import dataclasses
 import json
 
 import trntest
-from trntest import isis_wac, plotting
+from trntest import isis_wac, plotting, tie_points
 
 session = trntest.Session()
 session.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,14 +117,14 @@ print(f"synthetic: rotate {rotations.k_synthetic*90} deg for north-up (residual 
 print(f"real crop: rotate {rotations.k_crop*90} deg for north-up (residual {rotations.dev_crop_deg:.1f} deg from true north)")
 
 # %% [markdown]
-# ### SPICE-derived tie points (display only)
+# ### Tie points (display only)
 #
-# `session.compute_tie_points()` finds the real ground area both the synthetic render and the real WAC crop cover (each image's own footprint, an inscribed axis-aligned lon/lat box per image, intersected), picks 5 points in a die's "5"/X pattern (4 corners + center, 10% margin from the shared area's edges), and projects each into both images' pixel coordinates using their real camera models (closed-form pinhole for the synthetic image; a small root-find over frame index for the real crop, which mixes many real poses -- pure SPICE frame-index geometry, independent of which real-data pipeline actually produced the pixels). Computed once here and reused throughout Phases 5-7 below: on the render panels of 5A/6A (marking the same 5 real ground points on each candidate's own raw image), and for the direct comparison in Phase 7.
+# `session.select_tie_points()` finds the real ground area both the synthetic render and the real WAC crop cover (each image's own footprint, an inscribed axis-aligned lon/lat box per image, intersected -- an approximate estimate, used only to pick plausible candidate points, not to place them), picks 5 points in a die's "5"/X pattern (4 corners + center, 10% margin from the shared area's edges), and projects each into the synthetic image's exact pixel coordinates (closed-form pinhole, the same fixed pose that rendered it). The real WAC crop's own pixel coordinates (`crop_px`) aren't resolved here yet -- that needs the real crop cube to exist first (Phase 6, below), and now goes through a genuine ISIS `campt` ground-to-image query against it, not a hand-rolled approximation (see `tie_points.py`'s module docstring). Reused throughout Phases 5-7 below: on the render panels of 5A/6A (marking the same 5 real ground points on each candidate's own raw image), and for the direct comparison in Phase 7.
 
 # %%
-tie_point_results = session.compute_tie_points(camera, frame_timing)
+tie_point_results = session.select_tie_points(camera, frame_timing)
 for name, r in tie_point_results.items():
-    print(f"{name:12s} lonlat={r['lonlat']}  synthetic_px={r['synthetic_px']}  crop_px={r['crop_px']}")
+    print(f"{name:12s} lonlat={r['lonlat']}  synthetic_px={r['synthetic_px']}")
 
 # %% [markdown]
 # ## Phase 5: does the synthetic render's geometry check out?
@@ -164,15 +164,24 @@ plotting.plot_overlay(
 # %% [markdown]
 # ## Phase 6: does the real, ISIS-processed WAC crop's geometry check out?
 #
-# The same two-style geometry check as Phase 5, for the other TRN test image candidate: a roughly square center crop of the product's real WAC EDR, processed through ISIS3's own pipeline instead of `sat_sim`. WAC is a push-frame camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS @ 14 TDI lines), and getting a usable, calibrated image out of the raw EDR takes real processing. `isis_wac.run_pipeline()` steps the product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain, not a hand-derived byte offset. `flip` is derived from `camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook -- not a fixed per-product constant.
+# The same two-style geometry check as Phase 5, for the other TRN test image candidate: a roughly square center crop of the product's real WAC EDR, processed through ISIS3's own pipeline instead of `sat_sim`. WAC is a push-frame camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS @ 14 TDI lines), and getting a usable, calibrated image out of the raw EDR takes real processing. `isis_wac.run_pipeline()` steps the product's real EDR through ISIS3's own pipeline (`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain, not a hand-derived byte offset. `flip` (`camera.reverse_crop_along_track`, the same real SPICE-derived per-pass yaw-state signal used throughout this notebook, not a fixed per-product constant) is passed explicitly now, not derived from a `Camera` object -- `session.generate_dataset()` above already ran this exact pipeline once internally, to pose `camera`'s own boresight at this crop's real, ISIS-determined center (see `camera.build_camera`'s docstring); `run_pipeline` is idempotent, so this call just reuses that same stitched cube rather than redoing the work.
 #
 # `isis_wac.crop_for_camera()` then crops `stitched` (via ISIS's own `crop` app) down to the real-footprint frame range (`camera.center_frame_index` +/- half of `camera.n_frames_for_square_crop`) -- a single, real "WAC crop" cube that both 6A (raw display, right below) and 6B (mapprojected, further below) derive from, the same way 5A/5B both already derive from one synthetic render with no special-casing. `crop_footprint` (from Phase 2's `result.crop_footprint` -- `tie_points.crop_footprint_corners_for_camera`'s independent ray-trace of that same crop's real ground footprint, computed inside `generate_dataset()` since it's also needed there to size the DEM/ortho fetch) is what `plot_render_vs_basemap` crops the matching basemap area to.
 #
 # Unlike 5B, 6B does *not* go through ASP's `mapproject` via a CSM/ISD sidecar. That path was tried extensively and abandoned: investigation traced its bad geometry to a real bug in `usgscsm`'s `UsgsAstroPushFrameSensorModel::groundToImage` (the function `mapproject` calls once per output pixel) -- an unbracketed secant search over framelet index that's unreliable for Pushframe images, badly so for a short crop. Confirmed independent of any ISD authoring choice (varying every plausible ISD field made no difference), confirmed via a chained-iteration round-trip test that never converges to a stable answer for the crop, and confirmed even the long-trusted *full-cube* reference used throughout this notebook's earlier validation is itself measurably affected (~0.2-0.4 correlation against ISIS's own native reprojection, despite the two using literally the same source pixels). `isis_wac.run_cam2map_for_crop()` instead uses ISIS's own native camera model via `cam2map` -- confirmed self-consistent regardless of crop size (crop vs. full cube agree to 0.9999986 correlation) and independently checked against `pyproj`'s own math to sub-micrometer precision. See `docs/history.md`'s dated entry for the full investigation.
 
 # %%
-stitched = isis_wac.run_pipeline(camera, frame_timing, session.config)
+stitched = isis_wac.run_pipeline(camera.reverse_crop_along_track, frame_timing, session.config)
 wac_crop = isis_wac.crop_for_camera(stitched, camera, session.config)
+
+# %% [markdown]
+# `isis_wac.resolve_ground_to_image_model()` decides which camera-model authority the real crop's own tie points should be queried against: try a CSM ISD sidecar first (`isd_generate`, same tool 5B's `mapproject` uses), and only fall back to the crop's native, SPICE-embedded camera model if the ISD resolves to a Pushframe sensor model -- the class `mapproject`'s `groundToImage` is known unreliable for (see 6B's notes above). For WAC-VIS this always takes the fallback branch, but the decision itself is real (derived from the ISD's own `name_model`), not hardcoded. `tie_points.resolve_crop_pixels()` then queries each tie point's real pixel location in `wac_crop` via ISIS's own `campt` -- a genuine ground-to-image lookup through a validated tool, replacing the deprecated SPICE-only approximation `select_tie_points` used to compute this same value with (see `tie_points.py`'s module docstring for the measured discrepancy this fixes). A die5 point the real camera doesn't actually see (the approximate footprint used to pick candidate points can be off enough for this to happen for real, e.g. near the poles) is dropped with a printed warning rather than breaking the run.
+
+# %%
+ground_to_image_model = isis_wac.resolve_ground_to_image_model(stitched, wac_crop, session.config)
+tie_point_results = tie_points.resolve_crop_pixels(tie_point_results, ground_to_image_model)
+for name, r in tie_point_results.items():
+    print(f"{name:12s} crop_px={r['crop_px']}")
 
 # %%
 crop_width_km = camera.cross_track_width_km

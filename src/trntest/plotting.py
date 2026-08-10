@@ -292,11 +292,14 @@ def plot_isis_comparison(
     order and `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
     `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
 
-    `tie_point_results` (from `session.compute_tie_points`, already computed for Phase 5) are
-    reused as-is, not recomputed -- `tie_points.py`'s "crop_px" was never CSM/ISD-based to begin
-    with (pure SPICE frame-index geometry), and its row/col origin and `wac.VIS_BLOCK_HEIGHT`
-    scaling are exactly what `crop_window_for_camera` already uses, so the same pixel coordinates
-    land correctly in this window with no transformation.
+    `tie_point_results` (from `session.select_tie_points` + `tie_points.resolve_crop_pixels`,
+    already computed by Phase 6) are reused as-is, not recomputed -- `tie_points.py`'s "crop_px" is
+    a real ISIS `campt` ground-to-image query against `stitched_cub_path` itself (see that module's
+    docstring), so its row/col origin already matches this exact cube with no transformation needed.
+
+    A tie point the real camera doesn't see (see `tie_points.resolve_crop_pixels`'s docstring) is
+    simply absent from `tie_point_results` -- this function draws whatever's present, no special
+    handling needed for a missing point.
 
     Brightness-matches the real panel to the synthetic one via the same single-multiplicative-
     median-scale technique `plot_comparison` uses (see its docstring for the full rationale) -- not
@@ -381,7 +384,8 @@ def plot_render_vs_basemap(
     north-up display), the basemap crop needs no rotation: the local Orthographic CRS is already
     north-referenced by construction (+Y = north).
 
-    `tie_point_results` (from `session.compute_tie_points`, see `plot_comparison`/
+    `tie_point_results` (from `session.select_tie_points` + `tie_points.resolve_crop_pixels` for the
+    real crop's `"crop_px"`, see `plot_comparison`/
     `plot_isis_comparison`'s identical dict shape) marks the same 5 ground points on both panels, if
     given. On the render panel, `render_px_key` selects which of each point's two pre-computed pixel
     coordinates applies (`"synthetic_px"` or `"crop_px"`) -- same technique `plot_comparison`/

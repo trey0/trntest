@@ -42,15 +42,15 @@ product to this.
 | `config.py` | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
 | `cache.py` | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see `docs/caching.md`. |
 | `spice_kernels.py` | Selects/downloads the minimal SPICE kernel set for a date, furnishes it (`fetch_and_furnish`, `furnish_spk_range`). WAC CK (pointing) kernel selection defaults to asking a real ISIS `spiceinit` run what it resolves (`select_isis_wac_ck_kernels`, via `isis_wac.resolve_wac_ck_kernels`), falling back to a NAIF-metakernel-based heuristic (`select_naif_wac_ck_kernels`, deprecated but numerically equivalent) for dates outside that resolution's own coverage — see `docs/data-sources.md`. |
-| `camera.py` | Poses the synthetic camera from real SPICE trajectory/orientation data; `build_camera()`, `FrameTiming`/`fetch_frame_timing()` (EDR label parsing), sensor-axis convention (`boresight_rotation_k`). |
+| `camera.py` | Poses the synthetic camera from real SPICE trajectory/orientation data; `build_camera()`, `FrameTiming`/`fetch_frame_timing()` (EDR label parsing), sensor-axis convention (`boresight_rotation_k`). `build_camera()`'s final boresight is *re-aimed* (`look_at_rotation`) at a real, ISIS-determined target ground point (`isis_wac.run_pipeline`/`ground_point_at_pixel`) rather than trusted directly from `spice.pxform`'s raw `[0,0,1]` -- that raw assumption is confirmed measurably wrong for WAC-VIS (see `docs/history.md`'s dated entry). Camera *position* (`camera_pose_moon_me`) is untouched, already confirmed exactly correct. |
 | `illumination.py` | Sun/orbit geometry via real SPICE functions — sun elevation/azimuth, sub-solar point, ascending-node search (`gfposc`). |
 | `catalog.py` | PDS ODE REST API client — lists real EDR/CDR products by time range, matches EDR↔CDR pairs. |
 | `dataset.py` | Public multi-image API: `select_dataset()` (catalog-driven selection), `generate_dataset()` (renders selected images through the single-image pipeline). Also computes each image's real WAC crop footprint (`tie_points.crop_footprint_corners_for_camera`) and passes it to `lunaserv.fetch_dem_and_ortho` so the DEM/ortho AOI covers both the synthetic camera's footprint and the real WAC crop's — exposed on `GenerationResult.crop_footprint` for reuse (e.g. by the notebook's Phase 6). |
 | `lunaserv.py` | Fetches ortho imagery from Lunaserv WMS and the DEM from USGS Astropedia's flat-file GLD100 (`fetch_dem_astropedia`/`reproject_astropedia_elevation_to_local_grid` — Lunaserv's own DTM layer has a real, unfixable-client-side artifact, see `docs/data-sources.md`), both reprojected onto one shared per-camera local Orthographic CRS (real Moon radius) centered on that camera's footprint (optionally unioned with an extra footprint via `union_bbox`, see `dataset.py`) — genuinely isotropic meter pixels either way. `fetch_dem_native`/`reproject_dem_to_local_grid` (the deprecated Lunaserv-DEM path) are kept for reference/comparison, no longer called by the default pipeline. Despeckles the ortho and blends in a real-sun-lit hillshade (`sat_sim` applies no illumination model of its own). |
 | `render.py` | Runs `sat_sim`/`cam_gen` to produce the rendered `.tif` + CSM/ISD JSON sidecar. `run_mapproject` reprojects the render back onto the map through that same CSM sidecar, for geo-aligned overlay display. |
 | `wac.py` | Extracts a band-separated, along-track-stacked VIS mosaic from a real WAC CDR product via manual, hand-derived byte offsets. Superseded by `isis_wac.py` as the demo notebook's real-WAC comparison method (see the open items below) but left in place, untouched, with its own unit test coverage. |
-| `isis_wac.py` | Steps a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain. `crop_for_camera` then crops the stitched cube (ISIS's own `crop` app) down to the real footprint being compared -- a single, real "WAC crop" cube both the notebook's raw-pixel display and `run_cam2map_for_crop` consume, with no special-casing. `run_cam2map_for_crop` reprojects it onto the DEM via ISIS's own *native* Pushframe camera model (`cam2map`, using a PVL map file cloned from `LunaservResult`'s own local Orthographic CRS) rather than ASP's `mapproject`/CSM -- a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors made the CSM route unusable for a crop this size (see `docs/history.md`'s dated entry). `run_isd_generate`/`run_mapproject` (the old CSM path) are kept for reference/comparison but no longer used. Must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
-| `tie_points.py` | SPICE-derived ground tie points, projected into both images' pixel coordinates, for the comparison figure. `crop_footprint_corners`/`crop_footprint_corners_for_camera` independently ray-trace the real WAC crop's own ground footprint (not assumed identical to the synthetic camera's), for `plotting.plot_render_vs_basemap` and `dataset.generate_dataset`'s DEM/ortho AOI sizing. |
+| `isis_wac.py` | Steps a real WAC EDR through ISIS3's own pipeline (`lrowac2isis`/`spiceinit`/`lrowaccal`/`framestitch`) -- calibrated, band-separated, and framelet-interleaved through a genuine camera-model-aware toolchain. `crop_for_camera` then crops the stitched cube (ISIS's own `crop` app) down to the real footprint being compared -- a single, real "WAC crop" cube both the notebook's raw-pixel display and `run_cam2map_for_crop` consume, with no special-casing. `run_cam2map_for_crop` reprojects it onto the DEM via ISIS's own *native* Pushframe camera model (`cam2map`, using a PVL map file cloned from `LunaservResult`'s own local Orthographic CRS) rather than ASP's `mapproject`/CSM -- a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors made the CSM route unusable for a crop this size (see `docs/history.md`'s dated entry). `resolve_ground_to_image_model`/`ground_to_image_pixel` generalize that same resolution order (try a CSM ISD sidecar, fall back to the crop's native model only if it resolves to a Pushframe sensor) into a reusable ground-to-image query, now also used for `tie_points.resolve_crop_pixels`. `ground_point_at_pixel` is the reverse (image-to-ground), used by `camera.build_camera()` to re-aim the synthetic camera's boresight at a real target. `run_pipeline` takes `flip: bool` directly (not a `Camera`) and is idempotent (safe to call once from `build_camera()` and again from the notebook's own Phase 6 cell for the same product -- reuses, doesn't redo, the ISIS work). `run_isd_generate`/`run_mapproject` (the old CSM path) are kept for reference/comparison but no longer used. Must run against the stitched (interleaved) cube, not a lone even/odd parity (see the open items below). |
+| `tie_points.py` | Ground tie points for the comparison figure: `select_tie_points` picks 5 points (SPICE-approximate footprint, used only to choose plausible candidates) and projects them into the synthetic image's exact pixel coordinates; `resolve_crop_pixels` fills in each point's real WAC-crop pixel coordinate via `isis_wac.ground_to_image_pixel` (a genuine ISIS `campt` query against the actual crop, not an approximation -- see `docs/data-sources.md`), dropping (with a warning) any point the real camera doesn't actually see. `crop_footprint_corners`/`crop_footprint_corners_for_camera` independently ray-trace the real WAC crop's own *approximate* ground footprint, for `plotting.plot_render_vs_basemap` and `dataset.generate_dataset`'s DEM/ortho AOI sizing. |
 | `orientation.py` | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | `plotting.py` | Comparison-figure plotting. `plot_render_vs_basemap` is the "A"-style geometry check: a render's own raw pixels next to a plain crop of the hillshade basemap covering the same real footprint (no resampling, no rotation on the basemap side -- its local Orthographic CRS is already north-referenced), both optionally marked with the same SPICE-derived tie points. `plot_overlay` is the "B"-style check: two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) displayed via `rioxarray`, using each file's own real coordinates rather than pixel indices -- expects `overlay_raster_path` to already cover just the real footprint being compared (true for both the synthetic render's own mapproject and `isis_wac.crop_for_camera`'s output), no view-restricting parameter needed. `plot_isis_comparison` is the direct candidate-vs-candidate comparison (brightness-matched, dead-pixel-filled). |
 | `session.py` | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
@@ -94,6 +94,49 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   regression there (>100 candidates each triggering their own uncached ISIS pipeline run). See
   `docs/history.md`'s dated entry for the full investigation,
   including the real, decisive empirical tests that overturned the original diagnosis.
+- **Resolved**: Phase 6A's real WAC crop appeared systematically misaligned from its own tie points
+  (real features consistently south of their matching marker). Root cause: `tie_points.py`'s crop-
+  side pixel projection (`project_ground_to_crop_pixel`, now deprecated) was a hand-rolled SPICE
+  frame-index bisection, entirely decoupled from whatever pipeline actually produced the crop's real
+  pixels -- confirmed live, on this project's real default candidate, to disagree with the crop's
+  actual embedded camera model by ~92-96px (out of 994 total lines, ~10%, along-track), and 2 of the
+  5 SPICE-chosen die5 points weren't even visible to the real camera at all. Fixed by switching the
+  crop-side projection to a genuine ISIS `campt` ground-to-image query (`tie_points.
+  resolve_crop_pixels`/`isis_wac.ground_to_image_pixel`) against the real, already-produced crop
+  cube. Generalized the camera-model choice into `isis_wac.resolve_ground_to_image_model`, following
+  the same resolution order 6B's `cam2map` switch already established: try a CSM ISD sidecar first,
+  fall back to the crop's native, SPICE-embedded model only if the ISD resolves to a Pushframe
+  sensor (the class `usgscsm`'s `groundToImage` is known unreliable for) -- derived from a real ISD
+  each call, not hardcoded, so it stays correct if this pipeline is ever pointed at a non-Pushframe
+  instrument. Point *selection* (`select_tie_points`, still SPICE-approximate) is unaffected; a
+  selected point the real camera doesn't see is now dropped with a warning rather than crashing the
+  notebook. Phase 5's synthetic-image tie points are untouched -- that projection is already exact
+  (the same fixed pose that rendered the image), not an approximation of some other camera model, so
+  there was no discrepancy to fix there. See `docs/history.md`'s dated entry for the full
+  investigation, including the real pixel-offset numbers and why Phase 5 was deliberately left out
+  of this pass.
+- **Resolved**: the item just above's "Phase 5 was deliberately left out" turned out to have its own
+  real bug, found while debugging why the WAC crop's own real map-projected footprint didn't roughly
+  match the synthetic render's footprint (as it should, both being TRN candidates for the same real
+  ground area) -- they disagreed by ~11-15% in extent, and the exact "center" point by ~6-12km.
+  Root cause: `build_camera()`'s synthetic-camera boresight trusted `spice.pxform`'s raw `[0,0,1]`
+  directly, but that's confirmed measurably not WAC-VIS's real optical boresight (~5-6 degree real,
+  roughly frame-constant angular offset -- not a timing or line-selection artifact, and not
+  reproducible from any SPICE-visible kernel data, including the IAK). A first fix attempt (a
+  constant correction rotation, empirically fit via a Wahba/Kabsch cross-check) was fully built,
+  tested, and then found live-invalid: the correction came out ~identity by construction, since that
+  same Wahba fit had already proven the *attitude* (rotation matrix) exactly correct -- the real bug
+  was never the rotation, it was that `[0,0,1]` isn't any real pixel's actual look direction in a way
+  a rotation can fix without being a no-op. Reverted cleanly. The real fix: `build_camera()` now runs
+  the real WAC pipeline (`isis_wac.run_pipeline`, refactored to take `flip: bool` directly instead of
+  a `Camera`, to break the resulting circular data dependency, and made idempotent so it's safe to
+  call again later, e.g. by Phase 6's own explicit call) and re-aims the boresight (`camera.
+  look_at_rotation`) at the real, ISIS-determined ground point at the crop's true center pixel
+  (`isis_wac.ground_point_at_pixel`) -- camera *position* is untouched, already proven exact. A real
+  ~10-20s cost added to `build_camera()`, traded deliberately for actual accuracy. Live-validated:
+  0.000km residual on two different real candidates; Phase 5A's synthetic-vs-basemap alignment
+  visibly excellent post-fix. See `docs/history.md`'s dated entry for the full investigation,
+  including exactly why the first (reverted) fix attempt couldn't have worked.
 - **Resolved**: the stripe/crosshatch artifact reported in the synthetic render (worse in
   darker/shadowed areas, sometimes crosshatched). Root cause turned out to be **Lunaserv's DTM WMS
   layer itself**, not the float32-quantization theory this item originally proposed (tested directly
@@ -160,6 +203,16 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   `plot_overlay(show_overlay_outline=True)` traces the overlay raster's real (non-NaN) footprint and
   draws it as a vector boundary. A vector *data* layer (e.g. the Robbins crater database) on top of
   this raster overlay is still a possible future extension, not yet implemented.
+- **Open, future enhancement: `select_tie_points`'s die5 point-selection footprint is still the
+  SPICE approximation, and its drop rate under `resolve_crop_pixels` looks consistently high, not
+  occasional.** Two real candidates tried since the crop-side projection fix (above) dropped 2 of 5
+  and 3 of 5 points respectively (the real camera doesn't see them at all under its own actual
+  geometry). The projection fix itself is solid — this is specifically about which candidate points
+  get chosen in the first place. A natural fix: derive the shared footprint from a real `campt`
+  image-to-ground query at the crop's own 4 corners (the reverse direction of `ground_to_image_pixel`)
+  instead of `crop_footprint_corners`'s SPICE ray-trace, so points are chosen from where the real
+  camera actually looks. Not implemented — kept out of scope for the crop-side *projection* fix this
+  item followed from. See `docs/history.md`'s dated entry.
 
 ## Development history
 

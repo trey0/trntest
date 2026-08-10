@@ -25,7 +25,7 @@ from trntest.orientation import DisplayRotations, compute_display_rotations
 from trntest.render import RenderResult, read_csm_state, run_sat_sim
 from trntest.session import Session
 from trntest.spice_kernels import fetch_and_furnish
-from trntest.tie_points import compute_tie_points
+from trntest.tie_points import resolve_crop_pixels, select_tie_points
 from trntest.wac import fetch_vis_mosaic
 
 __all__ = [
@@ -44,7 +44,8 @@ __all__ = [
     "fetch_frame_timing",
     "fetch_dem_and_ortho",
     "fetch_vis_mosaic",
-    "compute_tie_points",
+    "select_tie_points",
+    "resolve_crop_pixels",
     "compute_display_rotations",
     "run_sat_sim",
     "read_csm_state",

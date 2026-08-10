@@ -60,9 +60,9 @@ class Session:
     def fetch_frame_timing(self) -> FrameTiming:
         return camera.fetch_frame_timing(config=self.config)
 
-    @_inherit_doc(tie_points.compute_tie_points)
-    def compute_tie_points(self, camera: Camera, frame_timing: FrameTiming) -> dict:
-        return tie_points.compute_tie_points(frame_timing, camera, config=self.config)
+    @_inherit_doc(tie_points.select_tie_points)
+    def select_tie_points(self, camera: Camera, frame_timing: FrameTiming) -> dict:
+        return tie_points.select_tie_points(frame_timing, camera, config=self.config)
 
     @_inherit_doc(orientation.compute_display_rotations)
     def compute_display_rotations(self, camera: Camera, frame_timing: FrameTiming) -> DisplayRotations:

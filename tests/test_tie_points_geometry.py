@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from trntest import tie_points
+from trntest import isis_wac, tie_points
 
 
 def test_intersect_bbox_overlapping():
@@ -54,3 +56,41 @@ def test_inscribed_bbox_shrinks_for_skewed_quadrilateral():
     lon_min, lon_max, lat_min, lat_max = bbox
     assert lon_max - lon_min < 10.0
     assert lat_max - lat_min < 10.0
+
+
+_FAKE_MODEL = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+
+
+def test_resolve_crop_pixels_merges_successful_points_with_isis_convention_offset(monkeypatch):
+    points = {"center": {"lonlat": (10.0, 20.0), "synthetic_px": (5.0, 6.0)}}
+    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: (100.0, 50.0))
+
+    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+
+    assert resolved["center"]["synthetic_px"] == (5.0, 6.0)  # other fields preserved
+    assert resolved["center"]["crop_px"] == (99.5, 49.5)  # ISIS's 1-based Sample/Line -> 0-based corner
+
+
+def test_resolve_crop_pixels_drops_points_that_dont_project(monkeypatch, capsys):
+    points = {
+        "top_left": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)},
+        "center": {"lonlat": (2.0, 2.0), "synthetic_px": (1.0, 1.0)},
+    }
+
+    def fake_ground_to_image_pixel(model, lon, lat):
+        return None if lon == 1.0 else (10.0, 10.0)
+
+    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", fake_ground_to_image_pixel)
+
+    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+
+    assert set(resolved) == {"center"}
+    assert "top_left" in capsys.readouterr().out
+
+
+def test_resolve_crop_pixels_raises_if_none_resolve(monkeypatch):
+    points = {"center": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)}}
+    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: None)
+
+    with pytest.raises(RuntimeError):
+        tie_points.resolve_crop_pixels(points, _FAKE_MODEL)

@@ -141,6 +141,21 @@ def frame_et(frame_timing: FrameTiming, frame_index: float) -> float:
     return et0 + frame_index * frame_timing.interframe_delay_s
 
 
+def off_nadir_and_slant_range(c_km: np.ndarray, boresight_me: np.ndarray) -> tuple[float, float]:
+    """off_nadir_deg (angle between `boresight_me` and local nadir) and slant_range_km (distance
+    from `c_km` to where `boresight_me` hits the Moon) -- shared by `camera_pose_moon_me` (boresight
+    = the nominal `LRO_LROCWAC_VIS` frame's raw Z axis) and `build_camera`'s re-aimed boresight (see
+    its docstring) with whatever boresight direction the caller actually used."""
+    nadir = -c_km / np.linalg.norm(c_km)
+    off_nadir_deg = np.degrees(np.arccos(np.clip(np.dot(boresight_me, nadir), -1, 1)))
+    slant_range_km = ray_sphere_intersect_range(c_km, boresight_me)
+    # A camera actually looking at the Moon (as this demo's near-nadir poses always are) always
+    # hits the sphere along its own boresight; None here would mean the boresight points away from
+    # the Moon entirely, which would indicate a real upstream pose bug worth failing loudly on.
+    assert slant_range_km is not None, "camera boresight does not intersect the Moon -- pose is not looking at it"
+    return off_nadir_deg, slant_range_km
+
+
 def camera_pose_moon_me(et: float):
     """Return (C_meters, R_cam_to_moon_me, slant_range_km) for the WAC VIS channel at time et."""
     state, _ = spice.spkezr("LRO", et, "MOON_ME", "NONE", "MOON")
@@ -148,15 +163,23 @@ def camera_pose_moon_me(et: float):
     r_cam_to_me = np.array(spice.pxform("LRO_LROCWAC_VIS", "MOON_ME", et))
 
     boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
-    nadir = -c_km / np.linalg.norm(c_km)
-    off_nadir_deg = np.degrees(np.arccos(np.clip(np.dot(boresight_me, nadir), -1, 1)))
-
-    slant_range_km = ray_sphere_intersect_range(c_km, boresight_me)
-    # A camera actually looking at the Moon (as this demo's near-nadir poses always are) always
-    # hits the sphere along its own boresight; None here would mean the boresight points away from
-    # the Moon entirely, which would indicate a real upstream pose bug worth failing loudly on.
-    assert slant_range_km is not None, "camera boresight does not intersect the Moon -- pose is not looking at it"
+    off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_km, boresight_me)
     return c_km * 1000.0, r_cam_to_me, slant_range_km, off_nadir_deg
+
+
+def look_at_rotation(boresight_me: np.ndarray, reference_r_cam_to_me: np.ndarray) -> np.ndarray:
+    """Builds a new R_cam_to_me whose Z axis is exactly `boresight_me` (a unit vector, MOON_ME
+    frame), with X/Y axes derived from `reference_r_cam_to_me`'s own X axis via Gram-Schmidt
+    orthogonalization against the new boresight. Used by `build_camera` to re-aim the synthetic
+    camera at a real, ISIS-determined target ground point (see its docstring) while keeping the
+    camera's roll close to its original SPICE attitude -- changes only which direction it points,
+    not how it's rolled around that direction."""
+    z = boresight_me / np.linalg.norm(boresight_me)
+    x_ref = reference_r_cam_to_me[:, 0]
+    x = x_ref - np.dot(x_ref, z) * z
+    x = x / np.linalg.norm(x)
+    y = np.cross(z, x)
+    return np.column_stack([x, y, z])
 
 
 def rotation_about_boresight(k: int) -> np.ndarray:
@@ -305,7 +328,28 @@ def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
 
 def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Path | None = None) -> Camera:
     """Fetch the target frame's timing, pose the camera from real SPICE trajectory data, and write
-    the resulting `.tsai` Pinhole camera file."""
+    the resulting `.tsai` Pinhole camera file.
+
+    **Boresight re-aiming**: the raw SPICE pose (`camera_pose_moon_me`, boresight = the nominal
+    `LRO_LROCWAC_VIS` frame's Z axis) is *not* used directly as the synthetic camera's final
+    attitude -- confirmed live (see docs/history.md's dated entry) that `[0, 0, 1]` in that frame is
+    measurably not WAC-VIS's real optical boresight (a roughly constant ~5-6 degree real angular
+    offset, persisting across a wide line range and two very different candidates -- i.e. not a
+    timing/line-selection error, and not fixable by a constant rotation correction either: a
+    Wahba-fit cross-check confirmed the *attitude* -- the full rotation matrix -- is already exactly
+    correct, so no rotation exists that's both consistent with that and changes where `[0,0,1]`
+    points without being a no-op). So instead: run the real WAC pipeline (`isis_wac.run_pipeline`,
+    idempotent -- shares its output with Phase 6's own explicit call for the same product, no
+    duplicated ISIS work) to get a real, camera-model-aware stitched cube, query ISIS's own real
+    camera model (`isis_wac.ground_point_at_pixel`) for the real ground point at the crop's own true
+    center pixel (`center_frame_index * VIS_BLOCK_HEIGHT` -- exactly `isis_wac.crop_window_for_camera`'s
+    own window-center line, so this matches wherever the eventual displayed crop actually centers,
+    regardless of `flip`/`camera.reverse_crop_along_track` -- window *boundaries* are computed the
+    same translation-based way regardless of flip; flip only reorders *content* within them), and
+    re-aims the boresight at that real target via `look_at_rotation`. A real, meaningful cost
+    (~10-20s, the `lrowaccal`+`framestitch` steps `spice_kernels.fetch_and_furnish`'s default kernel
+    resolution doesn't already pay for) traded for actual accuracy -- see the dated entry for the
+    full investigation and why a hand-tuned constant-tilt "fix" doesn't work."""
     config = config or load_config()
     frame_timing = fetch_frame_timing(config)
     spice_kernels.fetch_and_furnish(frame_timing.start_time, config)
@@ -319,13 +363,26 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     center_frame_index = config.target_frame_index + crop_info["n_frames_for_square_crop"] / 2.0
     et = frame_et(frame_timing, center_frame_index)
 
-    c_meters, r_cam_to_me_raw, slant_range_km, off_nadir_deg = camera_pose_moon_me(et)
+    c_meters, r_cam_to_me_raw, _, _ = camera_pose_moon_me(et)
     # Apply the sensor-model axis convention (see `boresight_rotation_k`'s docstring above) -- this
     # only relabels px/py against the (unchanged) boresight, it doesn't move the camera. k is
-    # measured fresh from this pose's real ground-track direction, not a fixed constant.
+    # measured fresh from this pose's real ground-track direction, not a fixed constant. Uses the
+    # raw (not yet re-aimed) pose -- k is a discrete choice between 2 axis conventions, not
+    # sensitive to the ~5-6 degree re-aiming correction below.
     forward_step_km = ground_track_step_km(frame_timing, center_frame_index)
     k = boresight_rotation_k(r_cam_to_me_raw, forward_step_km)
-    r_cam_to_me = r_cam_to_me_raw @ rotation_about_boresight(k)
+
+    from trntest import isis_wac  # noqa: PLC0415 -- circular otherwise (isis_wac imports Camera/FrameTiming)
+
+    stitched = isis_wac.run_pipeline(k == _REVERSED_TIME_K, frame_timing, config)
+    center_line = center_frame_index * isis_wac.VIS_BLOCK_HEIGHT
+    target_lon, target_lat = isis_wac.ground_point_at_pixel(stitched.cub_path, isis_wac.SAMPLES / 2.0, center_line)
+    target_ground_km = np.array(spice.latrec(config.moon_radius_km, np.radians(target_lon), np.radians(target_lat)))
+    boresight_me = target_ground_km - c_meters / 1000.0
+    boresight_me = boresight_me / np.linalg.norm(boresight_me)
+    off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
+
+    r_cam_to_me = look_at_rotation(boresight_me, r_cam_to_me_raw) @ rotation_about_boresight(k)
 
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     fu = fv = (config.image_size / 2.0) / np.tan(half_angle_rad)

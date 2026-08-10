@@ -17,6 +17,37 @@ def test_rotation_about_boresight_90deg_preserves_z():
     np.testing.assert_allclose(r @ np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), atol=1e-12)
 
 
+def test_look_at_rotation_boresight_matches_target_exactly():
+    reference = np.eye(3)
+    target = np.array([1.0, 2.0, 3.0])
+    r = camera.look_at_rotation(target, reference)
+    np.testing.assert_allclose(r[:, 2], target / np.linalg.norm(target), atol=1e-12)
+
+
+def test_look_at_rotation_is_a_valid_rotation():
+    reference = camera.rotation_about_boresight(1)  # some nontrivial reference frame
+    target = np.array([0.2, -0.5, 0.9])
+    r = camera.look_at_rotation(target, reference)
+    np.testing.assert_allclose(r.T @ r, np.eye(3), atol=1e-10)
+    assert np.linalg.det(r) == pytest.approx(1.0, abs=1e-10)
+
+
+def test_look_at_rotation_close_to_reference_boresight_is_near_identity_change():
+    # Re-aiming at (nearly) the reference's own boresight should barely change the X/Y axes.
+    reference = np.eye(3)
+    target = np.array([1e-6, 1e-6, 1.0])
+    r = camera.look_at_rotation(target, reference)
+    np.testing.assert_allclose(r[:, 0], reference[:, 0], atol=1e-4)
+
+
+def test_off_nadir_and_slant_range_nadir_pointing():
+    c_km = np.array([0.0, 0.0, 3000.0])
+    boresight_me = np.array([0.0, 0.0, -1.0])
+    off_nadir_deg, slant_range_km = camera.off_nadir_and_slant_range(c_km, boresight_me)
+    assert off_nadir_deg == pytest.approx(0.0, abs=1e-9)
+    assert slant_range_km == pytest.approx(3000.0 - 1737.4)
+
+
 def test_ray_sphere_intersect_range_hits_sphere():
     origin = np.array([0.0, 0.0, 3000.0])
     direction = np.array([0.0, 0.0, -1.0])
