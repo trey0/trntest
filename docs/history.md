@@ -1977,3 +1977,69 @@ used the same kind of comparison (`tie_points.crop_footprint_corners_for_camera`
 almost exactly that magnitude, independent of the CK-kernel question Phase 27 chased. Not
 re-verified against that exact original scenario, so stated as a plausible connection, not a closed
 loop.
+
+## Phase 30 (2026-08-10) — Fixed the die5 tie-point drop rate: real crop footprint corners, and a real campt edge instability
+
+Follow-up to Phase 28's open item: the user noticed Phase 6A's bottom two tie points were "off-map"
+(missing from the display) in the live demo notebook — exactly the drop-rate issue Phase 28 flagged
+and deliberately left out of scope.
+
+**Root cause, layer 1**: `select_tie_points`'s die5 point-selection footprint (`crop_footprint_corners`)
+was still the deprecated SPICE-only ray-trace approximation, never revisited since Phase 28. Given
+Phase 29's fix made the real WAC pipeline (`isis_wac.run_pipeline`) run unconditionally inside
+`camera.build_camera()`, the "expensive ISIS pipeline" excuse for keeping this approximate no longer
+held — by the time `select_tie_points`/`orientation.compute_display_rotations`/`dataset.
+generate_dataset` run, the stitched cube already exists. Replaced `crop_footprint_corners` with
+`crop_footprint_corners_for_camera` querying the real crop's actual footprint directly via `campt`
+image-to-ground (`isis_wac.ground_point_at_pixel`, the reverse of `ground_to_image_pixel`) — the old
+function renamed to `_crop_footprint_corners_spice_approx` and kept for reference, matching this
+project's established deprecation convention.
+
+**First attempt at the real footprint query used the *stitched* (uncropped) cube's window
+boundaries** (`isis_wac.crop_window_for_camera`'s corners) — live-tested, and still dropped the same
+2 of 5 points. Diagnosed directly: `campt` extrapolates cheerfully far beyond the stitched cube's own
+declared line range (confirmed separately resolving well past line 1000 on a ~3600-line cube), but
+the *cropped* cube's own cached SPICE table doesn't support anywhere near that much extrapolation —
+querying a die5 point placed with a 10% safety margin inside the resulting "shared footprint" still
+hit `**ERROR** ... no surface intersection` against the real crop. The stitched cube was answering a
+question ("where would this line project if it existed") the cropped cube couldn't back up.
+
+**Second attempt: query the cropped cube's own exact first/last pixel** (`sample`/`line` = 1 and
+`SAMPLES`/height, ISIS's 1-based convention) instead. Still dropped the same 2 points — this time
+`**ERROR** ... not inside cube`, a *different* failure than before. A direct round-trip test isolated
+why: `campt`'s image-to-ground query at the cropped cube's exact edge pixel (1,1) succeeds and
+returns a real lon/lat — but a ground-to-image query at that *exact same* resulting lon/lat then
+fails ("not inside cube"). Tested insets of 1/2/5/10/20 pixels from the edge: 1/2/5px all failed the
+same way, 10px and 20px succeeded cleanly. This is a real numerical-convergence limitation in
+`campt`'s own ground-to-image solver within roughly 5-10px of a cropped cube's edge — not a flaw in
+this project's own footprint math, and not something discovered by assumption: found by directly
+round-tripping a real query and bisecting the margin empirically, the same "verify, don't assume"
+practice that caught the reverted boresight-correction attempt in Phase 29.
+
+**Fix**: `crop_footprint_corners_for_camera` now queries the cropped cube's own corners inset by a
+new `_CROP_EDGE_MARGIN_PX = 20` (double the empirically-found safe threshold, for margin). Live
+validated on the real default candidate: **5 of 5 die5 tie points now resolve** (was 2-3 of 5),
+confirmed both numerically and visually — Phase 6A's real WAC crop and hillshade basemap panels now
+show all 5 markers, correctly landing on matching craters in both, including the two that were
+previously missing entirely.
+
+**Also found and fixed in passing**: `isis_wac.crop_for_camera` (the ISIS `crop` app call) wasn't
+idempotent — `crop_footprint_corners_for_camera` now calls it once before Phase 6's own explicit
+call reaches it for the same product, and ISIS's `crop`, like `lrowac2isis`/`framestitch`, refuses to
+overwrite an existing output. Added the same existence-check guard `isis_wac.run_pipeline` already
+uses.
+
+**A distinct, separate residual limitation, deliberately not fixed here**: re-testing against a
+second, far more extreme near-polar candidate (~-81 to -83° latitude — the same one used throughout
+Phase 29's validation) still drops points, with a genuinely different error (`no surface
+intersection`, not an edge-margin issue). This project's die5 point-selection machinery
+(`inscribed_bbox`, `intersect_bbox`, `die5_points`) works entirely in axis-aligned lon/lat rectangles
+— a reasonable approximation at mid-latitudes, but one that breaks down this close to a pole, where a
+degree of longitude corresponds to a rapidly shrinking real ground distance and a "rectangle" in
+lon/lat space is a badly distorted shape on the actual sphere. Out of scope for this pass (the
+reported bug was about the live demo's actual mid-latitude candidate, now fully fixed); noted in
+`docs/plan.md` as a known, distinct limitation rather than silently left unmentioned.
+
+Verified: 118 passing tests (new: `crop_footprint_corners_for_camera`'s inset-margin logic, mocked),
+`trntest-lint` clean, full notebook re-run via `scripts/run_notebook.sh`, and direct visual
+confirmation of Phase 6A showing all 5 tie points correctly placed.

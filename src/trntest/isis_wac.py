@@ -468,19 +468,25 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
     `lrowaccal` (already run before this, in `run_pipeline`) explicitly refuses to run on a cropped
     cube ("USER ERROR: This application can not be run on any image that has been geometrically
     transformed ... or cropped") -- confirmed empirically -- so cropping must happen after
-    calibration/`framestitch`, on `stitched`, not earlier in the pipeline."""
+    calibration/`framestitch`, on `stitched`, not earlier in the pipeline.
+
+    Idempotent (matching `run_pipeline`'s pattern): reuses the file on disk if it already exists --
+    `crop_footprint_corners_for_camera` and the notebook's own Phase 6 cell both reach this for the
+    same product, and ISIS's `crop` app, like `lrowac2isis`/`framestitch`, refuses to overwrite an
+    existing `to=` output."""
     config = config or load_config()
     window = crop_window_for_camera(camera)
     out_path = stitched.cub_path.with_name(stitched.cub_path.stem + ".crop.cub")
-    run_quiet(
-        [
-            "crop",
-            f"from={stitched.cub_path}",
-            f"to={out_path}",
-            f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
-            f"nlines={window.height}",
-        ]
-    )
+    if not out_path.exists():
+        run_quiet(
+            [
+                "crop",
+                f"from={stitched.cub_path}",
+                f"to={out_path}",
+                f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
+                f"nlines={window.height}",
+            ]
+        )
     return CropResult(cub_path=out_path)
 
 

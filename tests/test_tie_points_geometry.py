@@ -1,8 +1,11 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from trntest import isis_wac, tie_points
+from trntest.camera import Camera
+from trntest.config import TrntestConfig
 
 
 def test_intersect_bbox_overlapping():
@@ -94,3 +97,48 @@ def test_resolve_crop_pixels_raises_if_none_resolve(monkeypatch):
 
     with pytest.raises(RuntimeError):
         tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+
+
+def _fake_camera(n_frames_for_square_crop: int, reverse: bool) -> Camera:
+    return Camera(
+        et=0.0,
+        center_frame_index=100.0,
+        camera_center_moon_me_m=[0.0, 0.0, 0.0],
+        r_cam_to_me=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        boresight_rotation_k=3 if reverse else 1,
+        slant_range_km=100.0,
+        off_nadir_deg=5.0,
+        focal_length_px=700.0,
+        footprint_lonlat_deg={},
+        cross_track_width_km=140.0,
+        km_per_frame=0.2,
+        n_frames_for_square_crop=n_frames_for_square_crop,
+        tsai_path=Path("/fake/camera.tsai"),
+    )
+
+
+def test_crop_footprint_corners_for_camera_queries_inset_from_edges(monkeypatch):
+    camera = _fake_camera(n_frames_for_square_crop=10, reverse=False)
+    height = camera.n_frames_for_square_crop * isis_wac.VIS_BLOCK_HEIGHT  # 140
+    margin = tie_points._CROP_EDGE_MARGIN_PX
+
+    queried = []
+
+    def fake_ground_point_at_pixel(cub_path, sample, line):
+        queried.append((sample, line))
+        return (sample, line)  # stand-in, just need to see what was queried
+
+    fake_crop = isis_wac.CropResult(cub_path=Path("/fake/crop.cub"))
+    with patch.object(isis_wac, "run_pipeline", return_value="fake-stitched"):
+        with patch.object(isis_wac, "crop_for_camera", return_value=fake_crop):
+            monkeypatch.setattr(isis_wac, "ground_point_at_pixel", fake_ground_point_at_pixel)
+            result = tie_points.crop_footprint_corners_for_camera(
+                frame_timing=None, camera=camera, config=TrntestConfig()
+            )
+
+    assert result["top_left"] == (1 + margin, 1 + margin)
+    assert result["top_right"] == (isis_wac.SAMPLES - margin, 1 + margin)
+    assert result["bottom_left"] == (1 + margin, height - margin)
+    assert result["bottom_right"] == (isis_wac.SAMPLES - margin, height - margin)
+    assert result["center"] == (isis_wac.SAMPLES / 2.0, height / 2.0)
+    assert len(queried) == 5

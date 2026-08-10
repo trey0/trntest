@@ -76,11 +76,9 @@ def compute_display_rotations(
     """For each image (synthetic render, real WAC CDR crop) independently, pick the multiple of 90
     degrees whose on-screen "up" is closest to true north -- for display only, see module docstring."""
     config = config or load_config()
-    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
-    n_frames = camera.n_frames_for_square_crop
 
     _, r_crop_raw, _, _ = camera_pose_moon_me(frame_et(frame_timing, camera.center_frame_index))
-    crop_corners = tie_points.crop_footprint_corners(frame_timing, config.target_frame_index, n_frames, half_angle_rad)
+    crop_corners = tie_points.crop_footprint_corners_for_camera(frame_timing, camera, config)
 
     r_synthetic = np.array(camera.r_cam_to_me)
     synthetic_center = camera.footprint_lonlat_deg["center"]

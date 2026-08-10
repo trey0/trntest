@@ -67,10 +67,13 @@ def lonlat_to_ground_km(lon_deg: float, lat_deg: float, moon_radius_km: float = 
     return np.array(spice.latrec(moon_radius_km, np.radians(lon_deg), np.radians(lat_deg)))
 
 
-def crop_footprint_corners(
+def _crop_footprint_corners_spice_approx(
     frame_timing: FrameTiming, start_frame: float, n_frames: float, half_angle_rad: float
 ) -> dict:
-    """The real CDR crop's own ground footprint: ray-trace +/- half-angle along the camera's
+    """**Deprecated** -- superseded by `crop_footprint_corners_for_camera`'s real `campt`-based
+    footprint (see its docstring for why). Kept for reference/comparison only.
+
+    The real CDR crop's own ground footprint: ray-trace +/- half-angle along the camera's
     cross-track (Y) axis at the crop's first frame (top) and last frame (bottom)."""
 
     def cross_track_ground(frame_index: float, sign: float) -> tuple:
@@ -103,18 +106,64 @@ def crop_footprint_corners(
     }
 
 
+# campt's own ground-to-image solve is confirmed, live, not to round-trip reliably within this many
+# pixels of a cropped WAC cube's own edge -- image-to-ground at the cube's declared first/last pixel
+# succeeds, but a ground-to-image query at that *exact* resulting lon/lat fails ("not inside cube");
+# insets of 1/2/5px still failed the same way, 10/20px didn't. Used by
+# crop_footprint_corners_for_camera below to keep its corner queries (and therefore anything placed
+# near them, e.g. select_tie_points' die5 candidates) inside campt's own numerically stable region,
+# not just the cube's nominal declared extent.
+_CROP_EDGE_MARGIN_PX = 20
+
+
 def crop_footprint_corners_for_camera(
     frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None
 ) -> dict:
-    """Convenience wrapper around `crop_footprint_corners` for the common case (the real WAC crop's
-    own footprint for a given camera/config) -- unpacks `start_frame`/`n_frames`/`half_angle_rad` the
-    same way `select_tie_points` already does, so callers (e.g. `plotting.plot_render_vs_basemap`)
-    don't need to re-derive them."""
+    """The real WAC crop's own real ground footprint -- queried directly via ISIS's own camera
+    model (`campt` image-to-ground, `isis_wac.ground_point_at_pixel`) at the actual cropped cube's
+    own pixels, `_CROP_EDGE_MARGIN_PX` in from each edge, not the deprecated
+    `_crop_footprint_corners_spice_approx`'s SPICE ray-trace.
+
+    **Queries the cropped cube (`isis_wac.crop_for_camera`'s output), not the full stitched one, and
+    not the cube's exact edge pixels either** -- both confirmed live to be real problems, not
+    theoretical ones. The stitched cube: `campt` extrapolates cheerfully far beyond its own declared
+    extent (confirmed separately, e.g. resolving well past line 1000 on a ~3600-line cube), so a
+    footprint computed from it can claim coverage the actual *cropped* cube doesn't have -- querying
+    even a die5 point placed with a 10% safety margin inside the resulting shared footprint still
+    hit "no surface intersection" against the real crop. Switching to the cropped cube's own exact
+    first/last pixel (`sample`/`line` = 1 and `SAMPLES`/height) didn't fully fix it either: a direct
+    round-trip test found `campt`'s own ground-to-image solve doesn't reliably converge within
+    `_CROP_EDGE_MARGIN_PX` pixels of the cropped cube's edge (image-to-ground at the exact edge
+    pixel succeeds; ground-to-image at that *same* resulting lon/lat then fails) -- an edge-region
+    numerical limitation in the tool itself, not a flaw in this project's own footprint math.
+
+    Requires both the real WAC pipeline (`isis_wac.run_pipeline`) and the actual crop
+    (`isis_wac.crop_for_camera`) -- but by the time this is called (from `select_tie_points`/
+    `orientation.compute_display_rotations`/`dataset.generate_dataset`, all of which run after
+    `camera.build_camera()`, which already runs `run_pipeline` internally to re-aim the synthetic
+    boresight -- see that function's docstring), the stitched cube already exists (fast, idempotent
+    reuse); `crop_for_camera` is a genuinely new but cheap (plain ISIS `crop`, no camera-model work)
+    call the first time, then idempotently reused by Phase 6's own explicit call for the same
+    product.
+
+    See docs/history.md's dated entry for the full investigation, including the original
+    ~11-15%-of-extent disagreement with the SPICE-only ray-trace this replaced."""
     config = config or load_config()
-    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
-    return crop_footprint_corners(
-        frame_timing, config.target_frame_index, camera.n_frames_for_square_crop, half_angle_rad
-    )
+    stitched = isis_wac.run_pipeline(camera.reverse_crop_along_track, frame_timing, config)
+    crop = isis_wac.crop_for_camera(stitched, camera, config)
+    height = camera.n_frames_for_square_crop * isis_wac.VIS_BLOCK_HEIGHT
+    m = _CROP_EDGE_MARGIN_PX
+
+    def real_ground(sample: float, line: float) -> tuple:
+        return isis_wac.ground_point_at_pixel(crop.cub_path, sample, line)
+
+    return {
+        "top_left": real_ground(1 + m, 1 + m),
+        "top_right": real_ground(isis_wac.SAMPLES - m, 1 + m),
+        "bottom_right": real_ground(isis_wac.SAMPLES - m, height - m),
+        "bottom_left": real_ground(1 + m, height - m),
+        "center": real_ground(isis_wac.SAMPLES / 2.0, height / 2.0),
+    }
 
 
 def project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv) -> tuple:
@@ -271,16 +320,16 @@ def die5_points(bbox: tuple, margin_frac: float = 0.1) -> dict:
 
 def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None) -> dict:
     """Pick 5 real ground points visible in both images (die's-5 pattern -- see this module's
-    docstring) and project each into the synthetic image's exact pixel coordinates. Doesn't need the
-    real WAC crop cube to exist yet -- only `crop_footprint_corners`'s SPICE-approximate footprint,
-    used solely to pick plausible candidate points, not to place them (see this module's docstring
-    for why that distinction matters). Call `resolve_crop_pixels` once the real crop exists
-    (`isis_wac.crop_for_camera`'s output) to fill in each point's real `crop_px`.
+    docstring) and project each into the synthetic image's exact pixel coordinates. Requires the
+    real WAC crop cube to exist (via `crop_footprint_corners_for_camera`'s real `campt`-based
+    footprint, used to pick plausible candidate points, not yet to place them) -- true by the time
+    this is called in practice, since `camera.build_camera()` already ran the real WAC pipeline
+    internally (see its docstring), so this doesn't add new expensive ISIS work. Call
+    `resolve_crop_pixels` once the real crop is cropped (`isis_wac.crop_for_camera`'s output) to
+    fill in each point's real `crop_px`.
 
     Returns {name: {"lonlat": (lon, lat), "synthetic_px": (px, py)}} -- no "crop_px" yet."""
     config = config or load_config()
-    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
-    n_frames = camera.n_frames_for_square_crop
 
     # Use the exact (already boresight-rotated, per the fixed sensor-model convention) C/R that
     # build_camera() wrote into the .tsai -- not a fresh, unrotated camera_pose_moon_me() call.
@@ -290,7 +339,7 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
     cu = cv = config.image_size / 2.0
 
     synthetic_corners = camera.footprint_lonlat_deg
-    crop_corners = crop_footprint_corners(frame_timing, config.target_frame_index, n_frames, half_angle_rad)
+    crop_corners = crop_footprint_corners_for_camera(frame_timing, camera, config)
 
     synthetic_center = synthetic_corners["center"]
     assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
