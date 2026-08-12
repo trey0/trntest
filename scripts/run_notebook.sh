@@ -32,6 +32,13 @@
 # checked-in `.py` (generated before execution) never has, so left alone it's a spurious notebook-
 # sync failure on every single run. `metadata.execution` isn't touched, so the timing report above
 # still works after stripping it.
+#
+# --cwd (the notebook's own directory, e.g. notebooks/) matches a live JupyterLab kernel's default
+# working directory -- without it, papermill's kernel inherits this whole invocation's cwd (the
+# Docker service's own `working_dir: /workspace`, i.e. the repo root), silently breaking any
+# notebook that reads/writes a file via a plain relative path (e.g. image_generation.ipynb's
+# `dataset_manifest.csv`, which works fine opened live in JupyterLab but raised a real
+# FileNotFoundError here before this flag was added).
 
 set -e
 
@@ -58,6 +65,7 @@ docker compose -f docker/docker-compose.yml run --rm demo bash -c "
     mkdir -p '$LOG_DIR'
     [ -f '$LATEST_LOG' ] && cp '$LATEST_LOG' '$PREVIOUS_LOG'
     papermill '$NOTEBOOK_IPYNB' '$NOTEBOOK_IPYNB' --log-output --no-progress-bar \
+        --cwd '$(dirname "$NOTEBOOK_IPYNB")' \
         --request-save-on-cell-execute --autosave-cell-every 30 2>&1 | tee '$LOG_FILE'
     python3 scripts/strip_papermill_metadata.py '$NOTEBOOK_IPYNB'
     python3 scripts/notebook_timing_report.py '$NOTEBOOK_IPYNB' 2>&1 | tee -a '$LOG_FILE'
