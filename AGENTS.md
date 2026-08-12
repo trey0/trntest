@@ -43,8 +43,8 @@ this file). Then, as needed:
   README) before committing Python changes — `git config core.hooksPath githooks` wires this up as
   a pre-commit hook automatically. `cache/`/`output/` live outside this repo entirely (siblings of
   the outer workspace's `src/`, not inside this checkout).
-- When validating a change by running the notebook end-to-end, run `scripts/run_notebook.sh
-  notebooks/lunar_sat_sim_demo.py` — it regenerates `notebooks/lunar_sat_sim_demo.ipynb` from the
+- When validating a change by running a notebook end-to-end, run `scripts/run_notebook.sh
+  notebooks/<name>.py` — it regenerates `notebooks/<name>.ipynb` from the
   tracked `.py` source and re-executes it in place (via `papermill --log-output`, not a bare
   `jupyter nbconvert --execute` — streams live cell-by-cell progress/output and per-cell timing
   instead of buffering everything until the run finishes or hangs; see docs/history.md's Phase 27
@@ -59,10 +59,14 @@ this file). Then, as needed:
   Don't bother building/publishing an Artifact for this kind of
   internal validation check — it's slower and not worth the token cost when the user can just view
   the live notebook themselves.
-- **Notebooks are jupytext-paired and both halves are committed.** There are two:
-  `notebooks/lunar_sat_sim_demo.py`/`.ipynb` (the flagship demo, all phases) and
-  `notebooks/wac_isis_spike.py`/`.ipynb` (the narrower ISIS/CSM `framestitch` investigation —
-  see `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
+- **Notebooks are jupytext-paired and both halves are committed.** There are three:
+  `notebooks/data_set_selection.py`/`.ipynb` (catalog-driven EDR selection; its last cell writes
+  the selected candidate table to the checked-in `notebooks/dataset_manifest.csv`),
+  `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads `dataset_manifest.csv` and
+  renders/validates the selected image; no runtime dependency on `data_set_selection.ipynb`
+  itself, so rerun that notebook and commit its updated manifest to change which real image gets
+  rendered), and `notebooks/wac_isis_spike.py`/`.ipynb` (the narrower ISIS/CSM `framestitch`
+  investigation — see `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
   review/diffing/lint/IDE work; the `.ipynb` carries real, fully-executed outputs and is committed
   too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,
   including images), so no separate HTML/Pages publishing step exists anymore. The two halves of a

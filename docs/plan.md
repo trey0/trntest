@@ -55,8 +55,11 @@ product to this.
 | `plotting.py` | Comparison-figure plotting. `plot_render_vs_basemap` is the "A"-style geometry check: a render's own raw pixels next to a plain crop of the hillshade basemap covering the same real footprint (no resampling, no rotation on the basemap side -- its local Orthographic CRS is already north-referenced), both optionally marked with the same SPICE-derived tie points. `plot_overlay` is the "B"-style check: two geo-aligned rasters (e.g. a `mapproject` output over `LunaservResult.ortho`) displayed via `rioxarray`, using each file's own real coordinates rather than pixel indices -- expects `overlay_raster_path` to already cover just the real footprint being compared (true for both the synthetic render's own mapproject and `isis_wac.crop_for_camera`'s output), no view-restricting parameter needed. `plot_isis_comparison` is the direct candidate-vs-candidate comparison (brightness-matched, dead-pixel-filled). |
 | `session.py` | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 
-`notebooks/lunar_sat_sim_demo.ipynb` drives all of the above end to end — see `README.md` to run it,
-and AGENTS.md's "Working conventions" for how to validate changes against it.
+`notebooks/data_set_selection.ipynb` (catalog-driven EDR selection, writes the checked-in
+`notebooks/dataset_manifest.csv`) and `notebooks/image_generation.ipynb` (reads that manifest,
+drives all of the above end to end) together replace what used to be one combined notebook — see
+`README.md` to run them, and AGENTS.md's "Working conventions" for how to validate changes against
+them.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
@@ -194,7 +197,7 @@ and AGENTS.md's "Working conventions" for how to validate changes against it.
   genuine, validated camera model now exists end-to-end, `isis_wac.py` replaced `wac.py`'s manual
   framelet-stacking as the demo notebook's real-WAC comparison method entirely (`wac.py` itself is
   untouched, still covered by its own unit tests, just no longer used by either notebook — see
-  `docs/history.md`'s dated entry for the rationale). `notebooks/lunar_sat_sim_demo.py`'s Phase
+  `docs/history.md`'s dated entry for the rationale). `notebooks/image_generation.py`'s Phase
   5A/5B/6A/6B demonstrate the result: Phase 5 is the synthetic render's own geometry check (5A raw
   quality, 5B `mapproject` overlay), Phase 6 is the real WAC crop's (6A raw quality, 6B `mapproject`
   overlay) — 5B/6B share `plotting.plot_overlay` with no special-casing, since both overlays are

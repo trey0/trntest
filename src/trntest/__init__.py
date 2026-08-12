@@ -19,7 +19,14 @@ from trntest import plotting
 from trntest.camera import Camera, FrameTiming, build_camera, fetch_frame_timing
 from trntest.catalog import CATALOG_COLUMNS
 from trntest.config import TrntestConfig, load_config
-from trntest.dataset import DATASET_COLUMNS, GenerationResult, generate_dataset, select_dataset
+from trntest.dataset import (
+    DATASET_COLUMNS,
+    GenerationResult,
+    generate_dataset,
+    read_manifest,
+    select_dataset,
+    write_manifest,
+)
 from trntest.lunaserv import LunaservResult, fetch_dem_and_ortho
 from trntest.orientation import DisplayRotations, compute_display_rotations
 from trntest.render import RenderResult, read_csm_state, run_sat_sim
@@ -52,5 +59,7 @@ __all__ = [
     "fetch_and_furnish",
     "select_dataset",
     "generate_dataset",
+    "write_manifest",
+    "read_manifest",
     "plotting",
 ]

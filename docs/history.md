@@ -2083,3 +2083,49 @@ four). `trntest-lint` clean, full pytest suite green (new/rewritten `test_lunase
 including a direct regression test that transforms `dst_bbox_m`'s own corners through the returned
 degree bbox and asserts they're inside it -- the exact geometric property the old implementation
 didn't have), full notebook re-run via `scripts/run_notebook.sh`.
+
+## Phase 32 (2026-08-12) — Split the flagship notebook into `data_set_selection` + `image_generation`
+
+The single combined notebook (`notebooks/lunar_sat_sim_demo.py`/`.ipynb`) did catalog-driven EDR
+selection and full image generation/geometry validation in one run. The user wanted these
+separated into `data_set_selection.ipynb` and `image_generation.ipynb`, with `data_set_selection`
+conceptually running first but no runtime dependency between them.
+
+The natural split fell exactly where `dataset.py`'s own two functions already divide the work:
+`select_dataset()` (catalog query + SPICE-based illumination/geometry filtering) does no DEM/ortho/
+render work at all and already returns everything `generate_dataset()` needs per row
+(`edr_volume`/`edr_subdir`/`edr_doy`/`edr_product`, `cdr_volume`/`cdr_product`, `start_frame`) --
+so no changes to either function were needed.
+
+First design considered was a literal, hand-copied dict of those fields pasted into
+`image_generation.py` (with a comment on where it came from) -- rejected by the user in favor of a
+real checked-in file, closer to what `write_manifest`/`read_manifest` (`dataset.py`) already exist
+for: CSV, human-readable/diffable, and already covered by an existing round-trip unit test
+(`tests/test_dataset.py::test_write_read_manifest_round_trip`) that had no real caller until now.
+`data_set_selection.ipynb`'s last cell writes the *whole* candidate table (not just the selected
+row) to a new checked-in `notebooks/dataset_manifest.csv`, and also prints the selected
+`edr_product` id directly. `image_generation.ipynb` reads that file with `read_manifest()` and
+calls `generate_dataset(images, limit=1)` on it -- identical to what the combined notebook already
+did, just with the `DataFrame` coming from a file instead of a fresh catalog query.
+`write_manifest`/`read_manifest` were also added to `trntest/__init__.py`'s top-level exports
+(previously only `select_dataset`/`generate_dataset`/`DATASET_COLUMNS`/`GenerationResult` were
+re-exported from `dataset.py`).
+
+Mid-implementation, the user pulled 15 commits of upstream work into the checkout (the die5 tie-
+point/campt fixes, the Astropedia DEM switch, the boresight re-aim fix, the papermill notebook
+runner) that had landed while this split was in progress, stashing the in-flight `__init__.py`
+edit first. The stash was left alone (not popped) since the pulled `tie_points`/`session` API had
+already changed shape (`compute_tie_points` -> `select_tie_points` + `resolve_crop_pixels`) in a
+way that made the stashed diff not directly reapplicable; the `__init__.py` export and both
+notebooks were redone by hand against the new code instead. Notebook `Phase` numbers (2-7) were
+kept unchanged in `image_generation.py` since `docs/plan.md`/`docs/data-sources.md` cross-reference
+"Phase 5A/5B/6A/6B" by those exact labels; `data_set_selection.py` got its own new, unnumbered
+section.
+
+Live-validated end to end via `scripts/run_notebook.sh` for both notebooks (real catalog/SPICE/WMS/
+`sat_sim`/ISIS calls): `data_set_selection.ipynb` selected `M1327210646CE` from an 81-candidate
+window and wrote the manifest; `image_generation.ipynb` read it back, rendered, and all 5 die5 tie
+points resolved on both candidates with no dropped points or warnings. Visually inspected the
+extracted Phase 5A/6A/7 comparison figures directly (not just "it ran") -- real, sane, geo-aligned
+lunar terrain with tie points landing on the same features across the synthetic render, the real
+WAC crop, and the hillshade basemap.

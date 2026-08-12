@@ -5,11 +5,15 @@ models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories
 with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See `docs/plan.md`
 for the full approach and status, and `AGENTS.md` for how the docs in this repo are organized.
 
-The demo logic is the installable `trntest` Python package (`src/trntest/`); the notebook drives
-it via a small `Session` facade. It's tracked as a jupytext-paired pair:
-`notebooks/lunar_sat_sim_demo.py` (percent format, the source of truth for review/diff/lint/IDE
-work) and `notebooks/lunar_sat_sim_demo.ipynb` (fully executed, viewable directly in GitHub's file
-browser — no separate publishing step needed).
+The demo logic is the installable `trntest` Python package (`src/trntest/`); two notebooks drive
+it via a small `Session` facade. `notebooks/data_set_selection.py`/`.ipynb` queries the real LROC
+catalog for a favorable image and writes it to the checked-in `notebooks/dataset_manifest.csv`;
+`notebooks/image_generation.py`/`.ipynb` reads that manifest and renders/validates it (no runtime
+dependency on `data_set_selection.ipynb` itself — rerun that notebook and commit its updated
+manifest to change which real image gets rendered). Each is tracked as a jupytext-paired pair: the
+`.py` (percent format) is the source of truth for review/diff/lint/IDE work, and the `.ipynb`
+(fully executed, viewable directly in GitHub's file browser — no separate publishing step needed)
+carries the real outputs.
 
 ## Build & run
 
@@ -30,10 +34,10 @@ own machine:
 ssh -L 8888:localhost:8888 <this-host>
 ```
 
-then open `http://localhost:8888` in a browser. Open `notebooks/lunar_sat_sim_demo.py` — the
-bundled `jupyterlab-jupytext` extension renders it as a live, editable notebook (equivalent to
-opening `notebooks/lunar_sat_sim_demo.ipynb` directly). After making changes, run
-`scripts/run_notebook.sh notebooks/lunar_sat_sim_demo.py` to regenerate and re-execute the
+then open `http://localhost:8888` in a browser. Open `notebooks/data_set_selection.py` or
+`notebooks/image_generation.py` — the bundled `jupyterlab-jupytext` extension renders either as a
+live, editable notebook (equivalent to opening its paired `.ipynb` directly). After making
+changes, run `scripts/run_notebook.sh notebooks/<name>.py` to regenerate and re-execute the
 `.ipynb` before committing (see "Viewing the rendered demo" below).
 
 For one-off commands instead of the notebook server:
@@ -120,17 +124,20 @@ any clone with just Docker installed -- no host-side Python setup required.
 
 ## Viewing the rendered demo
 
-The git-tracked `notebooks/lunar_sat_sim_demo.ipynb` carries real, fully-executed outputs and
-renders natively in GitHub's file browser (markdown, code, and outputs, including images) — just
-click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
+The git-tracked `notebooks/data_set_selection.ipynb` and `notebooks/image_generation.ipynb` carry
+real, fully-executed outputs and render natively in GitHub's file browser (markdown, code, and
+outputs, including images) — just click either file in the repo. No separate publishing step,
+HTML build, or GitHub Pages setup.
 
-`notebooks/lunar_sat_sim_demo.py` (jupytext percent format, paired with the `.ipynb` via inline
-metadata) is the actual source of truth: it's what you edit, what gets `ruff`/`mypy`-checked, and
-what stays diffable — the `.ipynb`'s own diff will always be noisy since it carries outputs, which
-is expected. After editing the notebook, regenerate and re-execute the `.ipynb` before committing:
+`notebooks/data_set_selection.py`/`notebooks/image_generation.py` (jupytext percent format, each
+paired with its own `.ipynb` via inline metadata) are the actual source of truth: they're what you
+edit, what gets `ruff`/`mypy`-checked, and what stays diffable — the `.ipynb`'s own diff will
+always be noisy since it carries outputs, which is expected. After editing a notebook, regenerate
+and re-execute its `.ipynb` before committing:
 
 ```sh
-scripts/run_notebook.sh notebooks/lunar_sat_sim_demo.py
+scripts/run_notebook.sh notebooks/data_set_selection.py
+scripts/run_notebook.sh notebooks/image_generation.py
 ```
 
 The pre-commit hook checks that the `.py`/`.ipynb` pair is staged together, that their code/
