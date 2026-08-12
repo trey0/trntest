@@ -63,6 +63,11 @@ them.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
+- **Designed, not yet implemented: `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage`** — a structured,
+  self-contained dataset folder (manifest + `crop`/`hillshade`/`reproject` subfolders) with a
+  filesystem-based, multi-worker-safe task queue for populating it. See `docs/dataset-plan.md` for
+  the full design (class hierarchy, on-disk layout, notebook wiring, and a corrected approach to
+  the crop's CSM ISD sidecar) — start there before implementing.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
