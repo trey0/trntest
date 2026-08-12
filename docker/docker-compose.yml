@@ -1,3 +1,11 @@
+# Explicit project name: this repo lives at trntest_ws/trntest2 (a second worktree alongside
+# trntest_ws/src/trntest), so without this, Compose's default project name (the basename of this
+# docker/ directory) would collide with the other worktree's -- both are literally named "docker".
+# `docker compose run --rm` is unaffected (its containers get unique per-invocation names), but
+# `docker compose up` would target the same fixed container name the other worktree's persistent
+# Jupyter Lab server already owns, risking recreating/destroying it.
+name: trntest2
+
 services:
   demo:
     build:
@@ -22,6 +30,10 @@ services:
     ports:
       # Bound to loopback only — this host has a public IP and the Jupyter
       # server below runs with no auth token. Reach it via an SSH tunnel:
-      #   ssh -L 8888:localhost:8888 <this-host>
-      - "127.0.0.1:8888:8888"
+      #   ssh -L 8889:localhost:8889 <this-host>
+      # Host port 8889, not the project's usual 8888 -- this is a second worktree
+      # (trntest_ws/trntest2) alongside trntest_ws/src/trntest, which already holds 8888 with its
+      # own long-running `docker compose up`; a duplicate 127.0.0.1:8888 binding here would just
+      # fail outright (Docker refuses to bind the same host port twice), not queue or share.
+      - "127.0.0.1:8889:8888"
     working_dir: /workspace

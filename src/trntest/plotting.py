@@ -1,9 +1,13 @@
 """Matplotlib display helpers for the notebook. No SPICE/network/subprocess calls -- pure
 consumption of already-computed values, reading image files by path where needed."""
 
+import base64
+import io
+import uuid
 import warnings
 
 import geopandas
+import IPython.display
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
@@ -557,19 +561,68 @@ def plot_overlay(
     parameter that only restricted the displayed *view*, leaving `show_overlay_outline`'s trace still
     running on the full un-clipped raster -- confirmed not to work (the outline still only showed a
     partial cross-section of a much longer boundary, not a closed shape) and removed; see
-    `docs/history.md`'s dated entry for the full story."""
+    `docs/history.md`'s dated entry for the full story.
+
+    See also `plot_overlay_toggle`, which renders this same overlay twice (`overlay_alpha=0` and
+    `overlay_alpha=1`) behind a clickable on/off toggle rather than a single fixed `overlay_alpha`."""
+    base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
+        base_raster_path, overlay_raster_path, fill_overlay_nodata
+    )
+    outline_geoseries = _overlay_outline_geoseries(overlay) if show_overlay_outline else None
+    return _render_overlay_figure(
+        base,
+        overlay_display,
+        base_vmin,
+        base_vmax,
+        overlay_vmin,
+        overlay_vmax,
+        overlay_cmap,
+        overlay_alpha,
+        title,
+        outline_geoseries,
+        overlay_outline_color,
+    )
+
+
+def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_nodata: bool):
+    """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`: open both rasters, optionally fill
+    the overlay's small nodata gaps for display, and compute each raster's own 0/99.9th-percentile
+    stretch (see `plot_overlay`'s docstring for why a naive min/max autoscale washes out real
+    calibrated-I/F data). Split out so `plot_overlay_toggle` can do this once and reuse it for both of
+    its two renders, rather than re-opening/re-stretching the same rasters twice."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
-
-    # Linear stretch through 0 (vmin=0, vmax=99.9th percentile), same technique/rationale as
-    # `plot_render_vs_basemap`'s "6A darkness" fix -- without it, `imshow`'s naive min/max autoscale
-    # (esp. on a real calibrated-I/F overlay, e.g. ~0.02-0.17 with a handful of brighter outliers)
-    # compresses the bulk of genuine overlay data down near black. At `overlay_alpha` blended over a
-    # much better-exposed base, that reads as a barely-visible tint.
     base_vmin, base_vmax = 0, np.nanpercentile(base.values, 99.9)
     overlay_vmin, overlay_vmax = 0, np.nanpercentile(overlay_display.values, 99.9)
+    return base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax
 
+
+def _overlay_outline_geoseries(overlay):
+    """The overlay's real-data footprint (see `_valid_data_outline`) as a `GeoSeries`, ready to draw
+    via `.boundary.plot(...)` -- split out of `_render_overlay_figure` so `plot_overlay_toggle` can
+    compute this once and pass the same `GeoSeries` into both of its two renders, rather than
+    re-tracing the same footprint (a real rasterio/shapely computation) twice."""
+    return geopandas.GeoSeries([_valid_data_outline(overlay)], crs=overlay.rio.crs)
+
+
+def _render_overlay_figure(
+    base,
+    overlay_display,
+    base_vmin,
+    base_vmax,
+    overlay_vmin,
+    overlay_vmax,
+    overlay_cmap,
+    overlay_alpha,
+    title,
+    outline_geoseries,
+    overlay_outline_color,
+):
+    """Builds one `Figure` for `plot_overlay`/`plot_overlay_toggle` -- identical rendering path
+    (figsize, draw order, axis-limit restore, km tick formatting) regardless of `overlay_alpha`, so
+    two calls with only `overlay_alpha` varying produce pixel-aligned images (same figure size, same
+    dpi, same bbox -- required for `plot_overlay_toggle`'s CSS-opacity stacking to line up)."""
     fig, ax = plt.subplots(figsize=(9, 9))
     base.plot.imshow(ax=ax, cmap="gray", vmin=base_vmin, vmax=base_vmax, add_colorbar=False)
     # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
@@ -580,11 +633,8 @@ def plot_overlay(
     overlay_display.plot.imshow(
         ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, vmin=overlay_vmin, vmax=overlay_vmax, add_colorbar=False
     )
-    if show_overlay_outline:
-        outline = _valid_data_outline(overlay)
-        geopandas.GeoSeries([outline], crs=overlay.rio.crs).boundary.plot(
-            ax=ax, color=overlay_outline_color, linewidth=1.5
-        )
+    if outline_geoseries is not None:
+        outline_geoseries.boundary.plot(ax=ax, color=overlay_outline_color, linewidth=1.5)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_title(title)
@@ -600,3 +650,173 @@ def plot_overlay(
     ax.set_ylabel("Northing (km)")
     fig.tight_layout()
     return fig
+
+
+def plot_overlay_toggle(
+    base_raster_path,
+    overlay_raster_path,
+    overlay_cmap: str = "gray",
+    title: str = "Overlay (geo-aligned)",
+    show_overlay_outline: bool = True,
+    overlay_outline_color: str = "red",
+    fill_overlay_nodata: bool = True,
+    initial_visible: bool = True,
+):
+    """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at
+    both `overlay_alpha=0` and `overlay_alpha=1` and displays them stacked behind a clickable
+    `<details>`/`<summary>` disclosure that swaps between them -- "blinking" the overlay on and off to
+    compare it against the base at full clarity each way, rather than a partial blend of both at once
+    (a blend makes it hard to tell which pixels are the overlay's own content versus the base showing
+    through -- see `plot_overlay`'s docstring -- exactly when that distinction matters most, e.g.
+    debugging a not-yet-correct overlay).
+
+    This works by exploiting the fact that a browser compositing a partially/fully-opaque image over
+    another produces the exact same per-pixel blend matplotlib's own `imshow(..., alpha=...)` does in
+    a single pass -- so two pre-rendered, pixel-aligned PNGs (one per `overlay_alpha` endpoint) stacked
+    in the DOM, with the top one shown/hidden by expanding/collapsing the `<details>` wrapping it,
+    reproduce `plot_overlay(overlay_alpha=0)`/`plot_overlay(overlay_alpha=1)` exactly, without
+    re-running this function or recomputing anything per click.
+
+    `<details>`'s expand/collapse is native browser behavior, no JavaScript involved -- unlike an
+    earlier version of this function that used a checkbox with an inline `onchange` handler instead,
+    which turned out to be inert both on GitHub's static `.ipynb` viewer *and* in a live JupyterLab
+    kernel (confirmed against JupyterLab's own installed HTML-sanitizer bundle: no tag's attribute
+    allowlist includes any `on*` handler; GitHub's renderer strips them too). `<details>`'s `open`
+    attribute is in that same sanitizer's allowlist, and `<details>`/`<summary>` is a standard,
+    intentionally-supported GitHub Flavored Markdown feature, so this version is a real, working
+    toggle in both places. `initial_visible` (default `True`, matching `plot_overlay`'s own
+    `overlay_alpha=1.0` default) sets `<details>`'s starting `open` state.
+
+    Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
+    cell (no trailing `;`) to actually display."""
+    base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
+        base_raster_path, overlay_raster_path, fill_overlay_nodata
+    )
+    outline_geoseries = _overlay_outline_geoseries(overlay) if show_overlay_outline else None
+
+    base_png_b64, width_px, height_px = _render_overlay_png(
+        base,
+        overlay_display,
+        base_vmin,
+        base_vmax,
+        overlay_vmin,
+        overlay_vmax,
+        overlay_cmap,
+        0.0,
+        title,
+        outline_geoseries,
+        overlay_outline_color,
+    )
+    overlay_png_b64, _, _ = _render_overlay_png(
+        base,
+        overlay_display,
+        base_vmin,
+        base_vmax,
+        overlay_vmin,
+        overlay_vmax,
+        overlay_cmap,
+        1.0,
+        title,
+        outline_geoseries,
+        overlay_outline_color,
+    )
+
+    element_id = f"overlay-toggle-{uuid.uuid4().hex[:8]}"
+    html = _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible, element_id, width_px, height_px)
+    return IPython.display.HTML(html)
+
+
+def _render_overlay_png(
+    base,
+    overlay_display,
+    base_vmin,
+    base_vmax,
+    overlay_vmin,
+    overlay_vmax,
+    overlay_cmap,
+    overlay_alpha,
+    title,
+    outline_geoseries,
+    overlay_outline_color,
+):
+    """Renders one `_render_overlay_figure(...)` frame to a base64-encoded PNG. Deliberately no
+    `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both frames must use plain,
+    consistent full-figure export so the two PNGs `plot_overlay_toggle` produces are pixel-dimension-
+    identical (a content-dependent tight-bbox crop could differ between the transparent and opaque
+    frames, breaking the CSS-stack alignment the whole toggle depends on). `plt.close(fig)` is
+    required, not cleanup hygiene: the notebook's inline matplotlib backend auto-displays any figure
+    left open at cell-end, so without it this would leak two extra static PNGs into the cell's output
+    alongside the intended HTML."""
+    fig = _render_overlay_figure(
+        base,
+        overlay_display,
+        base_vmin,
+        base_vmax,
+        overlay_vmin,
+        overlay_vmax,
+        overlay_cmap,
+        overlay_alpha,
+        title,
+        outline_geoseries,
+        overlay_outline_color,
+    )
+    width_px, height_px = fig.get_size_inches() * fig.dpi
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", pil_kwargs={"compress_level": 9})
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("ascii"), round(width_px), round(height_px)
+
+
+def _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible: bool, element_id: str, width_px, height_px):
+    """The actual on/off-toggle markup: a base `<img>` with the fully-transparent-overlay render,
+    plus a native `<details>`/`<summary>` disclosure whose content is the second `<img>` (the
+    fully-opaque-overlay render), absolutely positioned on top of the base. `<details>` toggles its
+    content's visibility via plain browser behavior, no JavaScript or event handler required -- a
+    real, previous attempt at this used a checkbox with an inline `onchange` handler instead, and
+    that turned out to render but do nothing: both JupyterLab's own HTML output sanitizer (confirmed
+    directly against its installed `@jupyterlab/apputils` bundle -- no tag's attribute allowlist
+    includes any `on*` handler) and GitHub's `.ipynb` renderer strip inline event handlers, so it was
+    inert everywhere, not just on GitHub as originally planned for. `<details>`'s `open` attribute is
+    explicitly in that same sanitizer's allowlist (and `<details>`/`<summary>` are a standard,
+    intentionally-supported GitHub Flavored Markdown feature), so this version is a real, working
+    toggle in both a live kernel and GitHub's static viewer -- actually reaching the "no JavaScript"
+    goal this was originally built around, not just degrading gracefully without it.
+    `element_id` namespaces the `id` attribute so multiple toggles in one notebook (e.g. this repo's
+    Phase 5B and 6B cells) don't collide.
+
+    The overlay `<img>` is given an *explicit* pixel size matching the wrapper, rather than left to
+    size itself from its content -- confirmed empirically necessary, not just defensive: JupyterLab
+    applies its own `max-width: 100%` to `<img>` tags in rendered output, and without an explicit
+    size that resolves against whatever the image's containing block happens to be, which isn't
+    always the 900px wrapper (an earlier version, with `<details>` itself absolutely positioned and
+    unsized, shrank the whole thing down to its `<summary>` badge's own tiny width). Pinning the
+    image's own size removes the ambiguity outright.
+
+    `<summary>` (the clickable "Toggle Overlay" control) is deliberately placed *below* the image
+    rather than overlapping it -- `<details>` is left in normal document flow (not absolutely
+    positioned) so it renders after the base `<img>` in the stack, with `text-align:center` on
+    `<details>` and `display:inline-block` on `<summary>` centering the button under the image. This
+    also sidesteps a real stacking-order bug an earlier, overlapping-button version had: CSS always
+    paints *positioned* elements (the overlay `<img>`, `position:absolute`) above plain in-flow
+    content within the same containing block regardless of DOM order, which silently hid the button
+    entirely underneath the full-size image. With the two no longer overlapping at all, that whole
+    class of bug is moot rather than patched around.
+
+    `initial_visible` sets `<details>`'s own `open` attribute (default `True`, matching
+    `plot_overlay`'s own `overlay_alpha=1.0` default), i.e. whether the overlay starts expanded."""
+    open_attr = "open" if initial_visible else ""
+    return f"""\
+<div style="position:relative; display:inline-block; width:{width_px}px; height:{height_px}px;">
+  <img src="data:image/png;base64,{base_png_b64}" width="{width_px}" height="{height_px}"
+       style="display:block; width:{width_px}px; height:{height_px}px;">
+  <details id="{element_id}" {open_attr} style="display:block; width:{width_px}px; text-align:center; margin-top:4px;">
+    <summary style="cursor:pointer; list-style:none; display:inline-block; background:#f0f0f0;
+                     color:#000; border:1px solid #999; border-radius:4px; padding:4px 12px;
+                     font-size:0.9em;">
+      Toggle Overlay
+    </summary>
+    <img src="data:image/png;base64,{overlay_png_b64}"
+         style="position:absolute; top:0; left:0; width:{width_px}px; height:{height_px}px;">
+  </details>
+</div>
+"""
