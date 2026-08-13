@@ -21,14 +21,33 @@ this file). Then, as needed:
   not re-run or kept in sync going forward — see its own `README.md`). Useful when a `docs/history.md`
   entry references one and you want the actual plots/reasoning trail, not just the narrative summary.
 - `docs/environment.md` — the ephemeral VPS/archive-restore workflow this repo is developed under:
-  what survives a teardown, and why spike/experimental source (`src/scratch/`) and large file
-  output (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must be kept in separate locations.
+  what survives a teardown, why spike/experimental source (`src/scratch/`) and large file output
+  (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must be kept in separate locations, and
+  (see its "Multi-agent worktrees" section) how concurrent Claude Code worktree agents share the
+  outer `trntest_ws` workspace safely.
 
 ## Working conventions for this repo
 
 - Everything that needs GDAL/ASP/SPICE runs **inside the Docker container** (`docker/`) — the host
   itself has no geospatial tooling installed and should stay that way. `docker compose run --rm demo
   <cmd>` (see `README.md`) for one-off commands; `docker compose up` for the Jupyter Lab server.
+- **If you're running in a Claude Code worktree** (this session's checkout is
+  `.claude/worktrees/<name>/`, not the main checkout — check `git rev-parse --show-toplevel`), run
+  `scripts/setup_worktree_docker_env.sh` once before your first `docker compose` call in this
+  session, and use your worktree's own `output/<name>/` subfolder for anything else you write under
+  the shared `trntest_ws` (e.g. one-off files outside `output/`, if you ever need them) — the outer
+  `trntest_ws` workspace (`cache/`, `output/`, `scratch/`) is shared with the main checkout and any
+  other concurrent worktree agents, and `output/` in particular isn't safe to write to un-namespaced
+  since two agents' runs would clobber each other there. `cache/`/`scratch/` are meant to stay
+  shared (no per-agent copy needed). See `docs/environment.md`'s "Multi-agent worktrees" section for
+  the full rationale and what the setup script does — including its "Other sharp edges" subsection
+  (shared narrative docs/`dataset_manifest.csv` as merge-conflict risks, resolving `.ipynb` conflicts
+  by merging the `.py` and regenerating rather than reading the JSON diff, why `clean.sh`/
+  `archive.sh`/`restore.sh` are the user's own session-teardown tools and not something an agent
+  should run, a real concurrency race in the one-time Astropedia GLD100 fetch, and per-worktree
+  Docker image cleanup) if another agent might be active at the same time. Verify your own worktree
+  name yourself (`git rev-parse --show-toplevel`) rather than trusting a
+  name you're told — it can be stale in a multi-agent conversation.
 - Keep `docs/plan.md`'s architecture/status current as things change, and record newly-learned facts
   (exact product IDs, kernel filenames, gotchas) in `docs/data-sources.md` rather than only in code
   comments or commit messages — this repo's docs are meant to carry context across sessions so a

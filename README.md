@@ -78,13 +78,20 @@ to `trntest.toml` at the repo root (picked up automatically) or point the `TRNTE
 at a file elsewhere. `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR` env vars override just those two
 paths without needing a config file at all.
 
-`cache/` and `output/` are **not** part of this repo's own directory tree — they live one level
-above the outer workspace's `src/` (e.g. `<workspace>/cache`, `<workspace>/output`, siblings of
-`<workspace>/src/trntest`), an out-of-source, ROS-workspace-inspired layout. `docker-compose.yml`'s
-volume mounts assume this repo is checked out at `<workspace>/src/trntest`; if you've cloned it
-somewhere else, either recreate that wrapper directory, edit the two `../../../cache`/
-`../../../output` mount lines in `docker/docker-compose.yml`, or just set
-`TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR`/a `trntest.toml` instead.
+`cache/`, `output/`, and `scratch/` are **not** part of this repo's own directory tree — they live
+one level above the outer workspace's `src/` (e.g. `<workspace>/cache`, `<workspace>/output`,
+siblings of `<workspace>/src/trntest`), an out-of-source, ROS-workspace-inspired layout.
+`docker-compose.yml`'s volume mounts assume this repo is checked out at `<workspace>/src/trntest`;
+if you've cloned it somewhere else, either recreate that wrapper directory, override
+`TRNTEST_HOST_CACHE_DIR`/`TRNTEST_HOST_OUTPUT_DIR`/`TRNTEST_HOST_SCRATCH_DIR` (see `docker/.env`,
+below), or just set `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR`/a `trntest.toml` instead.
+
+**Working in a Claude Code worktree** (`.claude/worktrees/<name>/`, alongside the main checkout,
+sharing the same outer `trntest_ws`)? Run `scripts/setup_worktree_docker_env.sh` once before your
+first `docker compose` call — it writes a gitignored `docker/.env` so your worktree shares the main
+checkout's `cache`/`scratch` but gets its own `output/<name>/` subfolder and its own image
+tag/Compose project name, so concurrent agents don't clobber each other's outputs or image builds.
+See `docs/environment.md`'s "Multi-agent worktrees" section for why.
 
 ## Linting and type-checking
 

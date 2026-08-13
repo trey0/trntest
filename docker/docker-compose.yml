@@ -1,10 +1,13 @@
-# Explicit project name: this repo lives at trntest_ws/trntest2 (a second worktree alongside
-# trntest_ws/src/trntest), so without this, Compose's default project name (the basename of this
-# docker/ directory) would collide with the other worktree's -- both are literally named "docker".
-# `docker compose run --rm` is unaffected (its containers get unique per-invocation names), but
-# `docker compose up` would target the same fixed container name the other worktree's persistent
-# Jupyter Lab server already owns, risking recreating/destroying it.
-name: trntest2
+# Every value below defaults to this repo's traditional single-checkout layout (repo at
+# <workspace>/src/trntest, port 8888, cache/output/scratch as its direct siblings). A Claude Code
+# worktree checkout (`.claude/worktrees/<name>/`, see docs/environment.md's "Multi-agent
+# worktrees" section) sits three directories deeper, so its relative mount paths resolve to the
+# wrong place, and it needs its own image tag/project name so concurrent `docker compose run --rm`
+# invocations across worktrees don't stomp each other's image build. Run
+# `scripts/setup_worktree_docker_env.sh` once per worktree to generate the gitignored `docker/.env`
+# that supplies the overrides below -- see that script and docs/environment.md for what it writes
+# and why. The main checkout needs no `docker/.env` at all; these defaults already suit it.
+name: ${COMPOSE_PROJECT_NAME:-trntest}
 
 services:
   demo:
@@ -13,27 +16,30 @@ services:
       # repo in (for the editable `pip install -e`), which needs pyproject.toml/src/ in scope.
       context: ..
       dockerfile: docker/Dockerfile
-    image: trntest-lunar-demo
+    image: ${TRNTEST_IMAGE_TAG:-trntest-lunar-demo}
     volumes:
       - ..:/workspace
-      # cache/output live outside this repo entirely, as siblings of the outer workspace's `src/`
-      # (ROS-workspace-inspired out-of-source layout: this repo is expected at
-      # <workspace>/src/trntest). If you've cloned this repo somewhere else, either recreate that
-      # wrapper directory or edit these two lines (or set TRNTEST_CACHE_ROOT/TRNTEST_OUTPUT_DIR /
-      # a trntest.toml instead of relying on these mounts at all -- see README's Configuration
-      # section).
-      - ../../../cache:/workspace/cache
-      - ../../../output:/workspace/output
+      # cache/output/scratch live outside this repo entirely, as siblings of the outer workspace's
+      # `src/` (ROS-workspace-inspired out-of-source layout: this repo is expected at
+      # <workspace>/src/trntest). cache/scratch are meant to be *shared* across every checkout of
+      # this repo (main + all worktrees) -- re-fetching SPICE kernels/WMS tiles per worktree would
+      # be wasteful; output is meant to be *per-worktree* so concurrent agents don't clobber each
+      # other's rendered demo artifacts. If you've cloned this repo somewhere else, or these
+      # defaults land in the wrong place, override via TRNTEST_HOST_CACHE_DIR/
+      # TRNTEST_HOST_OUTPUT_DIR/TRNTEST_HOST_SCRATCH_DIR (`docker/.env`, see
+      # scripts/setup_worktree_docker_env.sh), or set TRNTEST_CACHE_ROOT/TRNTEST_OUTPUT_DIR/a
+      # trntest.toml to bypass these mounts entirely -- see README's Configuration section.
+      - ${TRNTEST_HOST_CACHE_DIR:-../../../cache}:/workspace/cache
+      - ${TRNTEST_HOST_OUTPUT_DIR:-../../../output}:/workspace/output
       # Large, disposable intermediate files (e.g. the ISIS/CSM WAC reprojection spike's
       # intermediate cubes) go here, not output/ -- see docs/environment.md.
-      - ../../../scratch:/workspace/scratch
+      - ${TRNTEST_HOST_SCRATCH_DIR:-../../../scratch}:/workspace/scratch
     ports:
-      # Bound to loopback only — this host has a public IP and the Jupyter
-      # server below runs with no auth token. Reach it via an SSH tunnel:
-      #   ssh -L 8889:localhost:8889 <this-host>
-      # Host port 8889, not the project's usual 8888 -- this is a second worktree
-      # (trntest_ws/trntest2) alongside trntest_ws/src/trntest, which already holds 8888 with its
-      # own long-running `docker compose up`; a duplicate 127.0.0.1:8888 binding here would just
-      # fail outright (Docker refuses to bind the same host port twice), not queue or share.
-      - "127.0.0.1:8889:8888"
+      # Bound to loopback only — this host has a public IP and the Jupyter server below runs with
+      # no auth token. Reach it via an SSH tunnel: ssh -L 8888:localhost:8888 <this-host>. Only the
+      # main checkout is expected to run `docker compose up` (the persistent Jupyter Lab server
+      # AGENTS.md/scripts/run_notebook.sh assume is already running); worktree agents use
+      # `docker compose run --rm demo <cmd>` instead, which doesn't publish ports -- so this port
+      # doesn't need to vary per worktree.
+      - "127.0.0.1:${TRNTEST_JUPYTER_PORT:-8888}:8888"
     working_dir: /workspace

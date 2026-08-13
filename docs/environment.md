@@ -57,6 +57,92 @@ the rest of `cache/`'s small, fast-to-refetch WMS tiles/kernels. Worth deciding 
 to keep it archived (bigger tarball/scp) or delete-and-re-download-next-session, not just deleting it
 reflexively along with everything else in a space-saving pass.
 
+## Multi-agent worktrees
+
+Multiple Claude Code sessions can now work this repo concurrently as **Claude Code worktrees**:
+the main checkout stays at `<workspace>/src/trntest`, and each additional agent gets its own git
+worktree checked out under `<workspace>/src/trntest/.claude/worktrees/<name>/` (its own working
+tree and branch, e.g. `worktree-a1`, but sharing the same `.git` history/objects as the main
+checkout). All of this — main checkout and every worktree — sits under the same `trntest_ws`
+(`<workspace>`), so `cache/`, `output/`, and `scratch/` are physically shared, not per-agent copies.
+
+- **`cache/` and `scratch/` should stay shared.** Re-fetching SPICE kernels/WMS tiles per agent
+  would be wasteful, and `scratch/`'s contents are already self-namespaced (e.g.
+  `scratch/notebook_runs/<name>_<timestamp>.log`), so concurrent agents writing there don't
+  collide in practice.
+- **`output/` must not be shared as-is** — it holds final rendered demo artifacts, and two agents
+  writing to the same `output/` at once means one agent's run silently clobbers another's. Each
+  worktree agent should write to its own `output/<worktree-name>/` subfolder instead (e.g.
+  `trntest_ws/output/a1/`) so concurrent agents can't step on each other.
+- **The Docker image tag/Compose project name must also be per-worktree.** `docker compose run
+  --rm` rebuilds the image from whatever's currently on disk in that checkout; if two worktrees
+  share one image tag, whichever agent's build finishes last silently becomes the image the
+  *other* agent's `run --rm` picks up next, mid-task.
+
+`docker-compose.yml` handles all three via env vars (`TRNTEST_HOST_CACHE_DIR`,
+`TRNTEST_HOST_OUTPUT_DIR`, `TRNTEST_HOST_SCRATCH_DIR`, `TRNTEST_IMAGE_TAG`,
+`COMPOSE_PROJECT_NAME`), with defaults that already suit the main checkout unchanged. Run
+`scripts/setup_worktree_docker_env.sh` once in a new worktree, before the first `docker compose`
+call there — it detects the worktree name from the checkout path (no manual path arithmetic) and
+writes a gitignored `docker/.env` pointing cache/scratch at the shared roots and output/image
+tag/project name at agent-specific ones. Re-run it any time; it's idempotent. Only the main
+checkout is expected to run the long-lived `docker compose up` Jupyter Lab server; worktree agents
+use `docker compose run --rm demo <cmd>` for one-off commands (same as the existing non-worktree
+workflow), which doesn't publish ports, so there's no port contention to manage per worktree.
+
+The pre-commit hook (`git config core.hooksPath githooks`) doesn't need re-running per worktree —
+`core.hooksPath` lives in the shared `.git/config` (worktrees don't get their own by default, since
+`extensions.worktreeConfig` isn't enabled here), so it's already active in every worktree
+automatically.
+
+### Other sharp edges when more than one agent is active
+
+- **`docs/plan.md`/`docs/history.md`/`docs/data-sources.md` are shared narrative state.** AGENTS.md
+  asks every agent to update these as it works; two agents doing so concurrently on separate
+  worktree branches *will* produce merge conflicts when both branches land on `main`. Keep edits to
+  these additive/localized (a new dated `history.md` entry, a small targeted edit elsewhere) rather
+  than restructuring, so conflicts stay small and mergeable — resolving them is expected, not a sign
+  something went wrong.
+- **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Re-running
+  `data_set_selection.py` and committing its output changes which real image *every* subsequent
+  `image_generation.py` run renders, for every agent and the user, not just yours. Fine to run
+  read-only (e.g. while warming cache) without committing; don't commit a changed manifest unless
+  you specifically mean to change the demo's target image.
+- **If a merge conflict lands in a `.ipynb`, don't try to resolve it in the `.ipynb` itself** —
+  its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the real source of
+  truth), then regenerate the `.ipynb` from scratch with `scripts/run_notebook.sh
+  notebooks/<name>.py`. This is also why concurrent edits to the same notebook across agents are
+  low-stakes as long as both sides touch the `.py`: whoever merges second just re-derives the
+  `.ipynb`, no manual JSON surgery required.
+- **`clean.sh`/`archive.sh`/`restore.sh` (`/root/trntest_ws/*.sh`, host-level, not git-tracked) are
+  the user's own session-teardown/restore tools, run by hand after shutting down every agent** —
+  not something an agent should ever invoke. `clean.sh` in particular is nuclear and not
+  worktree-aware: it stops *every* running container, `docker system prune -a`s *every* image
+  (including every other worktree's per-agent tag), and `rm -rf`s the entire shared `cache/`,
+  `output/`, and `scratch/` — not just yours. If you think cleanup is needed, ask the user rather
+  than running these (or equivalent manual `docker system prune`/`rm -rf` on those shared dirs)
+  yourself.
+- **`cache.fetch_astropedia_gld100`'s one-time ~10GB GLD100 download is not concurrency-safe** —
+  unlike every other fetch path in `cache.py` (which downloads to a uniquely-named temp file before
+  an atomic rename, so concurrent cold fetches of the same small file are safe, if slightly
+  wasteful), this one deliberately resumes into a *stable* `<dest>.part` path so a `curl -C -` can
+  continue an interrupted multi-GB transfer (see `docs/caching.md`). Two agents both triggering a
+  cold fetch of this file at the same time will race on that same partial file. In practice this
+  only matters once (it's cached forever after) — check `cache/astropedia/*.tif` already exists
+  before kicking off a full pipeline run if you're unsure whether another agent got there first.
+- **Docker images accumulate per worktree** (`trntest-lunar-demo-<name>`, several GB each once
+  ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
+  is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
+  per-agent images don't pile up; `docker system df` shows current usage.
+- **Don't merge your worktree branch into `main`, push, or delete/force-touch another worktree's
+  branch yourself.** With multiple agent branches in flight, the user is coordinating integration
+  by hand — treat this the same as any other push/merge action needing explicit confirmation (see
+  the general safety guidance you already follow), just doubly so here since another agent's
+  in-progress branch could be on the other end.
+- **If you're told your worktree/agent name, verify it** with `git rev-parse --show-toplevel`
+  (look for the `.claude/worktrees/<name>/` segment) rather than trusting it blindly — in a
+  multi-agent conversation that name can be stale or simply wrong.
+
 ## Why the separation matters
 
 An in-progress spike (the ISIS/CSM `mapproject` investigation tracked as an open item in
