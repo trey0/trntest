@@ -932,6 +932,78 @@ different real candidates), confirmed to hold across a wide line range with no z
   some other (raw multi-band detector, pre-windowing) coordinate system this project never fully
   decoded, not the calibrated 704-sample VIS image's own sample axis.
 
+## `TrnTestDataSet` on-disk layout, and the crop ISD sidecar's real accuracy
+
+See `docs/dataset-plan.md` for the full design (class hierarchy, task queue) — this section is just
+the durable, current-state facts about what ends up on disk, kept here alongside this file's other
+concrete-format references.
+
+**Layout**: `<output_dir>/trn_dataset/` (not `<output_dir>/dataset/`, which is
+`dataset.generate_dataset()`'s own, separate flat per-`product_id` layout — the two don't collide in
+meaning or content) holds `manifest.csv` plus `crop/<edr_product>_crop.{cub,json}`,
+`hillshade/<edr_product>_hillshade.{tif,json}`, an empty reserved `reproject/`, per-entry
+intermediates under `_work/<edr_product>/` (`.tsai`, DEM/ortho tiles, pre-copy render output — kept
+out of `crop`/`hillshade` so those two only ever hold the canonical named pair), and task-queue
+bookkeeping under `.locks/`. Filenames key on `edr_product` (`M1327210646CE` →
+`crop/M1327210646CE_crop.cub`), matching `isis_wac.py`'s own scratch-dir convention; row lookup
+(`TrnTestDataSet[key]`) keys on `product_id` instead, matching `dataset.generate_dataset()`'s
+existing per-image folder convention — the two are always equal in today's real manifest, so this
+split is currently low-risk, just future-proofing.
+
+**The real WAC pipeline's own raw-EDR scratch** (`config.scratch_dir/isis_wac/<edr_product>/` —
+stitched cube, calibration intermediates) is deliberately *not* duplicated inside a
+`TrnTestDataSet`'s `_work/` — it stays in the shared scratch location, so two different datasets
+referencing the same `edr_product` reuse that real ISIS work (`isis_wac.run_pipeline`/
+`crop_for_camera` are already idempotent) instead of redoing it.
+
+**`isis_wac.run_isd_generate_for_crop`'s sidecar is accurate, not just informational** — it exists
+specifically so `crop/<edr_product>_crop.json` truthfully describes `crop/<edr_product>_crop.cub`'s
+own dimensions and real acquisition time window, unlike a naive `isd_generate -i` run directly
+against a cropped Pushframe cube (see "`isd_generate -i` on an ISIS-`crop`ped Pushframe cube" above
+for the exact bug this patches: the crop's own `starting_ephemeris_time`/`ending_ephemeris_time`/
+`center_ephemeris_time` and `instrument_pointing.ck_table_start_time`/`ck_table_end_time` otherwise
+still read as if the crop started at the original, pre-`crop` cube's first line). **This does not
+make the sidecar usable for actual reprojection** — like any Pushframe ISD in this codebase,
+`usgscsm`'s `groundToImage` remains unreliable for that (see the `usgscsm` bug section above); real
+ground↔image lookups always go through `resolve_ground_to_image_model`/`ground_to_image_pixel`
+instead, regardless of this patch. The distinction matters: accuracy of the sidecar's own stated
+metadata and usability for reprojection are two separate properties, and this only fixes the first.
+
+**Live-validated on the real default candidate (`M1327210646CE`, `flip=true`/
+`framelet_order_reversed=true`)**: `crop/M1327210646CE_crop.json`'s `image_samples`/`image_lines`
+(704/980) exactly match `gdalinfo`'s real raster dimensions of `crop/M1327210646CE_crop.cub`.
+`starting_ephemeris_time` matches real `campt` output at the crop's own line 1 to **0.016s**, and
+`center_ephemeris_time` is exactly `(starting + ending) / 2` as expected. `ending_ephemeris_time`,
+however, is **~1.39s** off from real `campt` output at the crop's own last line (980) — suspiciously
+close to one whole `interframe_delay` (1.40625s here), not just numerical noise.
+
+**Traced, not a bug in this patch**: re-ran the identical `campt`-vs-`isd_generate` comparison
+directly on the full, *unpatched* stitched cube (`isis_wac.run_isd_generate`'s own pre-existing
+output, untouched by any of this feature's new code) and found the exact same pattern: `campt` at
+the full cube's **line 1** matches the ISD's `ending_ephemeris_time` (not `starting_ephemeris_time`)
+to within ~1.39s, while `campt` at the full cube's **last line** (3612) matches
+`starting_ephemeris_time` to within 0.017s. In other words, for this `flip=true` product, physical
+row 1 corresponds to the *chronologically last* framelet and the physical last row to the
+*chronologically first* one (consistent with `framestitch`'s `FLIP=TRUE` reordering, and with why
+`campt`-based lookups — which read the cube's own embedded, physically-correct-by-construction
+pointing data directly — remain the only trustworthy ground-to-image/image-to-ground path in this
+codebase). `isis_wac.run_isd_generate_for_crop` shifts the full-cube ISD's already-computed
+`starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` by one shared
+`time_offset_s`, so it faithfully **preserves** whatever gap already existed between
+`isd_generate`'s own `ending_ephemeris_time` and true chronological end on the full cube — it
+doesn't introduce a new one. This ~1-`interframe_delay` gap specifically on `ending_ephemeris_time`
+(not `starting_ephemeris_time`) is therefore a pre-existing characteristic of `isd_generate -i`'s
+own output for this flip direction, most plausibly an exclusive-fencepost convention (`ending` =
+one frame *past* the last real sample, not the last sample's own time) — never previously noticed
+because `docs/history.md`'s own investigation already confirmed `ck_table_end_time`/`ending_
+ephemeris_time` have zero effect on `mapproject`'s output either way (`starting_ephemeris_time` is
+the one field CSM interpolation actually keys off), so nothing before this feature ever checked its
+absolute accuracy against `campt`. Not investigated further (out of scope for a field that was
+already known not to affect reprojection); worth reopening only if a future consumer starts relying
+on `ending_ephemeris_time`'s own absolute accuracy, or if a `flip=false` product ever shows a
+different-shaped discrepancy (in which case the fencepost hypothesis above would be a good first
+thing to test directly, rather than re-deriving this investigation from scratch).
+
 **Why a constant correction rotation doesn't work, despite the "frame-relative constant offset"
 signature initially suggesting one would**: a Wahba fit from real correspondences can only ever
 recover the rotation that's *actually true* — and that's already proven to equal

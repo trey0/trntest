@@ -2129,3 +2129,133 @@ points resolved on both candidates with no dropped points or warnings. Visually 
 extracted Phase 5A/6A/7 comparison figures directly (not just "it ran") -- real, sane, geo-aligned
 lunar terrain with tie points landing on the same features across the synthetic render, the real
 WAC crop, and the hillshade basemap.
+
+## Phase 33 (2026-08-13) — Implemented `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage`
+
+Implemented the design `docs/dataset-plan.md` laid out in a prior planning-only session (see that
+file's own header): a structured, self-contained dataset folder (`manifest.csv` + `crop`/
+`hillshade`/`reproject` subfolders) with a filesystem-based, multi-worker-safe task queue, replacing
+`dataset.generate_dataset()`'s flat, all-at-once layout as the notebook-facing generation path.
+`dataset.generate_dataset()` itself is untouched -- still used by `select_dataset`'s per-candidate
+illumination sweep, just no longer what either notebook calls for its own single-image generation.
+
+New `src/trntest/trn_dataset.py`: `TrnTestDataSet` (`create`/`open`, `__len__`/`__iter__`/
+`__getitem__` by index or `product_id`, `populate`/`status`), `TrnTestEntry` (one manifest row's
+shared, `functools.cached_property`-cached state -- camera, frame timing, the real WAC pipeline's
+stitched/cropped cubes, DEM/ortho), and `TrnTestImage` (abstract; `TrnTestCropImage`/
+`TrnTestHillshadeImage` concrete) owning the shared `exists`/`generate`/`plot_vs_basemap`/
+`plot_overlay` logic once per product type, matching the design's "real code reuse, not just a
+naming convenience" framing. The task queue (`.locks/<product_id>_<product_type>.lock`/`.error`,
+claimed via `os.O_CREAT | os.O_EXCL`) is safe across separate OS processes with zero extra
+machinery, consistent with this project's existing rule that SPICE state is process-global and
+unsafe across concurrent calls *within* one process -- `populate()` itself stays a simple sequential
+loop, as designed.
+
+Two new small supporting pieces, both exactly as scoped: `isis_wac.run_isd_generate_for_crop`
+(crop-scoped `isd_generate -i` + the same `time_offset_s` ephemeris-time patch formula this
+project's history already validated once, re-implemented fresh since the original code was fully
+removed after that investigation moved on to the deeper `usgscsm` bug -- see `docs/data-sources.md`'s
+"`isd_generate -i` on an ISIS-`crop`ped Pushframe cube" entry and its new follow-up section), and
+`lunaserv.result_from_files` (pure-IO reconstruction of a `LunaservResult` from an already-fetched
+ortho/DEM pair, reading `bbox`/`width`/`height` back from the ortho's own embedded georeferencing --
+this is what lets `TrnTestEntry.lunaserv_result` resume from a prior `generate()` run instead of
+re-fetching, the real mechanism behind `populate()`'s designed near-instant second run). A small,
+explicitly-optional refactor also landed: `dataset._per_image_config`, extracting the
+`dataclasses.replace(...)` construction `generate_dataset()`'s loop and `TrnTestEntry.per_image_config`
+both need, behavior-unchanged (confirmed by `test_dataset.py` passing unmodified).
+
+**Two deliberate deviations from `docs/dataset-plan.md`'s literal pseudocode**, found and resolved
+during implementation rather than assumed away:
+1. The design's `populate(self, product_types=PRODUCT_TYPES, retry_failed=False)` signature has no
+   row-count limit -- the task queue is inherently "every manifest row x every implemented product
+   type" by construction. But both notebooks' own "call `TrnTestDataSet.create(...)` with `images`"
+   wording, taken literally, would make `image_generation.ipynb`'s `populate()` call generate the
+   *entire* candidate table (commonly ~80 rows) instead of just the one image that notebook has
+   always rendered -- a real, undocumented cost blowup (single-image generation alone measured
+   ~19 minutes cold in this session's own validation run) that would have silently turned a routine
+   `scripts/run_notebook.sh` verification into an hours-long batch job. Resolved by having
+   `image_generation.py` pass `images.head(1)` to `create()`, matching `dataset.generate_dataset(...,
+   limit=1)`'s existing scope exactly; `data_set_selection.py`'s own `create()` call (cheap, no
+   `populate()`) still gets the full candidate table, as designed.
+2. `TrnTestImage.plot_overlay()`'s pseudocode names `plotting.plot_overlay` (the plain, single-state
+   overlay). But the notebook this replaces had already switched to `plotting.plot_overlay_toggle`
+   (the clickable on/off comparison, added the commit immediately before `docs/dataset-plan.md` was
+   written) for exactly this call site -- reverting to the plain version here would have been a real,
+   silent UX regression, not a neutral relocation of existing logic. Used `plot_overlay_toggle`
+   instead; noted in the method's own docstring so the deviation is visible in the code, not just
+   here.
+
+New `tests/test_trn_dataset.py` (19 tests, `tmp_path` + fakes, no real SPICE/ASP/ISIS) covers
+`create`/`open`, indexing, exact path naming, the shared `TrnTestImage` base-class logic (via a
+minimal fake subclass), and the task queue's four states/atomicity/`populate()` including the
+failure-and-continue and `retry_failed` paths -- all passing, alongside the full 137-test suite
+(unmodified pre-existing tests included) and a clean `trntest-lint --all`.
+
+**A genuine, unrelated infrastructure bug found and fixed along the way**: `trntest-lint --all`
+(which shells out to `git`) failed inside this worktree's Docker container with "not a git
+repository" -- a linked git worktree's `.git` is a *file* pointing at the main checkout's real
+`.git` by absolute host path, and that path wasn't covered by `docker-compose.yml`'s `..:/workspace`
+mount (which only covers the worktree's own directory). Fixed by mounting the main checkout's real
+git-common-dir at that same absolute path (read-only), computed by `scripts/setup_worktree_docker_env.sh`
+by parsing the worktree's `.git` file directly rather than trusting `git rev-parse`'s own path
+resolution -- the latter silently resolves through the `trntest_ws` relocation symlink from earlier
+this session, while the literal path git's own worktree admin files expect is the *unresolved* one.
+Safe no-op default for the main checkout (which needs no such mount), verified both ways.
+
+**Real-Docker verification** (`scripts/run_notebook.sh` for both notebooks, per `docs/dataset-plan.md`'s
+"Verification plan"): both ran clean, no errors. `data_set_selection.ipynb` re-selected the same
+`M1327210646CE` product (13.4s, warm cache). `image_generation.ipynb`'s `dataset.populate()` cell --
+the real end-to-end exercise of every new code path, including `run_isd_generate_for_crop` -- took
+12.08s on a warm cache; **re-running the whole notebook a second time dropped that same cell to
+0.87s**, confirming both the task queue's "done" skip and `TrnTestEntry.lunaserv_result`'s
+file-based resume path (`lunaserv.result_from_files`) work as designed. `trntest-lint --all` clean
+afterward, including the notebook sync/warnings checks.
+
+**Empirical visual check** (extracted and viewed the embedded images directly, not just "it ran"):
+Phase 5A/6A (`plot_vs_basemap`) both show real, sensibly-aligned lunar terrain with all 5 tie points
+landing on matching features in both panels; Phase 5B/6B (`plot_overlay_toggle`) both show a
+well-formed footprint outline over real terrain in both toggle states, not offset or blank.
+
+**Crop ISD accuracy check** -- see `docs/data-sources.md`'s new "`TrnTestDataSet` on-disk layout,
+and the crop ISD sidecar's real accuracy" section for the full numbers and investigation. Summary:
+dimensions match `gdalinfo` exactly; `starting_ephemeris_time` matches real `campt` output to
+0.016s; `ending_ephemeris_time` is off by ~1.39s (~1 `interframe_delay`) -- traced directly (by
+re-running the same `campt`-vs-ISD comparison on the pre-existing, unpatched full-cube ISD) to a
+pre-existing `isd_generate -i` characteristic for this `flip=true` product, not something this
+feature's new offset-shift logic introduced or got wrong; recorded as a known, characterized
+non-issue rather than either silently ignored or wrongly "fixed" based on a guess.
+
+**Follow-up, same day**: added `populate(limit=N)` -- stops after the call has done genuinely new
+work on `N` distinct entries (an entry already done/in-progress/failed doesn't consume the budget),
+so a large dataset's population can be split across multiple separate worker invocations against the
+same folder, each resuming from the on-disk task-queue state the last one left. Restructured
+`populate()`'s loop from `claim_next_task`'s flat cross-entry scan to an explicit per-entry loop to
+make "stop before starting a new entry" straightforward to express correctly; `claim_next_task`
+itself is unchanged and still independently tested. 3 new tests; full suite (140) still green.
+
+**Second follow-up, same day**: with `limit` now available, `image_generation.py`'s deviation #1
+above is gone -- switched back to passing the *full* manifest to `TrnTestDataSet.create(...)` (as
+the design doc originally specified) instead of the `images.head(1)` workaround, so `trn_dataset`'s
+own `manifest.csv` now always reflects the full candidate table regardless of which notebook wrote
+it last.
+
+**Caught before shipping, not after**: `populate(limit=1)` alone against the full manifest is
+*not* equivalent to the old `images.head(1)` behavior once entry 0 is already generated --
+`limit` counts distinct entries with genuinely *new* work done, so an already-done entry 0 doesn't
+consume the budget and the loop would instead claim and generate a *different*, never-before-seen
+manifest row -- a real, undisplayed, multi-minute cost, and a different row again on every
+subsequent re-run. Caught by walking through the semantics before wiring the notebook, not by a
+failed run. Fixed with a new `TrnTestDataSet.truncate(entries=None, product_types=PRODUCT_TYPES)`:
+deletes an entry's (or every entry's, or a list's) already-generated product files and task-queue
+lock/error state, reverting `task_state` back to `pending`. `image_generation.py` now calls
+`dataset.truncate(dataset[0])` immediately before `dataset.populate(limit=1)` -- since entries
+process in manifest order starting from 0, resetting entry 0 to `pending` first guarantees
+`populate(limit=1)` always lands on it and stops, never spilling into other rows regardless of
+their state. This also means the notebook deliberately gives up the "second run near-instant"
+property for its *render* step specifically -- appropriate for a demo notebook actively used while
+iterating on `render.py`/`isis_wac.py`, where silently reusing stale prior output would be
+misleading; `truncate()` leaves `_work/`'s DEM/ortho intermediates alone, so only the actual
+render/crop step re-runs, not the network fetches (confirmed: the truncate+populate cell measured
+4.44s on a warm cache in the real re-run below, not the ~12-19 minutes of a true cold generation).
+3 new tests (25 total in `test_trn_dataset.py`, 143 across the full suite); real Docker re-run of
+`image_generation.ipynb` confirmed clean (no errors, 48.5s total), `trntest-lint --all` clean.

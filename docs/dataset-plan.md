@@ -98,7 +98,11 @@ class TrnTestDataSet:
     def __iter__(self) -> Iterator["TrnTestEntry"]: ...
     def __getitem__(self, key: int | str) -> "TrnTestEntry": ...   # int=positional, str=product_id
 
-    def populate(self, product_types=("crop", "hillshade"), retry_failed: bool = False) -> None: ...
+    def populate(self, product_types=("crop", "hillshade"), retry_failed: bool = False, limit: int | None = None) -> None: ...
+    # limit, added post-implementation: stop after this call has done genuinely new work on `limit`
+    # distinct entries, so a batch population can be split across multiple separate worker
+    # invocations against the same folder -- see trn_dataset.py's own docstring for the exact
+    # semantics (an entry already done/in-progress/failed doesn't consume the budget).
     def status(self, product_types=("crop", "hillshade")) -> pd.DataFrame: ...   # queue progress table
 
 

@@ -490,6 +490,57 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
     return CropResult(cub_path=out_path)
 
 
+def run_isd_generate_for_crop(
+    crop: CropResult, camera: Camera, flip: bool, config: TrntestConfig | None = None
+) -> IsdGenerateResult:
+    """Generate a CSM Pushframe ISD for `crop` itself (the actual cropped cube ISIS's own `crop` app
+    produced), not the full stitched cube `run_isd_generate` is limited to -- so the resulting JSON's
+    own image dimensions/frame count are read from, and correctly reflect, the crop's real size, for
+    `trn_dataset.TrnTestCropImage`'s sidecar (see docs/dataset-plan.md's "Crop sidecar: accurate, not
+    just informational"). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
+    for actual reprojection** -- like any Pushframe ISD in this codebase, `usgscsm`'s `groundToImage`
+    isn't reliable enough for that (see the module docstring); real ground<->image lookups still go
+    through `resolve_ground_to_image_model`/`ground_to_image_pixel`, unaffected by any of this. This
+    exists purely so the sidecar sitting next to `crop.cub` accurately describes that same cube, on
+    principle, not a differently-sized one.
+
+    ISIS's `crop` app (even with its default `PROPSPICE=true`) does not re-anchor a Pushframe cube's
+    per-line pointing cache to the crop's new first line -- confirmed empirically (see
+    docs/data-sources.md's "`isd_generate -i` on an ISIS-`crop`ped Pushframe cube" entry): a naive
+    `isd_generate -i` against `crop.cub_path` produces a wrong-but-plausible-looking ISD whose
+    `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` and
+    `instrument_pointing.ck_table_start_time`/`ck_table_end_time` all read as if the crop still
+    started at the original, pre-crop cube's first line -- even though `ck_table_original_size` (also
+    under `instrument_pointing`) is correctly updated to the cropped line count. The underlying
+    `instrument_pointing.ephemeris_times`/`quaternions`/`angular_velocities` arrays are untouched by
+    `crop` and still hold the entire pass's real, absolute-time-tagged samples, so shifting just the
+    5 scalar time fields above by the crop's own real time offset is sufficient -- the same formula
+    previously validated in this repo's history (see docs/data-sources.md), reimplemented fresh here
+    since the original code was fully removed once that investigation moved on to the deeper
+    `usgscsm` bug this function's docstring (and the module's) describes.
+
+    `line_offset` -- how many lines into the *stitched* cube `crop.cub_path` actually starts -- comes
+    from `crop_window_for_camera(camera).row_off`, the exact same window `crop_for_camera` itself
+    cropped to."""
+    config = config or load_config()
+    json_path = crop.cub_path.with_suffix(".json")
+    run_quiet(["isd_generate", "-i", str(crop.cub_path), "-o", str(json_path)])
+    with open(json_path) as f:
+        isd = json.load(f)
+
+    line_offset = crop_window_for_camera(camera).row_off
+    time_offset_s = (line_offset / VIS_BLOCK_HEIGHT) * isd["interframe_delay"]
+    for key in ("starting_ephemeris_time", "ending_ephemeris_time", "center_ephemeris_time"):
+        isd[key] += time_offset_s
+    for key in ("ck_table_start_time", "ck_table_end_time"):
+        isd["instrument_pointing"][key] += time_offset_s
+    isd["framelet_order_reversed"] = flip
+
+    with open(json_path, "w") as f:
+        json.dump(isd, f)
+    return IsdGenerateResult(json_path=json_path)
+
+
 @dataclasses.dataclass(frozen=True)
 class GroundToImageModel:
     """Which camera-model authority `ground_to_image_pixel` should query for a given crop, and why --

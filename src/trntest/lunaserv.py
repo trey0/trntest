@@ -476,6 +476,22 @@ def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path,
         dst.write(shaded, 1)
 
 
+def result_from_files(ortho_path: Path, dem_path: Path) -> LunaservResult:
+    """Reconstruct a `LunaservResult` from an already-generated ortho/DEM pair on disk -- pure IO, no
+    fetching -- so `trn_dataset.TrnTestEntry.lunaserv_result` can resume from a prior `generate()`
+    run's output instead of re-fetching from Lunaserv/Astropedia. `bbox`/`width`/`height` are read
+    back from `ortho_path`'s own embedded georeferencing rather than recomputed or stored separately
+    -- `_reproject_raster_to_local_grid` (via `despeckle_and_shade_ortho`, which carries the fetched
+    ortho's own `profile` through unchanged) writes `dst_transform`/`dst_crs` from exactly this same
+    `bbox`/`width`/`height` at fetch time, so reading them back from the file is an exact
+    round-trip, not an approximation -- the same "raster's own georeferencing is authoritative"
+    pattern `isis_wac._orthographic_map_pvl` already relies on elsewhere."""
+    with rasterio.open(ortho_path) as src:
+        width, height = src.width, src.height
+        bbox = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
+    return LunaservResult(ortho=Path(ortho_path), dem=Path(dem_path), bbox=bbox, width=width, height=height)
+
+
 def fetch_dem_and_ortho(
     camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
 ) -> LunaservResult:
