@@ -2129,3 +2129,68 @@ points resolved on both candidates with no dropped points or warnings. Visually 
 extracted Phase 5A/6A/7 comparison figures directly (not just "it ran") -- real, sane, geo-aligned
 lunar terrain with tie points landing on the same features across the synthetic render, the real
 WAC crop, and the hillshade basemap.
+
+## Phase 33 (2026-08-13) — Fixed `plot_overlay_toggle`'s GitHub rendering: from a cosmetic patch to a real mechanism fix
+
+`plot_overlay_toggle` (added the previous session, `plotting.py`) worked correctly in a live
+JupyterLab kernel, but the user found afterward that GitHub's static `.ipynb` viewer rendered the
+"Toggle Overlay" control as plain text rather than a button -- contrary to the docstring's explicit
+claim that the earlier checkbox/`onchange` -> `<details>`/`<summary>` switch had been "confirmed" to
+produce "a real, working toggle in both a live kernel and GitHub's static viewer."
+
+Root-caused by reading GitHub's actual open-source HTML sanitizer directly rather than guessing:
+`gjtorikian/html-pipeline`'s `SanitizationFilter::DEFAULT_CONFIG` (the allowlist its `.ipynb`
+HTML-output rendering is built on) includes `details`/`summary`/`div`/`img` as elements and
+`id`/`width`/`height`/`open`/`name` as attributes, but `style` and `class` are not present anywhere
+in the config -- not per-element, not in its `all:` global list -- and there's no `<style>`/`<link>`
+in the element allowlist either. So the earlier validation (confirming inline `on*` event handlers
+are stripped, and that `<details>`/`<summary>` themselves survive) was correct as far as it went, but
+never actually tested the one thing both the "button" look and the pixel-stacked overlay mechanism
+depended on: `style="..."`. GitHub strips every `style` attribute in the markup while keeping every
+tag, degrading the control to a real, still-clickable but completely unstyled `<details>`/`<summary>`
+(native disclosure triangle plus label text, no button chrome -- easy to mistake for inert text,
+exactly as reported) with the overlay `<img>` (no longer `position:absolute`) falling into normal
+document flow *below* the base image on expand, rather than stacking exactly on top of it.
+
+First pass treated this as a cosmetic problem: gave the overlay `<img>` explicit `width=`/`height=`
+HTML attributes (not just matching `style`) and wrapped the label in `<strong>`, both of which
+survive sanitization, so the control at least reads as clickable instead of inert. That patch shipped,
+but left the actual mechanism -- a single `<details>` toggling a *second* image on top of an
+always-visible base -- still `style`-dependent for anything beyond "does it look clickable": on
+GitHub the overlay image would still land below the base rather than replacing it, and the user's
+real ask (confirmed when asked directly how confident the "no way to fix this" conclusion was) turned
+out to be about function, not looks -- rapid, repeated flipping between the two full images, not
+button styling.
+
+That reframing led to the real fix: `<details>` elements sharing one `name` attribute form a native
+"exclusive accordion" group (opening one auto-closes the other, like a two-option radio group) --
+shipped in Chrome 120 and Safari 17.2 (both Dec 2023), on by default in Firefox 130 (~mid-2025), so
+broadly supported by now, and `name` is a plain global HTML attribute (confirmed present in the same
+sanitizer's allowlist), not `style`. `_overlay_toggle_html` now renders two `<details name=...>`
+elements -- one per already-fully-rendered PNG (`overlay_alpha=0`/`overlay_alpha=1`, both complete
+standalone images, not a transparency layer) -- instead of one `<details>` toggling a second image on
+top of an unconditional base. Exclusivity, and therefore "exactly one image visible, real click-driven
+flipping," now works identically on both platforms without depending on `style` at all. Cosmetic
+concerns (button chrome, and -- live-kernel only, since GitHub strips `style` regardless of any
+markup choice -- pixel-exact stacking via `position:absolute`) are layered on top where `style`
+happens to survive, and degrade harmlessly (a real but plain toggle, images offset by roughly one
+summary row instead of pixel-registered) where it doesn't. Getting the pixel-exact live-kernel
+stacking right *and* keeping GitHub's plain fallback from silently reintroducing the earlier
+"positioned element paints over in-flow content" stacking-order bug required computing the image's
+`top` offset from the summary chrome's own known box model (explicit `height`/`padding`/`border`,
+not font-metric guesswork) rather than a fixed `top:0`.
+
+True pixel-registered, exact-same-screen-position overlay stacking remains impossible on GitHub's
+viewer specifically -- confirmed structurally, not just empirically: overlapping two same-size
+elements at identical coordinates requires *some* CSS positioning mechanism, and GitHub's sanitizer
+allows none (no `style`, no `class`, no `<style>`/`<link>`), so no markup can restore it there. That
+limit is unrelated to the actual ask, though, which this version now genuinely satisfies on both
+platforms.
+
+Confirmed against GitHub's own published sanitizer source rather than trying to scrape GitHub's live
+blob viewer (React-rendered, not server-rendered -- a plain HTTP fetch of the notebook's `blob` URL
+returns only the app shell, not the rendered notebook HTML); the `<details name>` grouping's own
+behavior was checked by parsing the regenerated `.ipynb`'s actual output HTML with `BeautifulSoup`
+(two `<details>` per toggle, same `name`, exactly one with `open`), not just by reasoning about it.
+`trntest-lint` clean; `scripts/run_notebook.sh notebooks/image_generation.py` re-executed end to end
+(real SPICE/WMS/`sat_sim`/ISIS pipeline).

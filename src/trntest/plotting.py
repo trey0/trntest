@@ -663,29 +663,26 @@ def plot_overlay_toggle(
     initial_visible: bool = True,
 ):
     """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at
-    both `overlay_alpha=0` and `overlay_alpha=1` and displays them stacked behind a clickable
-    `<details>`/`<summary>` disclosure that swaps between them -- "blinking" the overlay on and off to
+    both `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid PNGs ("base
+    only" and "with overlay"), not a transparent layer meant to be blended by the browser -- and
+    displays them behind two mutually-exclusive `<details name=...>` disclosures, one per PNG:
+    clicking either one shows that image and hides the other, "blinking" the overlay on and off to
     compare it against the base at full clarity each way, rather than a partial blend of both at once
     (a blend makes it hard to tell which pixels are the overlay's own content versus the base showing
     through -- see `plot_overlay`'s docstring -- exactly when that distinction matters most, e.g.
     debugging a not-yet-correct overlay).
 
-    This works by exploiting the fact that a browser compositing a partially/fully-opaque image over
-    another produces the exact same per-pixel blend matplotlib's own `imshow(..., alpha=...)` does in
-    a single pass -- so two pre-rendered, pixel-aligned PNGs (one per `overlay_alpha` endpoint) stacked
-    in the DOM, with the top one shown/hidden by expanding/collapsing the `<details>` wrapping it,
-    reproduce `plot_overlay(overlay_alpha=0)`/`plot_overlay(overlay_alpha=1)` exactly, without
-    re-running this function or recomputing anything per click.
+    Two `<details>` elements sharing one `name` form a native "exclusive accordion" group -- opening
+    one auto-closes the other, like a two-option radio group, no JavaScript or CSS required for the
+    exclusivity itself (shipped in Chrome 120 / Safari 17.2, both Dec 2023; Firefox 130 turned it on
+    by default around mid-2025, so it's broadly supported by now). This replaced an earlier
+    single-`<details>` version (base always shown, a second `<details>` stacked exactly on top of it
+    via CSS `position:absolute`) after the user found that GitHub's static `.ipynb` viewer doesn't
+    honor the `style` attribute that CSS-based stacking depends on -- see `_overlay_toggle_html`'s
+    docstring for the confirmed mechanism, and exactly what does and doesn't survive there.
 
-    `<details>`'s expand/collapse is native browser behavior, no JavaScript involved -- unlike an
-    earlier version of this function that used a checkbox with an inline `onchange` handler instead,
-    which turned out to be inert both on GitHub's static `.ipynb` viewer *and* in a live JupyterLab
-    kernel (confirmed against JupyterLab's own installed HTML-sanitizer bundle: no tag's attribute
-    allowlist includes any `on*` handler; GitHub's renderer strips them too). `<details>`'s `open`
-    attribute is in that same sanitizer's allowlist, and `<details>`/`<summary>` is a standard,
-    intentionally-supported GitHub Flavored Markdown feature, so this version is a real, working
-    toggle in both places. `initial_visible` (default `True`, matching `plot_overlay`'s own
-    `overlay_alpha=1.0` default) sets `<details>`'s starting `open` state.
+    `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
+    picks which of the two `<details>` starts `open`.
 
     Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
     cell (no trailing `;`) to actually display."""
@@ -768,55 +765,99 @@ def _render_overlay_png(
 
 
 def _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible: bool, element_id: str, width_px, height_px):
-    """The actual on/off-toggle markup: a base `<img>` with the fully-transparent-overlay render,
-    plus a native `<details>`/`<summary>` disclosure whose content is the second `<img>` (the
-    fully-opaque-overlay render), absolutely positioned on top of the base. `<details>` toggles its
-    content's visibility via plain browser behavior, no JavaScript or event handler required -- a
-    real, previous attempt at this used a checkbox with an inline `onchange` handler instead, and
-    that turned out to render but do nothing: both JupyterLab's own HTML output sanitizer (confirmed
-    directly against its installed `@jupyterlab/apputils` bundle -- no tag's attribute allowlist
-    includes any `on*` handler) and GitHub's `.ipynb` renderer strip inline event handlers, so it was
-    inert everywhere, not just on GitHub as originally planned for. `<details>`'s `open` attribute is
-    explicitly in that same sanitizer's allowlist (and `<details>`/`<summary>` are a standard,
-    intentionally-supported GitHub Flavored Markdown feature), so this version is a real, working
-    toggle in both a live kernel and GitHub's static viewer -- actually reaching the "no JavaScript"
-    goal this was originally built around, not just degrading gracefully without it.
-    `element_id` namespaces the `id` attribute so multiple toggles in one notebook (e.g. this repo's
-    Phase 5B and 6B cells) don't collide.
+    """The actual toggle markup: two `<details name="{element_id}">` elements, one per PNG
+    (`overlay_png_b64` = `overlay_alpha=1`, `base_png_b64` = `overlay_alpha=0`), sharing one `name` so
+    the browser enforces mutual exclusion -- opening either one auto-closes the other, so exactly one
+    of the two full images is selected at all times, without JavaScript, without CSS, and without
+    depending on which one happens to already be open (unlike a single on/off `<details>`, which only
+    toggles starting from "closed"). This is the browser-native "exclusive accordion" pattern
+    (`<details>` grouped by `name`, like radio inputs) -- shipped in Chrome 120 and Safari 17.2 (both
+    Dec 2023), turned on by default in Firefox 130 (~mid-2025), so it's broadly supported by now.
+    `name` is a plain global HTML attribute, not `style`, so this mechanism survives GitHub's static
+    `.ipynb` viewer, unlike the CSS-stacking approach this replaced.
 
-    The overlay `<img>` is given an *explicit* pixel size matching the wrapper, rather than left to
-    size itself from its content -- confirmed empirically necessary, not just defensive: JupyterLab
-    applies its own `max-width: 100%` to `<img>` tags in rendered output, and without an explicit
-    size that resolves against whatever the image's containing block happens to be, which isn't
-    always the 900px wrapper (an earlier version, with `<details>` itself absolutely positioned and
-    unsized, shrank the whole thing down to its `<summary>` badge's own tiny width). Pinning the
-    image's own size removes the ambiguity outright.
+    That earlier version showed the base `<img>` unconditionally and stacked a second `<img>` exactly
+    on top of it via `position:absolute`, toggled by one `<details>`. It looked and worked perfectly
+    in a live JupyterLab kernel, but the user found afterward that GitHub's static viewer rendered the
+    toggle as inert-looking plain text. Root cause, confirmed against GitHub's own open-source
+    sanitizer (`gjtorikian/html-pipeline`'s `SanitizationFilter::DEFAULT_CONFIG`, the allowlist
+    backing its `.ipynb` HTML-output rendering): `details`/`summary`/`div`/`img` and the
+    `id`/`width`/`height`/`open`/`name` attributes are all present in that allowlist, but `style` is
+    not present anywhere in it -- not per-element, not in its `all:` global list -- and neither is
+    `class` (so no external-stylesheet workaround exists either, and there's no `<style>`/`<link>` in
+    the element allowlist to define one inline). GitHub strips every inline style while keeping every
+    tag, so the *tag choice* (`<details>`/`<summary>` over a checkbox+`onchange`, already confirmed
+    dead everywhere -- inline event handlers don't survive any sanitizer, JupyterLab's own included)
+    was right, but a mechanism built entirely out of `style` -- both the button chrome and the
+    pixel-exact stacking -- could only ever work somewhere that honors `style`. That's a structural
+    fact about GitHub's sanitizer, not a markup bug: there is no CSS-free way to overlay two same-size
+    elements at the exact same on-screen position, so a true pixel-registered blink is only ever
+    achievable in a live kernel, on any hosting platform, not just this one.
 
-    `<summary>` (the clickable "Toggle Overlay" control) is deliberately placed *below* the image
-    rather than overlapping it -- `<details>` is left in normal document flow (not absolutely
-    positioned) so it renders after the base `<img>` in the stack, with `text-align:center` on
-    `<details>` and `display:inline-block` on `<summary>` centering the button under the image. This
-    also sidesteps a real stacking-order bug an earlier, overlapping-button version had: CSS always
-    paints *positioned* elements (the overlay `<img>`, `position:absolute`) above plain in-flow
-    content within the same containing block regardless of DOM order, which silently hid the button
-    entirely underneath the full-size image. With the two no longer overlapping at all, that whole
-    class of bug is moot rather than patched around.
+    This version fixes the underlying mechanism instead of patching around it: exclusivity now comes
+    from `name` grouping, which survives everywhere, rather than `style`-dependent show/hide -- so a
+    real, single-image-at-a-time flip works on both platforms. The button look and (live-kernel-only)
+    pixel-exact stacking are layered on top via `style` where it happens to be honored, and degrade
+    harmlessly where it's stripped:
 
-    `initial_visible` sets `<details>`'s own `open` attribute (default `True`, matching
-    `plot_overlay`'s own `overlay_alpha=1.0` default), i.e. whether the overlay starts expanded."""
-    open_attr = "open" if initial_visible else ""
+    - Both `<details>` are left in normal document flow (not absolutely positioned), so their two
+      `<summary>`s always render as a small stack of two always-visible, always-clickable controls,
+      regardless of which one is open. Each `<summary>` is given an explicit, fixed-height CSS box
+      (`height`/`padding`/`border`, not just font-driven sizing) so its rendered height in a live
+      kernel is a value this function already knows (`summary_box_height_px` below), not a guess.
+    - Each `<img>` is `position:absolute`, at `top:` *both* summary rows' combined height (plus a
+      small safety margin) -- not `top:0` -- so in a live kernel the two PNGs stack pixel-exact on top
+      of each other, below both summaries rather than under/over them. CSS always paints positioned
+      elements above in-flow content in the same containing block regardless of DOM order -- this
+      function's first version discovered that the hard way (a single `<summary>` sharing a
+      containing block with an absolutely-positioned image at `top:0` got painted over and hidden
+      entirely), and this version avoids it by construction, not by the accident of the base image
+      happening to occupy that same space this function's first version relied on.
+    - On GitHub, every `style` above is stripped: each `<details>` shrinks to just its own
+      `<summary>`'s native (unstyled) height, and each `<img>` falls out of `position:absolute` back
+      into normal flow, appearing directly below its own `<summary>` instead of pixel-stacked. Still
+      exactly one image at a time either way (`name` grouping needs no `style` to work) -- just
+      offset by roughly one summary row depending on which of the two is open, rather than perfectly
+      in place. A real, working flip on both platforms, not the same experience on both.
+
+    `width=`/`height=` HTML attributes (not just matching `style`) are given to both `<img>`s so
+    sizing is correct regardless of whether `style` survives. `element_id` (used as the shared `name`)
+    namespaces this toggle so multiple toggles in one notebook (e.g. this repo's Phase 5B and 6B
+    cells) form separate exclusive groups rather than one combined one.
+
+    `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
+    picks which `<details>` starts `open` -- always exactly one, never both: a `name` group with more
+    than one `open` `<details>` at parse time is browser-defined-but-inconsistent, so this never
+    produces that state."""
+    summary_line_height_px = 20
+    summary_padding_v_px = 4
+    summary_border_px = 1
+    # Load-bearing, not decorative: the `top` offset below assumes zero margin between the two
+    # stacked `<details>`, matching this function's own summary_box_height_px math exactly.
+    summary_box_height_px = summary_line_height_px + 2 * summary_padding_v_px + 2 * summary_border_px
+    img_top_px = 2 * summary_box_height_px + 4
+    total_height_px = img_top_px + height_px
+
+    summary_style = (
+        "cursor:pointer; list-style:none; display:inline-block; background:#f0f0f0; color:#000; "
+        f"border:{summary_border_px}px solid #999; border-radius:4px; padding:{summary_padding_v_px}px 12px; "
+        f"font-size:0.9em; height:{summary_line_height_px}px; line-height:{summary_line_height_px}px; margin:0;"
+    )
+    img_style = f"position:absolute; top:{img_top_px}px; left:0; width:{width_px}px; height:{height_px}px;"
+    wrapper_style = (
+        f"position:relative; display:inline-block; width:{width_px}px; height:{total_height_px}px; text-align:center;"
+    )
+    overlay_open, base_open = ("open", "") if initial_visible else ("", "open")
+
     return f"""\
-<div style="position:relative; display:inline-block; width:{width_px}px; height:{height_px}px;">
-  <img src="data:image/png;base64,{base_png_b64}" width="{width_px}" height="{height_px}"
-       style="display:block; width:{width_px}px; height:{height_px}px;">
-  <details id="{element_id}" {open_attr} style="display:block; width:{width_px}px; text-align:center; margin-top:4px;">
-    <summary style="cursor:pointer; list-style:none; display:inline-block; background:#f0f0f0;
-                     color:#000; border:1px solid #999; border-radius:4px; padding:4px 12px;
-                     font-size:0.9em;">
-      Toggle Overlay
-    </summary>
-    <img src="data:image/png;base64,{overlay_png_b64}"
-         style="position:absolute; top:0; left:0; width:{width_px}px; height:{height_px}px;">
+<div style="{wrapper_style}">
+  <details name="{element_id}" {overlay_open} style="display:block; margin:0;">
+    <summary style="{summary_style}"><strong>With overlay</strong></summary>
+    <img src="data:image/png;base64,{overlay_png_b64}" width="{width_px}" height="{height_px}" style="{img_style}">
+  </details>
+  <details name="{element_id}" {base_open} style="display:block; margin:0;">
+    <summary style="{summary_style}"><strong>Base only</strong></summary>
+    <img src="data:image/png;base64,{base_png_b64}" width="{width_px}" height="{height_px}" style="{img_style}">
   </details>
 </div>
 """
