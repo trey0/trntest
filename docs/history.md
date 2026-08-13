@@ -2251,3 +2251,14 @@ result on `github.com` itself was left for the user to confirm live, rather than
 `scripts/run_notebook.sh notebooks/image_generation.py` re-executed end to end (real
 SPICE/WMS/`sat_sim`/ISIS pipeline); regenerated `.ipynb` output inspected directly (both toggle
 instances contain the expected `:target` CSS and matching `<a>`/`<span>`/`<img>` ids).
+
+**Live github.com result for the Phase 34 version (2026-08-13, commit `6336314`)**, as viewed/pasted by
+the user directly from the rendered page for the first (5B) toggle instance:
+
+```html
+<div style="position:relative; display:inline-block; width:900px; height:934px; text-align:center;">
+  
+  <a href="//github.com/trey0/trntest/blob/6336314479a08fce6b316743d321ca1e53e650cb/notebooks/#overlay-toggle-8516d1c8-with" style="cursor:pointer; display:inline-block; background:#f0f0f0; color:#000; text-decoration:none; border:1px solid #999; border-radius:4px; padding:4px 12px; font-size:0.9em; height:20px; line-height:20px; margin:0 4px 0 0;"><strong>With overlay</strong></a>
+  <a href="[truncated]" width="900" height="900" style="position:absolute; top:34px; left:0; width:900px; height:900px;">
+</div>
+```
