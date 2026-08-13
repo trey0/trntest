@@ -665,24 +665,25 @@ def plot_overlay_toggle(
     """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at
     both `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid PNGs ("base
     only" and "with overlay"), not a transparent layer meant to be blended by the browser -- and
-    displays them behind two mutually-exclusive `<details name=...>` disclosures, one per PNG:
-    clicking either one shows that image and hides the other, "blinking" the overlay on and off to
-    compare it against the base at full clarity each way, rather than a partial blend of both at once
-    (a blend makes it hard to tell which pixels are the overlay's own content versus the base showing
-    through -- see `plot_overlay`'s docstring -- exactly when that distinction matters most, e.g.
-    debugging a not-yet-correct overlay).
+    displays them behind two mutually-exclusive controls, one per PNG: clicking either one shows that
+    image and hides the other, "blinking" the overlay on and off to compare it against the base at
+    full clarity each way, rather than a partial blend of both at once (a blend makes it hard to tell
+    which pixels are the overlay's own content versus the base showing through -- see `plot_overlay`'s
+    docstring -- exactly when that distinction matters most, e.g. debugging a not-yet-correct overlay).
 
-    Two `<details>` elements sharing one `name` form a native "exclusive accordion" group -- opening
-    one auto-closes the other, like a two-option radio group, no JavaScript or CSS required for the
-    exclusivity itself (shipped in Chrome 120 / Safari 17.2, both Dec 2023; Firefox 130 turned it on
-    by default around mid-2025, so it's broadly supported by now). This replaced an earlier
-    single-`<details>` version (base always shown, a second `<details>` stacked exactly on top of it
-    via CSS `position:absolute`) after the user found that GitHub's static `.ipynb` viewer doesn't
-    honor the `style` attribute that CSS-based stacking depends on -- see `_overlay_toggle_html`'s
-    docstring for the confirmed mechanism, and exactly what does and doesn't survive there.
+    Two earlier versions of this were built and both failed on GitHub's static `.ipynb` viewer despite
+    being validated at the time -- see `_overlay_toggle_html`'s docstring for the full mechanism this
+    settled on (CSS `:target`, not `<details>`) and why: the first version (a single `<details>`
+    stacking a second image on top via `position:absolute`) rendered as inert-looking plain text
+    because that reasoning was never checked against GitHub's *actual* renderer for `.ipynb` files --
+    `notebooks.githubusercontent.com`, a separate service from the `html-pipeline` Ruby sanitizer that
+    backs README/markdown rendering, which is what the fix that followed (`<details name=...>`
+    exclusive-accordion groups) was mistakenly validated against instead. Its client-side JS sanitizer
+    (DOMPurify, with a hardcoded custom tag allowlist) doesn't include `details`/`summary` at all, so
+    both versions degraded to unwrapped, inert text on GitHub specifically.
 
     `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
-    picks which of the two `<details>` starts `open`.
+    picks which image is shown before either control is clicked.
 
     Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
     cell (no trailing `;`) to actually display."""
@@ -765,99 +766,107 @@ def _render_overlay_png(
 
 
 def _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible: bool, element_id: str, width_px, height_px):
-    """The actual toggle markup: two `<details name="{element_id}">` elements, one per PNG
-    (`overlay_png_b64` = `overlay_alpha=1`, `base_png_b64` = `overlay_alpha=0`), sharing one `name` so
-    the browser enforces mutual exclusion -- opening either one auto-closes the other, so exactly one
-    of the two full images is selected at all times, without JavaScript, without CSS, and without
-    depending on which one happens to already be open (unlike a single on/off `<details>`, which only
-    toggles starting from "closed"). This is the browser-native "exclusive accordion" pattern
-    (`<details>` grouped by `name`, like radio inputs) -- shipped in Chrome 120 and Safari 17.2 (both
-    Dec 2023), turned on by default in Firefox 130 (~mid-2025), so it's broadly supported by now.
-    `name` is a plain global HTML attribute, not `style`, so this mechanism survives GitHub's static
-    `.ipynb` viewer, unlike the CSS-stacking approach this replaced.
+    """The actual toggle markup: two `<a href="#...">` links plus a CSS `:target`-driven `<style>`
+    block, not `<details>`/`<summary>`. Both earlier versions of this function used `<details>` (first
+    stacked via `position:absolute`/CSS, then made exclusive via a shared `name` attribute) and both
+    were validated -- wrongly -- against `gjtorikian/html-pipeline`'s `SanitizationFilter`, the Ruby
+    sanitizer that backs GitHub's README/markdown rendering. That's the wrong sanitizer: a `.ipynb`
+    blob on github.com is rendered by a completely separate service, embedded via
+    `<iframe src="https://notebooks.githubusercontent.com/view/ipynb?...">` (confirmed by fetching an
+    actual blob page and reading its embedded `displayUrl`, then fetching that URL directly -- it
+    returns a static HTML shell whose `<script>` sets `window.NOTEBOOK_DATA = {"html": "..."}`, and a
+    separate client-side JS bundle (`/static/dist/bundle-*.js`, confirmed by fetching it directly) runs
+    that HTML through DOMPurify before inserting it into the page). That bundle's own
+    `app/static/js/html-sanitizer.ts` (readable in the unminified-enough bundle source) hardcodes its
+    own `ALLOWED_TAGS`, unrelated to html-pipeline's:
 
-    That earlier version showed the base `<img>` unconditionally and stacked a second `<img>` exactly
-    on top of it via `position:absolute`, toggled by one `<details>`. It looked and worked perfectly
-    in a live JupyterLab kernel, but the user found afterward that GitHub's static viewer rendered the
-    toggle as inert-looking plain text. Root cause, confirmed against GitHub's own open-source
-    sanitizer (`gjtorikian/html-pipeline`'s `SanitizationFilter::DEFAULT_CONFIG`, the allowlist
-    backing its `.ipynb` HTML-output rendering): `details`/`summary`/`div`/`img` and the
-    `id`/`width`/`height`/`open`/`name` attributes are all present in that allowlist, but `style` is
-    not present anywhere in it -- not per-element, not in its `all:` global list -- and neither is
-    `class` (so no external-stylesheet workaround exists either, and there's no `<style>`/`<link>` in
-    the element allowlist to define one inline). GitHub strips every inline style while keeping every
-    tag, so the *tag choice* (`<details>`/`<summary>` over a checkbox+`onchange`, already confirmed
-    dead everywhere -- inline event handlers don't survive any sanitizer, JupyterLab's own included)
-    was right, but a mechanism built entirely out of `style` -- both the button chrome and the
-    pixel-exact stacking -- could only ever work somewhere that honors `style`. That's a structural
-    fact about GitHub's sanitizer, not a markup bug: there is no CSS-free way to overlay two same-size
-    elements at the exact same on-screen position, so a true pixel-registered blink is only ever
-    achievable in a live kernel, on any hosting platform, not just this one.
+        HTML_TAGS = [body, b, blockquote, br, code, dd, del, div, dl, dt, em, h1-h8, hr, i, img,
+                     ins, kbd, li, ol, p, pre, q, rp, rt, ruby, s, samp, span, strike, strong,
+                     sub, sup, table, tbody, td, tfoot, th, thead, tr, tt, ul, var]
+        SVG_TAGS  = [a, animate*, circle, ..., foreignObject, g, ..., style, svg, symbol, ...]
 
-    This version fixes the underlying mechanism instead of patching around it: exclusivity now comes
-    from `name` grouping, which survives everywhere, rather than `style`-dependent show/hide -- so a
-    real, single-image-at-a-time flip works on both platforms. The button look and (live-kernel-only)
-    pixel-exact stacking are layered on top via `style` where it happens to be honored, and degrade
-    harmlessly where it's stripped:
+    `details`/`summary` are not in either list -- not stripped of attributes, *removed entirely*, with
+    DOMPurify's default `KEEP_CONTENT` behavior re-parenting their children in place. That's exactly
+    what both earlier versions looked like on GitHub: the `<strong>` label text left sitting inert
+    where the `<summary>` used to be, followed by the image(s) fallen into plain document flow --
+    "plain bold text, not clickable, no way to switch the overlay" is `<details>`/`<summary>` being
+    unwrapped, not a styling problem. (The `style` *attribute*, unlike the two `<details>`/`<summary>`
+    *tags* built around it, was never actually the blocker here: it's present in DOMPurify's default
+    attribute allowlist and this sanitizeContent() call passes no `ALLOWED_ATTR` override, so `style`
+    survives fine -- the second version's whole "GitHub strips `style`" premise was itself a
+    consequence of reading the wrong sanitizer's config.)
 
-    - Both `<details>` are left in normal document flow (not absolutely positioned), so their two
-      `<summary>`s always render as a small stack of two always-visible, always-clickable controls,
-      regardless of which one is open. Each `<summary>` is given an explicit, fixed-height CSS box
-      (`height`/`padding`/`border`, not just font-driven sizing) so its rendered height in a live
-      kernel is a value this function already knows (`summary_box_height_px` below), not a guess.
-    - Each `<img>` is `position:absolute`, at `top:` *both* summary rows' combined height (plus a
-      small safety margin) -- not `top:0` -- so in a live kernel the two PNGs stack pixel-exact on top
-      of each other, below both summaries rather than under/over them. CSS always paints positioned
-      elements above in-flow content in the same containing block regardless of DOM order -- this
-      function's first version discovered that the hard way (a single `<summary>` sharing a
-      containing block with an absolutely-positioned image at `top:0` got painted over and hidden
-      entirely), and this version avoids it by construction, not by the accident of the base image
-      happening to occupy that same space this function's first version relied on.
-    - On GitHub, every `style` above is stripped: each `<details>` shrinks to just its own
-      `<summary>`'s native (unstyled) height, and each `<img>` falls out of `position:absolute` back
-      into normal flow, appearing directly below its own `<summary>` instead of pixel-stacked. Still
-      exactly one image at a time either way (`name` grouping needs no `style` to work) -- just
-      offset by roughly one summary row depending on which of the two is open, rather than perfectly
-      in place. A real, working flip on both platforms, not the same experience on both.
+    `div`, `a`, `span`, `img`, and -- notably -- `style` *as a tag* are all present in the real
+    allowlist above (`style` via the SVG list; DOMPurify special-cases `style`/`a`/`font`/`title` so
+    they also work in plain HTML namespace, not just inside `<svg>`, specifically so they aren't
+    "erroneously deleted from HTML namespace" -- straight from that library's own source comment).
+    That's enough to build a real, no-JavaScript toggle out of the CSS `:target` pseudo-class instead
+    of `<details>`:
 
-    `width=`/`height=` HTML attributes (not just matching `style`) are given to both `<img>`s so
-    sizing is correct regardless of whether `style` survives. `element_id` (used as the shared `name`)
-    namespaces this toggle so multiple toggles in one notebook (e.g. this repo's Phase 5B and 6B
-    cells) form separate exclusive groups rather than one combined one.
+    - Two `<a href="#{element_id}-with">` / `<a href="#{element_id}-base">` links, styled to look like
+      buttons.
+    - Two empty `<span id="{element_id}-with">` / `<span id="{element_id}-base">` anchor targets,
+      siblings of the two `<img>`s within the same wrapping `<div>`.
+    - A `<style>` block (plain tag content, not an attribute -- survives the same allowlist check) with
+      `:target`-conditioned rules: clicking a link sets the page's URL fragment to that link's `href`,
+      which makes the matching `<span>` match `:target`, which (via the CSS general-sibling combinator
+      `~`, matching any later sibling in the same parent regardless of what's between them) shows its
+      image and hides the other. A separate, unconditional rule shows `initial_visible`'s image by
+      default, before either link has ever been clicked (there is no `:target` at all until one is).
 
-    `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
-    picks which `<details>` starts `open` -- always exactly one, never both: a `name` group with more
-    than one `open` `<details>` at parse time is browser-defined-but-inconsistent, so this never
-    produces that state."""
-    summary_line_height_px = 20
-    summary_padding_v_px = 4
-    summary_border_px = 1
-    # Load-bearing, not decorative: the `top` offset below assumes zero margin between the two
-    # stacked `<details>`, matching this function's own summary_box_height_px math exactly.
-    summary_box_height_px = summary_line_height_px + 2 * summary_padding_v_px + 2 * summary_border_px
-    img_top_px = 2 * summary_box_height_px + 4
+    Because `style` genuinely does survive GitHub's actual sanitizer (unlike the second version's
+    premise), both `<img>`s can stay `position:absolute` at the same computed offset on both platforms
+    -- true pixel-registered stacking isn't a live-kernel-only concession here the way it was for the
+    `<details>` versions. `width=`/`height=` HTML attributes are kept alongside the matching `style` as
+    a belt-and-suspenders fallback. `element_id` namespaces every id/href/CSS-selector this function
+    emits, so multiple toggles in one notebook (this repo's Phase 5B and 6B cells) never collide, even
+    though `:target` state is tracked by one page-wide URL fragment shared across all of them.
+
+    This mechanism is built directly from the real, extracted allowlist above rather than inferred --
+    a stronger basis than either earlier version had -- but still couldn't be exercised through an
+    actual DOMPurify pass before being committed (no JS runtime was available to run the real bundle
+    against candidate markup). Treat it as validated only once confirmed live on github.com, not from
+    this docstring alone."""
+    nav_row_height_px = 20
+    nav_padding_v_px = 4
+    nav_border_px = 1
+    nav_row_box_height_px = nav_row_height_px + 2 * nav_padding_v_px + 2 * nav_border_px
+    img_top_px = nav_row_box_height_px + 4
     total_height_px = img_top_px + height_px
 
-    summary_style = (
-        "cursor:pointer; list-style:none; display:inline-block; background:#f0f0f0; color:#000; "
-        f"border:{summary_border_px}px solid #999; border-radius:4px; padding:{summary_padding_v_px}px 12px; "
-        f"font-size:0.9em; height:{summary_line_height_px}px; line-height:{summary_line_height_px}px; margin:0;"
+    nav_style = (
+        "cursor:pointer; display:inline-block; background:#f0f0f0; color:#000; text-decoration:none; "
+        f"border:{nav_border_px}px solid #999; border-radius:4px; padding:{nav_padding_v_px}px 12px; "
+        f"font-size:0.9em; height:{nav_row_height_px}px; line-height:{nav_row_height_px}px; margin:0 4px 0 0;"
     )
     img_style = f"position:absolute; top:{img_top_px}px; left:0; width:{width_px}px; height:{height_px}px;"
     wrapper_style = (
         f"position:relative; display:inline-block; width:{width_px}px; height:{total_height_px}px; text-align:center;"
     )
-    overlay_open, base_open = ("open", "") if initial_visible else ("", "open")
+
+    with_img_id = f"{element_id}-img-with"
+    base_img_id = f"{element_id}-img-base"
+    default_img_id = with_img_id if initial_visible else base_img_id
+
+    style_block = f"""
+#{with_img_id}, #{base_img_id} {{ display: none; }}
+#{default_img_id} {{ display: block; }}
+#{element_id}-with:target ~ #{with_img_id} {{ display: block; }}
+#{element_id}-with:target ~ #{base_img_id} {{ display: none; }}
+#{element_id}-base:target ~ #{base_img_id} {{ display: block; }}
+#{element_id}-base:target ~ #{with_img_id} {{ display: none; }}
+"""
 
     return f"""\
 <div style="{wrapper_style}">
-  <details name="{element_id}" {overlay_open} style="display:block; margin:0;">
-    <summary style="{summary_style}"><strong>With overlay</strong></summary>
-    <img src="data:image/png;base64,{overlay_png_b64}" width="{width_px}" height="{height_px}" style="{img_style}">
-  </details>
-  <details name="{element_id}" {base_open} style="display:block; margin:0;">
-    <summary style="{summary_style}"><strong>Base only</strong></summary>
-    <img src="data:image/png;base64,{base_png_b64}" width="{width_px}" height="{height_px}" style="{img_style}">
-  </details>
+  <style>{style_block}</style>
+  <a href="#{element_id}-with" style="{nav_style}"><strong>With overlay</strong></a>
+  <a href="#{element_id}-base" style="{nav_style}"><strong>Base only</strong></a>
+  <span id="{element_id}-with"></span>
+  <span id="{element_id}-base"></span>
+  <img id="{with_img_id}" src="data:image/png;base64,{overlay_png_b64}"
+       width="{width_px}" height="{height_px}" style="{img_style}">
+  <img id="{base_img_id}" src="data:image/png;base64,{base_png_b64}"
+       width="{width_px}" height="{height_px}" style="{img_style}">
 </div>
 """

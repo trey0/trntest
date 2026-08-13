@@ -2194,3 +2194,60 @@ behavior was checked by parsing the regenerated `.ipynb`'s actual output HTML wi
 (two `<details>` per toggle, same `name`, exactly one with `open`), not just by reasoning about it.
 `trntest-lint` clean; `scripts/run_notebook.sh notebooks/image_generation.py` re-executed end to end
 (real SPICE/WMS/`sat_sim`/ISIS pipeline).
+
+## Phase 34 (2026-08-13) -- `plot_overlay_toggle` still broken on GitHub after Phase 33: wrong
+sanitizer investigated, real one found and fixed with CSS `:target`
+
+The user reported that Phase 33's fix, live on `github.com`, still showed "With overlay"/"Base only"
+as plain bold text with no way to switch the overlay -- looking exactly like the *original*, pre-Phase-33
+bug, not the "plain but still functional" `<details>`/`<summary>` disclosure Phase 33's own root-cause
+analysis predicted.
+
+Root cause: Phase 33 investigated the wrong sanitizer entirely. `gjtorikian/html-pipeline`'s
+`SanitizationFilter` (what Phase 33 read) backs GitHub's README/markdown rendering, not `.ipynb` blob
+rendering. Confirmed by fetching an actual notebook blob page (`curl`, not a browser -- the page is a
+React shell, but its embedded JSON payload includes `codeViewBlobLayoutRoute.blob.displayUrl`, an
+`https://notebooks.githubusercontent.com/view/ipynb?...` URL) and fetching that URL directly: it
+returns a static HTML page whose inline `<script>` sets `window.NOTEBOOK_DATA = {"html": "<the raw,
+unsanitized cell-output HTML>"}`, then loads a separate client-side JS bundle
+(`/static/dist/bundle-*.js`, fetched directly and read) that runs `DOMPurify.sanitize(content, {
+ALLOWED_TAGS })` on it before inserting it into the DOM -- entirely client-side, a completely different
+mechanism from html-pipeline's server-side Ruby sanitizer. That bundle's own
+`app/static/js/html-sanitizer.ts` hardcodes its `ALLOWED_TAGS`:
+
+    HTML_TAGS = [body, b, blockquote, br, code, dd, del, div, dl, dt, em, h1-h8, hr, i, img,
+                 ins, kbd, li, ol, p, pre, q, rp, rt, ruby, s, samp, span, strike, strong,
+                 sub, sup, table, tbody, td, tfoot, th, thead, tr, tt, ul, var]
+    SVG_TAGS  = [a, animate*, circle, ..., foreignObject, g, ..., style, svg, symbol, ...]
+
+`details`/`summary` (and `input`/`button`/`label`) are absent from both lists. DOMPurify's default
+behavior for a disallowed tag is to remove the tag but keep its children in place (`KEEP_CONTENT`) --
+so both Phase 33's version and the one before it degraded identically on GitHub: the `<strong>` label
+left sitting inert where `<summary>` used to be, the image(s) fallen into plain document flow below it.
+"Plain bold text, not clickable" was `<details>`/`<summary>` being unwrapped, not a styling problem --
+Phase 33's "GitHub strips `style`" diagnosis was itself downstream of reading the wrong sanitizer's
+config: this DOMPurify call passes no `ALLOWED_ATTR` override, so `style` (present in DOMPurify's own
+default attribute allowlist, confirmed by grepping the bundle) actually survives fine here.
+
+**Fix**: replaced the `<details name=...>` mechanism with one built only from tags confirmed present in
+the real allowlist above -- `div`, `a`, `span`, `img`, and `style` *as a tag* (present via the SVG list;
+DOMPurify special-cases `style`/`a`/`font`/`title` to also work outside `<svg>`, straight from that
+library's own source comment, specifically so they aren't "erroneously deleted from HTML namespace").
+`_overlay_toggle_html` (`plotting.py`) now emits two `<a href="#{id}-with">`/`<a href="#{id}-base">`
+links, two empty `<span id="{id}-with">`/`<span id="{id}-base">` anchor targets, and a `<style>` block
+of CSS `:target`-conditioned rules using the general-sibling combinator (`~`) to show/hide the matching
+`<img>`; clicking a link changes the page's URL fragment, which drives the `:target` match, with a
+separate unconditional rule for which image shows before any link has been clicked
+(`initial_visible`). Because `style` genuinely survives here (unlike Phase 33's premise), both `<img>`s
+stay `position:absolute` at one shared, precomputed offset on *both* platforms -- pixel-registered
+stacking is no longer a live-kernel-only concession.
+
+Verified against the real, extracted `ALLOWED_TAGS` array rather than an assumption about which
+sanitizer applies (Phase 33's actual mistake) -- a stronger basis than either prior version had -- but
+still not exercised through an actual DOMPurify pass before committing: no JS runtime (`node`) was
+available in this environment to run the real bundle against candidate markup, so the browser-rendered
+result on `github.com` itself was left for the user to confirm live, rather than the docstring claiming
+"confirmed" the way both earlier versions did right before failing. `trntest-lint` clean;
+`scripts/run_notebook.sh notebooks/image_generation.py` re-executed end to end (real
+SPICE/WMS/`sat_sim`/ISIS pipeline); regenerated `.ipynb` output inspected directly (both toggle
+instances contain the expected `:target` CSS and matching `<a>`/`<span>`/`<img>` ids).
