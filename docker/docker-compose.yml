@@ -34,6 +34,17 @@ services:
       # Large, disposable intermediate files (e.g. the ISIS/CSM WAC reprojection spike's
       # intermediate cubes) go here, not output/ -- see docs/environment.md.
       - ${TRNTEST_HOST_SCRATCH_DIR:-../../../scratch}:/workspace/scratch
+      # A worktree checkout's own `.git` is just a text file pointing at an absolute host path
+      # (`<main-checkout>/.git/worktrees/<name>`) into the *main* checkout's real git directory --
+      # normal for git worktrees, but that path isn't under `..` above, so `git` inside this
+      # container can't resolve it ("fatal: not a git repository"), breaking anything
+      # git-aware run in Docker for a worktree (e.g. trntest-lint's notebook-pair-staged check,
+      # even when called with an explicit file list -- it still shells out to git internally).
+      # TRNTEST_MAIN_GIT_DIR (`scripts/setup_worktree_docker_env.sh`) is that main checkout's real
+      # `.git`, mounted at the *same* absolute path so the pointer resolves; unset for the main
+      # checkout (whose `..:/workspace` above already includes a real, non-pointer `.git`), so this
+      # defaults to a harmless self-mount that changes nothing.
+      - ${TRNTEST_MAIN_GIT_DIR:-..}:${TRNTEST_MAIN_GIT_DIR:-/opt/.trntest-unused-git-mount}:ro
     ports:
       # Bound to loopback only — this host has a public IP and the Jupyter server below runs with
       # no auth token. Reach it via an SSH tunnel: ssh -L 8888:localhost:8888 <this-host>. Only the

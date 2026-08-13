@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Generates docker/.env (gitignored) so `docker compose`/`docker compose run --rm` mount the
-# shared trntest_ws cache/scratch and a per-worktree output/ subfolder, and use a per-worktree
-# image tag/project name -- see docker-compose.yml's top comment and docs/environment.md's
-# "Multi-agent worktrees" section for why. Run once after creating/entering a new worktree, before
-# the first `docker compose` invocation there. Safe to re-run any time (idempotent, overwrites).
+# shared trntest_ws cache/scratch and a per-worktree output/ subfolder, use a per-worktree image
+# tag/project name, and (TRNTEST_MAIN_GIT_DIR) let git actually work inside the container for a
+# worktree checkout -- see docker-compose.yml's top comment and docs/environment.md's "Multi-agent
+# worktrees" section for why. Run once after creating/entering a new worktree, before the first
+# `docker compose` invocation there. Safe to re-run any time (idempotent, overwrites).
 
 repo_root="$(git rev-parse --show-toplevel)"
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
@@ -35,6 +36,7 @@ TRNTEST_IMAGE_TAG=trntest-lunar-demo-$name
 TRNTEST_HOST_CACHE_DIR=$workspace_root/cache
 TRNTEST_HOST_OUTPUT_DIR=$workspace_root/output/$name
 TRNTEST_HOST_SCRATCH_DIR=$workspace_root/scratch
+TRNTEST_MAIN_GIT_DIR=$common_dir
 EOF
 
 echo "Wrote $env_file for worktree \"$name\":"
