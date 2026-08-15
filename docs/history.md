@@ -2735,3 +2735,29 @@ extracted and visually inspected -- footprint quad + center marker on the left p
 `Easting`/`Northing (km)` axes on both panels); `trntest-lint` clean; full `pytest` suite (156 tests,
 unaffected -- nothing test-covered referenced either the old plotting functions or the old name)
 passes.
+
+## Phase 42 (2026-08-15) — Closed the `wac_isis_spike.py` gap Phase 40's lint tightening left open;
+renamed the notebook to `wac_isis.py`
+
+Phase 40 dropped `trntest-lint`'s `ruff format --check` carve-out for `notebooks/*.py`, but only
+converted `image_generation.py`'s own semicolon-suppressed cells -- a follow-up `trntest-lint --all`
+run (checking the whole repo, not just files changed vs. `HEAD`, which is what the default `--diff`
+mode and the pre-commit hook actually check) surfaced that `notebooks/wac_isis_spike.py` still used
+the old trailing-`;` convention on 6 `plotting.plot_raster(...)` cells, so `ruff format --check` now
+failed there too in `--all` mode (silently, since normal commits never touched that file and so never
+tripped it). Converted all 6 to `_ = plotting.plot_raster(...)`, same as Phase 40.
+
+Also renamed the notebook itself, `wac_isis_spike.py`/`.ipynb` -> `wac_isis.py`/`.ipynb` (`git mv`,
+preserving history) -- the "_spike" name stopped being accurate a while ago: `docs/plan.md`'s own open
+items section already describes the striping investigation this notebook was for as resolved and
+folded into `isis_wac.py`'s real pipeline, with this notebook now serving as "the step-by-step version
+for isolating pipeline stages," a reference/debugging tool, not an active spike. Updated the file-path
+references in `AGENTS.md`, `docs/plan.md`, and a `docker/Dockerfile` comment to match; deliberately
+left this entry's own text and `old_notebooks/` alone (frozen references to what was actually true at
+the time, not current-state pointers -- same reasoning as Phase 41's rename). jupytext's pairing
+config is filename-pattern-based, not a hardcoded name, so renaming both halves together was enough to
+keep the `.py`/`.ipynb` pairing intact with no separate config change.
+
+Verified: real Docker re-run of the renamed notebook end to end (no errors, single-figure output on
+every previously-semicolon cell); `trntest-lint --all` now passes clean across the whole repo (40
+files, not just the diff-scoped subset Phase 40 verified); full `pytest` suite (159 tests) passes.

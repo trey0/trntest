@@ -222,7 +222,7 @@ changes against them.
   already cropped to just the real footprint being compared by the time they reach it. See
   `docs/data-sources.md`'s "ISIS3/CSM spike" section and `docs/history.md`'s dated entries for the
   full investigation, including the ISD ephemeris-time bug found and fixed when reprojecting a
-  cropped (not full-swath) cube; `notebooks/wac_isis_spike.py` remains the step-by-step version for
+  cropped (not full-swath) cube; `notebooks/wac_isis.py` remains the step-by-step version for
   isolating pipeline stages.
   **Correction: the ISD ephemeris-time fix above was a false positive** (0.999 correlation on a
   too-small sample), caught by the user's manual visual inspection of the actual notebook output,
