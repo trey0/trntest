@@ -255,7 +255,7 @@ unaffected and still current.
   image, rather than deriving them from `--t_srs`/`--tr`/`--mpp`/`--ppd`. Pointing this at the same
   DEM used to produce the input image guarantees the output lands on that DEM's exact pixel
   grid/projection — i.e. the same grid as any other raster derived from that DEM (this project's
-  `lunaserv.py` outputs, e.g. `LunaservResult.ortho`), with no separate reprojection/alignment step
+  `lunaserv.py` outputs, e.g. `DemOrthoResult.ortho`), with no separate reprojection/alignment step
   needed to overlay them. This is what `render.run_mapproject` uses.
 - Output nodata is real `NaN` (confirmed empirically, `Float32` output by default) — not a
   huge-magnitude sentinel like `wac.MISSING_CONSTANT` elsewhere in this codebase, and not something
@@ -856,7 +856,7 @@ model even on the known-good full cube) had missed both. Full investigation (see
   cube prints a `PROJ: proj_create_from_name` error to stderr (an ISIS/GDAL `PROJ_LIB` environment
   mismatch) that's harmless — confirmed the output CRS/transform are correct despite it, and the
   process still exits 0.
-  **Deliberately not pixel-grid-aligned** to `LunaservResult`'s own raster (no `UpperLeftCornerX`/
+  **Deliberately not pixel-grid-aligned** to `DemOrthoResult`'s own raster (no `UpperLeftCornerX`/
   `UpperLeftCornerY` pinning, no post-hoc `gdalwarp`/resampling pass) — `plotting.plot_overlay`
   composites both rasters via their own real georeferenced coordinates (`rioxarray`/`xarray`), not
   a shared pixel grid, so matching *projection* (verified above) is sufficient; a separate

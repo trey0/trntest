@@ -24,7 +24,7 @@ from PIL import Image
 
 from trntest import lunaserv, orientation, wac
 from trntest.camera import Camera
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
 # Visually-distinct, high-contrast marker per die-5 tie-point position, shared between the two
@@ -102,54 +102,59 @@ def plot_raster(
     return fig
 
 
-def plot_dem_ortho(lunaserv_result: LunaservResult):
-    with rasterio.open(lunaserv_result.ortho) as src:
-        ortho = src.read(1)
-    with rasterio.open(lunaserv_result.dem) as src:
-        dem = src.read(1)
+def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
+    """Left: the Lunaserv ortho mosaic with the SPICE-derived camera's ground footprint (the 4
+    corner rays' Moon intersections, connected into a closed quad, plus a center marker) overlaid,
+    to visually confirm the pose lands where expected. Right: the GLD100 DEM (elevation). Both share
+    one figure (previously two separate plots/cells -- merged since the right panel's DEM tile is
+    exactly the left panel's own AOI, no information lost by combining them) and the same km-scaled
+    Easting/Northing axes.
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-    axes[0].imshow(ortho, cmap="gray")
-    axes[0].set_title("Lunaserv WAC global mosaic (ROI)")
-    im = axes[1].imshow(dem, cmap="terrain")
-    axes[1].set_title("GLD100 DEM (elevation, m)")
-    fig.colorbar(im, ax=axes[1], shrink=0.8)
-    for ax in axes:
-        ax.set_xlabel("sample")
-        ax.set_ylabel("line")
-    fig.tight_layout()
-    return fig
-
-
-def plot_camera_footprint(lunaserv_result: LunaservResult, camera: Camera):
-    """Camera footprint's real ground coverage (the 4 corner rays' Moon intersections, connected
-    into a closed quad) over the Lunaserv ortho mosaic. Reprojects `camera.footprint_lonlat_deg`
-    (plain geographic lon/lat) into the ortho's own local Orthographic CRS via `geopandas`/`pyproj`
-    (one `.to_crs()` call), then plots both in real georeferenced coordinates -- not the previous
-    version's manual `rasterio.transform.rowcol(ortho_transform, lon, lat)`, which passed raw lon/lat
-    *degrees* straight in as if they were already the ortho's own local-CRS *meters*, collapsing
-    every point near the map's center once the ortho switched from a native lon/lat grid to a local
-    per-camera CRS (see docs/history.md's dated entry)."""
-    with rasterio.open(lunaserv_result.ortho) as src:
+    The footprint overlay reprojects `camera.footprint_lonlat_deg` (plain geographic lon/lat) into
+    the ortho's own local Orthographic CRS via `geopandas`/`pyproj` (one `.to_crs()` call), then
+    plots both in real georeferenced coordinates -- not a previous version's manual
+    `rasterio.transform.rowcol(ortho_transform, lon, lat)`, which passed raw lon/lat *degrees*
+    straight in as if they were already the ortho's own local-CRS *meters*, collapsing every point
+    near the map's center once the ortho switched from a native lon/lat grid to a local per-camera
+    CRS (see docs/history.md's dated entry)."""
+    with rasterio.open(dem_ortho_result.ortho) as src:
         ortho = src.read(1)
         ortho_crs = src.crs
-        bounds = src.bounds
+        ortho_bounds = src.bounds
+    with rasterio.open(dem_ortho_result.dem) as src:
+        dem = src.read(1)
+        dem_bounds = src.bounds
 
     moon_geographic_crs = "+proj=longlat +R=1737400 +no_defs"
     min_polygon_points = 3
     corners = [camera.footprint_lonlat_deg[name] for name in ("top_left", "top_right", "bottom_right", "bottom_left")]
     corners = [c for c in corners if c is not None]
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(ortho, cmap="gray", extent=(bounds.left, bounds.right, bounds.bottom, bounds.top))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+    axes[0].imshow(
+        ortho, cmap="gray", extent=(ortho_bounds.left, ortho_bounds.right, ortho_bounds.bottom, ortho_bounds.top)
+    )
     if len(corners) >= min_polygon_points:
         footprint = geopandas.GeoSeries([shapely.geometry.Polygon(corners)], crs=moon_geographic_crs)
-        footprint.to_crs(ortho_crs).boundary.plot(ax=ax, color="yellow", linewidth=1.5)
+        footprint.to_crs(ortho_crs).boundary.plot(ax=axes[0], color="yellow", linewidth=1.5)
     center_lonlat = camera.footprint_lonlat_deg["center"]
     if center_lonlat is not None:
         center = geopandas.GeoSeries([shapely.geometry.Point(center_lonlat)], crs=moon_geographic_crs)
-        center.to_crs(ortho_crs).plot(ax=ax, color="red", markersize=30)
-    ax.set_title("Camera footprint over Lunaserv ortho mosaic")
+        center.to_crs(ortho_crs).plot(ax=axes[0], color="red", markersize=30)
+    axes[0].set_title("Lunaserv WAC global mosaic (ROI) with camera footprint")
+
+    im = axes[1].imshow(
+        dem, cmap="terrain", extent=(dem_bounds.left, dem_bounds.right, dem_bounds.bottom, dem_bounds.top)
+    )
+    axes[1].set_title("GLD100 DEM (elevation, m)")
+    fig.colorbar(im, ax=axes[1], shrink=0.8)
+
+    km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.0f}")
+    for ax in axes:
+        ax.xaxis.set_major_formatter(km_formatter)
+        ax.yaxis.set_major_formatter(km_formatter)
+        ax.set_xlabel("Easting (km)")
+        ax.set_ylabel("Northing (km)")
     fig.tight_layout()
     return fig
 
@@ -367,7 +372,7 @@ def plot_render_vs_basemap(
 ):
     """Raw, north-up-rotated, real-km-scaled side-by-side of a render's own unprojected pixels
     (`render_array` -- genuine sensor/render image quality, not a resampled reprojection) against a
-    plain pixel crop of the hillshade basemap (`base_raster_path`, e.g. `LunaservResult.ortho`)
+    plain pixel crop of the hillshade basemap (`base_raster_path`, e.g. `DemOrthoResult.ortho`)
     covering the same real ground footprint. This is the "A"-style geometry check: a quick ad hoc
     quality/rough-alignment look -- for true pixel-for-pixel geo-registration against the same
     basemap, see `plot_overlay`'s "B"-style `mapproject`-based overlay instead.
@@ -529,7 +534,7 @@ def plot_overlay(
     `plot_comparison`'s side-by-side panels (aligned only by matching real-km extent and a north-up
     display rotation), this is genuine pixel-for-pixel geo-registration: both rasters are expected to
     already share the same map grid (e.g. `render.run_mapproject`'s `--ref-map` output alongside
-    `LunaservResult.ortho`), not reprojected/aligned here. `overlay_cmap` defaults to `"gray"`
+    `DemOrthoResult.ortho`), not reprojected/aligned here. `overlay_cmap` defaults to `"gray"`
     (matching the base) since the overlay is typically also a real image, not categorical/scalar
     data -- a high-chroma colormap like `"inferno"` visually exaggerates what's actually a mild,
     real brightness gradient (e.g. real-sun hillshade) into a distracting "rainbow" look.

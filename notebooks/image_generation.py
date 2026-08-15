@@ -50,7 +50,9 @@ import trntest
 from trntest import isis_wac, plotting, tie_points
 
 images = trntest.read_manifest("dataset_manifest.csv")
-print(f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv, see data_set_selection.ipynb)")
+print(
+    f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv, see data_set_selection.ipynb)"
+)
 
 session = trntest.Session()
 
@@ -97,33 +99,25 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # %% [markdown]
 # ## Phase 3: DEM + ortho from Lunaserv WMS
 #
-# Fetch `luna_wac_normalized_reflectance` (visible mosaic, despeckled and blended with a real-sun-lit hillshade -- see `docs/data-sources.md`) and `luna_wac_dtm_numeric_meters_absolute` (GLD100 DEM, converted from planetocentric radius to elevation) for the footprint above, through the local cache.
+# Fetch `luna_wac_normalized_reflectance` (visible mosaic, despeckled and blended with a real-sun-lit hillshade -- see `docs/data-sources.md`) and `luna_wac_dtm_numeric_meters_absolute` (GLD100 DEM, converted from planetocentric radius to elevation) for the footprint above, through the local cache. Displayed with the SPICE-derived camera's ground footprint (corners + center) overlaid on the ortho, to visually confirm the pose lands where expected.
 
 # %%
-lunaserv_result = entry.lunaserv_result
-print(json.dumps(dataclasses.asdict(lunaserv_result), indent=2, default=str))
+dem_ortho_result = entry.dem_ortho_result
+print(json.dumps(dataclasses.asdict(dem_ortho_result), indent=2, default=str))
 
 # %%
-plotting.plot_dem_ortho(lunaserv_result);
-
-# %% [markdown]
-# ### Camera footprint over the DEM
-#
-# Plot the SPICE-derived camera's ground footprint (corners + center) on top of the ortho mosaic, to visually confirm the pose lands where expected.
-
-# %%
-plotting.plot_camera_footprint(lunaserv_result, camera);
+_ = plotting.plot_dem_ortho(dem_ortho_result, camera)
 
 # %% [markdown]
 # ## Phase 4: render with `sat_sim` + the real camera pose
 #
 # `dataset.populate()` already generated `entry.hillshade` above -- `TrnTestHillshadeImage._generate_impl`
-# calls `render.run_sat_sim(camera, lunaserv_result)`, which:
+# calls `render.run_sat_sim(camera, dem_ortho_result)`, which:
 # 1. Calls `sat_sim --camera-list` with the Phase 2 `.tsai` camera against the Phase 3 DEM/ortho, producing the synthetic 256x256 image.
 # 2. Calls ASP's `cam_gen` to convert that exact camera to a CSM Frame model-state JSON (the "ISD" sidecar) -- `--save-as-csm` is a no-op in `--camera-list` mode, see `docs/data-sources.md`.
 
 # %%
-plotting.plot_synthetic_render(entry.hillshade.raster_path);
+_ = plotting.plot_synthetic_render(entry.hillshade.raster_path)
 
 # %% [markdown]
 # ### The CSM / "ISD" JSON sidecar
@@ -133,9 +127,9 @@ plotting.plot_synthetic_render(entry.hillshade.raster_path);
 # %%
 model_name, csm_state = trntest.read_csm_state(entry.hillshade.sidecar_json_path)
 
-print('Model name:', model_name)
-for key in ['m_focalLength', 'm_nLines', 'm_nSamples', 'm_ccdCenter', 'm_currentParameterValue']:
-    print(f'{key}: {csm_state[key]}')
+print("Model name:", model_name)
+for key in ["m_focalLength", "m_nLines", "m_nSamples", "m_ccdCenter", "m_currentParameterValue"]:
+    print(f"{key}: {csm_state[key]}")
 
 # %% [markdown]
 # `m_currentParameterValue`'s first 3 entries are the camera center (X, Y, Z, meters, MOON_ME frame) and the last 4 are the orientation quaternion -- matching the `C`/`R` we computed from SPICE in Phase 2.
@@ -149,8 +143,12 @@ for key in ['m_focalLength', 'm_nLines', 'm_nSamples', 'm_ccdCenter', 'm_current
 
 # %%
 rotations = entry.rotations
-print(f"synthetic: rotate {rotations.k_synthetic*90} deg for north-up (residual {rotations.dev_synthetic_deg:.1f} deg from true north)")
-print(f"real crop: rotate {rotations.k_crop*90} deg for north-up (residual {rotations.dev_crop_deg:.1f} deg from true north)")
+print(
+    f"synthetic: rotate {rotations.k_synthetic * 90} deg for north-up (residual {rotations.dev_synthetic_deg:.1f} deg from true north)"
+)
+print(
+    f"real crop: rotate {rotations.k_crop * 90} deg for north-up (residual {rotations.dev_crop_deg:.1f} deg from true north)"
+)
 
 # %% [markdown]
 # ### Tie points (display only)
@@ -165,7 +163,7 @@ for name, r in tie_point_results.items():
 # %% [markdown]
 # ## Phase 5: does the synthetic render's geometry check out?
 #
-# This demo's actual goal is generating synthetic images that could stand in for real spacecraft imagery in terrain-relative navigation (TRN) testing -- so the real question for each candidate TRN test image (the synthetic render here; the real, ISIS-processed WAC crop in Phase 6) is whether its geometry genuinely matches reality, not just whether it looks plausible. Both phases check this two ways against the same reference -- the hillshade-based ortho basemap (`lunaserv_result.ortho`), Phase 3's own best available geometry reference:
+# This demo's actual goal is generating synthetic images that could stand in for real spacecraft imagery in terrain-relative navigation (TRN) testing -- so the real question for each candidate TRN test image (the synthetic render here; the real, ISIS-processed WAC crop in Phase 6) is whether its geometry genuinely matches reality, not just whether it looks plausible. Both phases check this two ways against the same reference -- the hillshade-based ortho basemap (`dem_ortho_result.ortho`), Phase 3's own best available geometry reference:
 #
 # - **A: raw image quality.** The render's own unprojected pixels, rotated north-up and scaled to real km, next to a plain crop of the basemap covering the same real footprint, both marked with the same 5 tie points -- a quick, ad hoc look at whether the render's content and rough position/scale make sense (`plotting.plot_render_vs_basemap`).
 # - **B: pixel-for-pixel alignment.** The render reprojected onto the map through its own real camera model (`mapproject`) and overlaid directly on the basemap -- true geo-registration, not just visual similarity, as an auto-blinking animated GIF that alternates the overlay against the basemap (`plotting.plot_overlay_toggle`).
@@ -173,13 +171,13 @@ for name, r in tie_point_results.items():
 # (Phase 7, below, is just 5A's and 6A's own render panels put together directly, for an easier side-by-side look at the two candidates themselves.)
 
 # %%
-entry.hillshade.plot_vs_basemap(
+_ = entry.hillshade.plot_vs_basemap(
     tie_point_results=tie_point_results,
     title="Phase 5A: synthetic render vs. hillshade-based basemap",
 )
 
 # %% [markdown]
-# `entry.hillshade.plot_overlay()` reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render.run_mapproject_image`'s `--ref-map`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `lunaserv_result.ortho` with no separate alignment step. Displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, as an animated GIF that automatically blinks the overlay on and off.
+# `entry.hillshade.plot_overlay()` reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render.run_mapproject_image`'s `--ref-map`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `dem_ortho_result.ortho` with no separate alignment step. Displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, as an animated GIF that automatically blinks the overlay on and off.
 
 # %%
 entry.hillshade.plot_overlay(title="Phase 5B: synthetic render (mapprojected) over hillshade-based basemap")
@@ -195,19 +193,21 @@ entry.hillshade.plot_overlay(title="Phase 5B: synthetic render (mapprojected) ov
 # `isis_wac.resolve_ground_to_image_model()` decides which camera-model authority the real crop's own tie points should be queried against: try a CSM ISD sidecar first (`isd_generate`, same tool 5B's `mapproject` uses), and only fall back to the crop's native, SPICE-embedded camera model if the ISD resolves to a Pushframe sensor model -- the class `mapproject`'s `groundToImage` is known unreliable for (see 6B's notes above). For WAC-VIS this always takes the fallback branch, but the decision itself is real (derived from the ISD's own `name_model`), not hardcoded. `tie_points.resolve_crop_pixels()` then queries each tie point's real pixel location in the real crop via ISIS's own `campt` -- a genuine ground-to-image lookup through a validated tool, replacing the deprecated SPICE-only approximation `select_tie_points` used to compute this same value with (see `tie_points.py`'s module docstring for the measured discrepancy this fixes). A die5 point the real camera doesn't actually see (the approximate footprint used to pick candidate points can be off enough for this to happen for real, e.g. near the poles) is dropped with a printed warning rather than breaking the run.
 
 # %%
-ground_to_image_model = isis_wac.resolve_ground_to_image_model(entry.stitched, entry.crop_result, entry.per_image_config)
+ground_to_image_model = isis_wac.resolve_ground_to_image_model(
+    entry.stitched, entry.crop_result, entry.per_image_config
+)
 tie_point_results = tie_points.resolve_crop_pixels(tie_point_results, ground_to_image_model)
 for name, r in tie_point_results.items():
     print(f"{name:12s} crop_px={r['crop_px']}")
 
 # %%
-entry.crop.plot_vs_basemap(
+_ = entry.crop.plot_vs_basemap(
     tie_point_results=tie_point_results,
     title="Phase 6A: real ISIS-processed WAC crop vs. hillshade-based basemap",
 )
 
 # %% [markdown]
-# `entry.crop.plot_overlay()` reprojects the real crop onto the map via ISIS's own native `cam2map` (`isis_wac.run_cam2map_for_crop`), using a map file cloned from `lunaserv_result`'s own local Orthographic projection (`isis_wac._orthographic_map_pvl`) so the output lands in the same real-world coordinate system as `lunaserv_result.ortho` -- the real-WAC counterpart to 5B's `mapproject`, sharing the same auto-blinking-GIF overlay display (no special-casing needed since the crop -- unlike the old full stitched cube -- already covers just the real footprint being compared).
+# `entry.crop.plot_overlay()` reprojects the real crop onto the map via ISIS's own native `cam2map` (`isis_wac.run_cam2map_for_crop`), using a map file cloned from `dem_ortho_result`'s own local Orthographic projection (`isis_wac._orthographic_map_pvl`) so the output lands in the same real-world coordinate system as `dem_ortho_result.ortho` -- the real-WAC counterpart to 5B's `mapproject`, sharing the same auto-blinking-GIF overlay display (no special-casing needed since the crop -- unlike the old full stitched cube -- already covers just the real footprint being compared).
 
 # %%
 entry.crop.plot_overlay(title="Phase 6B: real ISIS-processed WAC (mapprojected) over hillshade-based basemap")
@@ -218,7 +218,9 @@ entry.crop.plot_overlay(title="Phase 6B: real ISIS-processed WAC (mapprojected) 
 # Conceptually, just 5A's and 6A's own render panels (synthetic, real WAC crop -- same tie points, same north-up rotation, computed above) put together directly, for an easier side-by-side look at the two TRN test image candidates themselves, rather than each against the basemap. `plotting.plot_isis_comparison()` additionally brightness-matches the two panels (a single multiplicative scale, since the ISIS cube's calibrated I/F and the render's texture-brightness values are on entirely different numeric scales to begin with -- see its docstring) and interpolates across the real crop's small, known dead-pixel gaps for display -- both real quality-of-life improvements on top of what 5A/6A already show, not new geometry content.
 
 # %%
-plotting.plot_isis_comparison(camera, tie_point_results, entry.hillshade.raster_path, entry.crop.raster_path, rotations);
+_ = plotting.plot_isis_comparison(
+    camera, tie_point_results, entry.hillshade.raster_path, entry.crop.raster_path, rotations
+)
 
 # %% [markdown]
 # ## Summary

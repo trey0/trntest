@@ -53,7 +53,7 @@ import rasterio.windows
 from trntest import cache, render
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.subprocess_utils import run_quiet
 from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
 
@@ -408,7 +408,7 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
 def run_mapproject(
     stitched: FramestitchResult,
     isd: IsdGenerateResult,
-    lunaserv_result: LunaservResult,
+    dem_ortho_result: DemOrthoResult,
     config: TrntestConfig | None = None,
 ) -> Path:
     """Reproject the real, ISIS-processed WAC cube back onto the map via its own CSM/ISD sidecar
@@ -434,7 +434,7 @@ def run_mapproject(
     reference/comparison; `run_cam2map_for_crop` is the accurate path now."""
     config = config or load_config()
     mapproj_tif = stitched.cub_path.with_name(stitched.cub_path.stem + "-mapproj.tif")
-    return render.run_mapproject_image(stitched.cub_path, isd.json_path, mapproj_tif, lunaserv_result, config)
+    return render.run_mapproject_image(stitched.cub_path, isd.json_path, mapproj_tif, dem_ortho_result, config)
 
 
 def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
@@ -613,18 +613,18 @@ def ground_to_image_pixel(model: GroundToImageModel, lon_deg: float, lat_deg: fl
     return float(ground_point["Sample"]), float(ground_point["Line"])
 
 
-def _orthographic_map_pvl(lunaserv_result: LunaservResult) -> str:
-    """Builds an ISIS PVL "Mapping" group cloning `lunaserv_result`'s own local Orthographic CRS
-    (see `LunaservResult`'s docstring: `config.lunaserv_srs_template`, centered on this camera's own
+def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
+    """Builds an ISIS PVL "Mapping" group cloning `dem_ortho_result`'s own local Orthographic CRS
+    (see `DemOrthoResult`'s docstring: `config.lunaserv_srs_template`, centered on this camera's own
     footprint) -- same center lat/lon, spherical Moon radius, and pixel resolution -- so
     `cam2map`'s output (`run_cam2map_for_crop`) lands in the *same projected coordinate system* as
-    `lunaserv_result.dem`/`.ortho`. Verified empirically (not assumed) that ISIS's own Orthographic
+    `dem_ortho_result.dem`/`.ortho`. Verified empirically (not assumed) that ISIS's own Orthographic
     projection implementation agrees with GDAL/PROJ's `+proj=ortho` to sub-micrometer precision for
     matching center/radius parameters, via `cam2map`+`campt` cross-checked against `pyproj`'s own
     forward projection at a real test pixel (see docs/history.md's dated entry).
 
     Deliberately does *not* pin `UpperLeftCornerX`/`UpperLeftCornerY` to match
-    `lunaserv_result`'s own pixel grid -- `cam2map`'s output is left free to auto-size to the crop's
+    `dem_ortho_result`'s own pixel grid -- `cam2map`'s output is left free to auto-size to the crop's
     own footprint (`DEFAULTRANGE=CAMERA` in `run_cam2map_for_crop`). This is safe because
     `plotting.plot_overlay` composites both rasters via their own real georeferenced coordinates
     (`rioxarray`/`xarray`), not a shared pixel grid -- so the two rasters only need to agree on the
@@ -632,7 +632,7 @@ def _orthographic_map_pvl(lunaserv_result: LunaservResult) -> str:
     avoids needing a separate resampling/warping pass after `cam2map` (which would risk the exact
     kind of interpolation-quality/subtle-misalignment issues this whole detour was trying to avoid
     in the first place)."""
-    with rasterio.open(lunaserv_result.dem) as src:
+    with rasterio.open(dem_ortho_result.dem) as src:
         proj = src.crs.to_dict()
         resolution = src.res[0]
     return (
@@ -652,13 +652,13 @@ def _orthographic_map_pvl(lunaserv_result: LunaservResult) -> str:
 
 
 def run_cam2map_for_crop(
-    crop: CropResult, lunaserv_result: LunaservResult, config: TrntestConfig | None = None
+    crop: CropResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
     """Reprojects `crop` onto the map via ISIS's own native `cam2map` -- the real-WAC counterpart to
     5B's `mapproject`, but through ISIS's native Pushframe camera model instead of ASP/CSM (see the
-    module docstring for why). `_orthographic_map_pvl` clones `lunaserv_result`'s own projection so
+    module docstring for why). `_orthographic_map_pvl` clones `dem_ortho_result`'s own projection so
     the output shares the same real-world coordinate system (not pixel grid -- see that function's
-    docstring) as `lunaserv_result.ortho`, letting `plotting.plot_overlay` composite them directly.
+    docstring) as `dem_ortho_result.ortho`, letting `plotting.plot_overlay` composite them directly.
 
     `PIXRES=map` is required -- `cam2map`'s `PIXRES` parameter defaults to `CAMERA` (auto-derives
     resolution from the image itself), which *silently ignores* the map file's own `PixelResolution`
@@ -688,10 +688,10 @@ def run_cam2map_for_crop(
     "Detected multi-band image. Only the first band will be used."). `gdal_translate` prints a
     `PROJ: proj_create_from_name` error to stderr here (an ISIS/GDAL `PROJ_LIB` environment mismatch)
     -- confirmed harmless: the output CRS/transform were verified correct (matching
-    `lunaserv_result`'s own projection exactly) despite it, and the process still exits 0."""
+    `dem_ortho_result`'s own projection exactly) despite it, and the process still exits 0."""
     config = config or load_config()
     map_path = crop.cub_path.with_suffix(".ortho.map")
-    map_path.write_text(_orthographic_map_pvl(lunaserv_result))
+    map_path.write_text(_orthographic_map_pvl(dem_ortho_result))
 
     mapproj_cub = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.cub")
     run_quiet(

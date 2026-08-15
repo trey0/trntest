@@ -24,7 +24,7 @@ from trntest import camera as camera_module
 from trntest import dataset, isis_wac, lunaserv, orientation, plotting, render, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
 PRODUCT_TYPES = ("crop", "hillshade")
@@ -79,7 +79,7 @@ class TrnTestEntry:
         return tie_points.crop_footprint_corners_for_camera(self.frame_timing, self.camera, self.per_image_config)
 
     @functools.cached_property
-    def lunaserv_result(self) -> LunaservResult:
+    def dem_ortho_result(self) -> DemOrthoResult:
         """Resumes from a prior `generate()` run's own DEM/ortho files (`lunaserv.result_from_files`,
         pure IO) when they already exist on disk, instead of re-fetching from Lunaserv/Astropedia --
         the real resumability win `dataset.populate()`'s second-run-near-instant behavior depends
@@ -231,7 +231,7 @@ class TrnTestDataSet:
         the whole dataset folder.
 
         Leaves `_work/<edr_product>/` intermediates (DEM/ortho, `.tsai`) alone -- regeneration reuses
-        those where still valid (see `TrnTestEntry.lunaserv_result`'s own resume-from-files check);
+        those where still valid (see `TrnTestEntry.dem_ortho_result`'s own resume-from-files check);
         delete `dataset.folder / "_work" / <edr_product>` yourself first if you also want those
         re-fetched from scratch."""
         target_entries = list(self) if entries is None else entries if isinstance(entries, list) else [entries]
@@ -318,7 +318,7 @@ class TrnTestImage(abc.ABC):
             self.width_km,
             self.height_km,
             self.footprint_lonlat_deg,
-            self.entry.lunaserv_result.ortho,
+            self.entry.dem_ortho_result.ortho,
             title=title or f"{self.render_label} vs. hillshade-based basemap",
             render_label=self.render_label,
             tie_point_results=tie_point_results,
@@ -334,7 +334,7 @@ class TrnTestImage(abc.ABC):
         notebook cell, same requirement as calling `plot_overlay_toggle` directly."""
         self._require_generated()
         return plotting.plot_overlay_toggle(
-            self.entry.lunaserv_result.ortho,
+            self.entry.dem_ortho_result.ortho,
             self._mapprojected_path(),
             title=title or f"{self.render_label} (mapprojected) over hillshade-based basemap",
         )
@@ -388,7 +388,7 @@ class TrnTestCropImage(TrnTestImage):
         # Operates on the scratch-dir crop_result, not raster_path, so cam2map's own intermediates
         # (the .ortho.map PVL file, the intermediate .cub) don't spill into crop/.
         return isis_wac.run_cam2map_for_crop(
-            self.entry.crop_result, self.entry.lunaserv_result, self.entry.per_image_config
+            self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
         )
 
 
@@ -432,7 +432,7 @@ class TrnTestHillshadeImage(TrnTestImage):
         return "synthetic_px"
 
     def _generate_impl(self) -> None:
-        render_result = render.run_sat_sim(self.entry.camera, self.entry.lunaserv_result, self.entry.per_image_config)
+        render_result = render.run_sat_sim(self.entry.camera, self.entry.dem_ortho_result, self.entry.per_image_config)
         self.raster_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(render_result.rendered_tif, self.raster_path)
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
@@ -442,7 +442,7 @@ class TrnTestHillshadeImage(TrnTestImage):
         # canonical named pair's folder" reasoning as TrnTestCropImage's own override.
         out_path = self.entry.per_image_config.output_dir / (self.raster_path.stem + "-mapproj.tif")
         return render.run_mapproject_image(
-            self.raster_path, self.sidecar_json_path, out_path, self.entry.lunaserv_result, self.entry.per_image_config
+            self.raster_path, self.sidecar_json_path, out_path, self.entry.dem_ortho_result, self.entry.per_image_config
         )
 
 
