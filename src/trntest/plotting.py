@@ -593,12 +593,21 @@ def plot_overlay(
     database; see `docs/plan.md`'s open items) on top of this same raster display.
     `fill_overlay_nodata` applies `_fill_overlay_nodata_for_display` before the overlay is drawn --
     display only (the outline above is still traced from the real, unfilled data, so it reflects the
-    genuine sensor footprint, not the filled result). Both base and overlay are displayed with a
-    `vmin=0`/`vmax=`99.9th-percentile linear stretch (same technique as `plot_render_vs_basemap`'s
-    "6A darkness" fix) rather than `imshow`'s naive min/max autoscale -- without it, a real calibrated
-    overlay's actual valid-data footprint can visually read as a thin sliver near `show_overlay_outline`'s
-    boundary line rather than the majority of the frame it actually covers, since the naive-autoscaled
-    overlay blends into the base almost invisibly at `overlay_alpha`.
+    genuine sensor footprint, not the filled result). The overlay is first brightness-matched to the
+    base via a single multiplicative scale at the median (`_prep_overlay_rasters`) -- the same
+    technique `plot_comparison`/`plot_isis_comparison` already use for Phase 5A/6A (see their own
+    docstrings for the full rationale). Necessary here for the same real reason it mattered there:
+    `overlay_raster_path` and `base_raster_path` can come from different pipelines on different
+    numeric scales (e.g. 6B's ISIS-calibrated I/F crop vs. the hillshade-based basemap), and each
+    panel's own independent percentile stretch doesn't guarantee the two end up looking similarly
+    bright even though each is individually well-exposed -- distracting when `plot_overlay_toggle`
+    blinks between them. Base and the now-brightness-matched overlay are then both displayed on the
+    *same* `vmin=0`/`vmax=`99.9th-percentile linear stretch (base's own; same technique as
+    `plot_render_vs_basemap`'s "6A darkness" fix) rather than `imshow`'s naive min/max autoscale --
+    without it, a real calibrated overlay's actual valid-data footprint can visually read as a thin
+    sliver near `show_overlay_outline`'s boundary line rather than the majority of the frame it
+    actually covers, since the naive-autoscaled overlay blends into the base almost invisibly at
+    `overlay_alpha`.
 
     `overlay_alpha` defaults to fully opaque (`1.0`), not a blend -- per explicit user feedback, a
     partial blend (the original default, `0.6`) makes it genuinely hard to tell which pixels are the
@@ -649,15 +658,28 @@ def plot_overlay(
 
 def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_nodata: bool):
     """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`: open both rasters, optionally fill
-    the overlay's small nodata gaps for display, and compute each raster's own 0/99.9th-percentile
-    stretch (see `plot_overlay`'s docstring for why a naive min/max autoscale washes out real
+    the overlay's small nodata gaps for display, brightness-match the overlay to the base (see
+    `plot_overlay`'s docstring for the full rationale), and compute a shared 0/99.9th-percentile
+    display stretch (see `plot_overlay`'s docstring for why a naive min/max autoscale washes out real
     calibrated-I/F data). Split out so `plot_overlay_toggle` can do this once and reuse it for both of
-    its two renders, rather than re-opening/re-stretching the same rasters twice."""
+    its two renders, rather than re-opening/re-stretching/re-scaling the same rasters twice."""
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
     base_vmin, base_vmax = 0, np.nanpercentile(base.values, 99.9)
-    overlay_vmin, overlay_vmax = 0, np.nanpercentile(overlay_display.values, 99.9)
+    # Single multiplicative scale at the median, same as plot_comparison/plot_isis_comparison --
+    # not an affine/percentile stretch, which would remap the darkest/brightest values and stop
+    # reflecting the pipeline's actual relative brightness. Guarded against a zero/non-finite overlay
+    # median (e.g. an all-nodata overlay) rather than dividing by it.
+    overlay_median = np.nanmedian(overlay_display.values)
+    if overlay_median and np.isfinite(overlay_median):
+        brightness_scale = np.nanmedian(base.values) / overlay_median
+        overlay_display = overlay_display * brightness_scale
+    # Both now share base's own vmin/vmax rather than each getting its own independent percentile
+    # stretch -- an independent stretch would silently re-normalize away the brightness match above,
+    # the same "implicit stretch making two panels' brightness incomparable" issue
+    # plot_comparison's own docstring describes.
+    overlay_vmin, overlay_vmax = base_vmin, base_vmax
     return base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax
 
 
