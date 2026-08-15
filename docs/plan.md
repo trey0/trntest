@@ -262,16 +262,33 @@ changes against them.
   `DIAM_ELLI_ANGLE_IMG` as separate attribute columns — confirms the ellipse polygon must be
   constructed at render time, not read off the shelf. Full field list/CRS/units in
   `docs/data-sources.md`.
-  **Still planned** (not yet started): overlay Robbins lunar crater ellipses as the first real
-  `OverlayLayer`, following the pattern above. Given >99% of the 1.3M craters lie outside any one
-  camera footprint, the key remaining design point is a two-stage filter: read-time bbox pushdown
-  (`geopandas.read_file(..., bbox=...)`, requires a spatially-indexed format — GeoPackage/FlatGeobuf,
-  since the raw CSV has no native spatial index at all, unlike a real GIS format might) so the full
-  database is never materialized in Python, then an in-memory `.sindex`/`.cx[]` trim to the exact
-  AOI (confirmed this repo's installed stack — `geopandas 1.1.4`/`shapely 2.1.2`/`pyogrio 0.13.0` —
-  supports both paths). Remaining chunks: query/filter + ellipse construction (likely a new
-  `src/trntest/craters.py`) → notebook wiring (Phase 5B/6B) → docs close-out
-  (`docs/history.md` entry).
+  **Done**: `src/trntest/craters.py` — `ensure_geopackage()` converts the raw CSV (no native
+  spatial index) to a GeoPackage once (point geometry at each crater's ellipse-fit center,
+  `LAT_ELLI_IMG`/`LON_ELLI_IMG`; ~10s real conversion time, 374MB output, cached alongside the raw
+  zip), giving GDAL's own `rtree` spatial index for free. `query_craters_in_bbox()` does the
+  two-stage filter this section already planned: `geopandas.read_file(..., bbox=...)` pushdown (so
+  the ~1.3M-row database is never materialized in Python — confirmed live: querying a real ~10°×10°
+  box took 0.05s, 1395 rows), then `.cx[]` for the exact box. `crater_overlay_layer(raster_path,
+  config)` is the single entry point notebook cells will call: derives the query AOI from
+  `raster_path`'s own real bounds (`rasterio.warp.transform_bounds`, then normalized from the
+  standard -180..180 output to this project's 0-360 Positive-East convention — a real bug caught by
+  a live smoke test, not just reasoned about: the unnormalized bbox silently matched zero rows),
+  pads it (`lunaserv.pad_bbox`, reused rather than reinvented), queries, and builds each surviving
+  crater's real ellipse polygon in `raster_path`'s own local-meters CRS via
+  `shapely.affinity.scale`/`.rotate`/`.translate` on a unit circle (reprojecting the *center point*
+  first, then building the ellipse exactly in isotropic meters — no projection distortion, unlike
+  building the ellipse in geographic degrees first). Returns a ready-to-use `plotting.OverlayLayer`,
+  or `None` if nothing's in view. Live-validated against the real ~1.3M-row database (a 100km×100km
+  synthetic AOI centered on a real crater found 152 ellipses, sane sizes/positions) and covered by
+  7 real unit tests (`tests/test_craters.py`, no network — synthetic zip/CSV/raster fixtures);
+  168 tests total pass, lint clean.
+  **Known caveat, not yet resolved**: `DIAM_ELLI_ANGLE_IMG`'s rotation reference (which axis,
+  which direction) isn't documented in the PDS4 label — ellipse *size*/*position* are confirmed,
+  *orientation* needs visual cross-checking against a real crater rim in the hillshade basemap once
+  this is wired into the notebook (see `craters._ellipse_polygon`'s docstring).
+  **Still planned**: notebook wiring (Phase 5B/6B — call `craters.crater_overlay_layer` and pass
+  the result into `plot_overlay`/`plot_overlay_toggle`'s `layers=[...]`, per the visual-QA caveat
+  above) → docs close-out (`docs/history.md` entry).
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE
