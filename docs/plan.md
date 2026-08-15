@@ -252,13 +252,24 @@ changes against them.
   **Still planned** (not yet started): overlay Robbins lunar crater ellipses as the first real
   `OverlayLayer`, following the pattern above. Source: Robbins
   (2019) *JGR Planets* DOI `10.1029/2018JE005592`, ~1.3-2M craters, distributed via USGS
-  Astropedia/PDS Annex (catalog page `astrogeology.usgs.gov/search/map/moon_crater_database_v1_robbins`)
-  as CSV/shapefile — **exact download URL not yet confirmed**, the catalog page is a JS app behind
-  Cloudflare bot-protection that blocked this session's automated fetch attempts; needs a human to
-  grab the real URL from a browser before any fetch code is written (see the "don't guess a URL"
-  discipline `docs/data-sources.md` already follows elsewhere). Shipped geometry is likely POINT
-  (center) with major/minor-axis/angle as attribute columns, not a pre-built ellipse polygon —
-  needs confirming against the real file. Given >99% of the ~1.3-2M craters lie outside any one
+  Astropedia/PDS Annex — **exact download URL still not confirmed, but the blocker is now understood
+  and it is not bot-protection**: a second research pass (2026-08-15) confirmed direct file
+  downloads through `astrogeology.usgs.gov` work fine via a plain scripted request with a
+  browser-like User-Agent (verified against a real CKAN resource file on that same host, 200 OK) —
+  the actual problem is that every specific catalog/download URL findable via search engines for
+  this dataset (`search/map/moon_crater_database_v1_robbins`, and the Mars sibling's
+  `search/details/.../zip` pattern, tried on both the Mars and Moon slugs) now 404s live on
+  `astrogeology.usgs.gov`, despite being real, working, search-engine-indexed URLs as recently as
+  Oct 2024 (per the third-party SONIC library's own docs, which cite that exact catalog URL,
+  dated). This reads as a USGS-side site reorganization since then, not something scriptable
+  around — needs a human using the site's *current* live search UI (not a bookmarked/indexed old
+  URL) to find wherever this dataset now lives, then hand back whatever URL that search lands on.
+  **Schema confirmed** in the meantime, via the same SONIC library's field documentation (real,
+  not by analogy this time): geometry is indeed POINT-only, with `latCir_RAD`/`lonCir_RAD` (crater
+  center, radians), `diamCir_KM` (circular diameter), and `majAxElp_KM`/`minAxElp_KM`/`angElp_RAD`
+  (ellipse major/minor axis, angle) as separate attribute columns — confirms the ellipse polygon
+  must be constructed at render time, not read off the shelf, as this section already expected.
+  Given >99% of the ~1.3-2M craters lie outside any one
   camera footprint, the key design point is a two-stage filter: read-time bbox pushdown
   (`geopandas.read_file(..., bbox=...)`, requires a spatially-indexed format — GeoPackage/FlatGeobuf,
   converted once at fetch time if the shipped file isn't already indexed) so the full database is
