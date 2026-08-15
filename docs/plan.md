@@ -237,6 +237,26 @@ changes against them.
   `plot_overlay(show_overlay_outline=True)` traces the overlay raster's real (non-NaN) footprint and
   draws it as a vector boundary. A vector *data* layer (e.g. the Robbins crater database) on top of
   this raster overlay is still a possible future extension, not yet implemented.
+  **Planned** (not yet started): overlay Robbins lunar crater ellipses on Phase 5B/6B, following
+  the existing `outline_geoseries` vector-layer pattern in `_render_overlay_figure`. Source: Robbins
+  (2019) *JGR Planets* DOI `10.1029/2018JE005592`, ~1.3-2M craters, distributed via USGS
+  Astropedia/PDS Annex (catalog page `astrogeology.usgs.gov/search/map/moon_crater_database_v1_robbins`)
+  as CSV/shapefile — **exact download URL not yet confirmed**, the catalog page is a JS app behind
+  Cloudflare bot-protection that blocked this session's automated fetch attempts; needs a human to
+  grab the real URL from a browser before any fetch code is written (see the "don't guess a URL"
+  discipline `docs/data-sources.md` already follows elsewhere). Shipped geometry is likely POINT
+  (center) with major/minor-axis/angle as attribute columns, not a pre-built ellipse polygon —
+  needs confirming against the real file. Given >99% of the ~1.3-2M craters lie outside any one
+  camera footprint, the key design point is a two-stage filter: read-time bbox pushdown
+  (`geopandas.read_file(..., bbox=...)`, requires a spatially-indexed format — GeoPackage/FlatGeobuf,
+  converted once at fetch time if the shipped file isn't already indexed) so the full database is
+  never materialized in Python, then an in-memory `.sindex`/`.cx[]` trim to the exact AOI (confirmed
+  this repo's installed stack — `geopandas 1.1.4`/`shapely 2.1.2`/`pyogrio 0.13.0` — supports both
+  paths). Caching follows `docs/caching.md`'s normal `cache.cached_get` shape unless the confirmed
+  file size turns out Astropedia-GLD100-sized. Full staged plan (research → schema-independent
+  plotting plumbing → fetch/cache → query/filter → notebook wiring → docs close-out) written up
+  2026-08-15, not persisted in-repo beyond this note — re-derive the chunk breakdown fresh if picking
+  this back up later rather than hunting for it.
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

@@ -18,6 +18,7 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
+import geopandas
 import pandas as pd
 
 from trntest import camera as camera_module
@@ -325,18 +326,32 @@ class TrnTestImage(abc.ABC):
             render_px_key=self.tie_point_px_key,
         )
 
-    def plot_overlay(self, title: str | None = None):
+    def plot_overlay(
+        self,
+        title: str | None = None,
+        crater_geoseries: geopandas.GeoSeries | None = None,
+        crater_outline_color: str = "orange",
+    ):
         """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay`
         docs/dataset-plan.md's own pseudocode names -- the notebook this replaces already switched
         to the auto-blinking-GIF toggle version (see its own docstring) before this class existed,
         and reverting that UX improvement here would be a real regression, not a neutral relocation.
         Returns an `IPython.display.HTML` object -- callers must not add a trailing `;` in a
-        notebook cell, same requirement as calling `plot_overlay_toggle` directly."""
+        notebook cell, same requirement as calling `plot_overlay_toggle` directly.
+
+        `crater_geoseries`/`crater_outline_color` pass straight through to
+        `plotting.plot_overlay_toggle` -- see its docstring (must already be in
+        `self.entry.lunaserv_result.ortho`'s own raster CRS and already AOI-filtered; this class
+        does no crater fetch/filter/reprojection of its own, same "consumption only" split as the
+        rest of `plotting.py`). Shared by both `TrnTestHillshadeImage` (5B) and `TrnTestCropImage`
+        (6B) with no special-casing, same as the rest of this method."""
         self._require_generated()
         return plotting.plot_overlay_toggle(
             self.entry.lunaserv_result.ortho,
             self._mapprojected_path(),
             title=title or f"{self.render_label} (mapprojected) over hillshade-based basemap",
+            crater_geoseries=crater_geoseries,
+            crater_outline_color=crater_outline_color,
         )
 
 
