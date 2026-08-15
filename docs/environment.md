@@ -85,10 +85,17 @@ checkout). All of this — main checkout and every worktree — sits under the s
 `scripts/setup_worktree_docker_env.sh` once in a new worktree, before the first `docker compose`
 call there — it detects the worktree name from the checkout path (no manual path arithmetic) and
 writes a gitignored `docker/.env` pointing cache/scratch at the shared roots and output/image
-tag/project name at agent-specific ones. Re-run it any time; it's idempotent. Only the main
-checkout is expected to run the long-lived `docker compose up` Jupyter Lab server; worktree agents
-use `docker compose run --rm demo <cmd>` for one-off commands (same as the existing non-worktree
-workflow), which doesn't publish ports, so there's no port contention to manage per worktree.
+tag/project name at agent-specific ones. Re-run it any time; it's idempotent. In practice, an
+active worktree agent runs its own `docker compose up` Jupyter Lab server (so the user can watch
+that agent's `scripts/run_notebook.sh` runs live) rather than the main checkout — no agent works
+directly in the main checkout, and the user doesn't run a persistent server there either, so it's
+normal for these per-worktree servers to be the only ones actually running at any given time. The
+setup script writes `TRNTEST_JUPYTER_PORT` into each worktree's own `docker/.env` following the
+convention `8887 + <agent number>` (the worktree name's own trailing digit(s), e.g. `a1` -> 8888,
+`a2` -> 8889), so concurrent agents' servers land on different ports without manual coordination.
+Worktree agents still use `docker compose run --rm demo <cmd>` for one-off commands (e.g.
+`trntest-lint`, a one-shot fetch) alongside their own `docker compose up` server — the two aren't
+mutually exclusive.
 
 The pre-commit hook (`git config core.hooksPath githooks`) doesn't need re-running per worktree —
 `core.hooksPath` lives in the shared `.git/config` (worktrees don't get their own by default, since

@@ -47,10 +47,16 @@ services:
       - ${TRNTEST_MAIN_GIT_DIR:-..}:${TRNTEST_MAIN_GIT_DIR:-/tmp/trntest-unused-git-mount}:ro
     ports:
       # Bound to loopback only — this host has a public IP and the Jupyter server below runs with
-      # no auth token. Reach it via an SSH tunnel: ssh -L 8888:localhost:8888 <this-host>. Only the
-      # main checkout is expected to run `docker compose up` (the persistent Jupyter Lab server
-      # AGENTS.md/scripts/run_notebook.sh assume is already running); worktree agents use
-      # `docker compose run --rm demo <cmd>` instead, which doesn't publish ports -- so this port
-      # doesn't need to vary per worktree.
+      # no auth token. Reach it via an SSH tunnel: ssh -L <port>:localhost:<port> <this-host>. In
+      # practice no agent works directly in the main checkout, and the user doesn't run a
+      # persistent server there either -- each active worktree agent runs its own `docker compose
+      # up` server instead (so the user can watch that agent's `scripts/run_notebook.sh` runs
+      # live), alongside `docker compose run --rm demo <cmd>` for one-off commands, needing a
+      # *different* port so concurrent agents' servers don't collide -- `scripts/
+      # setup_worktree_docker_env.sh` writes TRNTEST_JUPYTER_PORT into that worktree's own
+      # docker/.env following the convention `8887 + <agent number>` (the worktree name's own
+      # trailing digit(s), e.g. "a1" -> 8888, "a2" -> 8889) -- see docs/environment.md's
+      # "Multi-agent worktrees" section. The `:-8888` default below is just the main checkout's own
+      # unvaried port, not a claim that anything is actually listening there.
       - "127.0.0.1:${TRNTEST_JUPYTER_PORT:-8888}:8888"
     working_dir: /workspace
