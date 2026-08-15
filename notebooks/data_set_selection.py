@@ -64,3 +64,17 @@ print(
 manifest_path = "dataset_manifest.csv"
 trntest.write_manifest(images, manifest_path)
 print(f"Wrote {len(images)} candidate row(s) to {manifest_path}")
+
+# %% [markdown]
+# ## Dataset folder (cheap convenience/validation step)
+#
+# `trntest.TrnTestDataSet.create()` sets up (or reuses) the self-contained `trn_dataset` folder
+# `image_generation.ipynb` actually populates and reads from -- see `../docs/dataset-plan.md` for
+# the full design. This call is idempotent and never touches already-generated product files, so
+# it's safe to run here purely to confirm the full candidate table round-trips into a valid dataset
+# folder; `image_generation.ipynb`'s own call is the authoritative one (it has no runtime
+# dependency on this notebook having run first, same as the manifest CSV above).
+
+# %%
+trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
+print(f"Dataset folder ready at {session.config.output_dir / 'trn_dataset'}")

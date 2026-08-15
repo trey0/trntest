@@ -336,6 +336,24 @@ def select_dataset(
     return result
 
 
+def _per_image_config(row: pd.Series, config: TrntestConfig, output_dir: Path) -> TrntestConfig:
+    """Shared per-row `dataclasses.replace(...)` construction, keyed on one manifest row's
+    edr_volume/edr_subdir/edr_doy/edr_product/cdr_volume/cdr_product/start_frame -- used by
+    `generate_dataset()`'s loop (`output_dir=<its own output_dir>/product_id`) and
+    `trn_dataset.TrnTestEntry.per_image_config` (`output_dir=dataset_folder/"_work"/edr_product`)."""
+    return dataclasses.replace(
+        config,
+        edr_volume=row["edr_volume"],
+        edr_subdir=row["edr_subdir"],
+        edr_doy=str(row["edr_doy"]),
+        edr_product=row["edr_product"],
+        cdr_volume=row["cdr_volume"],
+        cdr_product=row["cdr_product"],
+        target_frame_index=round(row["start_frame"]),
+        output_dir=output_dir,
+    )
+
+
 def generate_dataset(
     images: pd.DataFrame,
     config: TrntestConfig | None = None,
@@ -374,17 +392,7 @@ def generate_dataset(
     for _, row in rows.iterrows():
         product_id = row["product_id"]
         try:
-            per_image_config = dataclasses.replace(
-                config,
-                edr_volume=row["edr_volume"],
-                edr_subdir=row["edr_subdir"],
-                edr_doy=str(row["edr_doy"]),
-                edr_product=row["edr_product"],
-                cdr_volume=row["cdr_volume"],
-                cdr_product=row["cdr_product"],
-                target_frame_index=round(row["start_frame"]),
-                output_dir=output_dir / product_id,
-            )
+            per_image_config = _per_image_config(row, config, output_dir / product_id)
             built_camera = camera.build_camera(per_image_config)
             frame_timing = camera.fetch_frame_timing(per_image_config)
             crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, built_camera, per_image_config)
