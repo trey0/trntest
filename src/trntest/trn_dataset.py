@@ -335,7 +335,7 @@ class TrnTestImage(abc.ABC):
 
         `layers` passes straight through to `plotting.plot_overlay_toggle` -- see
         `plotting.OverlayLayer`'s docstring (each layer's geometry must already be in
-        `self.entry.lunaserv_result.ortho`'s own raster CRS and already AOI-filtered; this class does
+        `self.entry.dem_ortho_result.ortho`'s own raster CRS and already AOI-filtered; this class does
         no fetch/filter/reprojection of its own, same "consumption only" split as the rest of
         `plotting.py`). Shared by both `TrnTestHillshadeImage` (5B) and `TrnTestCropImage` (6B) with
         no special-casing, same as the rest of this method."""
