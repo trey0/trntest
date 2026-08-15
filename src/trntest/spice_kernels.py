@@ -19,9 +19,9 @@ See docs/data-sources.md and docs/caching.md for the background.
 """
 
 import dataclasses
-import functools
 import re
 from datetime import datetime
+from pathlib import Path
 
 import requests
 import spiceypy as spice
@@ -92,24 +92,43 @@ def doy_code(dt: datetime) -> int:
     return dt.year * 1000 + dt.timetuple().tm_yday
 
 
-@functools.cache
-def latest_metakernel_url(year: int, naif_base_url: str) -> str:
-    """Which metakernel is "latest" for `year` doesn't change within a process's lifetime, so this
-    is memoized -- without it, callers that furnish kernels for many different dates in one process
-    (e.g. dataset.select_dataset() evaluating hundreds of candidate images) would otherwise re-hit
-    this live (uncached-by-design, since it's a directory listing, not a specific file) NAIF
-    endpoint once per date. Takes `naif_base_url` directly rather than a whole `TrntestConfig` --
-    this was originally cached on `(year, config)`, which silently defeated the memoization: callers
-    like dataset.evaluate_candidate_image build a fresh per-candidate config via dataclasses.replace
-    (varying edr_volume/edr_product/etc, fields this function never reads), so every candidate got a
-    distinct cache key and a real HTTP request -- ~1600 live requests, ~500s, for a single sweep."""
-    mk_dir_url = f"{naif_base_url}extras/mk/"
+def _latest_metakernel_cache_path(cache_root: Path, year: int) -> Path:
+    return cache_root / "naif_latest_metakernel" / f"{year}.txt"
+
+
+def latest_metakernel_url(year: int, config: TrntestConfig) -> str:
+    """Which metakernel is "latest" for `year` -- a live NAIF directory listing, not a specific
+    file, so `cache.cached_get`'s usual "does this local path already exist" check doesn't apply
+    directly to it.
+
+    Result is persisted to `cache_root/naif_latest_metakernel/<year>.txt` after a successful
+    resolution, and read from there first on every subsequent call for that year -- once resolved,
+    no code path needs to reach this live endpoint again for that year, the same resilience
+    tradeoff as `isis_wac.resolve_wac_ck_kernels`'s own resolution cache (see docs/caching.md).
+    Deliberately never invalidated: a year's "latest" version is fixed once kernels selected from it
+    are already cached locally (a newer metakernel published later for the same year would only add
+    entries covering dates beyond that year, moot for this project's fixed demo timestamps), and
+    re-checking on every run would defeat the point -- preserving the ability to run this notebook
+    with zero network access at all once genuinely warmed up.
+
+    Takes the whole `TrntestConfig` (unlike most of this module's fetch helpers, which take bare
+    scalars) only for `cache_root` -- `naif_base_url` is read off it too rather than as a second
+    positional, since both call sites already have `config` in scope."""
+    cache_path = _latest_metakernel_cache_path(config.cache_root, year)
+    if cache_path.exists():
+        return cache_path.read_text().strip()
+
+    mk_dir_url = f"{config.naif_base_url}extras/mk/"
     resp = requests.get(mk_dir_url, timeout=30)
     resp.raise_for_status()
     versions = [int(m) for m in re.findall(rf"lro_{year}_v(\d+)\.tm", resp.text)]
     if not versions:
         raise RuntimeError(f"no metakernel found for year {year} at {mk_dir_url}")
-    return f"extras/mk/lro_{year}_v{max(versions):02d}.tm"
+    result = f"extras/mk/lro_{year}_v{max(versions):02d}.tm"
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(result)
+    return result
 
 
 def parse_metakernel(text: str) -> list[str]:
@@ -153,7 +172,7 @@ def select_naif_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> li
     kernel selection. Left in place for direct A/B comparison, not for any accuracy reason -- both
     `lrosc`/`lrolc` and `moc42r` are the same "Reconstructed" tier in ISIS's own kernel-db vocabulary,
     no evidence one is more accurate than the other."""
-    mk_path = latest_metakernel_url(target_dt.year, config.naif_base_url)
+    mk_path = latest_metakernel_url(target_dt.year, config)
     mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
     all_paths = parse_metakernel(mk_local.read_text())
     target_doy = doy_code(target_dt)
@@ -217,7 +236,7 @@ def select_kernels_for(target_dt: datetime, config: TrntestConfig) -> list[Kerne
     if not ck_refs:
         raise RuntimeError(f"no WAC CK kernel resolved for {target_dt!r} via wac_ck_source={config.wac_ck_source!r}")
 
-    mk_path = latest_metakernel_url(target_dt.year, config.naif_base_url)
+    mk_path = latest_metakernel_url(target_dt.year, config)
     mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
     all_paths = parse_metakernel(mk_local.read_text())
     target_doy = doy_code(target_dt)
@@ -296,7 +315,7 @@ def furnish_spk_range(start_dt: datetime, end_dt: datetime, config: TrntestConfi
 
     all_paths: list[str] = []
     for year in range(start_dt.year, end_dt.year + 1):
-        mk_path = latest_metakernel_url(year, config.naif_base_url)
+        mk_path = latest_metakernel_url(year, config)
         mk_local = cache.fetch_naif_kernel(mk_path, cache_root=config.cache_root, base_url=config.naif_base_url)
         all_paths.extend(parse_metakernel(mk_local.read_text()))
 
