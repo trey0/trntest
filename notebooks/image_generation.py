@@ -157,7 +157,7 @@ for name, r in tie_point_results.items():
 # This demo's actual goal is generating synthetic images that could stand in for real spacecraft imagery in terrain-relative navigation (TRN) testing -- so the real question for each candidate TRN test image (the synthetic render here; the real, ISIS-processed WAC crop in Phase 6) is whether its geometry genuinely matches reality, not just whether it looks plausible. Both phases check this two ways against the same reference -- the hillshade-based ortho basemap (`lunaserv_result.ortho`), Phase 3's own best available geometry reference:
 #
 # - **A: raw image quality.** The render's own unprojected pixels, rotated north-up and scaled to real km, next to a plain crop of the basemap covering the same real footprint, both marked with the same 5 tie points -- a quick, ad hoc look at whether the render's content and rough position/scale make sense (`plotting.plot_render_vs_basemap`).
-# - **B: pixel-for-pixel alignment.** The render reprojected onto the map through its own real camera model (`mapproject`) and overlaid directly on the basemap -- true geo-registration, not just visual similarity, behind a clickable on/off toggle to blink the overlay against the basemap (`plotting.plot_overlay_toggle`).
+# - **B: pixel-for-pixel alignment.** The render reprojected onto the map through its own real camera model (`mapproject`) and overlaid directly on the basemap -- true geo-registration, not just visual similarity, as an auto-blinking animated GIF that alternates the overlay against the basemap (`plotting.plot_overlay_toggle`).
 #
 # (Phase 7, below, is just 5A's and 6A's own render panels put together directly, for an easier side-by-side look at the two candidates themselves.)
 
@@ -176,7 +176,7 @@ plotting.plot_render_vs_basemap(
 );
 
 # %% [markdown]
-# `render.run_mapproject`'s `--ref-map` (see `render.run_mapproject_image`) reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render_result.csm_json`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `lunaserv_result.ortho` with no separate alignment step. `plotting.plot_overlay_toggle()` displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, behind a button that toggles the overlay on and off.
+# `render.run_mapproject`'s `--ref-map` (see `render.run_mapproject_image`) reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render_result.csm_json`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `lunaserv_result.ortho` with no separate alignment step. `plotting.plot_overlay_toggle()` displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, as an animated GIF that automatically blinks the overlay on and off.
 
 # %%
 synthetic_mapproj_tif = session.run_mapproject(render_result, lunaserv_result)

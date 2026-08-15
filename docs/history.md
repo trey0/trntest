@@ -2262,3 +2262,125 @@ the user directly from the rendered page for the first (5B) toggle instance:
   <a href="[truncated]" width="900" height="900" style="position:absolute; top:34px; left:0; width:900px; height:900px;">
 </div>
 ```
+
+## Phase 35 (2026-08-15) — Root-caused Phase 34's failure for real: a third, server-side
+sanitizer strips `<style>` and rewrites fragment links *before* DOMPurify ever runs
+
+Picked back up from Phase 34's unreviewed pasted snippet above. That snippet's second element —
+`<a href="[truncated]" width="900" height="900" style="position:absolute; ...">`, an `<a>` tag
+carrying `<img>`-only attributes — turned out to be a copy/paste artifact, not a real finding
+(confirmed below); the first element's href, `//github.com/trey0/trntest/blob/<sha>/notebooks/#overlay-toggle-8516d1c8-with`,
+was the real lead: our source only ever emits a bare `href="#overlay-toggle-8516d1c8-with"`, so
+something had rewritten it into an absolute URL — one that drops the filename entirely (path ends
+`.../notebooks/#...`, not `.../notebooks/image_generation.ipynb#...`).
+
+Investigated by reproducing Phase 34's own fetch chain (blob page → embedded
+`codeViewBlobLayoutRoute.blob.displayUrl` → `notebooks.githubusercontent.com/view/ipynb?...`) with
+`curl`, then extracting `window.NOTEBOOK_DATA.html` from that response via a small Python script
+(`json.loads` on the `{"html": "..."}` object literal — the whole page is one `<script>` block, not
+real JSON, but the object is). Phase 34 had already found and read the client bundle's
+`sanitizeNotebook()`, which reads exactly this `window.NOTEBOOK_DATA.html` and passes it straight to
+`purify.sanitize(content, {ALLOWED_TAGS, RETURN_DOM_FRAGMENT: true})` — so this string is genuinely
+the pre-DOMPurify input, confirmed from the bundle's own code this time, not assumed.
+
+That pre-DOMPurify HTML, for our real committed toggle (`overlay-toggle-8516d1c8`), already has:
+- **Zero `<style>` tags** anywhere in the entire ~6.6MB payload (`data.count('<style')` == `0`),
+  despite the committed `.ipynb`'s own `text/html` output containing exactly one, verified by loading
+  the tracked `notebooks/image_generation.ipynb` JSON directly and grepping that cell's output.
+- **Both `<a href="#...">` links already rewritten** to the absolute, filename-dropping
+  `//github.com/.../notebooks/#...` form shown above, for both the `-with` and `-base` link (checked
+  both, not just the one Phase 34 happened to paste).
+- **Both `<img>` tags intact** — `id`, `src="data:image/png;base64,..."`, `width`, `height`, and
+  `style="position:absolute; ..."` all present unchanged, confirming `_overlay_toggle_html`'s image
+  markup itself was never the problem, and that this pass doesn't touch `data:` image URIs or inline
+  `style=` *attributes* generally (only the `<style>` *tag* and fragment `href`s).
+
+This means `<style>` is stripped, and the fragment links are broken, by something upstream of
+DOMPurify entirely — a **third sanitizer** (GitHub's own server-side `.ipynb`→HTML rendering step,
+distinct from both `html-pipeline` (Phase 33's wrong guess) and the client DOMPurify bundle (Phase
+34's fix target)). Its exact implementation isn't visible from the client bundle, but its effect is
+directly observed, not inferred. Practical fallout for the `:target` mechanism specifically:
+
+- No `<style>` block survives to reach the browser at all, so no CSS rule -- `:target`-conditioned or
+  otherwise -- can ever be defined in the first place. Nothing on DOMPurify's `ALLOWED_TAGS` (which
+  does include `style`, per Phase 34) matters, because DOMPurify never sees the tag.
+- Even given CSS rules some other way, the trigger is separately broken: rewriting
+  `href="#overlay-toggle-8516d1c8-with"` into an absolute URL pointed at the *containing directory*
+  (not even the current file) means a click no longer changes the current document's URL fragment at
+  all -- it attempts to load a different page (or, since the notebook itself renders inside an
+  `<iframe src="https://notebooks.githubusercontent.com/...">`, a same-origin navigation of that
+  iframe to a `github.com` URL, a cross-origin target from the iframe's own perspective) instead of
+  triggering `:target` in place.
+
+Both failures are independent and either alone is fatal to the CSS `:target` design, so Phase 34's
+fix cannot be patched forward -- it needs a different mechanism, not different tags. The one prior
+loose end (the "`<a>` tag with `<img>` attributes" in the pasted snippet) was resolved by this same
+fetch: the real pre-DOMPurify HTML has two ordinary, well-formed `<img>` tags in that position, not an
+`<a>`; Phase 34's paste was very likely a manual copy/paste artifact (e.g. a partial DevTools
+selection), not a rendering behavior, since the reproducible fetch shows no mechanism that would
+rename an `<img>` element to `<a>`.
+
+**Where this leaves the "blink" goal**: inline `style="..."` *attributes* keep surviving every layer
+found so far (this server-side pass, and DOMPurify's defaults per Phase 34), so per-element inline
+positioning still works -- it's only block-level `<style>` rules and fragment-link navigation that are
+dead on GitHub. A click-driven exclusive toggle therefore has no remaining CSS-only path (no
+`<style>`, no working same-page `href="#..."` trigger, and `<details>`/`<summary>` were already ruled
+out in Phase 34 for being outright absent from `ALLOWED_TAGS`). Not yet investigated: whether a
+single self-contained animated image (GIF/APNG, still just one `<img src="data:...">`, no `<style>`,
+no anchor links, nothing for either sanitizer to strip) could deliver the actual underlying want --
+automatic, repeated blinking between the base and overlay frames, the classic image-analyst "blink
+comparator" technique -- without requiring click-driven interactivity at all. Both `_render_overlay_png`
+frames already exist as separate in-memory PNGs before `_overlay_toggle_html` combines them, so this
+would reuse that part of `plot_overlay_toggle` unchanged and only replace the HTML-toggle half.
+
+No code changed this phase -- root-cause and options-gathering only, using the real fetched sanitizer
+input/output rather than guessing from source reading alone (Phase 33's mistake) or from an unverified
+client-side allowlist alone (Phase 34's mistake).
+
+## Phase 36 (2026-08-15) — Replaced `plot_overlay_toggle`'s click-driven toggle with an auto-blinking
+animated GIF, per the user's own explicit choice among the Phase 35 options
+
+Given Phase 35's finding that no CSS-only click-toggle mechanism can survive GitHub's real rendering
+pipeline (both the trigger and the styling it depends on are broken upstream of the sanitizer Phase 34
+targeted), presented the user three ways forward -- an auto-blinking GIF, an unverified SVG-SMIL
+declarative-click experiment, or dropping GitHub interactivity entirely -- and they picked the GIF
+approach.
+
+`plot_overlay_toggle` (`plotting.py`) keeps its name and signature (plus one addition,
+`blink_interval_ms: int = 700`) but now returns a single `<img src="data:image/gif;base64,...">`
+instead of the `<div>`/`<a>`/`<span>`/`<style>`/`<img>`x2 structure Phases 33/34 built -- no `<style>`
+block, no anchor `href`, nothing left for either GitHub sanitizer layer (the Phase 35 server-side pass
+or DOMPurify) to strip, so it now renders identically on a live kernel and GitHub's static viewer by
+construction rather than by surviving an allowlist. `_render_overlay_png` (base64 PNG) became
+`_render_overlay_frame` (`PIL.Image`, RGB); a new `_blink_gif_b64` replaces `_overlay_toggle_html`,
+building the two-frame GIF. One real subtlety: naively saving two independently-quantized RGB frames
+as GIF frames would let each frame pick its own 256-color palette, which would very slightly recolor
+the *unchanged* base-image pixels differently between frames -- a whole-image flicker on every blink,
+masking the actual overlay-region change being compared. Fixed by quantizing both frames onto one
+shared palette first (`Image.new` pasting both frames side by side, `.quantize(colors=256)` once on
+that combined image, then `.quantize(palette=<that result>)` on each original frame separately) before
+handing them to `Image.save(..., format="GIF", save_all=True, ...)`.
+
+`docs/plan.md`'s `plotting.py` row and the two Phase-5B/6B markdown cells in
+`notebooks/image_generation.py` that described a "clickable"/"button" toggle were updated to match.
+`uuid` (only ever used for the old mechanism's per-element id namespacing, now unneeded) dropped from
+`plotting.py`'s imports; `pillow` added to `pyproject.toml`'s direct dependencies since `plotting.py`
+now imports `PIL` directly rather than relying on it being pulled in transitively (already true,
+confirmed via `docker compose run --rm demo python3 -c "import PIL"`, `12.3.0`). `trntest-lint` clean.
+
+A small, synthetic-array reproduction inside the container (two 100x100 solid-color frames, no real
+raster I/O) confirmed the GIF mechanism itself works: valid `GIF89a` header, 2 frames on reload via
+`PIL.Image.open(...).n_frames`, correct `duration` on each frame. End-to-end validation through the
+real pipeline (`scripts/run_notebook.sh notebooks/image_generation.py`) could not be completed this
+session: `session.generate_dataset()`'s fetch of the selected EDR product
+(`M1327210646CE`, from `dataset_manifest.csv`) hit a `429` from `pds.mcp.nasa.gov`, and a direct `curl
+-I` against the same URL confirmed a CloudFront-level `retry-after: 3600` (a full hour) -- not the
+short transient blip a 90s-interval retry loop (tried, stopped once the `Retry-After` header was read)
+could clear. `notebooks/image_generation.ipynb` was left at its last real, committed (Phase 34)
+executed state rather than committing the broken partial run papermill produced (execution stopped at
+cell 2 with the 429 as an unhandled exception) -- `git checkout -- notebooks/image_generation.ipynb`
+after confirming via `git diff --stat` what was being discarded. Still outstanding: a real
+`scripts/run_notebook.sh` run once the rate limit clears, and the user's own live-github.com
+confirmation of the rendered GIF -- this phase's mechanism has not yet been checked against the actual
+notebooks.githubusercontent.com pipeline the way Phases 33-35 eventually checked their own guesses.
+

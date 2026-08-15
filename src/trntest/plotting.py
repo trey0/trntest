@@ -3,7 +3,6 @@ consumption of already-computed values, reading image files by path where needed
 
 import base64
 import io
-import uuid
 import warnings
 
 import geopandas
@@ -21,6 +20,7 @@ import rioxarray
 import shapely.geometry
 import shapely.ops
 import xarray
+from PIL import Image
 
 from trntest import lunaserv, orientation, wac
 from trntest.camera import Camera
@@ -564,7 +564,7 @@ def plot_overlay(
     `docs/history.md`'s dated entry for the full story.
 
     See also `plot_overlay_toggle`, which renders this same overlay twice (`overlay_alpha=0` and
-    `overlay_alpha=1`) behind a clickable on/off toggle rather than a single fixed `overlay_alpha`."""
+    `overlay_alpha=1`) as an auto-blinking animated GIF rather than a single fixed `overlay_alpha`."""
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata
     )
@@ -622,7 +622,7 @@ def _render_overlay_figure(
     """Builds one `Figure` for `plot_overlay`/`plot_overlay_toggle` -- identical rendering path
     (figsize, draw order, axis-limit restore, km tick formatting) regardless of `overlay_alpha`, so
     two calls with only `overlay_alpha` varying produce pixel-aligned images (same figure size, same
-    dpi, same bbox -- required for `plot_overlay_toggle`'s CSS-opacity stacking to line up)."""
+    dpi, same bbox -- required for `plot_overlay_toggle`'s two GIF frames to align pixel-for-pixel)."""
     fig, ax = plt.subplots(figsize=(9, 9))
     base.plot.imshow(ax=ax, cmap="gray", vmin=base_vmin, vmax=base_vmax, add_colorbar=False)
     # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
@@ -661,29 +661,37 @@ def plot_overlay_toggle(
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
     initial_visible: bool = True,
+    blink_interval_ms: int = 700,
 ):
-    """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at
-    both `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid PNGs ("base
-    only" and "with overlay"), not a transparent layer meant to be blended by the browser -- and
-    displays them behind two mutually-exclusive controls, one per PNG: clicking either one shows that
-    image and hides the other, "blinking" the overlay on and off to compare it against the base at
-    full clarity each way, rather than a partial blend of both at once (a blend makes it hard to tell
-    which pixels are the overlay's own content versus the base showing through -- see `plot_overlay`'s
-    docstring -- exactly when that distinction matters most, e.g. debugging a not-yet-correct overlay).
+    """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at both
+    `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid frames ("base only"
+    and "with overlay"), not a transparent layer meant to be blended by the browser -- and encodes
+    them as a single looping animated GIF that automatically blinks between the two: the classic
+    image-analyst "blink comparator" technique for spotting registration differences, showing each
+    frame at full clarity in turn rather than a partial blend of both at once (a blend makes it hard
+    to tell which pixels are the overlay's own content versus the base showing through -- see
+    `plot_overlay`'s docstring -- exactly when that distinction matters most, e.g. debugging a
+    not-yet-correct overlay).
 
-    Two earlier versions of this were built and both failed on GitHub's static `.ipynb` viewer despite
-    being validated at the time -- see `_overlay_toggle_html`'s docstring for the full mechanism this
-    settled on (CSS `:target`, not `<details>`) and why: the first version (a single `<details>`
-    stacking a second image on top via `position:absolute`) rendered as inert-looking plain text
-    because that reasoning was never checked against GitHub's *actual* renderer for `.ipynb` files --
-    `notebooks.githubusercontent.com`, a separate service from the `html-pipeline` Ruby sanitizer that
-    backs README/markdown rendering, which is what the fix that followed (`<details name=...>`
-    exclusive-accordion groups) was mistakenly validated against instead. Its client-side JS sanitizer
-    (DOMPurify, with a hardcoded custom tag allowlist) doesn't include `details`/`summary` at all, so
-    both versions degraded to unwrapped, inert text on GitHub specifically.
+    This is this function's third mechanism. Two earlier, click-driven-toggle versions (a single
+    `<details>` element, then a CSS `:target` scheme built from two `<a href="#...">` links) were each
+    built and validated against what looked like GitHub's real `.ipynb`-rendering sanitizer, and both
+    still failed live on github.com anyway -- see docs/history.md Phases 33-35 for the full trail.
+    Phase 35's fetch of GitHub's actual pre-sanitization notebook payload (not just its sanitizer's
+    source code) found the real, previously-unknown reason: a server-side rendering pass, upstream of
+    GitHub's client-side DOMPurify sanitizer entirely, strips every `<style>` tag outright and rewrites
+    same-page `href="#fragment"` links into absolute, filename-dropping URLs -- independently breaking
+    both halves any CSS `:target`-based toggle needs (no CSS rule can exist without a surviving
+    `<style>` tag; no click can change the in-page URL fragment once its href points elsewhere). A
+    single self-contained `<img src="data:image/gif;...">` sidesteps both failure modes at once -- no
+    `<style>` block, no anchor links, nothing left for either sanitizer layer to strip -- and, unlike
+    the pixel-registered `:target` stacking (a live-kernel-only concession even when the toggle itself
+    worked), renders identically on both platforms since it's the exact same one HTML element either
+    way.
 
     `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
-    picks which image is shown before either control is clicked.
+    picks which frame plays first in the loop. `blink_interval_ms` sets how long each frame is shown
+    before switching -- fast enough to compare by eye, slow enough not to strobe.
 
     Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
     cell (no trailing `;`) to actually display."""
@@ -692,7 +700,7 @@ def plot_overlay_toggle(
     )
     outline_geoseries = _overlay_outline_geoseries(overlay) if show_overlay_outline else None
 
-    base_png_b64, width_px, height_px = _render_overlay_png(
+    base_frame, width_px, height_px = _render_overlay_frame(
         base,
         overlay_display,
         base_vmin,
@@ -705,7 +713,7 @@ def plot_overlay_toggle(
         outline_geoseries,
         overlay_outline_color,
     )
-    overlay_png_b64, _, _ = _render_overlay_png(
+    overlay_frame, _, _ = _render_overlay_frame(
         base,
         overlay_display,
         base_vmin,
@@ -719,12 +727,12 @@ def plot_overlay_toggle(
         overlay_outline_color,
     )
 
-    element_id = f"overlay-toggle-{uuid.uuid4().hex[:8]}"
-    html = _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible, element_id, width_px, height_px)
+    gif_b64 = _blink_gif_b64(base_frame, overlay_frame, initial_visible, blink_interval_ms)
+    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
     return IPython.display.HTML(html)
 
 
-def _render_overlay_png(
+def _render_overlay_frame(
     base,
     overlay_display,
     base_vmin,
@@ -737,14 +745,13 @@ def _render_overlay_png(
     outline_geoseries,
     overlay_outline_color,
 ):
-    """Renders one `_render_overlay_figure(...)` frame to a base64-encoded PNG. Deliberately no
+    """Renders one `_render_overlay_figure(...)` frame to a `PIL.Image`. Deliberately no
     `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both frames must use plain,
-    consistent full-figure export so the two PNGs `plot_overlay_toggle` produces are pixel-dimension-
+    consistent full-figure export so the two frames `plot_overlay_toggle` produces are pixel-dimension-
     identical (a content-dependent tight-bbox crop could differ between the transparent and opaque
-    frames, breaking the CSS-stack alignment the whole toggle depends on). `plt.close(fig)` is
-    required, not cleanup hygiene: the notebook's inline matplotlib backend auto-displays any figure
-    left open at cell-end, so without it this would leak two extra static PNGs into the cell's output
-    alongside the intended HTML."""
+    frames, breaking the GIF's frame alignment). `plt.close(fig)` is required, not cleanup hygiene: the
+    notebook's inline matplotlib backend auto-displays any figure left open at cell-end, so without it
+    this would leak two extra static images into the cell's output alongside the intended GIF."""
     fig = _render_overlay_figure(
         base,
         overlay_display,
@@ -760,113 +767,30 @@ def _render_overlay_png(
     )
     width_px, height_px = fig.get_size_inches() * fig.dpi
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", pil_kwargs={"compress_level": 9})
+    fig.savefig(buf, format="png")
     plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode("ascii"), round(width_px), round(height_px)
+    buf.seek(0)
+    return Image.open(buf).convert("RGB"), round(width_px), round(height_px)
 
 
-def _overlay_toggle_html(base_png_b64, overlay_png_b64, initial_visible: bool, element_id: str, width_px, height_px):
-    """The actual toggle markup: two `<a href="#...">` links plus a CSS `:target`-driven `<style>`
-    block, not `<details>`/`<summary>`. Both earlier versions of this function used `<details>` (first
-    stacked via `position:absolute`/CSS, then made exclusive via a shared `name` attribute) and both
-    were validated -- wrongly -- against `gjtorikian/html-pipeline`'s `SanitizationFilter`, the Ruby
-    sanitizer that backs GitHub's README/markdown rendering. That's the wrong sanitizer: a `.ipynb`
-    blob on github.com is rendered by a completely separate service, embedded via
-    `<iframe src="https://notebooks.githubusercontent.com/view/ipynb?...">` (confirmed by fetching an
-    actual blob page and reading its embedded `displayUrl`, then fetching that URL directly -- it
-    returns a static HTML shell whose `<script>` sets `window.NOTEBOOK_DATA = {"html": "..."}`, and a
-    separate client-side JS bundle (`/static/dist/bundle-*.js`, confirmed by fetching it directly) runs
-    that HTML through DOMPurify before inserting it into the page). That bundle's own
-    `app/static/js/html-sanitizer.ts` (readable in the unminified-enough bundle source) hardcodes its
-    own `ALLOWED_TAGS`, unrelated to html-pipeline's:
+def _blink_gif_b64(base_frame, overlay_frame, initial_visible: bool, interval_ms: int) -> str:
+    """Encodes `base_frame`/`overlay_frame` (same-size `PIL.Image`s, from `_render_overlay_frame`) as a
+    base64-encoded, looping animated GIF. Both frames are quantized onto one shared 256-color palette
+    (built from the two frames pasted side by side, then each re-quantized onto that same palette via
+    `Image.quantize(palette=...)`) rather than each picking its own independently -- letting GIF
+    encoding choose per-frame palettes would recolor the unchanged base-image pixels slightly
+    differently in each frame, showing up as a flicker across the *whole* image on every blink instead
+    of only where the overlay actually differs."""
+    width, height = base_frame.size
+    combined = Image.new("RGB", (width * 2, height))
+    combined.paste(base_frame, (0, 0))
+    combined.paste(overlay_frame, (width, 0))
+    shared_palette = combined.quantize(colors=256)
 
-        HTML_TAGS = [body, b, blockquote, br, code, dd, del, div, dl, dt, em, h1-h8, hr, i, img,
-                     ins, kbd, li, ol, p, pre, q, rp, rt, ruby, s, samp, span, strike, strong,
-                     sub, sup, table, tbody, td, tfoot, th, thead, tr, tt, ul, var]
-        SVG_TAGS  = [a, animate*, circle, ..., foreignObject, g, ..., style, svg, symbol, ...]
+    base_frame_p = base_frame.quantize(palette=shared_palette)
+    overlay_frame_p = overlay_frame.quantize(palette=shared_palette)
+    frames = [overlay_frame_p, base_frame_p] if initial_visible else [base_frame_p, overlay_frame_p]
 
-    `details`/`summary` are not in either list -- not stripped of attributes, *removed entirely*, with
-    DOMPurify's default `KEEP_CONTENT` behavior re-parenting their children in place. That's exactly
-    what both earlier versions looked like on GitHub: the `<strong>` label text left sitting inert
-    where the `<summary>` used to be, followed by the image(s) fallen into plain document flow --
-    "plain bold text, not clickable, no way to switch the overlay" is `<details>`/`<summary>` being
-    unwrapped, not a styling problem. (The `style` *attribute*, unlike the two `<details>`/`<summary>`
-    *tags* built around it, was never actually the blocker here: it's present in DOMPurify's default
-    attribute allowlist and this sanitizeContent() call passes no `ALLOWED_ATTR` override, so `style`
-    survives fine -- the second version's whole "GitHub strips `style`" premise was itself a
-    consequence of reading the wrong sanitizer's config.)
-
-    `div`, `a`, `span`, `img`, and -- notably -- `style` *as a tag* are all present in the real
-    allowlist above (`style` via the SVG list; DOMPurify special-cases `style`/`a`/`font`/`title` so
-    they also work in plain HTML namespace, not just inside `<svg>`, specifically so they aren't
-    "erroneously deleted from HTML namespace" -- straight from that library's own source comment).
-    That's enough to build a real, no-JavaScript toggle out of the CSS `:target` pseudo-class instead
-    of `<details>`:
-
-    - Two `<a href="#{element_id}-with">` / `<a href="#{element_id}-base">` links, styled to look like
-      buttons.
-    - Two empty `<span id="{element_id}-with">` / `<span id="{element_id}-base">` anchor targets,
-      siblings of the two `<img>`s within the same wrapping `<div>`.
-    - A `<style>` block (plain tag content, not an attribute -- survives the same allowlist check) with
-      `:target`-conditioned rules: clicking a link sets the page's URL fragment to that link's `href`,
-      which makes the matching `<span>` match `:target`, which (via the CSS general-sibling combinator
-      `~`, matching any later sibling in the same parent regardless of what's between them) shows its
-      image and hides the other. A separate, unconditional rule shows `initial_visible`'s image by
-      default, before either link has ever been clicked (there is no `:target` at all until one is).
-
-    Because `style` genuinely does survive GitHub's actual sanitizer (unlike the second version's
-    premise), both `<img>`s can stay `position:absolute` at the same computed offset on both platforms
-    -- true pixel-registered stacking isn't a live-kernel-only concession here the way it was for the
-    `<details>` versions. `width=`/`height=` HTML attributes are kept alongside the matching `style` as
-    a belt-and-suspenders fallback. `element_id` namespaces every id/href/CSS-selector this function
-    emits, so multiple toggles in one notebook (this repo's Phase 5B and 6B cells) never collide, even
-    though `:target` state is tracked by one page-wide URL fragment shared across all of them.
-
-    This mechanism is built directly from the real, extracted allowlist above rather than inferred --
-    a stronger basis than either earlier version had -- but still couldn't be exercised through an
-    actual DOMPurify pass before being committed (no JS runtime was available to run the real bundle
-    against candidate markup). Treat it as validated only once confirmed live on github.com, not from
-    this docstring alone."""
-    nav_row_height_px = 20
-    nav_padding_v_px = 4
-    nav_border_px = 1
-    nav_row_box_height_px = nav_row_height_px + 2 * nav_padding_v_px + 2 * nav_border_px
-    img_top_px = nav_row_box_height_px + 4
-    total_height_px = img_top_px + height_px
-
-    nav_style = (
-        "cursor:pointer; display:inline-block; background:#f0f0f0; color:#000; text-decoration:none; "
-        f"border:{nav_border_px}px solid #999; border-radius:4px; padding:{nav_padding_v_px}px 12px; "
-        f"font-size:0.9em; height:{nav_row_height_px}px; line-height:{nav_row_height_px}px; margin:0 4px 0 0;"
-    )
-    img_style = f"position:absolute; top:{img_top_px}px; left:0; width:{width_px}px; height:{height_px}px;"
-    wrapper_style = (
-        f"position:relative; display:inline-block; width:{width_px}px; height:{total_height_px}px; text-align:center;"
-    )
-
-    with_img_id = f"{element_id}-img-with"
-    base_img_id = f"{element_id}-img-base"
-    default_img_id = with_img_id if initial_visible else base_img_id
-
-    style_block = f"""
-#{with_img_id}, #{base_img_id} {{ display: none; }}
-#{default_img_id} {{ display: block; }}
-#{element_id}-with:target ~ #{with_img_id} {{ display: block; }}
-#{element_id}-with:target ~ #{base_img_id} {{ display: none; }}
-#{element_id}-base:target ~ #{base_img_id} {{ display: block; }}
-#{element_id}-base:target ~ #{with_img_id} {{ display: none; }}
-"""
-
-    return f"""\
-<div style="{wrapper_style}">
-  <style>{style_block}</style>
-  <a href="#{element_id}-with" style="{nav_style}"><strong>With overlay</strong></a>
-  <a href="#{element_id}-base" style="{nav_style}"><strong>Base only</strong></a>
-  <span id="{element_id}-with"></span>
-  <span id="{element_id}-base"></span>
-  <img id="{with_img_id}" src="data:image/png;base64,{overlay_png_b64}"
-       width="{width_px}" height="{height_px}" style="{img_style}">
-  <img id="{base_img_id}" src="data:image/png;base64,{base_png_b64}"
-       width="{width_px}" height="{height_px}" style="{img_style}">
-</div>
-"""
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=interval_ms, loop=0)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
