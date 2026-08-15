@@ -84,7 +84,7 @@ this file). Then, as needed:
   `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads `dataset_manifest.csv` and
   renders/validates the selected image; no runtime dependency on `data_set_selection.ipynb`
   itself, so rerun that notebook and commit its updated manifest to change which real image gets
-  rendered), and `notebooks/wac_isis_spike.py`/`.ipynb` (the narrower ISIS/CSM `framestitch`
+  rendered), and `notebooks/wac_isis.py`/`.ipynb` (the narrower ISIS/CSM `framestitch`
   investigation — see `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
   review/diffing/lint/IDE work; the `.ipynb` carries real, fully-executed outputs and is committed
   too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,

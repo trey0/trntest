@@ -29,7 +29,7 @@ RUN curl -fL -o /tmp/asp.tar.bz2 \
 ENV PATH="${ASP_DIR}/bin:${PATH}"
 
 # ISIS3 + ALE, for the ISIS/CSM real-WAC reprojection pipeline (src/trntest/isis_wac.py; see
-# docs/data-sources.md's "ISIS3/CSM spike" section and notebooks/wac_isis_spike.py for how this was
+# docs/data-sources.md's "ISIS3/CSM spike" section and notebooks/wac_isis.py for how this was
 # derived) -- a separate conda-managed env, since ISIS/ALE are conda-only packages that can't merge
 # into the uv venv below. Bootstrapped via micromamba (a single static binary) rather than a full
 # miniforge/mamba install, to keep this layer lean; the channel/package args themselves are

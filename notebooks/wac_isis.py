@@ -85,10 +85,10 @@ split
 # here too).
 
 # %%
-plotting.plot_raster(split.vis_even);
+_ = plotting.plot_raster(split.vis_even)
 
 # %%
-plotting.plot_raster(split.vis_odd);
+_ = plotting.plot_raster(split.vis_odd)
 
 # %% [markdown]
 # ## Step 2: `spiceinit web=yes` -- attach real SPICE geometry, zero local kernels required
@@ -113,10 +113,10 @@ odd_cal = isis_wac.run_lrowaccal(odd_spice, config)
 # something upstream.
 
 # %%
-plotting.plot_raster(even_cal.cub_path);
+_ = plotting.plot_raster(even_cal.cub_path)
 
 # %%
-plotting.plot_raster(odd_cal.cub_path);
+_ = plotting.plot_raster(odd_cal.cub_path)
 
 # %% [markdown]
 # ## Step 4: `framestitch` -- combine even + odd
@@ -128,7 +128,7 @@ stitched = isis_wac.run_framestitch(even_cal, odd_cal, flip=FLIP, config=config)
 stitched
 
 # %%
-plotting.plot_raster(stitched.cub_path);
+_ = plotting.plot_raster(stitched.cub_path)
 
 # %% [markdown]
 # ### Zoomed crop near framelet boundaries
@@ -154,7 +154,7 @@ line_end = line_start + WINDOW_HEIGHT
 print(f"selected line window (peak mean signal): {line_start}:{line_end} of {full_band.shape[0]}")
 
 window = rasterio.windows.Window(col_off=0, row_off=line_start, width=704, height=WINDOW_HEIGHT)
-plotting.plot_raster(stitched.cub_path, window=window);
+_ = plotting.plot_raster(stitched.cub_path, window=window)
 
 # %% [markdown]
 # ## Observations
