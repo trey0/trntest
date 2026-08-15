@@ -235,10 +235,22 @@ changes against them.
   `docs/history.md`'s dated entry for the full investigation.
 - `geopandas` (added alongside `rioxarray` for `plotting.plot_overlay`) now has a concrete caller:
   `plot_overlay(show_overlay_outline=True)` traces the overlay raster's real (non-NaN) footprint and
-  draws it as a vector boundary. A vector *data* layer (e.g. the Robbins crater database) on top of
-  this raster overlay is still a possible future extension, not yet implemented.
-  **Planned** (not yet started): overlay Robbins lunar crater ellipses on Phase 5B/6B, following
-  the existing `outline_geoseries` vector-layer pattern in `_render_overlay_figure`. Source: Robbins
+  draws it as a vector boundary.
+  **Done**: `plot_overlay`/`plot_overlay_toggle`/`TrnTestImage.plot_overlay` (covering both 5B and
+  6B) now take a generic `layers: list[plotting.OverlayLayer] | None` parameter — each layer is a
+  `geoseries` + style (`color`/`linewidth`/`alpha`/`fill`), drawn via `.boundary.plot(...)` or
+  `.plot(...)`. Chosen over per-layer-type named parameters (an earlier version added
+  `crater_geoseries`/`crater_outline_color` directly) specifically because that approach doesn't
+  scale — one layer type already cost 2 params × 4 function signatures
+  (`plot_overlay`/`plot_overlay_toggle`/`_render_overlay_figure`/`_render_overlay_frame`), and a
+  `layers` list absorbs any number of future layer types with zero further signature changes. The
+  existing footprint outline (`outline_geoseries`/`overlay_outline_color`) deliberately stayed a
+  separate, dedicated, always-present parameter rather than folding into `layers` — it's the actual
+  geometry-validation reference the Phase 5/6 comparison exists to show, not an optional annotation.
+  Verified with hand-built toy `GeoSeries` layers (single-layer, multi-layer, filled) through both
+  `plot_overlay` and `plot_overlay_toggle`; full test suite (156 tests) and lint still pass.
+  **Still planned** (not yet started): overlay Robbins lunar crater ellipses as the first real
+  `OverlayLayer`, following the pattern above. Source: Robbins
   (2019) *JGR Planets* DOI `10.1029/2018JE005592`, ~1.3-2M craters, distributed via USGS
   Astropedia/PDS Annex (catalog page `astrogeology.usgs.gov/search/map/moon_crater_database_v1_robbins`)
   as CSV/shapefile — **exact download URL not yet confirmed**, the catalog page is a JS app behind
@@ -254,9 +266,9 @@ changes against them.
   this repo's installed stack — `geopandas 1.1.4`/`shapely 2.1.2`/`pyogrio 0.13.0` — supports both
   paths). Caching follows `docs/caching.md`'s normal `cache.cached_get` shape unless the confirmed
   file size turns out Astropedia-GLD100-sized. Full staged plan (research → schema-independent
-  plotting plumbing → fetch/cache → query/filter → notebook wiring → docs close-out) written up
-  2026-08-15, not persisted in-repo beyond this note — re-derive the chunk breakdown fresh if picking
-  this back up later rather than hunting for it.
+  plotting plumbing [done, see above] → fetch/cache → query/filter → notebook wiring → docs
+  close-out) written up 2026-08-15, not persisted in-repo beyond this note — re-derive the remaining
+  chunk breakdown fresh if picking this back up later rather than hunting for it.
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

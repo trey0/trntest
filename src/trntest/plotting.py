@@ -2,6 +2,7 @@
 consumption of already-computed values, reading image files by path where needed."""
 
 import base64
+import dataclasses
 import io
 import warnings
 
@@ -514,6 +515,42 @@ def _fill_overlay_nodata_for_display(overlay_da, max_search_distance: int = 10):
     return overlay_da.copy(data=filled)
 
 
+@dataclasses.dataclass
+class OverlayLayer:
+    """One optional vector-data annotation layer for `plot_overlay`/`plot_overlay_toggle` -- e.g.
+    Robbins crater database ellipses, the concrete case this was added for (see `docs/plan.md`'s
+    open items). `geoseries` must already be in the same CRS as the base/overlay raster and already
+    filtered down to the relevant AOI -- this module stays consumption-only (no fetch/filter/
+    reprojection here, per its own module docstring).
+
+    Deliberately a plain `geoseries` + a handful of style fields (a "GeoJSON-like" geometry+style
+    pairing, not literal GeoJSON) rather than named `plot_overlay(..., crater_geoseries=...)`
+    parameters -- an earlier version of this did exactly that for craters alone, and adding a second
+    annotation-layer type would have meant threading two more parameters through all four of
+    `plot_overlay`/`plot_overlay_toggle`/`_render_overlay_figure`/`_render_overlay_frame` again, the
+    same way the crater parameters were threaded through the first time. A `layers: list[OverlayLayer]`
+    on all four instead scales to any number of layers with no further signature changes -- the
+    footprint outline (`outline_geoseries`/`overlay_outline_color`) deliberately stays a separate,
+    dedicated, always-present parameter rather than folding into this list: it's the actual geometry
+    validation reference the whole Phase 5/6 comparison exists to show, not an optional annotation.
+
+    `fill=False` (default) draws just the boundary (`.boundary.plot(...)`, matching the existing
+    footprint-outline style) rather than a filled shape -- outlines read better than fills stacked on
+    top of imagery at `plot_overlay`'s typical `overlay_alpha=1.0`."""
+
+    geoseries: geopandas.GeoSeries
+    color: str = "orange"
+    linewidth: float = 1.0
+    alpha: float = 1.0
+    fill: bool = False
+
+    def plot(self, ax):
+        if self.fill:
+            self.geoseries.plot(ax=ax, color=self.color, alpha=self.alpha)
+        else:
+            self.geoseries.boundary.plot(ax=ax, color=self.color, linewidth=self.linewidth, alpha=self.alpha)
+
+
 def plot_overlay(
     base_raster_path,
     overlay_raster_path,
@@ -523,8 +560,7 @@ def plot_overlay(
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
-    crater_geoseries: geopandas.GeoSeries | None = None,
-    crater_outline_color: str = "orange",
+    layers: list[OverlayLayer] | None = None,
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
     geographic coordinates in each file's own georeferencing drive the plot -- unlike
@@ -568,12 +604,13 @@ def plot_overlay(
     See also `plot_overlay_toggle`, which renders this same overlay twice (`overlay_alpha=0` and
     `overlay_alpha=1`) as an auto-blinking animated GIF rather than a single fixed `overlay_alpha`.
 
-    `crater_geoseries`, if given, is drawn as an additional vector layer (outline only, same
-    `.boundary.plot(...)` technique as the footprint outline above) -- e.g. Robbins crater database
-    ellipses, the concrete case this parameter was added for (see `docs/plan.md`'s open items). Must
-    already be in the same CRS as `overlay`'s own raster CRS and already filtered down to the
-    relevant AOI -- this function stays consumption-only (no fetch/filter/reprojection logic here),
-    matching this module's own "pure consumption of already-computed values" docstring."""
+    `layers`, if given, is a list of `OverlayLayer`s (see its own docstring) each drawn as an
+    additional vector layer on top of the footprint outline above -- e.g. a single-entry list
+    wrapping Robbins crater database ellipses, the concrete case this parameter was added for (see
+    `docs/plan.md`'s open items). Each layer's geometry must already be in the same CRS as
+    `overlay`'s own raster CRS and already filtered down to the relevant AOI -- this function stays
+    consumption-only (no fetch/filter/reprojection logic here), matching this module's own "pure
+    consumption of already-computed values" docstring."""
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata
     )
@@ -590,8 +627,7 @@ def plot_overlay(
         title,
         outline_geoseries,
         overlay_outline_color,
-        crater_geoseries,
-        crater_outline_color,
+        layers,
     )
 
 
@@ -629,17 +665,17 @@ def _render_overlay_figure(
     title,
     outline_geoseries,
     overlay_outline_color,
-    crater_geoseries=None,
-    crater_outline_color="orange",
+    layers: list[OverlayLayer] | None = None,
 ):
     """Builds one `Figure` for `plot_overlay`/`plot_overlay_toggle` -- identical rendering path
     (figsize, draw order, axis-limit restore, km tick formatting) regardless of `overlay_alpha`, so
     two calls with only `overlay_alpha` varying produce pixel-aligned images (same figure size, same
     dpi, same bbox -- required for `plot_overlay_toggle`'s two GIF frames to align pixel-for-pixel).
 
-    `crater_geoseries` draws after `outline_geoseries` (own default color, `"orange"`, distinct from
-    both the footprint outline's `"red"` and `MARKER_STYLES`'s tie-point colors) so it's never hidden
-    underneath the footprint boundary line."""
+    `layers` draw after `outline_geoseries`, in list order -- `OverlayLayer`'s own default color
+    (`"orange"`) is distinct from both the footprint outline's `"red"` and `MARKER_STYLES`'s
+    tie-point colors so a default-styled layer is never hidden underneath the footprint boundary
+    line."""
     fig, ax = plt.subplots(figsize=(9, 9))
     base.plot.imshow(ax=ax, cmap="gray", vmin=base_vmin, vmax=base_vmax, add_colorbar=False)
     # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
@@ -652,8 +688,8 @@ def _render_overlay_figure(
     )
     if outline_geoseries is not None:
         outline_geoseries.boundary.plot(ax=ax, color=overlay_outline_color, linewidth=1.5)
-    if crater_geoseries is not None:
-        crater_geoseries.boundary.plot(ax=ax, color=crater_outline_color, linewidth=1.0)
+    for layer in layers or []:
+        layer.plot(ax)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_title(title)
@@ -681,8 +717,7 @@ def plot_overlay_toggle(
     fill_overlay_nodata: bool = True,
     initial_visible: bool = True,
     blink_interval_ms: int = 700,
-    crater_geoseries: geopandas.GeoSeries | None = None,
-    crater_outline_color: str = "orange",
+    layers: list[OverlayLayer] | None = None,
 ):
     """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at both
     `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid frames ("base only"
@@ -714,8 +749,8 @@ def plot_overlay_toggle(
     picks which frame plays first in the loop. `blink_interval_ms` sets how long each frame is shown
     before switching -- fast enough to compare by eye, slow enough not to strobe.
 
-    `crater_geoseries`/`crater_outline_color` -- see `plot_overlay`'s docstring; drawn identically in
-    both GIF frames (computed once here, like `outline_geoseries`, so both frames stay pixel-aligned).
+    `layers` -- see `plot_overlay`'s docstring; drawn identically in both GIF frames (computed once
+    here, like `outline_geoseries`, so both frames stay pixel-aligned).
 
     Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
     cell (no trailing `;`) to actually display."""
@@ -736,8 +771,7 @@ def plot_overlay_toggle(
         title,
         outline_geoseries,
         overlay_outline_color,
-        crater_geoseries,
-        crater_outline_color,
+        layers,
     )
     overlay_frame, _, _ = _render_overlay_frame(
         base,
@@ -751,8 +785,7 @@ def plot_overlay_toggle(
         title,
         outline_geoseries,
         overlay_outline_color,
-        crater_geoseries,
-        crater_outline_color,
+        layers,
     )
 
     gif_b64 = _blink_gif_b64(base_frame, overlay_frame, initial_visible, blink_interval_ms)
@@ -772,8 +805,7 @@ def _render_overlay_frame(
     title,
     outline_geoseries,
     overlay_outline_color,
-    crater_geoseries=None,
-    crater_outline_color="orange",
+    layers: list[OverlayLayer] | None = None,
 ):
     """Renders one `_render_overlay_figure(...)` frame to a `PIL.Image`. Deliberately no
     `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both frames must use plain,
@@ -794,8 +826,7 @@ def _render_overlay_frame(
         title,
         outline_geoseries,
         overlay_outline_color,
-        crater_geoseries,
-        crater_outline_color,
+        layers,
     )
     width_px, height_px = fig.get_size_inches() * fig.dpi
     buf = io.BytesIO()
