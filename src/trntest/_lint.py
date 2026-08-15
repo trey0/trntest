@@ -189,21 +189,21 @@ def main() -> int:
 
     results = {}
     if py_files:
-        # Notebook .py twins keep trailing semicolons on purpose (suppresses IPython's
-        # auto-display of a cell's last expression, e.g. to hide a plot call's Axes repr) --
-        # `ruff format` strips these as "redundant" regardless of per-file-ignores (those only
-        # affect `ruff check`, not the formatter), so notebook files are linted but not
-        # format-checked.
-        format_files = [f for f in py_files if not f.startswith("notebooks/")]
+        # Notebook .py twins used to suppress IPython's auto-display of a cell's last expression
+        # (e.g. to hide a plot call's Figure repr) with a trailing semicolon -- `ruff format` strips
+        # those as "redundant" regardless of per-file-ignores (those only affect `ruff check`, not
+        # the formatter), which used to force notebook files out of format-checking entirely. Fixed
+        # by suppressing display via `_ = expr` instead (an `Assign` node, not the bare `Expr` node
+        # IPython's display hook checks for) -- format-safe, so notebook files are now checked the
+        # same as everything else; see docs/history.md's dated entry.
         # `--force-exclude`: ruff's own `[tool.ruff] exclude` (e.g. `old_notebooks/`, a frozen
         # archive genuinely out of scope for lint -- see its own README.md) only applies during
         # ruff's own directory discovery, not when files are passed explicitly on the command line
         # like this -- without this flag, an untracked/changed file under an excluded directory
         # would still get linted.
-        if format_files:
-            results["ruff format --check"] = subprocess.run(
-                ["ruff", "format", "--check", "--force-exclude", *format_files], check=False
-            ).returncode
+        results["ruff format --check"] = subprocess.run(
+            ["ruff", "format", "--check", "--force-exclude", *py_files], check=False
+        ).returncode
         # mypy always runs against the whole package, never scoped to a partial file list --
         # restricting mypy's own inputs is a known footgun when a changed file imports an
         # unmodified sibling module mypy then can't fully check in isolation.

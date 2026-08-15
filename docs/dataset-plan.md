@@ -70,8 +70,8 @@ referencing the same EDR product share that expensive work instead of redoing it
 
 ## Hillshade = pure relocation, no pipeline change
 
-Traced precisely: `sat_sim --ortho <lunaserv_result.ortho>` already renders the hillshade-blended
-texture today (hillshade gets baked into `LunaservResult.ortho` by
+Traced precisely: `sat_sim --ortho <dem_ortho_result.ortho>` already renders the hillshade-blended
+texture today (hillshade gets baked into `DemOrthoResult.ortho` by
 `lunaserv.despeckle_and_shade_ortho` *before* `sat_sim` ever runs) — so "hillshade base map data
 reprojected using sat_sim" is a literal description of today's existing synthetic render
 (`RenderResult.rendered_tif`/`csm_json`, i.e. `render.run_sat_sim`'s output). No changes to
@@ -125,7 +125,7 @@ class TrnTestEntry:
     crop_result: isis_wac.CropResult      # isis_wac.crop_for_camera(...) -- scratch-dir cube,
                                            # distinct from TrnTestCropImage.raster_path (dataset-folder copy)
     crop_footprint: dict                  # tie_points.crop_footprint_corners_for_camera(...)
-    lunaserv_result: LunaservResult       # loaded from already-generated files via new
+    dem_ortho_result: DemOrthoResult       # loaded from already-generated files via new
                                            # lunaserv.result_from_files() when possible, else fetched fresh
     rotations: DisplayRotations           # orientation.compute_display_rotations(...)
 
@@ -195,7 +195,7 @@ class TrnTestImage(abc.ABC):
         plotting.plot_render_vs_basemap(
             plotting.read_raster_band(self.raster_path), self.rotation_k,
             self.width_km, self.height_km, self.footprint_lonlat_deg,
-            self.entry.lunaserv_result.ortho,
+            self.entry.dem_ortho_result.ortho,
             title=title or f"{self.render_label} vs. hillshade-based basemap",
             render_label=self.render_label, tie_point_results=tie_point_results,
             render_px_key=self.tie_point_px_key,
@@ -203,7 +203,7 @@ class TrnTestImage(abc.ABC):
 
     def plot_overlay(self, title=None):                              # ~Phase 5B / 6B
         self._require_generated()
-        plotting.plot_overlay(self.entry.lunaserv_result.ortho, self._mapprojected_path(),
+        plotting.plot_overlay(self.entry.dem_ortho_result.ortho, self._mapprojected_path(),
             title=title or f"{self.render_label} (mapprojected) over hillshade-based basemap")
 
 
@@ -220,7 +220,7 @@ class TrnTestCropImage(TrnTestImage):
     #                      entry.stitched.flip, entry.per_image_config)  -- NEW function, see
     #                      "Crop sidecar: accurate, not just informational" below; copy
     #                      entry.crop_result.cub_path -> raster_path, isd.json_path -> sidecar_json_path
-    # _mapprojected_path() = isis_wac.run_cam2map_for_crop(entry.crop_result, entry.lunaserv_result,
+    # _mapprojected_path() = isis_wac.run_cam2map_for_crop(entry.crop_result, entry.dem_ortho_result,
     #                        entry.per_image_config)  -- operates on the scratch-dir crop_result, not
     #                        raster_path, so cam2map's own intermediates don't spill into crop/
 
@@ -233,10 +233,10 @@ class TrnTestHillshadeImage(TrnTestImage):
     # footprint_lonlat_deg = entry.camera.footprint_lonlat_deg
     # render_label       = "Synthetic (sat_sim, SPICE-posed)"
     # tie_point_px_key   = "synthetic_px"
-    # _generate_impl()   = render.run_sat_sim(entry.camera, entry.lunaserv_result, entry.per_image_config);
+    # _generate_impl()   = render.run_sat_sim(entry.camera, entry.dem_ortho_result, entry.per_image_config);
     #                      copy rendered_tif -> raster_path, csm_json -> sidecar_json_path
     # _mapprojected_path() = render.run_mapproject_image(raster_path, sidecar_json_path, <out>,
-    #                        entry.lunaserv_result, entry.per_image_config)
+    #                        entry.dem_ortho_result, entry.per_image_config)
 ```
 
 Tie points stay **out of scope for the class hierarchy in the first pass** (matches the current
@@ -359,7 +359,7 @@ classes.
 |---|---|
 | `src/trntest/trn_dataset.py` | **New**: `TrnTestDataSet`, `TrnTestEntry`, `TrnTestImage` (abstract base), `TrnTestCropImage`, `TrnTestHillshadeImage`, queue primitives, `PRODUCT_TYPES`. |
 | `src/trntest/isis_wac.py` | Add `run_isd_generate_for_crop(crop, camera, flip, config=None) -> IsdGenerateResult` — new function, real logic (crop-scoped `isd_generate` call + time-offset patch), not a relocation. `run_isd_generate`/`crop_window_for_camera`/`VIS_BLOCK_HEIGHT` unchanged, reused by it. |
-| `src/trntest/lunaserv.py` | Add `result_from_files(ortho_path, dem_path) -> LunaservResult` (pure IO, no new pipeline logic). |
+| `src/trntest/lunaserv.py` | Add `result_from_files(ortho_path, dem_path) -> DemOrthoResult` (pure IO, no new pipeline logic). |
 | `src/trntest/dataset.py` | Optional small refactor: extract shared `_per_image_config(row, config, output_dir)` helper used by both `generate_dataset()`'s loop (behavior-unchanged) and `TrnTestEntry.per_image_config`. |
 | `src/trntest/__init__.py` | Export `TrnTestDataSet`, `TrnTestEntry`, `TrnTestImage` (queue primitives stay `trn_dataset.*`-only, not top-level). |
 | `notebooks/data_set_selection.py`/`.ipynb` | Last cell also calls `TrnTestDataSet.create(...)`. |

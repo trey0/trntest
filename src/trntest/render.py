@@ -1,7 +1,7 @@
 """Render the synthetic image with ASP's `sat_sim` using the real SPICE-derived camera, then convert
 that exact camera to a CSM Frame model-state JSON sidecar with `cam_gen`. Replaces the old
 `run_sat_sim.sh` -- direct subprocess calls instead of a shell script, so the DEM/ortho paths flow
-in as plain Python values (no `lunaserv_result.txt` handoff file needed).
+in as plain Python values (no `dem_ortho_result.txt` handoff file needed).
 """
 
 import dataclasses
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.subprocess_utils import run_quiet
 
 
@@ -37,7 +37,7 @@ class RenderResult:
 DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 
-def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: TrntestConfig | None = None) -> RenderResult:
+def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None) -> RenderResult:
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,9 +52,9 @@ def run_sat_sim(camera: Camera, lunaserv_result: LunaservResult, config: Trntest
         [
             "sat_sim",
             "--dem",
-            str(lunaserv_result.dem),
+            str(dem_ortho_result.dem),
             "--ortho",
-            str(lunaserv_result.ortho),
+            str(dem_ortho_result.ortho),
             "--camera-list",
             str(camera_list_path),
             "--image-size",
@@ -97,7 +97,7 @@ def run_mapproject_image(
     image_path: Path,
     csm_json_path: Path,
     output_path: Path,
-    lunaserv_result: LunaservResult,
+    dem_ortho_result: DemOrthoResult,
     config: TrntestConfig | None = None,
 ) -> Path:
     """Reproject any image back onto the map via its own CSM/ISD sidecar and ASP `mapproject`'s
@@ -109,12 +109,12 @@ def run_mapproject_image(
     run_quiet(
         [
             "mapproject",
-            str(lunaserv_result.dem),
+            str(dem_ortho_result.dem),
             str(image_path),
             str(csm_json_path),
             str(output_path),
             "--ref-map",
-            str(lunaserv_result.dem),
+            str(dem_ortho_result.dem),
             "-t",
             "csm",
         ]
@@ -123,14 +123,14 @@ def run_mapproject_image(
 
 
 def run_mapproject(
-    render_result: RenderResult, lunaserv_result: LunaservResult, config: TrntestConfig | None = None
+    render_result: RenderResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
     """Reproject `render_result`'s synthetic image back onto the map using its own CSM sidecar --
     the geometric inverse of `run_sat_sim`'s forward DEM+camera-to-image render, through the same
     camera model, so the output lands back on real ground coordinates (not just a visually-similar
-    crop). `--ref-map` reads the projection and grid size from `lunaserv_result.dem` -- the same DEM
+    crop). `--ref-map` reads the projection and grid size from `dem_ortho_result.dem` -- the same DEM
     `run_sat_sim` rendered from -- so the output shares an exact pixel grid with every other raster
-    in `lunaserv_result` (the hillshade-based ortho included), letting them be overlaid directly with
+    in `dem_ortho_result` (the hillshade-based ortho included), letting them be overlaid directly with
     no separate reprojection/alignment step. Confirmed empirically (see docs/data-sources.md): this
     round trip aligns real terrain features pixel-precisely, as expected for going forward and back
     through one consistent camera model. Opt-in/on-demand (not part of `dataset.generate_dataset`'s
@@ -140,7 +140,7 @@ def run_mapproject(
     render_dir = render_result.rendered_tif.parent
     mapproj_tif = render_dir / f"{camera_stem}-mapproj.tif"
     return run_mapproject_image(
-        render_result.rendered_tif, render_result.csm_json, mapproj_tif, lunaserv_result, config
+        render_result.rendered_tif, render_result.csm_json, mapproj_tif, dem_ortho_result, config
     )
 
 

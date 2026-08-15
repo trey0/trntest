@@ -24,10 +24,10 @@ from trntest.subprocess_utils import run_quiet
 
 
 @dataclasses.dataclass(frozen=True)
-class LunaservResult:
+class DemOrthoResult:
     """DEM/ortho tiles fetched for a `Camera`'s footprint, as returned by `fetch_dem_and_ortho`.
     `bbox` is in meters, in the per-camera local Orthographic CRS (`config.lunaserv_srs_template`)
-    both tiles were fetched in -- not lon/lat degrees (each `LunaservResult`'s tiles have their own
+    both tiles were fetched in -- not lon/lat degrees (each `DemOrthoResult`'s tiles have their own
     independent local CRS, centered on that camera's own footprint)."""
 
     ortho: Path
@@ -476,9 +476,9 @@ def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path,
         dst.write(shaded, 1)
 
 
-def result_from_files(ortho_path: Path, dem_path: Path) -> LunaservResult:
-    """Reconstruct a `LunaservResult` from an already-generated ortho/DEM pair on disk -- pure IO, no
-    fetching -- so `trn_dataset.TrnTestEntry.lunaserv_result` can resume from a prior `generate()`
+def result_from_files(ortho_path: Path, dem_path: Path) -> DemOrthoResult:
+    """Reconstruct a `DemOrthoResult` from an already-generated ortho/DEM pair on disk -- pure IO, no
+    fetching -- so `trn_dataset.TrnTestEntry.dem_ortho_result` can resume from a prior `generate()`
     run's output instead of re-fetching from Lunaserv/Astropedia. `bbox`/`width`/`height` are read
     back from `ortho_path`'s own embedded georeferencing rather than recomputed or stored separately
     -- `_reproject_raster_to_local_grid` (via `despeckle_and_shade_ortho`, which carries the fetched
@@ -489,12 +489,12 @@ def result_from_files(ortho_path: Path, dem_path: Path) -> LunaservResult:
     with rasterio.open(ortho_path) as src:
         width, height = src.width, src.height
         bbox = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
-    return LunaservResult(ortho=Path(ortho_path), dem=Path(dem_path), bbox=bbox, width=width, height=height)
+    return DemOrthoResult(ortho=Path(ortho_path), dem=Path(dem_path), bbox=bbox, width=width, height=height)
 
 
 def fetch_dem_and_ortho(
     camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
-) -> LunaservResult:
+) -> DemOrthoResult:
     """`extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
     own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
     crop footprint, which isn't always the same size/shape as the synthetic camera's own FOV. Keeps
@@ -582,7 +582,7 @@ def fetch_dem_and_ortho(
     ortho_shaded_path = config.output_dir / "ortho_shaded.tif"
     despeckle_and_shade_ortho(ortho_path, dem_filled_path, camera, ortho_shaded_path, config)
 
-    return LunaservResult(
+    return DemOrthoResult(
         ortho=ortho_shaded_path,
         dem=dem_filled_path,
         bbox=bbox,

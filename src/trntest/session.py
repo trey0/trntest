@@ -14,7 +14,7 @@ from trntest import camera, dataset, lunaserv, orientation, render, spice_kernel
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.dataset import GenerationResult
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 from trntest.render import RenderResult
 
@@ -45,16 +45,16 @@ class Session:
         return camera.build_camera(config=self.config, output_tsai_path=output_tsai_path)
 
     @_inherit_doc(lunaserv.fetch_dem_and_ortho)
-    def fetch_dem_and_ortho(self, camera: Camera) -> LunaservResult:
+    def fetch_dem_and_ortho(self, camera: Camera) -> DemOrthoResult:
         return lunaserv.fetch_dem_and_ortho(camera, config=self.config)
 
     @_inherit_doc(render.run_sat_sim)
-    def run_sat_sim(self, camera: Camera, lunaserv_result: LunaservResult) -> RenderResult:
-        return render.run_sat_sim(camera, lunaserv_result, config=self.config)
+    def run_sat_sim(self, camera: Camera, dem_ortho_result: DemOrthoResult) -> RenderResult:
+        return render.run_sat_sim(camera, dem_ortho_result, config=self.config)
 
     @_inherit_doc(render.run_mapproject)
-    def run_mapproject(self, render_result: RenderResult, lunaserv_result: LunaservResult) -> Path:
-        return render.run_mapproject(render_result, lunaserv_result, config=self.config)
+    def run_mapproject(self, render_result: RenderResult, dem_ortho_result: DemOrthoResult) -> Path:
+        return render.run_mapproject(render_result, dem_ortho_result, config=self.config)
 
     @_inherit_doc(camera.fetch_frame_timing)
     def fetch_frame_timing(self) -> FrameTiming:

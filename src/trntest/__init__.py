@@ -7,8 +7,8 @@ Typical usage:
 
     session = trntest.Session()
     camera = session.build_camera()
-    lunaserv_result = session.fetch_dem_and_ortho(camera)
-    render_result = session.run_sat_sim(camera, lunaserv_result)
+    dem_ortho_result = session.fetch_dem_and_ortho(camera)
+    render_result = session.run_sat_sim(camera, dem_ortho_result)
 
 See `trntest.Session` for the full pipeline, or the individual modules (`trntest.camera`,
 `trntest.lunaserv`, `trntest.render`, `trntest.wac`, `trntest.tie_points`, `trntest.orientation`)
@@ -27,7 +27,7 @@ from trntest.dataset import (
     select_dataset,
     write_manifest,
 )
-from trntest.lunaserv import LunaservResult, fetch_dem_and_ortho
+from trntest.lunaserv import DemOrthoResult, fetch_dem_and_ortho
 from trntest.orientation import DisplayRotations, compute_display_rotations
 from trntest.render import RenderResult, read_csm_state, run_sat_sim
 from trntest.session import Session
@@ -42,7 +42,7 @@ __all__ = [
     "load_config",
     "FrameTiming",
     "Camera",
-    "LunaservResult",
+    "DemOrthoResult",
     "RenderResult",
     "DisplayRotations",
     "GenerationResult",

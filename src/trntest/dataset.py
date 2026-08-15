@@ -20,7 +20,7 @@ import spiceypy as spice
 from trntest import cache, camera, catalog, illumination, lunaserv, render, spice_kernels, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import LunaservResult
+from trntest.lunaserv import DemOrthoResult
 from trntest.render import RenderResult
 
 # Same neighborhood as this repo's original single-demo product, so calling select_dataset() with
@@ -58,9 +58,9 @@ class GenerationResult:
     frame_timing: FrameTiming
     camera: Camera
     crop_footprint: dict  # the real WAC crop's own footprint (tie_points.crop_footprint_corners_for_camera)
-    # -- computed once here (needed to size lunaserv_result's own AOI fetch below) and reused by
+    # -- computed once here (needed to size dem_ortho_result's own AOI fetch below) and reused by
     # Phase 6, rather than recomputed later
-    lunaserv_result: LunaservResult
+    dem_ortho_result: DemOrthoResult
     render_result: RenderResult
 
 
@@ -396,10 +396,10 @@ def generate_dataset(
             built_camera = camera.build_camera(per_image_config)
             frame_timing = camera.fetch_frame_timing(per_image_config)
             crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, built_camera, per_image_config)
-            lunaserv_result = lunaserv.fetch_dem_and_ortho(
+            dem_ortho_result = lunaserv.fetch_dem_and_ortho(
                 built_camera, per_image_config, extra_footprint_lonlat_deg=crop_footprint
             )
-            render_result = render.run_sat_sim(built_camera, lunaserv_result, per_image_config)
+            render_result = render.run_sat_sim(built_camera, dem_ortho_result, per_image_config)
         except cache.FetchError:
             raise
         except ValueError as exc:
@@ -412,7 +412,7 @@ def generate_dataset(
                 frame_timing=frame_timing,
                 camera=built_camera,
                 crop_footprint=crop_footprint,
-                lunaserv_result=lunaserv_result,
+                dem_ortho_result=dem_ortho_result,
                 render_result=render_result,
             )
         )

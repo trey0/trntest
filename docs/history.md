@@ -2646,3 +2646,92 @@ render/crop step re-runs, not the network fetches (confirmed: the truncate+popul
 4.44s on a warm cache in the real re-run below, not the ~12-19 minutes of a true cold generation).
 3 new tests (25 total in `test_trn_dataset.py`, 143 across the full suite); real Docker re-run of
 `image_generation.ipynb` confirmed clean (no errors, 48.5s total), `trntest-lint --all` clean.
+
+## Phase 40 (2026-08-15) — Two minor post-merge notebook regressions, found in the user's own manual
+review: bare `plot_camera_footprint` axes, and a double-rendered plot in two cells
+
+Both found by the user actually looking at the regenerated `image_generation.ipynb` in Jupyter Lab
+(per their own standing preference -- see the review-before-commit note added this session -- rather
+than trusting `trntest-lint`/`pytest` alone, which can't catch either of these).
+
+**`plot_camera_footprint`'s bare axes**: the user recalled this cell (`In[6]`) once had km-scaled,
+labeled axes and asked whether that had regressed. Checked git history first rather than guessing --
+`plot_camera_footprint` has never had axis labels in its whole committed history, across every branch
+(`git log --all -S`). Traced the actual source of the remembered `"north-south (m)"`/`"east-west (m)"`
+phrasing to `old_notebooks/stripe_debug.py`, a frozen, no-longer-synced investigation notebook from
+the DEM-artifact debugging phase -- a different file entirely, not a regression in this one. The
+underlying complaint was still real, though (raw unlabeled local-CRS meter values on the axes, unlike
+the rest of the notebook), so `plot_camera_footprint` gained the same km `FuncFormatter` +
+`"Easting (km)"`/`"Northing (km)"` treatment `_render_overlay_figure` already used for this identical
+coordinate system.
+
+**Double-rendered plots in cells 11 and 14**: `entry.hillshade.plot_vs_basemap(...)`/
+`entry.crop.plot_vs_basemap(...)` each rendered their figure twice. Root cause: two independent
+display mechanisms both fire for a bare, un-suppressed expression whose value is a `Figure` still open
+at cell-end -- matplotlib's own inline-backend post-execute hook (auto-displays every open figure) and
+IPython's own last-expression display hook (auto-displays the cell's final value, since `Figure` has a
+`_repr_png_`) -- so leaving the returned `Figure` unsuppressed double-renders it. Four other cells in
+the same notebook already suppressed this correctly with a trailing `;` (the IPython convention for
+"don't display the last expression"); these two had simply lost theirs at some point (most plausibly
+during Phase 39's notebook restructure, since `entry.hillshade.plot_vs_basemap`/
+`entry.crop.plot_vs_basemap` didn't exist as call sites before that merge).
+
+Re-adding `;` would have fixed it, but the user raised a real, independent problem with that
+convention: `ruff format` strips trailing semicolons as "redundant" (regardless of per-file lint
+ignores, which only affect `ruff check`, not the formatter), which is *why* `trntest-lint` had been
+excluding `notebooks/*.py` from `ruff format --check` entirely up to now -- a real coverage gap letting
+any other formatting drift in those files go unnoticed too. Switched to `_ = expr` instead, verified
+directly (not assumed) before committing to it: `ast.parse` confirms `_ = f()` produces an `Assign`
+node while `f()`/`f();` produce an `Expr` node, and only a bare `Expr` triggers IPython's
+display-hook -- so `_ = expr` suppresses display via the interpreter's own AST semantics, not a
+lexical convention formatters treat as noise. Confirmed empirically too: `ruff check`/`ruff format
+--check` both pass clean on `_ = make_fig()` with zero special-casing (no `F841` unused-variable
+complaint either -- `_` is the standard exempted "discarded value" name). All 6
+previously-semicolon-suppressed cells converted; `_lint.py`'s `format_files` carve-out removed, so
+`ruff format --check` now genuinely covers `notebooks/*.py` like every other Python file. That
+uncovered several pre-existing, previously-invisible formatting issues in `image_generation.py` (long
+`print()`/function calls not wrapped, single- vs. double-quote drift) -- fixed by just running `ruff
+format` for real over the file rather than by hand.
+
+Verified: real Docker re-run of `image_generation.ipynb` end to end -- both previously-doubled cells
+now show exactly one `display_data` output each (checked directly against the regenerated `.ipynb`'s
+own cell outputs, not just visually). `trntest-lint` clean (including the newly-real
+`ruff format --check` coverage of `notebooks/*.py`); full `pytest` suite (156 tests) passes.
+
+## Phase 41 (2026-08-15) — Merged `plot_dem_ortho`/`plot_camera_footprint` into one figure; renamed
+`LunaservResult`/`lunaserv_result` to `DemOrthoResult`/`dem_ortho_result` throughout
+
+Two more small requests from the same manual-review pass as Phase 40.
+
+**Merged Phase 3's two plot cells**: the former `plot_dem_ortho` (ortho + DEM side by side, plain
+"sample"/"line" axes) and `plot_camera_footprint` (ortho + footprint overlay, km-labeled axes, added
+Phase 40) covered overlapping ground -- the DEM panel is exactly the same AOI as the footprint panel,
+just a different band. `plot_dem_ortho` now takes `camera` too and draws the footprint overlay (quad +
+center marker) directly on its own left (ortho) panel; the right (DEM) panel gained the same km
+`Easting`/`Northing` axis treatment (previously bare "sample"/"line"), rather than left inconsistent
+with its new neighbor. `plot_camera_footprint` is gone -- its only caller was the now-removed second
+cell (confirmed via `grep`, not assumed, before deleting it), so nothing else needed updating.
+
+**Renamed `LunaservResult`/`lunaserv_result`**: the user flagged this name as misleading -- it bundles
+an ortho (still genuinely from Lunaserv WMS) with a DEM that has *not* come from Lunaserv since the
+Astropedia GLD100 switch (`docs/history.md`'s own earlier "Fix synthetic render stripe artifact"
+entry). Confirmed the mismatch is real, not cosmetic: the function that builds one,
+`lunaserv.fetch_dem_and_ortho`, was already accurately named (dem *and* ortho, source-agnostic) --
+only the dataclass itself kept the stale single-source name from before that DEM-source switch. Chose
+`DemOrthoResult`/`dem_ortho_result` (matching that already-correct function name exactly, over the
+alternative `BasemapResult`/`basemap_result`, which reads more naturally in prose but is less precise
+about contents) after asking the user directly, given the size of the rename (~10 files: the class in
+`lunaserv.py`, every parameter/property/field of that name in `render.py`/`session.py`/
+`trn_dataset.py`/`plotting.py`/`dataset.py`/`isis_wac.py`/`__init__.py`, plus `notebooks/
+image_generation.py` and the current-state docs). Applied via `sed -i 's/\bLunaservResult\b/.../;
+s/\blunaserv_result\b/.../'` per file (word-boundary-anchored, confirmed first via `grep -w` that
+nothing else -- e.g. `lunaserv_srs_template`, `fetch_lunaserv_getmap` -- would be caught by accident),
+not by hand, given the volume. Deliberately left `docs/history.md`'s own past entries and
+`old_notebooks/` untouched -- both are frozen narrative/archive, not current-state references (see
+`AGENTS.md`), so they correctly keep the old name describing what was actually true at the time.
+
+Verified: real Docker re-run of `image_generation.ipynb` end to end (merged cell's own output
+extracted and visually inspected -- footprint quad + center marker on the left panel, matching
+`Easting`/`Northing (km)` axes on both panels); `trntest-lint` clean; full `pytest` suite (156 tests,
+unaffected -- nothing test-covered referenced either the old plotting functions or the old name)
+passes.
