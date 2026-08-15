@@ -343,7 +343,7 @@ class TrnTestImage(abc.ABC):
         return plotting.plot_overlay_toggle(
             self.entry.dem_ortho_result.ortho,
             self._mapprojected_path(),
-            title=title or f"{self.render_label} (mapprojected) over hillshade-based basemap",
+            title=title or f"{self.render_label} over basemap",
             layers=layers,
         )
 

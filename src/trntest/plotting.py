@@ -790,6 +790,16 @@ def plot_overlay_toggle(
     `layers` -- see `plot_overlay`'s docstring; drawn identically in both GIF frames (computed once
     here, like `outline_geoseries`, so both frames stay pixel-aligned).
 
+    Each frame's title gets a `" - ☑ Overlay Visibility"`/`" - ☐ Overlay Visibility"`
+    suffix (Unicode's checked/unchecked ballot-box glyphs) marking which frame is showing. An
+    earlier version used the GFM `[x]`/`[ ]` task-list convention instead, but this isn't a
+    fixed-width font, so swapping `"x"` for `" "` inside literal brackets shifted the trailing
+    words -- confirmed via matplotlib's own `get_window_extent()` that the two ballot-box glyphs
+    render at identical bounding-box width in this font, so this swap is genuinely static, not just
+    visually close. Deliberately only the glyph changes between frames, not the surrounding words --
+    per explicit user feedback, the goal is for the blinking GIF to visually read as a checkbox
+    ticking on/off in place, not as title text jumping around alongside the image.
+
     Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
     cell (no trailing `;`) to actually display."""
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
@@ -806,7 +816,7 @@ def plot_overlay_toggle(
         overlay_vmax,
         overlay_cmap,
         0.0,
-        title,
+        f"{title} - ☐ Overlay Visibility",
         outline_geoseries,
         overlay_outline_color,
         layers,
@@ -820,7 +830,7 @@ def plot_overlay_toggle(
         overlay_vmax,
         overlay_cmap,
         1.0,
-        title,
+        f"{title} - ☑ Overlay Visibility",
         outline_geoseries,
         overlay_outline_color,
         layers,

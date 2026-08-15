@@ -201,9 +201,7 @@ _ = entry.hillshade.plot_vs_basemap(
 # `entry.hillshade.plot_overlay()` reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render.run_mapproject_image`'s `--ref-map`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `dem_ortho_result.ortho` with no separate alignment step. Displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, as an animated GIF that automatically blinks the overlay on and off.
 
 # %%
-entry.hillshade.plot_overlay(
-    title="Phase 5B: synthetic render (mapprojected) over hillshade-based basemap", layers=crater_layers
-)
+entry.hillshade.plot_overlay(title="Phase 5B: synthetic render over basemap", layers=crater_layers)
 
 # %% [markdown]
 # ## Phase 6: does the real, ISIS-processed WAC crop's geometry check out?
@@ -233,9 +231,7 @@ _ = entry.crop.plot_vs_basemap(
 # `entry.crop.plot_overlay()` reprojects the real crop onto the map via ISIS's own native `cam2map` (`isis_wac.run_cam2map_for_crop`), using a map file cloned from `dem_ortho_result`'s own local Orthographic projection (`isis_wac._orthographic_map_pvl`) so the output lands in the same real-world coordinate system as `dem_ortho_result.ortho` -- the real-WAC counterpart to 5B's `mapproject`, sharing the same auto-blinking-GIF overlay display (no special-casing needed since the crop -- unlike the old full stitched cube -- already covers just the real footprint being compared).
 
 # %%
-entry.crop.plot_overlay(
-    title="Phase 6B: real ISIS-processed WAC (mapprojected) over hillshade-based basemap", layers=crater_layers
-)
+entry.crop.plot_overlay(title="Phase 6B: real WAC over basemap", layers=crater_layers)
 
 # %% [markdown]
 # ## Phase 7: synthetic render vs. real WAC, side by side
