@@ -2833,3 +2833,207 @@ notebook's actual usage).
 
 Verified: real Docker re-run of `image_generation.ipynb` end to end at each step (final state: 78
 craters in view, no errors); `trntest-lint` clean; full `pytest` suite (171 tests) passes.
+
+## Phase 45 (2026-08-15) — ISIS `photomet` (Hapke) as an alternate hillshade mode, using the real
+camera position for true per-pixel emission/phase
+
+Evaluated replacing the ortho basemap's plain Lambertian hillshade (`shade_ortho`,
+`matplotlib.colors.LightSource.hillshade` -- diffuse-only, no opposition surge, no real lunar
+reflectance behavior) with ISIS's own `photomet` application using a real Hapke bidirectional
+reflectance function (`PHTNAME=HAPKEHEN`, `NORMNAME=SHADE`). Added as a new `hapke=True` mode on
+`lunaserv.fetch_dem_and_ortho`/`despeckle_and_shade_ortho` (`hapke_shade_ortho`) alongside the
+default, not a replacement -- a feasibility prototype, not lunar-calibrated
+(`_HAPKE_PLACEHOLDER_PARAMS`).
+
+**The core obstacle**: `photomet`'s automatic angle sources (`ANGLESOURCE=ELLIPSOID`/`DEM`) need a
+real ISIS camera model embedded in the cube (via `spiceinit`) to derive incidence/emission/phase
+angles from -- but this ortho is a flat, map-projected mosaic with no ISIS camera model at all,
+real or synthetic. Confirmed via `photomet -help`/`photomet.xml` (read directly, not guessed) that
+`ANGLESOURCE=BACKPLANE` sidesteps this entirely: it accepts externally-supplied
+phase/incidence/emission angle rasters, so `photomet` only ever does the Hapke math, never the
+geometry. Wrote those angle rasters as plain (non-georeferenced) ISIS3 cubes directly via GDAL's own
+`ISIS3` driver (`rw+v`, confirmed via `gdalinfo --formats`) -- no `gdal2isis`/`isis2std` round-trip
+needed. One undocumented `photomet` requirement found only by running it: the `FROM` cube (a pure
+size/dtype template in `BACKPLANE` mode -- `NORMNAME=SHADE` overwrites its actual pixel values)
+still needs a `BandBin` label group just to open at all, added via `editlab` since GDAL's `ISIS3`
+writer doesn't create one from scratch.
+
+**First version (angle rasters) assumed a nadir viewer** -- emission from each pixel's local
+surface normal vs. straight up, phase constant across the whole scene -- correct for describing an
+already-existing flat WMS mosaic, but not a real camera's actual perspective geometry, so it could
+never capture the emission-angle-dependent brightening across a frame that's exactly the kind of
+effect a real Hapke BRDF is supposed to add over Lambertian. Replaced with the real, finite camera
+position (`Camera.camera_center_moon_me_m`) instead: `_camera_local_enu_m` expresses it as
+(East, North, Up) meters relative to the same local tangent point `fetch_dem_and_ortho`'s own local
+Orthographic CRS is centered on (a real `+proj=ortho` map projection's (x, y) for a given (lon, lat)
+depends only on that (lon, lat), not on any real elevation carried in a separate raster band -- so
+the DEM grid's own (x, y) + elevation already effectively live in this same tangent-plane frame, the
+same locally-flat approximation `_terrain_photometric_angles`'s surface-normal gradient already
+relied on even before this change). `_terrain_photometric_angles` then computes a true per-pixel
+view direction (real parallax, from each pixel's own vector to the finite camera position) instead
+of an idealized infinitely-distant nadir viewer, so emission and phase now genuinely vary per pixel;
+incidence is unaffected (still just needs the Sun's own effectively-parallel-ray direction). This
+stays entirely upstream of `sat_sim` (shading the ortho *before* its own geometric reprojection into
+the camera's pixel grid, same as the Lambertian path already does) -- no relighting-after-render or
+ISIS camera model for the synthetic view was ever needed, just the real position this project's own
+SPICE-derived `Camera` already carries.
+
+Added `tests/test_lunaserv.py` coverage for the new pure-geometry helpers (no ISIS/Docker
+dependency): `_camera_local_enu_m` against a direct overhead-altitude case and a real consistency
+check against `orthographic_xy_m` for an on-sphere point (same tangent-plane projection, two
+different derivations); `_terrain_photometric_angles` against a flat-DEM case (incidence constant
+`90 - elevation_deg` everywhere; emission/phase ~0 directly below the camera) and an off-nadir pixel
+matched against the exact flat-ground `atan(horizontal_distance / altitude)` formula.
+
+`notebooks/hapke_hillshade.py`/`.ipynb` (new) blinks the existing Lambertian basemap against a
+freshly Hapke-shaded one for the same footprint, via the same `plot_overlay_toggle` blink-comparator
+Phase 5B/6B use -- reuses Phase 1-2's manifest/camera setup but skips `dataset.populate()` (no
+`sat_sim` render or ISIS WAC crop needed for this comparison).
+
+Verified: extracted and visually inspected the rendered comparison -- a smooth, physically-expected
+difference gradient (Hapke brighter than Lambertian toward the side of the frame the real camera
+views more obliquely, consistent with a real emission-angle-dependent BRDF effect Lambertian has no
+equivalent of), not noise or a broken render. `trntest-lint` clean; full `pytest` suite (177 tests,
+`test_lunaserv.py`'s new geometry cases included) passes; real Docker re-run of
+`hapke_hillshade.ipynb` end to end, no errors.
+
+## Phase 46 (2026-08-15) — Made Hapke the default basemap shading, wired into `image_generation.ipynb`
+
+Phase 45's `hapke_shade_ortho` was opt-in (`hapke=False` default); this flips it -- added
+`lunaserv.DEFAULT_HAPKE_SHADING = True`, used as `fetch_dem_and_ortho`'s/`despeckle_and_shade_ortho`'s
+own parameter default, with the original plain Lambertian `shade_ortho` kept available as an
+explicit fallback (`hapke=False`), not removed. `image_generation.ipynb` needed no code changes at
+all to pick this up -- `TrnTestEntry.dem_ortho_result` already calls `fetch_dem_and_ortho` with no
+explicit `hapke=` argument, so it now gets the Hapke-shaded basemap automatically; only its Phase 3
+markdown was updated to say so.
+
+**A real correctness risk found and fixed before it could bite**: `fetch_dem_and_ortho` picks a
+mode-specific output filename (`ortho_shaded_hapke.tif` vs. `ortho_shaded.tif`, added in Phase 45 so
+both variants could coexist for `hapke_hillshade.ipynb`'s comparison) -- but
+`TrnTestEntry.dem_ortho_result`'s own resumption check (skip re-fetching if a prior run's ortho/DEM
+already exist on disk) still hardcoded the literal `"ortho_shaded.tif"` name. Left as-is, flipping
+the default would have silently resumed a *stale, pre-existing Lambertian file* under the new
+"default" filename for any `_work/<edr_product>` folder already populated from before this change
+(exactly the state this project's own worktree output folders were already in, from earlier
+sessions' runs) -- the notebook would have looked unchanged despite the default flip, with no error
+raised anywhere. Fixed by factoring the filename logic into a shared
+`lunaserv.ortho_shaded_filename(hapke)` helper, used by both `fetch_dem_and_ortho` and
+`dem_ortho_result`'s resumption check against the same `DEFAULT_HAPKE_SHADING` constant, so the two
+can never disagree about which cached file counts as "the" default.
+
+Updated `hapke_hillshade.ipynb`'s own framing to match (now a reference/regression comparison
+between the current default and the fallback, not an "should we do this" evaluation -- its Fetch
+cell now resumes `entry.dem_ortho_result` as the Hapke variant and explicitly fetches
+`hapke=False` for the Lambertian one, the reverse of Phase 45's version); light doc updates
+(`docs/data-sources.md`'s `sat_sim`-shading note, `lunaserv.py`'s own docstrings) to stop describing
+Lambertian as the assumed default.
+
+Verified: full `pytest` suite (177 tests) still passes; `trntest-lint` clean; real Docker re-run of
+`hapke_hillshade.ipynb` end to end (confirms mode-aware resumption picks the right file, not a
+stale one) and `image_generation.ipynb` end to end (confirms the main pipeline's basemap is now
+genuinely Hapke-shaded with no code changes needed there), both with no errors.
+
+## Phase 47 (2026-08-15) — `along_track_correction`: a single-frozen-camera-pose fix, found via a
+real user-spotted mismatch and iterated twice against real `campt` ground truth
+
+**Found by the user, not a code review**: looking at Phase 6B's real overlay, the Hapke basemap read
+brighter on the north edge while the real WAC crop was brighter in the southeast -- not the kind of
+thing a visual sanity check alone would catch as *wrong* (both looked like plausible lunar terrain),
+but a real, diagnosable geometry mismatch once flagged.
+
+**Root cause, confirmed via real `campt`, not guessed**: `hapke_shade_ortho`'s per-pixel angles use
+one *frozen* camera position (`Camera.camera_center_moon_me_m`, matched to the crop's own
+center-frame time) -- but a real WAC crop is a real multi-second pushframe scan. Ran `campt` at the
+crop's own corners and center: real `SpacecraftPosition` differed by **~150km** between the crop's
+north and south edges (`~97s` apart in real `EphemerisTime`, implying ~1.6 km/s -- matching LRO's
+real orbital speed, a good sanity check the numbers are real). The frozen pose is only accurate near
+the crop's own center; phase/emission computed from it are increasingly wrong toward the edges --
+invisible under the old Lambertian shading (sun-only, no camera-position dependence at all), only
+now visible because Hapke's phase/emission terms are the first camera-position-*dependent* ones in
+this pipeline.
+
+**First fix -- project out the raw orbital velocity direction.** User's proposal: rather than model
+real per-line spacecraft position (this project's existing per-line timing machinery, `isis_wac`'s
+own reconstruction, would allow this but is real added complexity), approximate it by discarding the
+raw view direction's component along the spacecraft's real orbital velocity (`spkezr`'s own velocity
+half of the state vector, MOON_ME) before computing emission/phase -- on the theory that a real
+scanning pushframe sensor observes each line close to nadir *in its own along-track direction* at
+the instant it's captured, so keeping only the cross-track component of the (wrong-position) raw
+view direction approximates that. Validated directly against real `campt` phase/incidence/emission
+at the same 5 points (crop corners + center): phase error at the 4 corners dropped from as much as
+~30 deg to within ~7 deg (mean absolute error 4.8 deg); emission mostly improved too, less
+uniformly. Wired in as `lunaserv._terrain_photometric_angles`'s `along_track_correction` (off by
+default); visually confirmed via a new `notebooks/along_track_correction.ipynb` (basemap-vs-real-WAC
+diff, brightness-matched at the median) -- mean|diff| against the real crop dropped from 12.1 to
+9.2, and critically, the strong north/south bias the user had actually spotted (+8.6 mean diff on
+the north half, -10.5 on the south) shrank to near-zero on the north half (-1.4) -- confirms the fix
+targets the actual reported symptom, not just an unrelated metric.
+
+**Second fix -- the user correctly suspected raw orbital velocity wasn't quite the right vector,
+and was right, though not in the exact way first proposed.** Real spacecraft velocity is a generic
+physical fact; it isn't necessarily parallel to the *sensor's own* along-track axis if the real
+camera has any off-nadir pointing (which this one does, `off_nadir_deg` is real and nonzero). User's
+proposed replacement: `z' x x`, where `z'` is the real (re-aimed) optical boresight direction
+(`camera.py`'s "Boresight re-aiming" -- confirmed the same ~6 deg real offset the user recalled) and
+`x` is the camera frame's own X axis. Checked this against `camera.py`'s own existing sensor-model
+axis convention comment (top of the module) before implementing blind: it identifies the *pre-twist*
+X axis as along-track (py) and `cross(z, x)` -- exactly the user's proposed vector -- as **cross-track**
+(px), the other one. Tested all three candidates directly against the same 5 real `campt` points
+(mean absolute phase error, the cleanest metric here since phase doesn't depend on surface normal at
+all, unlike incidence/emission): raw orbital velocity 4.8 deg; the user's `z' x x` (cross-track)
+16.9 deg, markedly worse, confirming it's the wrong axis; the pre-twist X axis (true along-track)
+**1.3 deg** -- a real, substantial win over the raw-velocity version, confirming the user's core
+insight (derive it from the camera's own re-aimed attitude, not generic orbital motion) once pointed
+at the right axis.
+
+Replaced `Camera.camera_velocity_moon_me_km_s` (added for the first version, now unused) with
+`Camera.camera_along_track_direction_moon_me` -- a unit vector, not a velocity, computed directly in
+`build_camera` as `look_at_rotation`'s own pre-twist X-axis output, before `rotation_about_boresight(k)`
+is applied (confirmed sign/k-twist doesn't matter here: perpendicular-projection is invariant to
+which of +/-along-track the vector points). `camera_pose_moon_me` reverted to its original 4-tuple
+return (no longer needs to carry velocity through). Re-ran `along_track_correction.ipynb` with the
+new vector: the whole-crop mean|diff| metric came out statistically indistinguishable from the
+raw-velocity version (9.2 either way) -- confirmed this isn't a bug (the two candidate vectors are
+only ~6 deg apart in this case, and the aggregate metric is dominated by near-center pixels where
+neither correction matters much, diluting a corner-concentrated improvement) rather than evidence
+the refinement didn't help; the direct `campt` point comparison remains the decisive, uncontaminated
+evidence for which vector is actually more accurate.
+
+Added `tests/test_lunaserv.py` coverage: `_local_enu_direction` against a pure-radial-vector case
+(no tangent-point subtraction, unlike a position), and `_terrain_photometric_angles`'s
+`along_track_local_enu` parameter against an exact synthetic case (an along-track-aligned camera
+offset component should be fully removable, leaving only the cross-track-implied angle).
+
+Verified: full `pytest` suite (179 tests) passes; `trntest-lint` clean; real Docker re-run of
+`along_track_correction.ipynb` end to end with the new vector, no errors.
+
+## Phase 48 (2026-08-15) — Made `along_track_correction` the default
+
+Same shape of change as Phase 46 (made Hapke the default), and the same stale-cache lesson applied
+proactively this time rather than found the hard way: `lunaserv.ortho_shaded_filename` now takes
+`along_track_correction` too and gives the corrected default its own real filename
+(`ortho_shaded_hapke_atc.tif`), distinct from the uncorrected `ortho_shaded_hapke.tif` -- rather than
+have `DEFAULT_ALONG_TRACK_CORRECTION` flip to `True` while any already-cached
+`ortho_shaded_hapke.tif` (real files already on disk in this project's own worktree output, from
+Phase 47's own testing) silently kept serving uncorrected content under what would otherwise still
+look like "the default" filename. `TrnTestEntry.dem_ortho_result`'s resumption check now asks for
+`ortho_shaded_filename(DEFAULT_HAPKE_SHADING, DEFAULT_ALONG_TRACK_CORRECTION)` explicitly, matching
+`fetch_dem_and_ortho`'s own new defaults.
+
+Added `DEFAULT_ALONG_TRACK_CORRECTION = True`, used as `along_track_correction`'s own parameter
+default across `hapke_shade_ortho`/`despeckle_and_shade_ortho`/`fetch_dem_and_ortho`. Neither
+`image_generation.ipynb` nor `hapke_hillshade.ipynb` needed code changes to pick this up -- same as
+Phase 46, `entry.dem_ortho_result` already calls `fetch_dem_and_ortho` with no explicit
+`along_track_correction=` argument. `along_track_correction.ipynb` itself no longer needs its
+end-of-notebook "restore the real default" cleanup fetch at all now that each combination has its
+own filename (removed); its comparison rows were reordered/relabeled so the corrected default (now
+top) reads as "today's default" and the uncorrected variant (now bottom) as the fallback, matching
+`hapke_hillshade.ipynb`'s own default-first convention. Light doc updates
+(`image_generation.py`'s Phase 3 markdown, `docs/plan.md`'s `lunaserv.py` row) to describe both
+defaults together rather than describing `along_track_correction` as still-experimental.
+
+Verified: full `pytest` suite (179 tests) passes; `trntest-lint` clean; real Docker re-run of all
+three affected notebooks end to end (`along_track_correction.ipynb`, `hapke_hillshade.ipynb`,
+`image_generation.ipynb`), no errors; confirmed directly (not just assumed) that
+`image_generation.ipynb`'s own `dem_ortho_result.ortho` now resolves to
+`ortho_shaded_hapke_atc.tif`, the new default's real filename.

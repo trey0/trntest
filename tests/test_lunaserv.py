@@ -82,6 +82,131 @@ def test_pixel_dims_for_gsd_isotropic_for_square_bbox():
     assert width_px == height_px == 200
 
 
+def test_camera_local_enu_m_directly_overhead_tangent_point():
+    radius_m = 1_737_400.0
+    altitude_m = 100_000.0
+    lon0_deg, lat0_deg = 30.0, 0.0
+    lon0, lat0 = math.radians(lon0_deg), math.radians(lat0_deg)
+    camera_moon_me_m = [
+        (radius_m + altitude_m) * math.cos(lat0) * math.cos(lon0),
+        (radius_m + altitude_m) * math.cos(lat0) * math.sin(lon0),
+        (radius_m + altitude_m) * math.sin(lat0),
+    ]
+    east, north, up = lunaserv._camera_local_enu_m(camera_moon_me_m, lon0_deg, lat0_deg, radius_m)
+    assert (east, north) == pytest.approx((0.0, 0.0), abs=1e-6)
+    assert up == pytest.approx(altitude_m, rel=1e-9)
+
+
+def test_camera_local_enu_m_matches_orthographic_xy_for_on_sphere_point():
+    # A point *on* the sphere (zero altitude) at a nearby (lon, lat) should land at the same
+    # (east, north) `orthographic_xy_m` already computes for it (both are the same tangent-plane
+    # projection, just derived two different ways -- see `_camera_local_enu_m`'s docstring), with
+    # up ~0 (small, curvature-only 2nd-order error for a nearby point).
+    radius_m = 1_737_400.0
+    center_lon_deg, center_lat_deg = 10.0, 5.0
+    point_lon_deg, point_lat_deg = 10.2, 5.1
+    point_moon_me_m = [
+        radius_m * math.cos(math.radians(point_lat_deg)) * math.cos(math.radians(point_lon_deg)),
+        radius_m * math.cos(math.radians(point_lat_deg)) * math.sin(math.radians(point_lon_deg)),
+        radius_m * math.sin(math.radians(point_lat_deg)),
+    ]
+    east, north, up = lunaserv._camera_local_enu_m(point_moon_me_m, center_lon_deg, center_lat_deg, radius_m)
+    expected_x, expected_y = lunaserv.orthographic_xy_m(
+        point_lon_deg, point_lat_deg, center_lon_deg, center_lat_deg, radius_m
+    )
+    assert (east, north) == pytest.approx((expected_x, expected_y), rel=1e-4)
+    # Curvature (sagitta) term, ~radius * angle_rad**2 / 2 for a ~0.22 deg separation -- ~13m here,
+    # not exactly 0 (the point is *on* the sphere, but the tangent *plane* dips below it away from
+    # the tangent point itself).
+    assert up == pytest.approx(0.0, abs=20.0)
+
+
+def test_terrain_photometric_angles_flat_dem_directly_below_camera():
+    # Flat terrain -> constant surface normal -> incidence should be exactly (90 - elevation_deg)
+    # everywhere, regardless of position. At the one pixel directly below the camera (odd grid size
+    # so a pixel center lands exactly at x=y=0), the view direction is exactly straight up too, so
+    # emission there should be ~0 and phase should coincide with incidence.
+    width = height = 11
+    bbox = (-100.0, -100.0, 100.0, 100.0)
+    dem = np.zeros((height, width))
+    altitude_m = 1_000.0
+    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+    azimuth_deg, elevation_deg = 90.0, 30.0
+
+    incidence_deg, emission_deg, phase_deg = lunaserv._terrain_photometric_angles(
+        dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m=200.0 / width
+    )
+    assert incidence_deg == pytest.approx(90.0 - elevation_deg, abs=1e-6)
+
+    center = height // 2, width // 2
+    assert emission_deg[center] == pytest.approx(0.0, abs=1e-6)
+    assert phase_deg[center] == pytest.approx(90.0 - elevation_deg, abs=1e-6)
+
+
+def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
+    # Off-center pixel, still flat terrain: emission from a finite-altitude camera directly
+    # overhead the grid's own center should match the exact flat-ground formula
+    # atan(horizontal_distance / altitude) -- confirms real parallax (not just a nadir
+    # approximation) drives emission here.
+    width = height = 11
+    minx, miny, maxx, maxy = bbox = (-100.0, -100.0, 100.0, 100.0)
+    dem = np.zeros((height, width))
+    altitude_m = 1_000.0
+    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+
+    _, emission_deg, _ = lunaserv._terrain_photometric_angles(
+        dem, bbox, camera_local_enu_m, azimuth_deg=0.0, elevation_deg=45.0, cellsize_m=200.0 / width
+    )
+
+    row = height // 2
+    col = width - 1
+    x = minx + (col + 0.5) * (maxx - minx) / width
+    expected_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
+    assert emission_deg[row, col] == pytest.approx(expected_emission_deg, rel=1e-6)
+
+
+def test_local_enu_direction_pure_radial_vector_is_pure_up():
+    # A vector pointing exactly along the tangent point's own radial direction (no East/North
+    # component at all) should land entirely on the "Up" axis in the local frame, regardless of its
+    # magnitude -- a direct check of `_local_enu_direction`'s basis vectors alone (no tangent-point
+    # subtraction involved, unlike `_camera_local_enu_m`).
+    lon0_deg, lat0_deg = 12.0, -34.0
+    lon0, lat0 = math.radians(lon0_deg), math.radians(lat0_deg)
+    magnitude = 1.6  # km/s-scale, but this function is unit-agnostic
+    radial = magnitude * np.array([math.cos(lat0) * math.cos(lon0), math.cos(lat0) * math.sin(lon0), math.sin(lat0)])
+    east, north, up = lunaserv._local_enu_direction(radial, lon0_deg, lat0_deg)
+    assert (east, north) == pytest.approx((0.0, 0.0), abs=1e-9)
+    assert up == pytest.approx(magnitude, rel=1e-9)
+
+
+def test_terrain_photometric_angles_along_track_correction_removes_along_track_component():
+    # Flat terrain again (normal always [0,0,1]): a camera offset with both an along-track and
+    # cross-track component should, once corrected, behave exactly as if only the cross-track
+    # component existed -- the along-track correction's whole point.
+    width = height = 11
+    bbox = (-100.0, -100.0, 100.0, 100.0)
+    dem = np.zeros((height, width))
+    # Camera 100m east, 200m north, 1000m up from the pixel directly below (grid center).
+    camera_local_enu_m = np.array([100.0, 200.0, 1000.0])
+    along_track_local_enu = np.array([0.0, 1.0, 0.0])  # due north -- an arbitrary nonzero magnitude is fine too
+
+    _, emission_deg, _ = lunaserv._terrain_photometric_angles(
+        dem,
+        bbox,
+        camera_local_enu_m,
+        azimuth_deg=0.0,
+        elevation_deg=45.0,
+        cellsize_m=200.0 / width,
+        along_track_local_enu=along_track_local_enu,
+    )
+
+    center = height // 2, width // 2
+    # North offset is exactly along the along-track direction, so it's fully removed -- what's left is exactly as if
+    # the camera had been at (100, 0, 1000) instead (pure cross-track + altitude).
+    expected_emission_deg = math.degrees(math.atan(100.0 / 1000.0))
+    assert emission_deg[center] == pytest.approx(expected_emission_deg, rel=1e-6)
+
+
 def _write_native_radius_tif(path, radius_value, native_bbox_deg, width, height):
     minlon, minlat, maxlon, maxlat = native_bbox_deg
     transform = transform_from_bounds(minlon, minlat, maxlon, maxlat, width, height)

@@ -104,6 +104,7 @@ def _fake_camera(n_frames_for_square_crop: int, reverse: bool) -> Camera:
         et=0.0,
         center_frame_index=100.0,
         camera_center_moon_me_m=[0.0, 0.0, 0.0],
+        camera_along_track_direction_moon_me=[0.0, 1.0, 0.0],
         r_cam_to_me=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         boresight_rotation_k=3 if reverse else 1,
         slant_range_km=100.0,

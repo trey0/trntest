@@ -76,6 +76,13 @@ class Camera:
     et: float
     center_frame_index: float
     camera_center_moon_me_m: list
+    camera_along_track_direction_moon_me: list  # unit vector, MOON_ME frame, not a velocity -- the
+    # sensor's own real along-track (py) axis, pre-twist X per the sensor-model axis convention
+    # comment near this module's top (cross-track/px is the *other* pre-twist axis, cross(z, x), not
+    # this). Used by `lunaserv._terrain_photometric_angles`'s `along_track_correction`; confirmed via
+    # real ISIS `campt` ground truth to track real per-pixel phase far better than the spacecraft's
+    # raw orbital velocity direction did (an earlier version of this field) -- see docs/history.md's
+    # dated entry.
     r_cam_to_me: list
     boresight_rotation_k: int
     slant_range_km: float
@@ -382,7 +389,13 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     boresight_me = boresight_me / np.linalg.norm(boresight_me)
     off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
 
-    r_cam_to_me = look_at_rotation(boresight_me, r_cam_to_me_raw) @ rotation_about_boresight(k)
+    r_cam_to_me_pretwist = look_at_rotation(boresight_me, r_cam_to_me_raw)
+    # Pre-twist X is along-track (py, up to sign) regardless of k, per the sensor-model axis
+    # convention comment near this module's top -- py maps to +-X_pretwist for either valid k, only
+    # its sign differs; cross(z, x) (would-be pre-twist Y) is cross-track instead, the *other* one.
+    # A unit vector, not a velocity -- see `Camera.camera_along_track_direction_moon_me`'s own note.
+    along_track_direction_me = r_cam_to_me_pretwist[:, 0]
+    r_cam_to_me = r_cam_to_me_pretwist @ rotation_about_boresight(k)
 
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     fu = fv = (config.image_size / 2.0) / np.tan(half_angle_rad)
@@ -400,6 +413,7 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
         et=et,
         center_frame_index=center_frame_index,
         camera_center_moon_me_m=c_meters.tolist(),
+        camera_along_track_direction_moon_me=along_track_direction_me.tolist(),
         r_cam_to_me=r_cam_to_me.tolist(),
         boresight_rotation_k=k,
         slant_range_km=slant_range_km,

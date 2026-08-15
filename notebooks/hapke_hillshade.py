@@ -14,27 +14,36 @@
 # ---
 
 # %% [markdown]
-# # ISIS `photomet` (Hapke) as a hillshade replacement -- feasibility prototype
+# # ISIS `photomet` (Hapke) hillshading vs. the plain Lambertian fallback
 #
 # `image_generation.ipynb`'s hillshade-based ortho basemap (`dem_ortho_result.ortho`, Phase 3) is
-# shaded with a plain Lambertian `matplotlib.colors.LightSource.hillshade` blend
-# (`lunaserv.shade_ortho`) -- real-sun-direction-lit, but not a real photometric model (no
-# opposition surge, no macroscopic-roughness term, no real lunar reflectance behavior). This
-# notebook evaluates swapping that for ISIS's own `photomet` application using a real Hapke
-# bidirectional reflectance function (`PHTNAME=HAPKEHEN`), added as a new `hapke=True` flag on
-# `lunaserv.fetch_dem_and_ortho`/`despeckle_and_shade_ortho` (see `hapke_shade_ortho`'s docstring)
-# rather than replacing the existing Lambertian path.
+# shaded with a real Hapke bidirectional reflectance function by default (ISIS `photomet`,
+# `PHTNAME=HAPKEHEN`, `lunaserv.hapke_shade_ortho` -- see `docs/history.md`'s dated entries for the
+# evaluation that led here). `lunaserv.fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s `hapke`
+# parameter (`lunaserv.DEFAULT_HAPKE_SHADING`) still keeps the original plain Lambertian
+# `matplotlib.colors.LightSource.hillshade` blend (`lunaserv.shade_ortho`) available as a fallback
+# (`hapke=False`) -- real-sun-direction-lit, but not a real photometric model (no opposition surge,
+# no macroscopic-roughness term, no real lunar reflectance behavior). This notebook is a reference/
+# regression comparison between the two -- not an "should we do this" evaluation anymore -- showing
+# what the Hapke default actually changes relative to that fallback for a real image.
 #
 # The tricky part evaluated here: `photomet`'s automatic angle sources (`ANGLESOURCE=ELLIPSOID`/
 # `DEM`) need a real ISIS camera model embedded in the cube (via `spiceinit`) to derive
 # incidence/emission/phase angles from -- but this ortho is a flat, map-projected mosaic with no
 # ISIS camera model at all (real or synthetic). The fix used here: `ANGLESOURCE=BACKPLANE`, feeding
-# `photomet` angle rasters computed directly in Python (`lunaserv._terrain_photometric_angles`,
-# from the DEM's own surface normals and the same real SPICE sun direction `shade_ortho` already
-# uses) -- `photomet` only does the Hapke math, not the geometry. This sidesteps the "no camera
-# model" problem entirely, at the cost of only being valid for a nadir/orthographic view (emission
-# angle from local-normal-vs-straight-up, not a real perspective camera) -- fine for this basemap,
-# not yet a general answer for relighting the *synthetic camera's own* perspective render.
+# `photomet` angle rasters computed directly in Python (`lunaserv._terrain_photometric_angles`) --
+# `photomet` only does the Hapke math, not the geometry. This sidesteps the "no camera model"
+# problem entirely.
+#
+# Those angle rasters use the synthetic camera's own **real, finite position**
+# (`Camera.camera_center_moon_me_m`, via `lunaserv._camera_local_enu_m`), not an idealized
+# infinitely-distant nadir viewer -- so emission and phase genuinely vary per pixel from actual
+# parallax (each pixel's own real vector to the spacecraft), the same real perspective geometry
+# `sat_sim`'s own synthetic render is posed with, not just local terrain slope. An earlier version
+# of this notebook used a nadir approximation (emission from local-normal-vs-straight-up only,
+# scene-wide phase) -- see docs/history.md's dated entry for why that was replaced: it couldn't
+# capture any real emission-angle-dependent brightening across the frame, which is exactly the kind
+# of effect a real Hapke BRDF (vs. Lambertian) is supposed to add.
 #
 # Minimum setup to get there: reuses `image_generation.ipynb`'s Phase 1-2 exactly (same manifest,
 # same `TrnTestDataSet`), but skips `dataset.populate()` entirely -- `entry.camera` is enough to
@@ -62,28 +71,32 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # %% [markdown]
 # ## Fetch both shading variants
 #
-# `entry.dem_ortho_result` is the existing Lambertian-shaded basemap (resumed from disk if
-# `image_generation.ipynb` already generated it for this manifest entry, else fetched fresh here).
-# `lunaserv.fetch_dem_and_ortho(..., hapke=True)` fetches the same DEM/ortho pair again -- cheap,
-# Lunaserv/Astropedia fetches are independently cached by `cache.py` -- but shades it with
-# `photomet`'s Hapke model instead, writing to its own `ortho_shaded_hapke.tif` so it doesn't
-# collide with the Lambertian file.
+# `entry.dem_ortho_result` is the current *default* basemap -- Hapke-shaded (resumed from disk if
+# `image_generation.ipynb` already generated it for this manifest entry, else fetched fresh here;
+# see `TrnTestEntry.dem_ortho_result`'s own docstring for how it stays mode-aware about which
+# cached file to resume from). `lunaserv.fetch_dem_and_ortho(..., hapke=False)` fetches the same
+# DEM/ortho pair again -- cheap, Lunaserv/Astropedia fetches are independently cached by `cache.py`
+# -- but shades it with the plain Lambertian fallback instead, writing to its own `ortho_shaded.tif`
+# so it doesn't collide with the Hapke file.
 
 # %%
-dem_ortho_lambertian = entry.dem_ortho_result
-dem_ortho_hapke = lunaserv.fetch_dem_and_ortho(camera, entry.per_image_config, hapke=True)
+dem_ortho_hapke = entry.dem_ortho_result
+dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(camera, entry.per_image_config, hapke=False)
 
-print("Lambertian ortho:", dem_ortho_lambertian.ortho)
-print("Hapke ortho:     ", dem_ortho_hapke.ortho)
+print("Hapke ortho:      ", dem_ortho_hapke.ortho)
+print("Lambertian ortho: ", dem_ortho_lambertian.ortho)
 
 # %% [markdown]
 # ## Blink comparison
 #
 # Both orthos share the exact same real georeferencing/pixel grid (same camera footprint, same DEM,
-# only the final shading step differs), so this is a direct visual read of what the Hapke model
-# changes relative to the current Lambertian hillshade -- opposition-surge brightening near the
-# sub-solar point, a different incidence-angle falloff, etc. -- not a geo-registration check like
-# Phase 5B/6B's own use of this same blink-comparator.
+# only the final shading step differs), so this is a direct visual read of what the Hapke default
+# changes relative to the plain Lambertian fallback -- real emission-angle-dependent brightening
+# toward the side of the frame the camera is looking more obliquely at (a genuine parallax effect
+# the Lambertian path has no equivalent of at all, since it only ever considers the Sun, never the
+# viewer), opposition-surge brightening near the sub-solar point, a different incidence-angle
+# falloff, etc. -- not a geo-registration check like Phase 5B/6B's own use of this same
+# blink-comparator.
 
 # %%
 plotting.plot_overlay_toggle(

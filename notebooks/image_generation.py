@@ -100,6 +100,8 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # ## Phase 3: DEM + ortho from Lunaserv WMS
 #
 # Fetch `luna_wac_normalized_reflectance` (visible mosaic, despeckled and blended with a real-sun-lit hillshade -- see `docs/data-sources.md`) and `luna_wac_dtm_numeric_meters_absolute` (GLD100 DEM, converted from planetocentric radius to elevation) for the footprint above, through the local cache. Displayed with the SPICE-derived camera's ground footprint (corners + center) overlaid on the ortho, to visually confirm the pose lands where expected.
+#
+# That hillshade is a real Hapke bidirectional reflectance function by default (ISIS `photomet`, using the camera's own real position for true per-pixel emission/phase -- `lunaserv.hapke_shade_ortho`), not just a plain Lambertian blend, with a further along-track correction also on by default (`along_track_correction`, approximating this project's single-frozen-camera-pose limitation for a real multi-second pushframe scan using the camera's own along-track attitude axis) -- see `notebooks/hapke_hillshade.ipynb` and `notebooks/along_track_correction.ipynb` for direct comparisons against each fallback (`hapke=False`, `along_track_correction=False`) and `docs/history.md`'s dated entries for both evaluations.
 
 # %%
 dem_ortho_result = entry.dem_ortho_result

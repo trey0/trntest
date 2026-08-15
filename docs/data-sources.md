@@ -271,9 +271,11 @@ unaffected and still current.
   pixel value is a direct geometric resample of whatever's already in the ortho, with no per-ray
   reflectance/sun-angle computation applied. Any relief/shading visible in a render is therefore
   whatever was already baked into the ortho texture, not something `sat_sim` computes — see
-  "Lunaserv WMS" below for how this project supplies that shading (`lunaserv.shade_ortho`, lit with
-  real SPICE sun geometry, not relying on any shading baked into the source imagery, which was never
-  guaranteed to match the simulated frame's real sun angle in the first place).
+  "Lunaserv WMS" below for how this project supplies that shading (`lunaserv.despeckle_and_shade_ortho`
+  -- a real Hapke BRDF via ISIS `photomet` by default, `hapke_shade_ortho`, with a plain Lambertian
+  `shade_ortho` fallback; both lit with real SPICE sun geometry, not relying on any shading baked
+  into the source imagery, which was never guaranteed to match the simulated frame's real sun angle
+  in the first place -- see `docs/history.md`'s dated entries).
 - **`--dem-height-error-tol`'s default (0.001m) is too tight for this project's DEM and causes
   visible salt-and-pepper speckle** in the render (`sat_sim`'s ray/DEM-intersection root-finder
   misbehaves at scattered pixels). Root cause: Lunaserv's DTM layer serves planetocentric radius
