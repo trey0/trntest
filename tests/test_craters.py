@@ -21,9 +21,12 @@ def _config(cache_root):
 
 def _write_robbins_zip(zip_path, rows):
     """A minimal stand-in for the real Robbins bundle zip -- just enough structure
-    (`_csv_member_name`'s own selection criteria) plus real header columns for `_convert_to_geopackage`."""
-    header = "CRATER_ID,LAT_ELLI_IMG,LON_ELLI_IMG,DIAM_ELLI_MAJOR_IMG,DIAM_ELLI_MINOR_IMG,DIAM_ELLI_ANGLE_IMG"
-    lines = [header] + [",".join(str(v) for v in row) for row in rows]
+    (`_csv_member_name`'s own selection criteria) plus real header columns for `_convert_to_geopackage`.
+    `rows` may be 6-tuples (CRATER_ID..DIAM_ELLI_ANGLE_IMG, `ARC_IMG` defaults to 1.0) or 7-tuples
+    (explicit trailing `ARC_IMG`, for tests that filter on it)."""
+    header = "CRATER_ID,LAT_ELLI_IMG,LON_ELLI_IMG,DIAM_ELLI_MAJOR_IMG,DIAM_ELLI_MINOR_IMG,DIAM_ELLI_ANGLE_IMG,ARC_IMG"
+    full_rows = [row if len(row) == 7 else (*row, 1.0) for row in rows]
+    lines = [header] + [",".join(str(v) for v in row) for row in full_rows]
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("bundle/data/lunar_crater_database_robbins_2018.csv", "\n".join(lines))
         zf.writestr("bundle/data/collection_data_inventory.csv", "not crater data")
@@ -105,6 +108,87 @@ def test_crater_overlay_layer_builds_ellipses_in_raster_crs(tmp_path):
     assert layer.color == "orange"
     with rasterio.open(raster_path) as src:
         assert layer.geoseries.crs == pyproj.CRS.from_wkt(src.crs.to_wkt())
+
+
+def test_crater_overlay_layer_filters_by_min_major_km(tmp_path):
+    zip_path = tmp_path / "robbins.zip"
+    center_lon, center_lat = 264.757, -19.8304
+    _write_robbins_zip(
+        zip_path,
+        rows=[
+            ("00-1-000000", center_lat, center_lon, 25.0, 20.0, 36.0),  # major >= 20km, kept
+            ("00-1-000002", center_lat + 0.05, center_lon + 0.05, 15.0, 12.0, 90.0),  # major < 20km, dropped
+        ],
+    )
+    gpkg_path = craters.geopackage_path(zip_path)
+    craters._convert_to_geopackage(zip_path, gpkg_path, moon_radius_m=_MOON_RADIUS_M)
+
+    crs = f"+proj=ortho +lon_0={center_lon} +lat_0={center_lat} +R={_MOON_RADIUS_M} +units=m +no_defs"
+    transform = rasterio.transform.from_origin(-50_000, 50_000, 100, 100)
+    raster_path = tmp_path / "raster.tif"
+    with rasterio.open(
+        raster_path, "w", driver="GTiff", height=1000, width=1000, count=1, dtype="uint8", crs=crs, transform=transform
+    ) as dst:
+        dst.write(np.zeros((1000, 1000), dtype="uint8"), 1)
+
+    with mock.patch.object(craters, "ensure_geopackage", return_value=gpkg_path):
+        layer = craters.crater_overlay_layer(raster_path, config=_config(tmp_path), min_major_km=20.0)
+
+    assert layer is not None
+    assert len(layer.geoseries) == 1
+
+
+def test_crater_overlay_layer_filters_by_min_arc_img_within_a_size_band(tmp_path):
+    zip_path = tmp_path / "robbins.zip"
+    center_lon, center_lat = 264.757, -19.8304
+    _write_robbins_zip(
+        zip_path,
+        rows=[
+            # major>=20, arc>=0.86: kept
+            ("00-1-000000", center_lat, center_lon, 25.0, 20.0, 36.0, 0.90),
+            # major>=20, arc<0.86: dropped
+            ("00-1-000002", center_lat + 0.05, center_lon + 0.05, 22.0, 18.0, 90.0, 0.50),
+            # major<20: dropped regardless of arc
+            ("00-1-000003", center_lat - 0.05, center_lon - 0.05, 5.0, 4.0, 10.0, 1.0),
+        ],
+    )
+    gpkg_path = craters.geopackage_path(zip_path)
+    craters._convert_to_geopackage(zip_path, gpkg_path, moon_radius_m=_MOON_RADIUS_M)
+
+    crs = f"+proj=ortho +lon_0={center_lon} +lat_0={center_lat} +R={_MOON_RADIUS_M} +units=m +no_defs"
+    transform = rasterio.transform.from_origin(-50_000, 50_000, 100, 100)
+    raster_path = tmp_path / "raster.tif"
+    with rasterio.open(
+        raster_path, "w", driver="GTiff", height=1000, width=1000, count=1, dtype="uint8", crs=crs, transform=transform
+    ) as dst:
+        dst.write(np.zeros((1000, 1000), dtype="uint8"), 1)
+
+    with mock.patch.object(craters, "ensure_geopackage", return_value=gpkg_path):
+        layer = craters.crater_overlay_layer(raster_path, config=_config(tmp_path), min_major_km=20.0, min_arc_img=0.86)
+
+    assert layer is not None
+    assert len(layer.geoseries) == 1
+
+
+def test_crater_overlay_layer_returns_none_when_min_major_km_filters_everything_out(tmp_path):
+    zip_path = tmp_path / "robbins.zip"
+    center_lon, center_lat = 264.757, -19.8304
+    _write_robbins_zip(zip_path, rows=[("00-1-000000", center_lat, center_lon, 15.0, 12.0, 36.0)])
+    gpkg_path = craters.geopackage_path(zip_path)
+    craters._convert_to_geopackage(zip_path, gpkg_path, moon_radius_m=_MOON_RADIUS_M)
+
+    crs = f"+proj=ortho +lon_0={center_lon} +lat_0={center_lat} +R={_MOON_RADIUS_M} +units=m +no_defs"
+    transform = rasterio.transform.from_origin(-50_000, 50_000, 100, 100)
+    raster_path = tmp_path / "raster.tif"
+    with rasterio.open(
+        raster_path, "w", driver="GTiff", height=1000, width=1000, count=1, dtype="uint8", crs=crs, transform=transform
+    ) as dst:
+        dst.write(np.zeros((1000, 1000), dtype="uint8"), 1)
+
+    with mock.patch.object(craters, "ensure_geopackage", return_value=gpkg_path):
+        layer = craters.crater_overlay_layer(raster_path, config=_config(tmp_path), min_major_km=20.0)
+
+    assert layer is None
 
 
 def test_crater_overlay_layer_returns_none_when_nothing_in_view(tmp_path):

@@ -2761,3 +2761,75 @@ keep the `.py`/`.ipynb` pairing intact with no separate config change.
 Verified: real Docker re-run of the renamed notebook end to end (no errors, single-figure output on
 every previously-semicolon cell); `trntest-lint --all` now passes clean across the whole repo (40
 files, not just the diff-scoped subset Phase 40 verified); full `pytest` suite (159 tests) passes.
+
+## Phase 43 (2026-08-15) — Wired the Robbins crater overlay into the notebook; confirmed ellipse
+orientation
+
+`craters.crater_overlay_layer` (query/filter/ellipse construction, added in an earlier session) was
+fully built and tested but never actually called from `image_generation.py` -- `docs/plan.md`'s open
+items tracked this as "still planned," alongside an unresolved caveat: `DIAM_ELLI_ANGLE_IMG`'s
+rotation reference isn't documented in the Robbins PDS4 label, so ellipse *orientation* (unlike
+size/position) was unconfirmed pending a real visual check against crater rims in the hillshade
+basemap.
+
+Wired it in: both Phase 5B (`entry.hillshade.plot_overlay`) and Phase 6B (`entry.crop.plot_overlay`)
+now draw `craters.crater_overlay_layer` as an extra `plotting.OverlayLayer`, computed once
+(`crater_layer`/`crater_layers`) since both share the same base raster (`dem_ortho_result.ortho`)
+and therefore the same query AOI/CRS -- `crater_overlay_layer` returns `None` when nothing's in
+view, so `layers` is left `None` rather than an empty list in that case.
+
+Verified: real Docker re-run of `image_generation.ipynb` end to end (4,633 real craters in view over
+this run's real AOI, no errors); extracted and visually inspected both overlay GIFs' rendered
+frames -- ellipses land tightly on real crater rims throughout the hillshade basemap, including
+visibly elongated (non-circular) craters, whose ellipse's long axis matches the real rim's, not
+perpendicular to it -- confirms `_ellipse_polygon`'s current rotation interpretation is correct
+as-is, no code change needed. `trntest-lint` clean.
+
+## Phase 44 (2026-08-15) — Crater overlay: size/quality filtering and legible styling, driven by
+live user feedback in the running notebook
+
+Phase 43's unfiltered crater overlay (4,633 craters over a real ~250km AOI) turned out too visually
+dense once the user actually looked at it in Jupyter Lab -- the ellipses overwhelmed the base image
+rather than reading as an annotation. Iterated live against the running notebook (`docker compose
+run --rm demo trntest-lint`/`scripts/run_notebook.sh` each round, plus pulling and visually
+inspecting the rendered overlay GIF frames) through several rounds of user feedback:
+
+1. Added `crater_overlay_layer(..., min_major_km=...)` (`DIAM_ELLI_MAJOR_IMG`, a full axis
+   length/diameter) -- `min_major_km=20.0` cut 4,633 craters down to 40.
+2. Tried fading the outline (`alpha=0.3`, `linewidth=0.6`) to declutter further -- this made rim
+   alignment *harder* to judge, not easier (a faint line is hard to place precisely), so reverted.
+3. Tried a sparse dotted `linestyle` instead (`OverlayLayer` gained this field -- any matplotlib
+   linestyle, including custom `(offset, (on, off, ...))` dash tuples, passed straight through to
+   `.boundary.plot(...)`) at full width/opacity: keeps each dot high-contrast while leaving most of
+   the underlying rim visible between dots. Landed on a dashed (not pure single-pixel-dot) pattern
+   after the first attempt (`(0, (1, 10))`) proved too faint to read without zooming in.
+4. User wanted the *same 40 craters but better ones*, using crater quality/"grade," not just size.
+   Investigated the real Robbins database for this: no dedicated degradation/sharpness field exists
+   at all -- confirmed both from the live PDS4 label (all 21 fields are position/size/shape/fit-SD)
+   and, more definitively, from the real archive-description PDF shipped in the downloaded bundle
+   (`lunar_crater_database_archive_description.pdf`), which states the database's purpose is "a
+   uniform, complete census of lunar impact craters" built by manually tracing rims and fitting
+   ellipses -- a locations-and-sizes census, not per-crater freshness grading, which is a separate,
+   far more labor-intensive research task. `ARC_IMG` (fraction of a crater's own rim circumference
+   actually traced/used in its ellipse fit) is the closest real proxy, but empirically confounded
+   with size: 41% of *all* craters have `ARC_IMG==1.0` (small bowl craters are trivially fully
+   traced) vs. just 2.5% of craters ≥20km major axis (larger craters are more often complex,
+   overlapped, or degraded) -- so it's only meaningful as a filter *within* a size band, not
+   applied to the whole database. Added `min_arc_img` alongside `min_major_km`; grid-searched the
+   real AOI data (not guessed) to find `min_major_km=9.0, min_arc_img=0.86` landing on the same ~40
+   count while favoring rim-completeness within that size band.
+5. User observed the smaller-crater-biased 40 read as less visually prominent than the original
+   size-only 40, despite the same count -- relaxed to `min_arc_img=0.75` (~80 craters, grid-searched
+   the same way) to roughly double the count and restore visual presence.
+6. User asked what styling was available; after discussion, manually tuned the final notebook cell
+   directly in the running Jupyter Lab kernel (color `"#ffddbb"`, `linestyle=(0, (1, 6))`) rather
+   than continuing to round-trip every small style tweak through the assistant -- picked up here by
+   re-running `trntest-lint`/`scripts/run_notebook.sh` for a clean, reproducible execution and
+   fixing one now-stale markdown phrase ("near-white `color`") the manual edit had left behind.
+
+Added `tests/test_craters.py` coverage for both new filter params (`min_major_km`, `min_arc_img`,
+including the "filters everything out -> `None`" cases and a combined-filter case matching the
+notebook's actual usage).
+
+Verified: real Docker re-run of `image_generation.ipynb` end to end at each step (final state: 78
+craters in view, no errors); `trntest-lint` clean; full `pytest` suite (171 tests) passes.

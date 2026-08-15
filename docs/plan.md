@@ -282,13 +282,31 @@ changes against them.
   synthetic AOI centered on a real crater found 152 ellipses, sane sizes/positions) and covered by
   7 real unit tests (`tests/test_craters.py`, no network — synthetic zip/CSV/raster fixtures);
   168 tests total pass, lint clean.
-  **Known caveat, not yet resolved**: `DIAM_ELLI_ANGLE_IMG`'s rotation reference (which axis,
-  which direction) isn't documented in the PDS4 label — ellipse *size*/*position* are confirmed,
-  *orientation* needs visual cross-checking against a real crater rim in the hillshade basemap once
-  this is wired into the notebook (see `craters._ellipse_polygon`'s docstring).
-  **Still planned**: notebook wiring (Phase 5B/6B — call `craters.crater_overlay_layer` and pass
-  the result into `plot_overlay`/`plot_overlay_toggle`'s `layers=[...]`, per the visual-QA caveat
-  above) → docs close-out (`docs/history.md` entry).
+  **Done**: notebook wiring (`notebooks/image_generation.py`) — Phase 5B/6B each call
+  `craters.crater_overlay_layer(dem_ortho_result.ortho, entry.per_image_config)` once (both share
+  the same base raster/CRS) and pass the result into `plot_overlay`'s `layers=[...]`.
+  **Resolved**: `DIAM_ELLI_ANGLE_IMG`'s rotation reference (which axis, which direction) wasn't
+  documented in the PDS4 label, so orientation (unlike size/position) was unconfirmed until this
+  wiring made a real visual cross-check possible — a live run over a real ~250km×250km AOI (4,633
+  craters, unfiltered) showed ellipses landing tightly on real crater rims throughout the hillshade
+  basemap, including visibly elongated (non-circular) craters matching their ellipse's long axis,
+  not perpendicular to it — confirms `_ellipse_polygon`'s current interpretation is correct as-is,
+  no code change needed (see `craters._ellipse_polygon`'s docstring for the interpretation itself).
+  **Done**: `crater_overlay_layer`'s `min_major_km`/`min_arc_img` filter params (the unfiltered
+  4,633-crater view was too visually dense to read as an annotation) — `notebooks/image_generation.py`
+  currently uses `min_major_km=9.0, min_arc_img=0.75` (~80 craters). `ARC_IMG` (fraction of a
+  crater's rim actually traceable/used in its ellipse fit) is this database's only real proxy for a
+  quality/"grade" field — confirmed against the real PDS4 bundle's own archive-description PDF that
+  no dedicated degradation/sharpness field exists at all (the database's stated purpose is a
+  position/size census for crater-count studies, not per-crater freshness grading) — but `ARC_IMG`
+  is confounded with size (41% of *all* craters have `ARC_IMG==1.0` vs. 2.5% of craters ≥20km major
+  axis), so it's only a meaningful filter *within* a size band, not applied to the whole database;
+  see `crater_overlay_layer`'s own docstring. Overlay styling (`OverlayLayer.color`/`linewidth`/
+  `linestyle`, the last a new field — any matplotlib linestyle, incl. custom dash tuples) was also
+  tuned for legibility: a solid full-opacity line was found to obscure the very rim it's meant to
+  help verify, so the current notebook uses a sparse dashed line (`linestyle=(0, (1, 6))`) in a
+  light, warm color (`#ffddbb`) instead of fading `alpha`/`linewidth` (which made alignment *harder*
+  to judge, not easier).
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

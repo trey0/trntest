@@ -47,7 +47,7 @@ import dataclasses
 import json
 
 import trntest
-from trntest import isis_wac, plotting, tie_points
+from trntest import craters, isis_wac, plotting, tie_points
 
 images = trntest.read_manifest("dataset_manifest.csv")
 print(
@@ -169,6 +169,27 @@ for name, r in tie_point_results.items():
 # - **B: pixel-for-pixel alignment.** The render reprojected onto the map through its own real camera model (`mapproject`) and overlaid directly on the basemap -- true geo-registration, not just visual similarity, as an auto-blinking animated GIF that alternates the overlay against the basemap (`plotting.plot_overlay_toggle`).
 #
 # (Phase 7, below, is just 5A's and 6A's own render panels put together directly, for an easier side-by-side look at the two candidates themselves.)
+#
+# Both 5B and 6B below also draw the Robbins et al. (2019) lunar crater database (`craters.crater_overlay_layer`) as an extra vector layer on top of the mapprojected overlay -- real catalog craters (ellipse-fit position/size, D>=1km) inside this image's own footprint, as a visual geometry cross-check: if the ellipses land on the actual crater rims visible in the hillshade basemap, that's independent confirmation the overlay's geo-registration is correct. (The ellipses' *orientation* specifically hasn't been visually confirmed before now -- see `craters._ellipse_polygon`'s docstring -- so this is also that check.) Computed once here since 5B and 6B share the same base raster (`dem_ortho_result.ortho`) and therefore the same query AOI/CRS; `crater_overlay_layer` returns `None` if no craters fall in view, so `crater_layers` is left `None` (no extra layer) rather than an empty list in that case.
+#
+# `min_major_km=9.0`/`min_arc_img=0.75` together select ~80 craters, favoring rim quality within that size band rather than size alone -- `ARC_IMG` (fraction of each crater's rim actually traceable/used in its ellipse fit) is this database's only real proxy for a "grade"/sharpness field, and it's confounded with size (see `crater_overlay_layer`'s docstring: complex/degraded large craters have systematically lower `ARC_IMG` than trivially-traced small ones), so it's only meaningful as a filter *within* a size band like this, not applied to the whole database. (`min_arc_img` started at 0.86, ~40 craters -- relaxed to 0.75 since a stricter quality bar leaned toward smaller craters within the size band, which read as less visually prominent than the original size-only 40 despite being the same count.) Fading the outline itself (lower `alpha`/`linewidth`) turned out to make alignment *harder* to judge, not easier -- a faint line is hard to place precisely against the rim. `linestyle=(0, (1, 6))` (a sparse dashed line, `OverlayLayer`'s own style field) instead keeps the dashes at full width/a light, warm `color` (`#ffddbb`, higher contrast against the mostly-dark basemap than the original orange) but leaves most of the underlying rim visible between them, so each dash is a precise, high-contrast check of whether the ellipse boundary is sitting on the real rim at that point.
+
+# %%
+# matplotlib dash-tuple format: (phase_offset, (dash_pt, gap_pt, ...)) -- phase_offset shifts where
+# the pattern starts, only useful for aligning multiple dashed lines' phases; 0 (unshifted) is the
+# standard case and what's used here.
+dash_phase_offset = 0
+crater_layer = craters.crater_overlay_layer(
+    dem_ortho_result.ortho,
+    entry.per_image_config,
+    min_major_km=9.0,
+    min_arc_img=0.75,
+    color="#ffddbb",
+    linewidth=2.0,
+    linestyle=(dash_phase_offset, (1, 6)),
+)
+crater_layers = [crater_layer] if crater_layer is not None else None
+print(f"Robbins craters in view: {len(crater_layer.geoseries) if crater_layer is not None else 0}")
 
 # %%
 _ = entry.hillshade.plot_vs_basemap(
@@ -180,7 +201,9 @@ _ = entry.hillshade.plot_vs_basemap(
 # `entry.hillshade.plot_overlay()` reprojects the synthetic render through the exact CSM/ISD sidecar `cam_gen` already produced for it (`render.run_mapproject_image`'s `--ref-map`) -- the geometric inverse of `sat_sim`'s own forward DEM+camera-to-image render, through that same camera model -- onto the same DEM the render came from, so the result shares an exact pixel grid with `dem_ortho_result.ortho` with no separate alignment step. Displays both with `rioxarray`, using each file's own real geographic coordinates rather than pixel indices, as an animated GIF that automatically blinks the overlay on and off.
 
 # %%
-entry.hillshade.plot_overlay(title="Phase 5B: synthetic render (mapprojected) over hillshade-based basemap")
+entry.hillshade.plot_overlay(
+    title="Phase 5B: synthetic render (mapprojected) over hillshade-based basemap", layers=crater_layers
+)
 
 # %% [markdown]
 # ## Phase 6: does the real, ISIS-processed WAC crop's geometry check out?
@@ -210,7 +233,9 @@ _ = entry.crop.plot_vs_basemap(
 # `entry.crop.plot_overlay()` reprojects the real crop onto the map via ISIS's own native `cam2map` (`isis_wac.run_cam2map_for_crop`), using a map file cloned from `dem_ortho_result`'s own local Orthographic projection (`isis_wac._orthographic_map_pvl`) so the output lands in the same real-world coordinate system as `dem_ortho_result.ortho` -- the real-WAC counterpart to 5B's `mapproject`, sharing the same auto-blinking-GIF overlay display (no special-casing needed since the crop -- unlike the old full stitched cube -- already covers just the real footprint being compared).
 
 # %%
-entry.crop.plot_overlay(title="Phase 6B: real ISIS-processed WAC (mapprojected) over hillshade-based basemap")
+entry.crop.plot_overlay(
+    title="Phase 6B: real ISIS-processed WAC (mapprojected) over hillshade-based basemap", layers=crater_layers
+)
 
 # %% [markdown]
 # ## Phase 7: synthetic render vs. real WAC, side by side

@@ -110,10 +110,10 @@ def _ellipse_polygon(
     `/2` down to semi-axes below.
 
     `angle_deg`'s rotation reference (measured from which axis, which direction) isn't documented in
-    the PDS4 label and hasn't yet been visually cross-checked against a real crater rim in the
-    hillshade basemap (the same kind of visual QA this notebook already does for other geometry,
-    e.g. Phase 5/6's tie points) -- treat ellipse *size*/*position* as confirmed, *orientation* as
-    unverified until checked against a real render."""
+    the PDS4 label, but this interpretation is now visually confirmed against real crater rims in
+    the hillshade basemap once wired into the notebook (`notebooks/image_generation.py`'s Phase
+    5B/6B, see `docs/plan.md`) -- ellipses land tightly on real rims throughout, including visibly
+    elongated (non-circular) craters matching their ellipse's long axis, not perpendicular to it."""
     unit_circle = shapely.geometry.Point(0, 0).buffer(1.0, quad_segs=32)
     semi_major_m, semi_minor_m = major_km * 500.0, minor_km * 500.0  # km -> m, then diameter -> radius
     ellipse = shapely.affinity.scale(unit_circle, semi_major_m, semi_minor_m)
@@ -122,14 +122,40 @@ def _ellipse_polygon(
 
 
 def crater_overlay_layer(
-    raster_path, config: TrntestConfig | None = None, **layer_kwargs
+    raster_path,
+    config: TrntestConfig | None = None,
+    min_major_km: float | None = None,
+    min_arc_img: float | None = None,
+    **layer_kwargs,
 ) -> plotting.OverlayLayer | None:
     """The single entry point notebook cells call: builds a `plotting.OverlayLayer` of Robbins
     crater ellipses covering `raster_path`'s own real footprint, in `raster_path`'s own CRS -- ready
     to pass straight into `plotting.plot_overlay`/`plot_overlay_toggle`'s `layers=[...]`. Returns
-    `None` if no craters fall in view (e.g. a very small or unlucky footprint) rather than an empty
-    layer, so callers should build their `layers` list conditionally
+    `None` if no craters fall in view (e.g. a very small or unlucky footprint, or everything in view
+    filtered out by `min_major_km`/`min_arc_img` below) rather than an empty layer, so callers
+    should build their `layers` list conditionally
     (`layers=[l for l in (craters.crater_overlay_layer(...),) if l is not None]` or similar).
+
+    `min_major_km`, if given, drops craters whose ellipse-fit major axis (`DIAM_ELLI_MAJOR_IMG` --
+    a full axis length/diameter, not a radius, same convention as `DIAM_CIRC_IMG`, see
+    `_ellipse_polygon`'s own docstring) is smaller than this. A typical camera footprint here (tens
+    to ~100km across) contains thousands of sub-km craters -- the full, unfiltered database at that
+    scale visually overwhelms the base image rather than reading as an annotation.
+
+    `min_arc_img`, if given, additionally drops craters whose `ARC_IMG` (the fraction, 0-1, of the
+    crater's own rim circumference that was actually traceable and used in its ellipse fit -- this
+    database's closest real proxy for rim quality/completeness; it has no dedicated
+    degradation-state/"sharpness" grade field the way some other crater catalogs do) is below this.
+    **`ARC_IMG` is confounded with size, confirmed empirically against the real database**: 41% of
+    *all* craters have `ARC_IMG == 1.0` (small, simple bowl craters are trivially fully traced) vs.
+    just 2.5% of craters >=20km major axis (large craters are more often complex, overlapped by
+    later impacts, or degraded) -- so applying an `ARC_IMG` floor across the *whole* unfiltered
+    database would just re-select small craters, not better ones. It's only a meaningful quality
+    signal *within* a size band, i.e. combined with `min_major_km` as done here, not as a
+    stand-alone filter.
+
+    Both filters are applied right after the bbox query, before ellipse construction, so this also
+    skips building polygons for craters that would just be dropped.
 
     `raster_path` is read purely for its own real georeferencing (`rasterio`'s `crs`/`bounds`) -- the
     same "raster's own georeferencing is authoritative" pattern
@@ -156,6 +182,10 @@ def crater_overlay_layer(
     padded_bbox_deg = lunaserv.pad_bbox(bbox_deg, _QUERY_BBOX_PADDING_FRACTION)
 
     gdf = query_craters_in_bbox(padded_bbox_deg, config)
+    if min_major_km is not None:
+        gdf = gdf[gdf["DIAM_ELLI_MAJOR_IMG"] >= min_major_km]
+    if min_arc_img is not None:
+        gdf = gdf[gdf["ARC_IMG"] >= min_arc_img]
     if gdf.empty:
         return None
 

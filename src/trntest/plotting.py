@@ -541,19 +541,30 @@ class OverlayLayer:
 
     `fill=False` (default) draws just the boundary (`.boundary.plot(...)`, matching the existing
     footprint-outline style) rather than a filled shape -- outlines read better than fills stacked on
-    top of imagery at `plot_overlay`'s typical `overlay_alpha=1.0`."""
+    top of imagery at `plot_overlay`'s typical `overlay_alpha=1.0`.
+
+    `linestyle` is any matplotlib `Line2D` linestyle -- a named style (`"solid"`, `"dashed"`,
+    `"dotted"`) or a custom `(offset, (on_pt, off_pt, ...))` dash tuple, passed straight through to
+    `.boundary.plot(...)`/`.plot(...)`'s own `linestyle` kwarg. Added because a solid outline at full
+    opacity/width can itself obscure the very rim it's meant to help visually verify -- a sparse
+    dotted line (e.g. `(0, (1, 10))`: a 1pt dash every 10pt) leaves most of the underlying image
+    visible between dots while still marking the boundary at full color/opacity, unlike turning down
+    `alpha`/`linewidth` instead (which fades the boundary itself, not just how much it covers)."""
 
     geoseries: geopandas.GeoSeries
     color: str = "orange"
     linewidth: float = 1.0
     alpha: float = 1.0
     fill: bool = False
+    linestyle: str | tuple = "solid"
 
     def plot(self, ax):
         if self.fill:
             self.geoseries.plot(ax=ax, color=self.color, alpha=self.alpha)
         else:
-            self.geoseries.boundary.plot(ax=ax, color=self.color, linewidth=self.linewidth, alpha=self.alpha)
+            self.geoseries.boundary.plot(
+                ax=ax, color=self.color, linewidth=self.linewidth, alpha=self.alpha, linestyle=self.linestyle
+            )
 
 
 def plot_overlay(
