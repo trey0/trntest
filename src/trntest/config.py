@@ -110,6 +110,19 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
+# Robbins (2019) lunar crater database -- ~1.3-2M craters, distributed by USGS Astropedia's PDS
+# Annex (see docs/data-sources.md's "Robbins crater database" section). This exact URL is a CKAN
+# resource-download route, not the catalog/search page a browser lands on -- confirmed live via
+# `curl` (200, `Content-Type: application/zip`, ~92MB); the search-page/details-page URLs that
+# search engines index for this dataset (e.g. `search/map/moon_crater_database_v1_robbins`) 404 on
+# the live site as of this writing, a real USGS-side site reorganization unrelated to any
+# bot-protection -- see `docs/plan.md`'s open items for the full investigation trail. Found by
+# manually navigating the current live catalog page's own download link, not guessed.
+DEFAULT_ROBBINS_CRATERS_URL = (
+    "https://astrogeology.usgs.gov/ckan/dataset/f89f5478-b69a-486c-b9b5-30d7b0c5ad2b/"
+    "resource/c4f25cc2-4f8a-4207-a845-5e176da3ac5a/download/lunar_crater_database_robbins_2018"
+)
+
 # USGS's own S3-hosted LRO ISIS kernel-db tree -- the same source ISIS's own `spiceinit web=yes` (and
 # local, non-web spiceinit) draws from for LRO. Confirmed live: LRO's `rclone` remote
 # (`/opt/conda/envs/isis/etc/isis/rclone.conf`'s `[lro]` alias) has no `naif:` union, unlike
@@ -143,6 +156,7 @@ class TrntestConfig:
     lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see docstring above
     dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see docstring above
     astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
+    robbins_craters_url: str = DEFAULT_ROBBINS_CRATERS_URL
     isis_kernel_base_url: str = DEFAULT_ISIS_KERNEL_BASE_URL
     wac_ck_source: str = DEFAULT_WAC_CK_SOURCE  # "isis_resolved" | "naif_metakernel" (deprecated)
     lroc_base_url: str = DEFAULT_LROC_BASE_URL

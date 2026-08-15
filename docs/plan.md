@@ -249,37 +249,29 @@ changes against them.
   geometry-validation reference the Phase 5/6 comparison exists to show, not an optional annotation.
   Verified with hand-built toy `GeoSeries` layers (single-layer, multi-layer, filled) through both
   `plot_overlay` and `plot_overlay_toggle`; full test suite (156 tests) and lint still pass.
+  **Done**: source URL confirmed (found by the user navigating the current live catalog page
+  directly — every URL findable via search engines or third-party docs 404s live on
+  `astrogeology.usgs.gov` now, a real site reorganization, not bot-protection; see
+  `docs/data-sources.md`'s "Robbins lunar crater database" section for the full investigation) and
+  fetch/cache wired up: `config.robbins_craters_url`/`cache.fetch_robbins_craters` (plain
+  `cache.cached_get`, ~92MB zip, not `fetch_astropedia_gld100`'s special resumable-curl path).
+  Downloaded and inspected the real file: a PDS4 bundle whose only data is one CSV, 1,296,796 rows
+  (D≥1km), POINT-only geometry (`LAT_CIRC_IMG`/`LON_CIRC_IMG` center, `DIAM_CIRC_IMG` in km — not
+  radians/differently-named as a third-party library's docs implied, both directly confirmed
+  against the real downloaded data) with `DIAM_ELLI_MAJOR_IMG`/`DIAM_ELLI_MINOR_IMG`/
+  `DIAM_ELLI_ANGLE_IMG` as separate attribute columns — confirms the ellipse polygon must be
+  constructed at render time, not read off the shelf. Full field list/CRS/units in
+  `docs/data-sources.md`.
   **Still planned** (not yet started): overlay Robbins lunar crater ellipses as the first real
-  `OverlayLayer`, following the pattern above. Source: Robbins
-  (2019) *JGR Planets* DOI `10.1029/2018JE005592`, ~1.3-2M craters, distributed via USGS
-  Astropedia/PDS Annex — **exact download URL still not confirmed, but the blocker is now understood
-  and it is not bot-protection**: a second research pass (2026-08-15) confirmed direct file
-  downloads through `astrogeology.usgs.gov` work fine via a plain scripted request with a
-  browser-like User-Agent (verified against a real CKAN resource file on that same host, 200 OK) —
-  the actual problem is that every specific catalog/download URL findable via search engines for
-  this dataset (`search/map/moon_crater_database_v1_robbins`, and the Mars sibling's
-  `search/details/.../zip` pattern, tried on both the Mars and Moon slugs) now 404s live on
-  `astrogeology.usgs.gov`, despite being real, working, search-engine-indexed URLs as recently as
-  Oct 2024 (per the third-party SONIC library's own docs, which cite that exact catalog URL,
-  dated). This reads as a USGS-side site reorganization since then, not something scriptable
-  around — needs a human using the site's *current* live search UI (not a bookmarked/indexed old
-  URL) to find wherever this dataset now lives, then hand back whatever URL that search lands on.
-  **Schema confirmed** in the meantime, via the same SONIC library's field documentation (real,
-  not by analogy this time): geometry is indeed POINT-only, with `latCir_RAD`/`lonCir_RAD` (crater
-  center, radians), `diamCir_KM` (circular diameter), and `majAxElp_KM`/`minAxElp_KM`/`angElp_RAD`
-  (ellipse major/minor axis, angle) as separate attribute columns — confirms the ellipse polygon
-  must be constructed at render time, not read off the shelf, as this section already expected.
-  Given >99% of the ~1.3-2M craters lie outside any one
-  camera footprint, the key design point is a two-stage filter: read-time bbox pushdown
+  `OverlayLayer`, following the pattern above. Given >99% of the 1.3M craters lie outside any one
+  camera footprint, the key remaining design point is a two-stage filter: read-time bbox pushdown
   (`geopandas.read_file(..., bbox=...)`, requires a spatially-indexed format — GeoPackage/FlatGeobuf,
-  converted once at fetch time if the shipped file isn't already indexed) so the full database is
-  never materialized in Python, then an in-memory `.sindex`/`.cx[]` trim to the exact AOI (confirmed
-  this repo's installed stack — `geopandas 1.1.4`/`shapely 2.1.2`/`pyogrio 0.13.0` — supports both
-  paths). Caching follows `docs/caching.md`'s normal `cache.cached_get` shape unless the confirmed
-  file size turns out Astropedia-GLD100-sized. Full staged plan (research → schema-independent
-  plotting plumbing [done, see above] → fetch/cache → query/filter → notebook wiring → docs
-  close-out) written up 2026-08-15, not persisted in-repo beyond this note — re-derive the remaining
-  chunk breakdown fresh if picking this back up later rather than hunting for it.
+  since the raw CSV has no native spatial index at all, unlike a real GIS format might) so the full
+  database is never materialized in Python, then an in-memory `.sindex`/`.cx[]` trim to the exact
+  AOI (confirmed this repo's installed stack — `geopandas 1.1.4`/`shapely 2.1.2`/`pyogrio 0.13.0` —
+  supports both paths). Remaining chunks: query/filter + ellipse construction (likely a new
+  `src/trntest/craters.py`) → notebook wiring (Phase 5B/6B) → docs close-out
+  (`docs/history.md` entry).
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

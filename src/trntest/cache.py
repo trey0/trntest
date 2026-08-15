@@ -208,6 +208,23 @@ def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
     return dest
 
 
+def robbins_craters_rel_path(url: str) -> str:
+    """robbins_craters/<filename>.zip -- a single named file (there's only ever one Robbins database
+    to fetch, not one per bbox/resolution), same shape as `astropedia_rel_path`. `.zip` is appended
+    explicitly since the upstream URL's own final path segment has no extension (a CKAN
+    resource-download route) -- confirmed via the real response's `Content-Type: application/zip`."""
+    return f"robbins_craters/{url.rsplit('/', maxsplit=1)[-1]}.zip"
+
+
+def fetch_robbins_craters(cache_root: Path, base_url: str) -> Path:
+    """Download and cache the Robbins lunar crater database's raw zip (~92MB, see
+    docs/data-sources.md) once. Plain `cached_get`, not `fetch_astropedia_gld100`'s special
+    resumable-curl path -- that path exists specifically because GLD100 is ~10GB, too large for
+    `cached_get`'s whole-response-then-rename shape to be a good fit; 92MB is comfortably fine for
+    it."""
+    return cached_get(base_url, robbins_craters_rel_path(base_url), cache_root=cache_root)
+
+
 def isis_kernel_rel_path(rel_path: str) -> str:
     """rel_path like 'kernels/ck/moc42r_2019334_2020001_v01.bc' -> cache path under isisdata/lro/... --
     deliberately mirrors $ISISDATA/lro/...'s own real layout (not a new independent subtree), so a
