@@ -24,7 +24,8 @@ this file). Then, as needed:
   what survives a teardown, why spike/experimental source (`src/scratch/`) and large file output
   (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must be kept in separate locations, and
   (see its "Multi-agent worktrees" section) how concurrent Claude Code worktree agents share the
-  outer `trntest_ws` workspace safely.
+  outer `trntest_ws` workspace safely, merge into `origin/main`, and message each other directly to
+  stay in sync.
 
 ## Working conventions for this repo
 

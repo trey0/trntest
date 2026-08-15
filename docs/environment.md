@@ -134,14 +134,45 @@ automatically.
   ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
-- **Don't merge your worktree branch into `main`, push, or delete/force-touch another worktree's
-  branch yourself.** With multiple agent branches in flight, the user is coordinating integration
-  by hand — treat this the same as any other push/merge action needing explicit confirmation (see
-  the general safety guidance you already follow), just doubly so here since another agent's
-  in-progress branch could be on the other end.
+- **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
+  when the user asks for it in that turn, and only your own branch.** This is a small team of
+  agents working closely with the user, not a large/anonymous one, so the informal "just merge it
+  in" workflow that implies is intentional — it doesn't need a PR. It's still the same kind of
+  action as any other push/merge needing explicit confirmation (see the general safety guidance you
+  already follow): never merge/push on your own initiative, and never merge, push, delete, or
+  force-touch *another* worktree's branch yourself — that stays the user's call. Right after
+  merging, message every other running agent that `origin/main` moved (see "Agent-to-agent
+  messaging" below) so they know to pull at their next good stopping point, not mid-edit.
 - **If you're told your worktree/agent name, verify it** with `git rev-parse --show-toplevel`
   (look for the `.claude/worktrees/<name>/` segment) rather than trusting it blindly — in a
   multi-agent conversation that name can be stale or simply wrong.
+
+### Agent-to-agent messaging
+
+This repo is worked by a small number of Claude Code agents at a time (the user plus a couple of
+worktree agents), working closely enough that direct messages between agents — via the `ListAgents`
+and `SendMessage` tools — are part of the normal workflow here, not just a break-glass fallback:
+
+- **On startup, announce yourself.** Once you've verified your own worktree name (`git rev-parse
+  --show-toplevel`), call `ListAgents` to see who else is currently running, then `SendMessage`
+  each one a short note with your worktree/branch name and what you're about to work on. This is
+  how agents learn they're not alone and avoid duplicate or conflicting work (e.g. two agents both
+  editing `docs/plan.md`, or both about to trigger the same cold cache fetch — see the GLD100 race
+  above).
+- **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
+  shows: that you merged, a one-line summary of what changed, and that they should `git pull
+  origin main` next time they hit a good stopping point (not mid-edit).
+- **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
+  two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
+  about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),
+  you're about to touch shared narrative state (`docs/plan.md`/`docs/history.md`/
+  `docs/data-sources.md`, `notebooks/dataset_manifest.csv`) and want to flag it to avoid a
+  collision, or you're about to do something slow/disruptive to the shared `trntest_ws` (a long
+  cold fetch, anything touching `cache/`). When in doubt, send the message — it costs little;
+  staying silent risks another agent burning time on stale state or a known-bad code path.
+- This is deliberately informal: no ticket system, no required message format. Keep messages short,
+  and skip them for anything purely local to your own worktree that doesn't touch shared state or
+  another agent's branch.
 
 ## Why the separation matters
 
