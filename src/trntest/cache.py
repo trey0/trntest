@@ -11,13 +11,59 @@ pass them down explicitly.
 import os
 import subprocess
 import tempfile
+import time
 import urllib.parse
 from pathlib import Path
 
 import requests
 
+# A from-cold `dataset.select_dataset()` sweep calls `cached_get` up to ~1600 times in a plain
+# sequential loop with no pacing at all between requests -- confirmed (docs/history.md's Phase 36
+# follow-up) to be enough on its own, no concurrent caller needed, to trip a real server-side
+# rate limiter (~3.5 req/s sustained for ~8 minutes). This fixed floor between real requests (never
+# applied on a cache hit -- see the early return below) costs nothing in the normal, mostly-cached
+# case and only meaningfully slows down exactly the bulk-fresh-fetch case that needs slowing down.
+_REQUEST_PACING_SECONDS = 0.2
+_MAX_FETCH_ATTEMPTS = 3
+# A `Retry-After` longer than this isn't worth retrying inline -- e.g. the 3600s (1hr) CloudFront
+# sent LROC's own EDR host during the same Phase 36 incident. Failing fast lets the caller decide
+# whether to abort rather than have `cached_get` silently block for up to an hour.
+_MAX_RETRY_AFTER_SECONDS = 30.0
 
-def cached_get(url: str, rel_path: str, cache_root: Path, **requests_kwargs) -> Path:
+# One shared connection pool (keep-alive) for every real fetch this process makes, rather than a
+# fresh TCP/TLS handshake per `requests.get` call -- lighter on the remote server and faster for us.
+_SESSION = requests.Session()
+
+_HTTP_TOO_MANY_REQUESTS = 429
+
+
+class FetchError(Exception):
+    """Raised by `cached_get` when a remote fetch fails after exhausting `_MAX_FETCH_ATTEMPTS` (or
+    hits a 429 with a `Retry-After` too long to wait out inline -- see `_MAX_RETRY_AFTER_SECONDS`).
+
+    Signals a systemic problem (server down, rate-limited, network unreachable) rather than a single
+    bad input, so a caller sweeping many items -- `dataset._evaluate_illuminated_candidates`,
+    `dataset.generate_dataset` -- must let this propagate and abort the whole operation instead of
+    catching it alongside ordinary per-item errors and skip-and-continuing: that exact anti-pattern
+    (docs/history.md's Phase 36 follow-up) is what turned one rate-limited request into ~1350 more
+    of them fired at an already-refusing server, in the same sweep that had no pacing either."""
+
+
+def _parse_retry_after_seconds(header_value: str | None) -> float | None:
+    """Only the delay-seconds form of `Retry-After` (e.g. "3600") is handled -- the HTTP-date form
+    is rare in practice for this kind of API and not worth parsing; treated as unknown (`None`),
+    same as a missing header, which `cached_get` conservatively treats as "too long to wait out"."""
+    if header_value is None:
+        return None
+    try:
+        return float(header_value)
+    except ValueError:
+        return None
+
+
+def cached_get(
+    url: str, rel_path: str, cache_root: Path, max_attempts: int = _MAX_FETCH_ATTEMPTS, **requests_kwargs
+) -> Path:
     """Return a local path for `url`, downloading into cache_root/rel_path only if not already there.
 
     Downloads to a uniquely-named temp file (not a fixed `dest.name + ".part"` path) before
@@ -25,25 +71,56 @@ def cached_get(url: str, rel_path: str, cache_root: Path, **requests_kwargs) -> 
     reproducible `tmp.rename(dest)` failures ("No such file or directory") under the rapid
     sequential I/O of evaluating many catalog candidates back-to-back (confirmed: ~1600 sequential
     fetches in one `select_dataset()` run, 69 hit this exact failure). `tempfile.mkstemp` claims
-    the unique path atomically. On failure, the temp file is removed rather than left behind."""
+    the unique path atomically. On failure, the temp file is removed rather than left behind.
+
+    Retries a failed fetch up to `max_attempts` times with a short exponential backoff (1s, 2s, 4s,
+    ...), except a 429 -- handled separately via `Retry-After` (see `_MAX_RETRY_AFTER_SECONDS`).
+    Once attempts are exhausted, raises `FetchError` (chained from the last real exception) rather
+    than the raw underlying exception, so callers can distinguish "this fetch is systemically broken"
+    from any other failure and choose to abort a whole batch rather than skip one item -- see
+    `FetchError`'s own docstring for why that distinction matters here specifically."""
     dest = cache_root / rel_path
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".part")
-    os.close(fd)
-    tmp = Path(tmp_name)
-    try:
-        with requests.get(url, stream=True, timeout=60, **requests_kwargs) as resp:
-            resp.raise_for_status()
-            with open(tmp, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    f.write(chunk)
-        tmp.rename(dest)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    return dest
+
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        time.sleep(_REQUEST_PACING_SECONDS)
+        fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".part")
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            with _SESSION.get(url, stream=True, timeout=60, **requests_kwargs) as resp:
+                if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
+                    retry_after = _parse_retry_after_seconds(resp.headers.get("Retry-After"))
+                    if retry_after is None or retry_after > _MAX_RETRY_AFTER_SECONDS or attempt == max_attempts:
+                        raise FetchError(
+                            f"{url}: rate-limited (429) after {attempt} attempt(s); Retry-After="
+                            f"{retry_after if retry_after is not None else 'unset'}s "
+                            f"exceeds the {_MAX_RETRY_AFTER_SECONDS}s inline-retry cap, or attempts "
+                            "are exhausted -- not waiting it out"
+                        )
+                    tmp.unlink(missing_ok=True)
+                    time.sleep(retry_after)
+                    continue
+                resp.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        f.write(chunk)
+            tmp.rename(dest)
+            return dest
+        except FetchError:
+            tmp.unlink(missing_ok=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "retry",
+            # not KeyboardInterrupt/SystemExit, which must propagate immediately, not be retried.
+            tmp.unlink(missing_ok=True)
+            last_exc = exc
+            if attempt == max_attempts:
+                raise FetchError(f"{url}: failed after {max_attempts} attempt(s): {exc}") from exc
+            time.sleep(min(2**attempt, 8))
+    raise FetchError(f"{url}: failed after {max_attempts} attempt(s)") from last_exc
 
 
 def naif_rel_path(kernel_path: str) -> str:

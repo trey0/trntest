@@ -1,6 +1,27 @@
 from unittest import mock
 
+import pytest
+
 from trntest import cache
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeps(monkeypatch):
+    """`cached_get` now sleeps for pacing/backoff on every real fetch attempt -- patched to a no-op
+    everywhere in this file so the suite stays fast and deterministic regardless of the real
+    `_REQUEST_PACING_SECONDS`/backoff values."""
+    monkeypatch.setattr(cache.time, "sleep", lambda _seconds: None)
+
+
+def _fake_response(body: bytes = b"data", status_code: int = 200, headers: dict | None = None):
+    response = mock.MagicMock()
+    response.status_code = status_code
+    response.headers = headers or {}
+    response.raise_for_status = mock.Mock()
+    response.iter_content = mock.Mock(return_value=[body])
+    response.__enter__ = mock.Mock(return_value=response)
+    response.__exit__ = mock.Mock(return_value=False)
+    return response
 
 
 def test_naif_rel_path():
@@ -34,14 +55,9 @@ def test_fetch_isis_kernel_constructs_expected_url(tmp_path):
 
     def fake_get(url, stream, timeout, **kwargs):
         calls.append(url)
-        response = mock.MagicMock()
-        response.raise_for_status = mock.Mock()
-        response.iter_content = mock.Mock(return_value=[b"data"])
-        response.__enter__ = mock.Mock(return_value=response)
-        response.__exit__ = mock.Mock(return_value=False)
-        return response
+        return _fake_response()
 
-    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
         dest = cache.fetch_isis_kernel(
             "kernels/ck/moc42r_x.bc", cache_root=cache_root, base_url="https://example.com/usgs_data/lro/"
         )
@@ -61,14 +77,9 @@ def test_cached_get_downloads_once_then_hits_cache(tmp_path):
 
     def fake_get(url, stream, timeout, **kwargs):
         calls.append(url)
-        response = mock.MagicMock()
-        response.raise_for_status = mock.Mock()
-        response.iter_content = mock.Mock(return_value=[b"hello"])
-        response.__enter__ = mock.Mock(return_value=response)
-        response.__exit__ = mock.Mock(return_value=False)
-        return response
+        return _fake_response(b"hello")
 
-    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
         dest1 = cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
         assert dest1.read_bytes() == b"hello"
         assert len(calls) == 1
@@ -83,14 +94,9 @@ def test_cached_get_uses_part_file_then_renames(tmp_path):
     cache_root = tmp_path / "cache"
 
     def fake_get(url, stream, timeout, **kwargs):
-        response = mock.MagicMock()
-        response.raise_for_status = mock.Mock()
-        response.iter_content = mock.Mock(return_value=[b"data"])
-        response.__enter__ = mock.Mock(return_value=response)
-        response.__exit__ = mock.Mock(return_value=False)
-        return response
+        return _fake_response()
 
-    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
         dest = cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
 
     assert dest.exists()
@@ -98,11 +104,10 @@ def test_cached_get_uses_part_file_then_renames(tmp_path):
     assert list(dest.parent.glob(f"{dest.name}.*.part")) == []
 
 
-def test_cached_get_cleans_up_temp_file_on_failure(tmp_path):
-    cache_root = tmp_path / "cache"
-
+def _fake_get_always_raising():
     def fake_get(url, stream, timeout, **kwargs):
         response = mock.MagicMock()
+        response.status_code = 200
         response.raise_for_status = mock.Mock()
 
         def raising_iter_content(chunk_size):
@@ -114,13 +119,120 @@ def test_cached_get_cleans_up_temp_file_on_failure(tmp_path):
         response.__exit__ = mock.Mock(return_value=False)
         return response
 
-    with mock.patch("trntest.cache.requests.get", side_effect=fake_get):
-        try:
-            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
-            raise AssertionError("expected ConnectionError")
-        except ConnectionError:
-            pass
+    return fake_get
+
+
+def test_cached_get_cleans_up_temp_file_on_failure(tmp_path):
+    cache_root = tmp_path / "cache"
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=_fake_get_always_raising()):
+        with pytest.raises(cache.FetchError):
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=1)
 
     dest = cache_root / "sub" / "f.bin"
     assert not dest.exists()
     assert list(dest.parent.glob(f"{dest.name}.*.part")) == []
+
+
+def test_cached_get_raises_fetch_error_chained_from_original_exception(tmp_path):
+    cache_root = tmp_path / "cache"
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=_fake_get_always_raising()):
+        with pytest.raises(cache.FetchError) as exc_info:
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=1)
+
+    assert isinstance(exc_info.value.__cause__, ConnectionError)
+
+
+def test_cached_get_retries_and_succeeds_after_a_transient_failure(tmp_path):
+    cache_root = tmp_path / "cache"
+    attempts = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("simulated transient failure")
+        return _fake_response(b"hello")
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        dest = cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=3)
+
+    assert len(attempts) == 2
+    assert dest.read_bytes() == b"hello"
+
+
+def test_cached_get_raises_fetch_error_after_exhausting_max_attempts(tmp_path):
+    cache_root = tmp_path / "cache"
+    attempts = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        attempts.append(1)
+        raise ConnectionError("simulated persistent failure")
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        with pytest.raises(cache.FetchError):
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=3)
+
+    assert len(attempts) == 3
+
+
+def test_cached_get_retries_429_when_retry_after_is_within_cap(tmp_path):
+    cache_root = tmp_path / "cache"
+    attempts = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            return _fake_response(status_code=429, headers={"Retry-After": "5"})
+        return _fake_response(b"hello")
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        dest = cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=3)
+
+    assert len(attempts) == 2
+    assert dest.read_bytes() == b"hello"
+
+
+def test_cached_get_raises_fetch_error_immediately_when_retry_after_exceeds_cap(tmp_path):
+    cache_root = tmp_path / "cache"
+    attempts = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        attempts.append(1)
+        return _fake_response(status_code=429, headers={"Retry-After": "3600"})
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        with pytest.raises(cache.FetchError):
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=3)
+
+    # Not worth burning all 3 attempts sleeping out a 3600s Retry-After -- fails on the first.
+    assert len(attempts) == 1
+
+
+def test_cached_get_raises_fetch_error_immediately_when_retry_after_is_missing(tmp_path):
+    cache_root = tmp_path / "cache"
+    attempts = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        attempts.append(1)
+        return _fake_response(status_code=429, headers={})
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        with pytest.raises(cache.FetchError):
+            cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root, max_attempts=3)
+
+    assert len(attempts) == 1
+
+
+def test_cached_get_paces_real_requests(tmp_path, monkeypatch):
+    cache_root = tmp_path / "cache"
+    sleeps = []
+    monkeypatch.setattr(cache.time, "sleep", sleeps.append)
+
+    def fake_get(url, stream, timeout, **kwargs):
+        return _fake_response()
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
+
+    assert cache._REQUEST_PACING_SECONDS in sleeps

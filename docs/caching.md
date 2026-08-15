@@ -33,6 +33,35 @@ otherwise be needed for.
 Fetch helpers (`src/trntest/cache.py`) check "does this local mirrored path already exist" before
 making any network request; if present, skip the request entirely.
 
+## Retry/backoff/pacing policy, and failing loudly on a systemic fetch problem
+
+`cache.cached_get` (the fetch path behind everything above except the Astropedia flat file, see
+below) retries a failed real request up to a small, fixed number of attempts (short exponential
+backoff, capped) before giving up -- not infinite/silent retrying, and not the old
+skip-on-first-failure behavior either. A 429 specifically honors the server's own `Retry-After` if
+it's short enough to wait out inline; a longer one (or a missing/malformed header) fails immediately
+rather than blocking for however long the server asks. Every real request (never a cache hit) is also
+paced by a small fixed delay, and all real requests in one process share one `requests.Session`
+(connection keep-alive) rather than a fresh connection per call.
+
+Once attempts are exhausted, `cached_get` raises `cache.FetchError`, not the raw underlying
+exception -- deliberately a distinct type so a caller sweeping many items in a loop (e.g.
+`dataset._evaluate_illuminated_candidates`'s per-candidate catalog sweep,
+`dataset.generate_dataset`'s per-image batch) can tell "this fetch is systemically broken" apart from
+an ordinary per-item problem and let it propagate to abort the whole operation, rather than logging
+"skipping" and immediately firing the next of possibly hundreds of further requests at a server
+that's already refusing them. That distinction exists because of a real incident, not a hypothetical:
+a from-cold `select_dataset(max_search_days=7)` sweep made ~1600 sequential, unpaced requests to the
+same PDS host with no backoff at all, and once the server started responding 429, the old
+catch-any-exception-and-continue loop kept right on firing -- 1354 more 429s in the same run -- into
+what turned out to be a full 1-hour, IP-scoped ban (confirmed via the response's own `Retry-After:
+3600` header). See `docs/history.md`'s dated entry for the full incident and the fix.
+
+Same underlying preference as the `spiceinit` case below (no silent retry loop, fail promptly instead)
+-- extended here to *bounded* retries plus pacing/backoff, since the failure mode observed was a
+genuinely unpaced burst tripping a rate limiter, not a single flaky call; the "signal failure on the
+whole operation" half of that direction is unchanged.
+
 ## SPICE kernel selection (avoid over-pulling)
 
 The NAIF archive's yearly metakernel is a **manifest**, not something to furnish/download in full —

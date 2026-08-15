@@ -15,8 +15,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import spiceypy as spice
 
-from trntest import camera, catalog, illumination, lunaserv, render, spice_kernels, tie_points
+from trntest import cache, camera, catalog, illumination, lunaserv, render, spice_kernels, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import LunaservResult
@@ -170,16 +171,54 @@ def _evaluate_illuminated_candidates(
     edr_candidates: pd.DataFrame, config: TrntestConfig, min_sun_elevation_deg: float
 ) -> pd.DataFrame:
     """Run evaluate_candidate_image over every candidate, dropping unilluminated ones and any that
-    fail outright (one bad candidate shouldn't abort the whole search)."""
+    fail for one of two specific, anticipated per-candidate geometry/coverage reasons -- not any
+    exception whatsoever. Narrowed deliberately (docs/history.md's Phase 37 follow-up): checked
+    against this project's one real large-scale run (the incident that motivated this function in
+    the first place), and every one of its 1,354 skips was a fetch failure, none were a genuine
+    geometry/coverage edge case -- so a bare `except Exception` was catching a far broader class of
+    problems (a real bug included) than it was ever observed to actually need. The two kept here are
+    concrete, not hypothetical, both reachable from `evaluate_candidate_image`'s own call graph for a
+    real candidate at extreme geometry (e.g. near the limb or a pole), not a code defect:
+
+    - `AssertionError`, from `camera.boresight_ground_point_km`'s "camera boresight does not
+      intersect the Moon" check.
+    - `spiceypy.utils.exceptions.SpiceyError`, from any of the real SPICE calls in this same chain
+      (`camera.camera_pose_moon_me`, `illumination.sun_elevation_deg`) -- e.g. a furnished kernel
+      not actually covering this one candidate's exact timestamp, even though it's within the
+      broader search window.
+
+    Anything else -- a `KeyError`/`TypeError`/`AttributeError` from a real bug, for instance -- is
+    *not* caught here and aborts the sweep, same as `cache.FetchError` (also not caught here, and for
+    the same underlying reason: it means a fetch failed systemically -- rate-limited, server down,
+    network unreachable -- after `cache.cached_get`'s own retries, not that this one candidate is
+    bad, and this loop calls `evaluate_candidate_image`, a real network fetch, up to ~1600 times for
+    a full 7-day sweep, so letting a systemic failure propagate and abort the whole sweep -- rather
+    than logging "skipping" and immediately firing the next of hundreds of further requests at an
+    already-refusing server -- is the whole point; this exact catch-and-continue is what turned one
+    real rate-limit response into ~1350 more of them in one incident).
+
+    Every skip is collected, not just printed inline, and reported as one prominent summary block at
+    the end (not scattered one-line-at-a-time through the sweep's other output) -- so a real geometry
+    edge case, however rare, stays visible rather than scrolling past unnoticed."""
     rows = []
+    dropped = []
     for _, edr_row in edr_candidates.iterrows():
         try:
             extra = evaluate_candidate_image(edr_row, config, min_sun_elevation_deg)
-        except Exception as exc:
-            print(f"select_dataset: skipping {edr_row['product_id']} ({exc})")
+        except cache.FetchError:
+            raise
+        except (AssertionError, spice.utils.exceptions.SpiceyError) as exc:
+            dropped.append((edr_row["product_id"], type(exc).__name__, str(exc)))
             continue
         if extra is not None:
             rows.append({**edr_row.to_dict(), **extra})
+    if dropped:
+        print(
+            f"select_dataset: {len(dropped)} of {len(edr_candidates)} candidate(s) skipped "
+            "(geometry/coverage edge case, not a fetch failure):"
+        )
+        for product_id, exc_type, message in dropped:
+            print(f"  {product_id}: {exc_type}: {message}")
     return pd.DataFrame(rows, columns=_ILLUMINATED_COLUMNS)
 
 
@@ -304,7 +343,28 @@ def generate_dataset(
     output_dir: Path | str | None = None,
 ) -> list[GenerationResult]:
     """Generate real synthetic images for (up to `limit` of) the given selected images, reusing the
-    existing single-image pipeline unchanged, just parameterized per image."""
+    existing single-image pipeline unchanged, just parameterized per image.
+
+    `cache.FetchError` is deliberately *not* caught here, unlike the one other exception type this
+    catches -- it means a fetch failed systemically (rate-limited, server down, network unreachable)
+    after `cache.cached_get`'s own retries, not that this one image is bad, so it propagates and
+    aborts the whole batch (docs/history.md's Phase 36 follow-up).
+
+    The only other exception caught (and skipped) here is `ValueError` from
+    `lunaserv.astropedia_coverage_bbox_deg`'s real, evidenced coverage check: a candidate whose
+    padded AOI falls outside Astropedia's GLD100 flat file's +-79-ish deg latitude coverage. Checked
+    deliberately narrow (docs/history.md's Phase 37 follow-up), same reasoning as
+    `_evaluate_illuminated_candidates` above: this pipeline's other assert-guarded invariants
+    (`lunaserv.py`'s `assert center is not None`) are defensive checks on state `build_camera` should
+    already guarantee, not conditions expected to trip for a real candidate, and its ISIS `campt`
+    calls (`tie_points.crop_footprint_corners_for_camera` -> `isis_wac.ground_point_at_pixel`) use
+    `check=True` specifically because *no* failure is expected there (see that function's own
+    docstring) -- so none of those get the same treatment; a failure from any of them is exactly as
+    likely to mean a real bug as `generate_dataset` failing for any other unanticipated reason, and
+    should abort the batch the same way. `generate_dataset` is, in this project's actual usage, always
+    called with `limit=1` on an already-screened candidate (see `notebooks/image_generation.py`), so
+    in practice this rarely matters either way -- but the same narrow-catch principle applies for
+    whenever it's used with a true multi-image batch."""
     config = config or load_config()
     output_dir = Path(output_dir) if output_dir is not None else config.output_dir / "dataset"
     rows = images if limit is None else images.head(limit)
@@ -332,9 +392,10 @@ def generate_dataset(
                 built_camera, per_image_config, extra_footprint_lonlat_deg=crop_footprint
             )
             render_result = render.run_sat_sim(built_camera, lunaserv_result, per_image_config)
-        except Exception as exc:  # noqa: BLE001 -- one bad image shouldn't abort the whole batch
-            print(f"generate_dataset: FAILED {product_id}: {exc}")
-            failures.append(product_id)
+        except cache.FetchError:
+            raise
+        except ValueError as exc:
+            failures.append((product_id, type(exc).__name__, str(exc)))
             continue
         results.append(
             GenerationResult(
@@ -348,8 +409,11 @@ def generate_dataset(
             )
         )
 
-    summary = f"generate_dataset: {len(results)} succeeded, {len(failures)} failed"
-    print(summary + (f" ({failures})" if failures else ""))
+    print(f"generate_dataset: {len(results)} of {len(rows)} image(s) succeeded")
+    if failures:
+        print(f"generate_dataset: {len(failures)} of {len(rows)} image(s) skipped (DEM coverage edge case):")
+        for product_id, exc_type, message in failures:
+            print(f"  {product_id}: {exc_type}: {message}")
     return results
 
 

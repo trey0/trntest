@@ -20,6 +20,7 @@ dependencies = [
     "geopandas",
     "pvl",
     "ipython",
+    "pillow",
 ]
 
 [project.optional-dependencies]

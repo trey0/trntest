@@ -2384,3 +2384,134 @@ after confirming via `git diff --stat` what was being discarded. Still outstandi
 confirmation of the rendered GIF -- this phase's mechanism has not yet been checked against the actual
 notebooks.githubusercontent.com pipeline the way Phases 33-35 eventually checked their own guesses.
 
+## Phase 37 (2026-08-15) — Root-caused the Phase 36 PDS 429 (a single unpaced ~1600-request sweep,
+not concurrent agents), and made `cache.py`'s fetch path retry, paced, and fail loudly instead of
+silently skipping
+
+Prompted by the user asking for a theory on why Phase 36's rate limit happened at all, given several
+prior from-cold sessions never hit it, and whether concurrent multi-agent requests might be the cause.
+
+Investigated via the shared `scratch/notebook_runs/` log directory (every worktree's
+`scripts/run_notebook.sh` invocation logs there) rather than guessing: exactly one
+`data_set_selection_20260815T014907Z.log` exists for today, no overlapping `image_generation` run
+from another process during its 01:49:07-01:56:47 window -- no direct evidence of a second
+simultaneous agent. That log's own content was more than sufficient on its own, though: its
+`select_dataset(max_search_days=7)` cell logged **1,354 `429`s out of 1,633 total candidate fetches**
+in that single 459.72s cell, all sequential, from one process. Traced to `dataset.py`'s
+`_evaluate_illuminated_candidates`: it calls `evaluate_candidate_image` -> `camera.fetch_frame_timing`
+-> a real HTTP GET, once per candidate, in a plain `for` loop, with zero delay anywhere in the fetch
+path (confirmed: no `time.sleep` existed anywhere in `src/trntest/` before this phase) -- averaging
+~3.5 requests/sec sustained for ~8 minutes against `pds.mcp.nasa.gov`, easily sufficient by itself to
+trip a rate limiter (confirmed via a direct `curl -I` against the same URL: CloudFront responded with
+`retry-after: 3600`, a flat 1-hour ban, not a short transient one). Why not in prior cold-cache
+sessions: `cache/`'s kernel files date back to 2022, so this exact from-scratch 1,633-request sweep
+for a *live* search window had likely never actually hit a fully empty cache before (Phase 10,
+`docs/history.md`, fixed a different cold-start cost -- a NAIF metakernel cache-key bug -- down to
+~6s, but that was measured with these PDS labels already warm); today's cache had almost nothing in
+the LROC EDR tree older than today, consistent with `cache/` having been wiped since the last session
+(explicitly disposable per `docs/environment.md`).
+
+Separately, and worse: the sweep's own `except Exception: print(...); continue` in
+`_evaluate_illuminated_candidates` caught the 429s (`requests.HTTPError`) exactly like any other
+per-candidate problem and just kept going -- meaning once the first request got rate-limited, the loop
+spent the rest of its ~1600 candidates uselessly hitting an already-refusing server instead of
+stopping. `dataset.generate_dataset` has the identical shape (confirmed live during this same
+incident: `generate_dataset: FAILED M1327210646CE: 429 ...` from Phase 36's own notebook run,
+followed by a confusing `IndexError` on `results[0]` rather than a clear failure, since `limit=1`
+meant the "0 succeeded" list was just empty).
+
+**Fix, in `cache.cached_get`** (the shared fetch path behind every source in this project except the
+Astropedia flat file):
+- **Pacing**: every real fetch attempt (never a cache hit) sleeps `_REQUEST_PACING_SECONDS` (0.2s)
+  first -- free in the normal mostly-cached case, meaningfully softens exactly the bulk-fresh-fetch
+  case that caused this.
+- **Session reuse**: one module-level `requests.Session()` (`_SESSION`) instead of a fresh
+  `requests.get()` per call -- connection keep-alive, lighter on the remote server and faster locally.
+- **Bounded retry with backoff**: up to `_MAX_FETCH_ATTEMPTS` (3) attempts, short exponential backoff
+  between them. A 429 is handled distinctly -- if `Retry-After` is present and <=
+  `_MAX_RETRY_AFTER_SECONDS` (30s), sleeps exactly that and retries; otherwise (missing, unparseable,
+  or too long -- e.g. this incident's 3600s) fails immediately rather than blocking for however long
+  the server asks.
+- **New `cache.FetchError`**: raised once attempts are exhausted, chained from the last real
+  exception. Deliberately a distinct type (not the raw `requests` exception) so a caller sweeping many
+  items can tell "this is a systemic problem" apart from an ordinary per-item failure.
+
+**Fix, in `dataset.py`**: both `_evaluate_illuminated_candidates` and `generate_dataset` now
+`except cache.FetchError: raise` before their existing broad `except Exception` (which still
+skip-and-continues for genuinely per-item problems, unchanged) -- a systemic fetch failure now
+aborts the whole sweep/batch instead of being logged as one more "skipping"/"FAILED" entry among
+hundreds. This matches explicit prior direction from the user (`docs/caching.md`'s WAC CK section,
+re: the `spiceinit` call: "I'd rather have a relatively prompt exception and manually retry later")
+-- extended here to *bounded* retries plus pacing/backoff first, since this failure mode was a
+genuinely unpaced burst tripping a rate limiter, not a single flaky call, but the "signal failure
+loudly rather than silently swallow it" half of that direction is unchanged and, if anything, this
+phase's actual bug (silent skip-and-continue through 1354 more 429s) was a real violation of it that
+had gone unnoticed until now.
+
+`docs/caching.md` gained a new section documenting this policy. Existing `tests/test_cache.py` tests
+that mocked `requests.get` directly were updated to mock `cache._SESSION.get` instead (an
+implementation-detail change, not a behavior one) and to expect `cache.FetchError` rather than a raw
+exception; new tests cover retry-then-succeed, exhausting retries, both 429 branches (short
+`Retry-After` retried, long/missing one fails fast), and pacing. New `tests/test_dataset.py` tests
+cover both loops letting `FetchError` propagate while still skipping ordinary per-item errors.
+`trntest-lint` clean; full `pytest` suite (129 tests, up from 118) passes. Not yet re-verified against
+the real PDS endpoint end-to-end (`scripts/run_notebook.sh notebooks/data_set_selection.py`) -- the
+same `Retry-After: 3600` ban from Phase 36 was still in effect throughout this phase's work.
+
+## Phase 38 (2026-08-15) — Narrowed Phase 37's per-item catch to the two specific, evidenced
+exception types it was actually meant for, and made every skip a prominent end-of-run summary
+
+The user pushed back on Phase 37's design: `_evaluate_illuminated_candidates`/`generate_dataset` still
+each kept a bare `except Exception: skip` for anything that wasn't `cache.FetchError`, justified only
+by each function's own docstring claim that "one bad candidate/image shouldn't abort the whole
+search/batch" -- but nothing had actually confirmed that claim against this project's real history, and
+the user's stated general preference is to know when something's gone wrong, not silently skip it.
+
+Checked rather than assumed: grepped the one real large-scale run available (Phase 37's own
+`data_set_selection` log, 1,633 candidates) for every "skipping" line -- all 1,354 were the 429s Phase
+37 already fixed; zero were a genuine non-fetch per-candidate problem. So the bare `except Exception`
+had, in this project's actual history, never once caught anything it was nominally there for -- only
+things a narrower catch would also let through (real bugs included).
+
+Traced `evaluate_candidate_image`'s and `generate_dataset`'s own call graphs for what a *narrower*,
+still-real catch should cover, rather than picking an arbitrary type:
+- `evaluate_candidate_image`: `camera.boresight_ground_point_km`'s `assert t is not None, "camera
+  boresight does not intersect the Moon"` (a real geometric edge case for some candidate's exact
+  timestamp/attitude -- e.g. near the limb) and `spiceypy.utils.exceptions.SpiceyError` (from
+  `camera.camera_pose_moon_me`/`illumination.sun_elevation_deg` -- a furnished kernel not actually
+  covering this one candidate's exact timestamp, even within the broader search window). Both
+  concrete, evidenced conditions in the code, not hypothetical.
+- `generate_dataset`: only `ValueError`, from `lunaserv.astropedia_coverage_bbox_deg`'s real
+  latitude-coverage check (a candidate's padded AOI falling outside Astropedia's GLD100 flat file's
+  +-79-ish deg coverage). Deliberately did *not* extend the same treatment to `lunaserv.py`'s two
+  `assert center is not None` checks (they guard state `build_camera` should already have
+  guaranteed by construction -- a defensive invariant, not a condition expected to trip for a real
+  candidate) or to this pipeline's ISIS `campt` calls (`tie_points.crop_footprint_corners_for_camera`
+  -> `isis_wac.ground_point_at_pixel` uses `check=True` specifically *because* no failure is expected
+  there, per that function's own docstring -- a failure means something's genuinely wrong, the same
+  epistemic status as any other unanticipated exception). `generate_dataset` is, in this project's
+  actual usage, always called with `limit=1` on an already-screened candidate (both current notebooks
+  and `old_notebooks/stripe_debug.py`), so this rarely matters in practice either way, but the same
+  narrow-catch principle now applies if it's ever used as a true multi-image batch.
+
+Both functions now `except (AssertionError, spiceypy.utils.exceptions.SpiceyError)` /
+`except ValueError` specifically (still after `except cache.FetchError: raise`, unchanged from Phase
+37) -- anything else (a `KeyError`/`TypeError`/`AttributeError` from a real bug, for instance) now
+propagates and aborts, same as `FetchError` already did.
+
+Also addressed directly: the user asked for a log of the errors and a prominent end-of-run status,
+"at minimum." Both functions now collect skip records (product_id, exception type, message) into a
+list during the sweep/batch instead of printing one line at a time inline, then print one clearly
+delineated summary block after the loop -- e.g. `select_dataset: 3 of 1633 candidate(s) skipped
+(geometry/coverage edge case, not a fetch failure):` followed by one line per skip -- rather than
+individual "skipping"/"FAILED" prints scattered through the rest of the sweep's own output. This
+mirrors a pattern already established elsewhere in this codebase, found while looking for precedent:
+`tie_points.resolve_crop_pixels` already does exactly this (collect drops, one aggregate summary,
+only hard-fail if *none* resolve) for its own per-tie-point skip case.
+
+Updated existing tests (`tests/test_dataset.py`) that exercised the old bare-`Exception` catch to use
+the two now-actually-caught types instead, and added new tests confirming a genuinely unanticipated
+exception (a plain `KeyError`, standing in for a real bug) propagates and aborts both the candidate
+sweep and the generation batch rather than being silently skipped. `trntest-lint` clean; full `pytest`
+suite (131 tests) passes. Still not re-verified against the real PDS endpoint end-to-end -- the Phase
+36 rate limit's ~1hr `Retry-After` window had not yet elapsed by the end of this phase either.
