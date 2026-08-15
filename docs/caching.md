@@ -20,6 +20,7 @@ cache/
   isisdata/lro/...    (LRO/WAC calibration files, and -- see below -- WAC CK kernels ISIS resolves)
   astropedia/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif   (one whole file, ~10GB -- see below)
   isis_ck_resolution/<edr_product>.json   (persisted spiceinit CK resolution -- see below)
+  naif_latest_metakernel/<year>.txt   (persisted "latest metakernel" resolution -- see below)
 ```
 
 `isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
@@ -85,6 +86,22 @@ bus reconstructed attitude) file for just that 10-day window is itself ~529 MB; 
 apparently samples at high angular rate. Skipping `lrodv`/`lrohg`/`lrosa` (still avoids ~4-5x more
 CK volume) and never touching kernels outside the target date range is what keeps this tractable at
 all — pulling a full year's CK data across all five flavors would be tens of GB.
+
+## "Latest metakernel" resolution caching
+
+Step 1 above ("download the one metakernel covering the year...") first has to ask NAIF *which*
+metakernel is current for that year -- `extras/mk/` holds one versioned file per year
+(`lro_2019_v06.tm`, etc.), and "latest" is a live directory listing, not a specific cacheable file,
+so `cache.cached_get`'s usual "does this local path already exist" check doesn't apply to it
+directly. `spice_kernels.latest_metakernel_url()` used to just re-request that listing on every
+call (in-process-memoized only, via `functools.cache` -- so still once per process, e.g. once per
+`docker compose run`, even with every actual kernel file already on disk). Now persisted instead,
+the same shape as the WAC CK resolution cache just below: written to
+`naif_latest_metakernel/<year>.txt` after the first successful resolution, read from there on every
+subsequent call for that year. Deliberately never invalidated -- a year's "latest" version is fixed
+once kernels selected from it are already cached locally, so re-checking on every run would defeat
+the point. This closes the last network dependency `image_generation.ipynb` had left once genuinely
+warmed up: the notebook can now run with no network access at all, not just "no *new* downloads."
 
 ## WAC CK (pointing) kernel caching -- a different remote host, and a resolution-result cache
 

@@ -1,5 +1,6 @@
 import dataclasses
 from datetime import UTC, datetime
+from unittest import mock
 
 import pytest
 
@@ -78,3 +79,47 @@ def test_select_kernels_for_raises_on_unknown_wac_ck_source():
     config = dataclasses.replace(TrntestConfig(), wac_ck_source="bogus")
     with pytest.raises(ValueError, match="unknown wac_ck_source"):
         spice_kernels.select_kernels_for(datetime(2019, 11, 30, tzinfo=UTC), config)
+
+
+def _fake_mk_dir_response(versions=(6,)):
+    response = mock.MagicMock()
+    response.raise_for_status = mock.Mock()
+    response.text = "\n".join(f"lro_2019_v{v:02d}.tm" for v in versions)
+    return response
+
+
+def test_latest_metakernel_url_persists_to_disk_cache(tmp_path, monkeypatch):
+    config = TrntestConfig(cache_root=tmp_path)
+    get = mock.Mock(return_value=_fake_mk_dir_response())
+    monkeypatch.setattr(spice_kernels.requests, "get", get)
+
+    result = spice_kernels.latest_metakernel_url(2019, config)
+
+    assert result == "extras/mk/lro_2019_v06.tm"
+    cache_path = tmp_path / "naif_latest_metakernel" / "2019.txt"
+    assert cache_path.read_text().strip() == result
+    get.assert_called_once()
+
+
+def test_latest_metakernel_url_reads_disk_cache_without_network(tmp_path, monkeypatch):
+    config = TrntestConfig(cache_root=tmp_path)
+    cache_path = tmp_path / "naif_latest_metakernel" / "2019.txt"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("extras/mk/lro_2019_v06.tm")
+    get = mock.Mock(side_effect=AssertionError("should not hit the network once disk-cached"))
+    monkeypatch.setattr(spice_kernels.requests, "get", get)
+
+    result = spice_kernels.latest_metakernel_url(2019, config)
+
+    assert result == "extras/mk/lro_2019_v06.tm"
+    get.assert_not_called()
+
+
+def test_latest_metakernel_url_raises_when_no_version_found(tmp_path, monkeypatch):
+    config = TrntestConfig(cache_root=tmp_path)
+    monkeypatch.setattr(spice_kernels.requests, "get", mock.Mock(return_value=_fake_mk_dir_response(versions=())))
+
+    with pytest.raises(RuntimeError, match="no metakernel found"):
+        spice_kernels.latest_metakernel_url(2019, config)
+
+    assert not (tmp_path / "naif_latest_metakernel" / "2019.txt").exists()
