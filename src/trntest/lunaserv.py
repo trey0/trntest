@@ -7,11 +7,13 @@ ortho). See docs/data-sources.md and docs/caching.md.
 
 import dataclasses
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from matplotlib.colors import LightSource
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import from_bounds as window_from_bounds
@@ -21,6 +23,12 @@ from trntest import cache, illumination
 from trntest.camera import Camera
 from trntest.config import DEFAULT_MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.subprocess_utils import run_quiet
+
+# Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
+# each parameter's documented valid range (see ISIS's photomet.xml), not calibrated against real
+# lunar photometry. This is a feasibility prototype for evaluating ISIS `photomet` as a hillshade
+# replacement (see docs/history.md's dated entry), not a validated reflectance model.
+_HAPKE_PLACEHOLDER_PARAMS = {"wh": 0.52, "hg1": 0.213, "hg2": 1.0, "hh": 0.17, "b0": 0.025, "theta": 0.0}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -453,10 +461,138 @@ def shade_ortho(
     return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
 
 
-def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path, config: TrntestConfig) -> None:
+def _terrain_photometric_angles(
+    dem: np.ndarray, azimuth_deg: float, elevation_deg: float, cellsize_m: float
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Per-pixel incidence/emission angles (degrees, as raw geometry -- not `LightSource.hillshade`'s
+    own scene-relative contrast-stretched intensity, see its `shade_normals` -- which ISIS `photomet`
+    needs real angles for) plus one scene-wide phase angle, for `dem`'s own orthographic nadir-view
+    ortho: the surface normal at each pixel comes from the identical `np.gradient`-based convention
+    `LightSource.hillshade` itself uses internally, so this stays geometrically consistent with
+    `shade_ortho`'s existing Lambertian shading. There's no real camera/observer position to get
+    `photomet` an emission angle from here -- this ortho is a flat map projection (like the
+    WMS-sourced Hapke-normalized layers `docs/data-sources.md` describes), not a perspective render
+    -- so "emission" is simply the angle between each pixel's local surface normal and straight up
+    (the implicit nadir viewing direction of an orthographic mosaic), and "phase" is scene-wide, not
+    per-pixel: both the Sun (effectively parallel rays at lunar distance, see
+    `illumination.sun_azimuth_elevation_deg`'s docstring) and that nadir viewing direction are the
+    same everywhere in the scene, so only local terrain slope makes incidence/emission vary."""
+    dy = -cellsize_m
+    e_dy, e_dx = np.gradient(dem.astype(np.float64), dy, cellsize_m)
+    normal = np.dstack([-e_dx, -e_dy, np.ones_like(dem, dtype=np.float64)])
+    normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
+
+    az_rad, el_rad = math.radians(90.0 - azimuth_deg), math.radians(elevation_deg)
+    sun_dir = np.array([math.cos(az_rad) * math.cos(el_rad), math.sin(az_rad) * math.cos(el_rad), math.sin(el_rad)])
+
+    incidence_deg = np.degrees(np.arccos(np.clip(normal @ sun_dir, -1.0, 1.0)))
+    emission_deg = np.degrees(np.arccos(np.clip(normal[..., 2], -1.0, 1.0)))
+    phase_deg = 90.0 - elevation_deg
+    return incidence_deg, emission_deg, phase_deg
+
+
+def _write_backplane_cube(path: Path, values: np.ndarray) -> None:
+    """Write `values` as a plain (non-georeferenced) single-band ISIS3 cube -- `photomet`'s
+    `ANGLESOURCE=BACKPLANE` mode only matches backplane files to the input cube by sample/line
+    dimensions, so no real CRS/transform is needed here (and translating this project's local
+    Orthographic CRS into an ISIS `Mapping` group is real, unnecessary risk -- ISIS only recognizes a
+    specific set of projections). GDAL's own `ISIS3` driver (`rw+v`, confirmed via `gdalinfo
+    --formats`) writes/reads real `.cub` files directly, so no `gdal2isis`/`isis2std` round-trip
+    through a separate conversion tool is needed either. Deliberately non-georeferenced (see above),
+    so `rasterio`'s own `NotGeoreferencedWarning` is expected and suppressed here rather than left to
+    print into a notebook cell's real output."""
+    path.unlink(missing_ok=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with rasterio.open(
+            path, "w", driver="ISIS3", height=values.shape[0], width=values.shape[1], count=1, dtype="float32"
+        ) as dst:
+            dst.write(values.astype("float32"), 1)
+
+
+def hapke_shade_ortho(
+    ortho: np.ndarray,
+    dem: np.ndarray,
+    azimuth_deg: float,
+    elevation_deg: float,
+    cellsize_m: float,
+    config: TrntestConfig,
+) -> np.ndarray:
+    """`shade_ortho`'s alternate shading mode -- a real Hapke bidirectional reflectance function
+    (ISIS `photomet`, `PHTNAME=HAPKEHEN`) instead of a plain Lambertian `LightSource.hillshade`, via
+    `ANGLESOURCE=BACKPLANE` fed the angle rasters `_terrain_photometric_angles` computes ourselves
+    (sidesteps the fact that this ortho has no ISIS camera model for `photomet` to derive angles from
+    automatically -- see docs/history.md's dated entry for the full evaluation). `_HAPKE_PLACEHOLDER_PARAMS`
+    is illustrative, not lunar-calibrated -- this is a feasibility prototype, not a validated
+    photometric model.
+
+    `photomet` also requires a `FROM` cube purely as a size/dtype template in `BACKPLANE` mode (its
+    own pixel values are irrelevant -- `NORMNAME=SHADE` overwrites them with the photometric model's
+    own output) and a `BandBin` label group just to open the file at all (confirmed empirically, not
+    documented in `photomet.xml`) -- added via `editlab` since GDAL's `ISIS3` writer doesn't create
+    one from scratch.
+
+    Hapke's raw reflectance factor is a physically real ~0-1 albedo-scale value, not the
+    scene-relative, always-min-to-max-stretched [0,1] intensity `LightSource.hillshade` itself
+    returns (see `shade_normals`) -- rescaled here by its own 99th-percentile (not literal max, to
+    avoid a few opposition-surge-bright outlier pixels crushing everything else) so the two shading
+    modes land in a visually comparable brightness range for a side-by-side/blink comparison."""
+    incidence_deg, emission_deg, phase_deg = _terrain_photometric_angles(dem, azimuth_deg, elevation_deg, cellsize_m)
+    phase_arr = np.full_like(incidence_deg, phase_deg)
+
+    work_dir = config.output_dir
+    from_cub, phase_cub = work_dir / "hapke_from.cub", work_dir / "hapke_phase.cub"
+    incidence_cub, emission_cub = work_dir / "hapke_incidence.cub", work_dir / "hapke_emission.cub"
+    out_cub = work_dir / "hapke_out.cub"
+
+    _write_backplane_cube(from_cub, np.zeros_like(incidence_deg, dtype=np.float32))
+    _write_backplane_cube(phase_cub, phase_arr)
+    _write_backplane_cube(incidence_cub, incidence_deg)
+    _write_backplane_cube(emission_cub, emission_deg)
+
+    run_quiet(["editlab", f"from={from_cub}", "options=addg", "grpname=BandBin"])
+    run_quiet(["editlab", f"from={from_cub}", "options=addkey", "grpname=BandBin", "keyword=Center", "value=1.0"])
+
+    out_cub.unlink(missing_ok=True)
+    run_quiet(
+        [
+            "photomet",
+            f"from={from_cub}",
+            f"to={out_cub}",
+            "anglesource=backplane",
+            f"phase_angle_file={phase_cub}",
+            f"incidence_angle_file={incidence_cub}",
+            f"emission_angle_file={emission_cub}",
+            "phtname=hapkehen",
+            *(f"{name}={value}" for name, value in _HAPKE_PLACEHOLDER_PARAMS.items()),
+            "zerob0standard=true",
+            "normname=shade",
+            "albedo=1.0",
+            "incref=0.0",
+        ]
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with rasterio.open(out_cub) as src:
+            reflectance = src.read(1).astype(np.float64)
+
+    peak = np.percentile(reflectance, 99.0)
+    normalized = np.clip(reflectance / peak, 0.0, 1.0) if peak > 0 and np.isfinite(peak) else np.zeros_like(reflectance)
+
+    ortho_norm = ortho.astype(np.float64) / 255.0
+    blended = ortho_norm * normalized
+    return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+
+
+def despeckle_and_shade_ortho(
+    ortho_path, dem_path, camera: Camera, output_path, config: TrntestConfig, hapke: bool = False
+) -> None:
     """Despeckle the raw fetched ortho and blend in a real-sun hillshade computed from the (already
     hole-filled) DEM, writing the result to `output_path` -- the single ortho used by both `sat_sim`
-    and every display panel (see `fetch_dem_and_ortho`)."""
+    and every display panel (see `fetch_dem_and_ortho`). `hapke=True` swaps in `hapke_shade_ortho`'s
+    ISIS-`photomet`-backed Hapke shading in place of the default `shade_ortho`'s plain Lambertian
+    blend -- see `hapke_shade_ortho`'s docstring."""
     with rasterio.open(ortho_path) as src:
         ortho = src.read(1)
         profile = src.profile
@@ -469,7 +605,10 @@ def despeckle_and_shade_ortho(ortho_path, dem_path, camera: Camera, output_path,
     assert center is not None, "camera's nadir footprint center must be a real ground point"
     center_lon, center_lat = center
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon, center_lat, camera.et)
-    shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
+    if hapke:
+        shaded = hapke_shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m, config)
+    else:
+        shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
 
     profile.update(count=1, dtype="uint8")
     with rasterio.open(output_path, "w", **profile) as dst:
@@ -493,9 +632,18 @@ def result_from_files(ortho_path: Path, dem_path: Path) -> DemOrthoResult:
 
 
 def fetch_dem_and_ortho(
-    camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
+    camera: Camera,
+    config: TrntestConfig | None = None,
+    extra_footprint_lonlat_deg: dict | None = None,
+    hapke: bool = False,
 ) -> DemOrthoResult:
-    """`extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
+    """`hapke=True` shades the ortho with ISIS `photomet`'s Hapke model (`despeckle_and_shade_ortho`'s
+    `hapke` passthrough) instead of the default plain Lambertian hillshade -- a feasibility
+    prototype, see `hapke_shade_ortho`'s docstring. Written to its own `ortho_shaded_hapke.tif`
+    (rather than overwriting the default `ortho_shaded.tif`) so both variants can be fetched for the
+    same camera and compared directly, e.g. `notebooks/hapke_hillshade.ipynb`.
+
+    `extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
     own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
     crop footprint, which isn't always the same size/shape as the synthetic camera's own FOV. Keeps
     the DEM/ortho fetch big enough to cover both Phase 5 and Phase 6's real ground needs in one
@@ -579,8 +727,8 @@ def fetch_dem_and_ortho(
     dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
     hole_fill_dem(dem_elevation_path, dem_filled_path)
 
-    ortho_shaded_path = config.output_dir / "ortho_shaded.tif"
-    despeckle_and_shade_ortho(ortho_path, dem_filled_path, camera, ortho_shaded_path, config)
+    ortho_shaded_path = config.output_dir / ("ortho_shaded_hapke.tif" if hapke else "ortho_shaded.tif")
+    despeckle_and_shade_ortho(ortho_path, dem_filled_path, camera, ortho_shaded_path, config, hapke=hapke)
 
     return DemOrthoResult(
         ortho=ortho_shaded_path,
