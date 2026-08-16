@@ -54,7 +54,7 @@
 # %%
 from datetime import datetime
 
-from trntest import dataset_selection, plotting
+from trntest import TrnTestDataSet, dataset_selection, plotting
 from trntest.config import load_config
 
 config = load_config()
@@ -141,3 +141,41 @@ selected_datasets[["start_utc", "end_utc", "center_lon_deg", "center_hour_angle_
 
 # %%
 plotting.plot_illuminated_node_scatter(orbits_df, PERIOD_START, PERIOD_END, selected_datasets)
+
+# %% [markdown]
+# ## Resolving one selected dataset into an image list
+#
+# `selected_datasets` is orbit-level -- a start/end UTC window, no images yet. `dataset_selection.
+# resolve_orbit_sequence` turns exactly one selected row into a real, `TrnTestDataSet`-ready images
+# table (`dataset.DATASET_COLUMNS`) -- the same real per-candidate EDR-label fetch + SPICE pose
+# `select_dataset()` has always used, just windowed to this one selected span, and only after a
+# cheap catalog-metadata pre-filter narrows the raw candidate list first.
+#
+# Deliberately resolves only `selected_datasets.iloc[0]`, not all `N_DATASETS` picks -- same
+# "iterate fast on one thing, not everything" discipline this project has followed throughout (see
+# `docs/history.md`); resolving the rest is a `for` loop away once this one is validated.
+
+# %%
+orbit_sequence = selected_datasets.iloc[0]
+images = dataset_selection.resolve_orbit_sequence(orbit_sequence, config, MIN_SUN_ELEVATION_DEG, MAX_EMISSION_ANGLE_DEG)
+images
+
+# %% [markdown]
+# ## Dataset folder (no rendering yet)
+#
+# `TrnTestDataSet.create()` sets up (or reuses) a self-contained dataset folder -- `manifest.csv`
+# (the resolved images above) plus empty `crop`/`hillshade`/`reproject` subfolders, ready for
+# `dataset.populate()` later (see `docs/dataset-plan.md`). Stops here -- no rendering in this
+# notebook.
+#
+# Uses its own `orbit_sequence_dataset` folder, separate from `data_set_selection.py`'s
+# `trn_dataset` -- this v2 pipeline is still exploratory (see this notebook's intro), not yet the
+# demo's canonical dataset. Also writes `orbit_sequence.csv` alongside `manifest.csv`: the one
+# selected-orbit-window row this dataset's images were resolved from, kept for debugging/provenance
+# per the design in `docs/plan.md`.
+
+# %%
+dataset_folder = config.output_dir / "orbit_sequence_dataset"
+trn_dataset = TrnTestDataSet.create(dataset_folder, images, config)
+orbit_sequence.to_frame().T.to_csv(dataset_folder / "orbit_sequence.csv", index=False)
+print(f"Dataset folder ready at {dataset_folder} ({len(trn_dataset)} images)")

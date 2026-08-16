@@ -277,6 +277,108 @@ def _attach_cdr_fields(throttled: pd.DataFrame, config: TrntestConfig) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def _finalize_images(
+    illuminated: pd.DataFrame, config: TrntestConfig, throttle_minutes: float | None, attach_cdr: bool = True
+) -> pd.DataFrame:
+    """Shared tail of both `select_dataset()` and `images_for_window()`: optional throttling, CDR
+    matching (`_attach_cdr_fields`), and rename/select into `DATASET_COLUMNS`. Split out so
+    `select_dataset()` can reuse its own already-computed `illuminated_df` slice for the window it
+    picked (no redundant catalog/evaluation work), while `images_for_window()` computes its own for
+    an externally-chosen window -- same finishing logic either way.
+
+    `attach_cdr=False` skips `_attach_cdr_fields` (one real network round-trip per candidate) and
+    fills the four `cdr_*` columns with `None` instead -- confirmed (grep) that `wac.py` is the only
+    real consumer of them anywhere in this codebase, and `wac.py` is itself already superseded by
+    `isis_wac.py` as the live real-WAC comparison method (kept only for its own test coverage, not
+    called by either notebook). `TrnTestEntry`/`TrnTestImage` never read `cdr_*` at all. Still
+    included as `DATASET_COLUMNS`-shaped `None`s (not dropped from the schema) so callers that do
+    still want CDR fields (`select_dataset()`'s own default) and callers that don't
+    (`dataset_selection.resolve_orbit_sequence`) share one manifest schema."""
+    images = throttle_by_time(illuminated, throttle_minutes) if throttle_minutes is not None else illuminated
+    if attach_cdr:
+        result = _attach_cdr_fields(images, config)
+    else:
+        result = images.copy()
+        result["cdr_volume"] = result["cdr_subdir"] = result["cdr_doy"] = result["cdr_product"] = None
+    result = result.rename(
+        columns={"volume": "edr_volume", "subdir": "edr_subdir", "doy": "edr_doy", "product": "edr_product"}
+    )
+    return result[DATASET_COLUMNS].reset_index(drop=True)
+
+
+def _prefilter_by_catalog_metadata(
+    edr_candidates: pd.DataFrame,
+    min_sun_elevation_deg: float,
+    max_emission_angle_deg: float | None,
+    margin_deg: float,
+) -> pd.DataFrame:
+    """Cheap pre-filter using catalog metadata already in hand (no network fetch, no SPICE) --
+    applied before the real per-candidate `evaluate_candidate_image` cost (one real HTTP request +
+    a SPICE camera-pose computation each), which is what actually tripped a real rate limit on the
+    LROC EDR host resolving one real 24-orbit window (a raw window can have several hundred candidate
+    EDRs -- most of them nowhere near acceptable -- not just the handful that end up illuminated).
+
+    Sun elevation is derived from the catalog's own `Incidence_angle` -- confirmed elsewhere in this
+    codebase (`anchor_start_frame_for_centered_crop`'s docstring) to closely match the real
+    SPICE-computed value at the midpoint-anchored crop center this project actually poses the camera
+    at, not just a rough approximation. Still, `margin_deg` widens both cutoffs (lower for sun
+    elevation, higher for emission angle) rather than using the exact same threshold
+    `evaluate_candidate_image`/`add_acceptable_edr_counts` apply -- a false *negative* here silently
+    drops a real candidate with no way to notice, whereas a false positive just costs one wasted (but
+    still cheap, paced) real evaluation downstream.
+
+    `max_emission_angle_deg` has no real-evaluation recheck downstream at all (unlike sun elevation,
+    which `evaluate_candidate_image` re-derives precisely) -- `evaluate_candidate_image` doesn't
+    compute emission angle, so if a caller passes this, the catalog value (plus margin) is the
+    *only* emission-angle enforcement applied, matching how `dataset_selection.
+    add_acceptable_edr_counts` already uses it directly. `None` (default) skips emission filtering
+    entirely, matching `select_dataset()`'s own long-standing "illuminated" definition (sun
+    elevation only) -- opt-in territory for callers that want it (`dataset_selection.
+    resolve_orbit_sequence` does)."""
+    sun_elevation_deg = 90.0 - edr_candidates["incidence_angle_deg"]
+    keep = sun_elevation_deg > (min_sun_elevation_deg - margin_deg)
+    if max_emission_angle_deg is not None:
+        keep &= edr_candidates["emission_angle_deg"] < (max_emission_angle_deg + margin_deg)
+    return edr_candidates[keep].reset_index(drop=True)
+
+
+def images_for_window(
+    start_dt: datetime,
+    end_dt: datetime,
+    config: TrntestConfig,
+    min_sun_elevation_deg: float,
+    throttle_minutes: float | None = None,
+    attach_cdr: bool = True,
+    max_emission_angle_deg: float | None = None,
+    prefilter_margin_deg: float = 5.0,
+) -> pd.DataFrame:
+    """Bless every acceptable WAC EDR in `[start_dt, end_dt)` into a `TrnTestDataSet`-ready images
+    table (columns: `DATASET_COLUMNS`) -- the real per-candidate camera-pose/sun-elevation evaluation
+    (`_evaluate_illuminated_candidates`, not just catalog metadata like
+    `dataset_selection.add_acceptable_edr_counts` computes for counting purposes) plus, by default,
+    CDR matching (see `_finalize_images`'s docstring for why `attach_cdr=False` is worth passing if
+    the caller doesn't need it).
+
+    Runs `_prefilter_by_catalog_metadata` first (see its own docstring) so the expensive real
+    per-candidate step only ever runs on candidates already plausible by catalog metadata alone --
+    a raw window's candidate count is typically dominated by clearly-unacceptable EDRs.
+    `max_emission_angle_deg=None` (default) matches `select_dataset()`'s own sun-elevation-only
+    "illuminated" definition; pass it to also enforce a nadir/"typical mapping mode" cutoff, as
+    `dataset_selection.resolve_orbit_sequence` does, matching what made its source window acceptable
+    in the first place.
+
+    This is `select_dataset()`'s own tail end (window already chosen -> resolve it), factored out so
+    any other window-*selection* method can reuse the resolution step without also reusing
+    `select_dataset()`'s own window-*search* logic -- e.g. `dataset_selection.resolve_orbit_sequence`,
+    given one already-selected orbit-sequence span instead of searching for one itself."""
+    edr_candidates = catalog.list_products(config, catalog.EDR_PRODUCT_TYPE, start_dt, end_dt)
+    edr_candidates = _prefilter_by_catalog_metadata(
+        edr_candidates, min_sun_elevation_deg, max_emission_angle_deg, prefilter_margin_deg
+    )
+    illuminated_df = _evaluate_illuminated_candidates(edr_candidates, config, min_sun_elevation_deg)
+    return _finalize_images(illuminated_df, config, throttle_minutes, attach_cdr)
+
+
 def select_dataset(
     config: TrntestConfig | None = None,
     search_start: datetime | None = None,
@@ -321,12 +423,7 @@ def select_dataset(
         candidate_windows, illuminated_df, num_orbits, min_images_per_orbit
     )
 
-    throttled = throttle_by_time(window_images, throttle_minutes)
-    result = _attach_cdr_fields(throttled, config)
-    result = result.rename(
-        columns={"volume": "edr_volume", "subdir": "edr_subdir", "doy": "edr_doy", "product": "edr_product"}
-    )
-    result = result[DATASET_COLUMNS].reset_index(drop=True)
+    result = _finalize_images(window_images, config, throttle_minutes)
 
     per_orbit_counts = window_images.groupby("orbit_number").size().to_dict()
     print(

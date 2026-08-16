@@ -3573,3 +3573,71 @@ regression test for `catalog.py`'s pagination fix) passes; `trntest-lint` clean 
 `notebooks/select_datasets.py` end to end across every design iteration (not just the final one),
 each visually reviewed by the user in their own running Jupyter Lab (a persistent `docker compose up`
 server started mid-session at their request, on this worktree's assigned port 8889).
+
+## Phase 58 (2026-08-16) — Bridging `select_datasets.py`'s orbit-sequence picks into the older
+EDR-list `TrnTestDataSet` world, plus a real LROC rate-limit incident along the way
+
+Phase 57's `select_diverse_datasets` picks *orbit windows* (a start/end UTC span), not individual
+images -- unusable as-is by `TrnTestDataSet`/`TrnTestEntry`, which expect a `dataset.
+DATASET_COLUMNS`-shaped table of individual EDR entries. The user described the target mental model
+(paraphrased): the core object is a list of *image entries*, each with camera parameters and pose;
+an entry's origin need not be an EDR at all (e.g. future-mission orbit propagation, with different
+pluggable generators per origin type); a selected orbit window is best thought of as its own type
+(a plain pandas table is fine, no literal class needed) that becomes the primary argument to a
+constructor turning it into a table of acceptable EDRs. Confirmed the concrete plan with the user,
+who explicitly scoped out generalizing `TrnTestEntry` for non-EDR origins as future work, and gave
+an explicit constraint to carry forward: resolve **one** selected window at a time, not all of them
+-- the same fast-iteration-on-one-item discipline this project has followed throughout (e.g.
+`TrnTestDataSet.populate(limit=1)`).
+
+**Implementation** (`src/trntest/dataset.py`, `dataset_selection.py`):
+
+- `dataset.images_for_window(start_dt, end_dt, config, ...)` -- `select_dataset()`'s own catalog-
+  query/evaluate/finalize tail, generalized from "search fresh over N days" to "evaluate this exact
+  window," sharing `_evaluate_illuminated_candidates`/`_finalize_images` (the latter newly extracted
+  from `select_dataset()`, behavior-preserving) rather than forking the logic.
+- `dataset._prefilter_by_catalog_metadata` -- a cheap pre-filter (sun-elevation from
+  `incidence_angle_deg`, optionally emission angle) computed straight off catalog fields, before any
+  per-candidate network fetch, with a deliberate false-positive-over-false-negative margin
+  (`prefilter_margin_deg`, default 5 deg).
+- `attach_cdr=False` as `images_for_window`'s default: confirmed via grep that the `cdr_*` columns'
+  only real consumer anywhere in the codebase is `wac.py`, itself already superseded by
+  `isis_wac.py` -- a legacy artifact from before ISIS's own functions were found to work directly
+  from EDRs, per the user's own read of it, which the investigation confirmed. Skips an unneeded
+  per-candidate network round-trip for callers (like `resolve_orbit_sequence`) that don't need it.
+- `dataset_selection.resolve_orbit_sequence(orbit_sequence: pd.Series, config, ...)` -- the actual
+  bridge, a thin wrapper around `images_for_window` taking exactly one row (not the whole
+  `select_diverse_datasets` table). Named after an initial user suggestion of "bless" (called "a
+  colorful metaphor" by the user themself, who asked for something more descriptive); renamed to
+  `resolve_orbit_sequence` to match this codebase's existing `resolve_*` naming precedent
+  (`resolve_ground_to_image_model`, `resolve_wac_ck_kernels`, `resolve_crop_pixels`).
+
+**Real incident**: the first live end-to-end test (one real 24-orbit window, 295 raw candidates,
+before the pre-filter existed) tripped a genuine HTTP 429 on `pds.lroc.im-ldi.com` (the LROC EDR
+label host), `Retry-After=3600s`. Reported immediately; messaged peer agent `a1-30` to rule out
+combined load (confirmed uninvolved). Root cause inconclusive (an earlier small smoke test had just
+succeeded on the same host moments before). Mitigated three ways at the user's direction: the
+catalog-metadata pre-filter above (295->207 candidates for this specific window -- a real but
+modest ~30% cut, since a pre-selected "good" window naturally has a high true-positive rate
+already); `attach_cdr=False`; and a general (not host-specific) pacing increase in `cache.py`'s
+`_REQUEST_PACING_SECONDS`, 0.2s -> 0.5s, on explicit instruction ("Let's dial down to 0.5s spacing
+wherever we had spacing before... Hoping that we'll mostly have warm caches in practice"). Verified
+the ban cleared via one targeted re-fetch of the failed product, then re-ran the real test
+successfully: 207 images resolved in 32.7s, zero errors. Also caught, mid-incident, having skipped
+the "ping other agents before request-heavy work" rule (Phase 57) on the retry -- the user asked
+directly ("Did you ping a1 by the way?"); acknowledged the miss and sent a belated heads-up.
+
+**Notebook wiring**: `notebooks/select_datasets.py` gained two cells --
+`dataset_selection.resolve_orbit_sequence(selected_datasets.iloc[0], ...)`, then
+`TrnTestDataSet.create()` on the result into a new `orbit_sequence_dataset` folder (kept separate
+from `data_set_selection.py`'s canonical `trn_dataset`, since this pipeline is still exploratory),
+also writing `orbit_sequence.csv` (the one selected window's own row) alongside `manifest.csv` for
+debugging/provenance, per the user's original suggestion. Stops short of `populate()` -- no
+rendering wired in yet. Executed for real via `scripts/run_notebook.sh` (a host-side script -- it
+itself shells out to `docker compose`, so it must run outside the container, not inside it as first
+attempted) after pinging `a1-30` beforehand this time; the window was already cache-warm from the
+incident retry above, so the resolve cell finished in under a second with zero fresh LROC requests.
+
+Verified: full `pytest` suite (209 fast tests, 2 new for `_prefilter_by_catalog_metadata`) passes;
+`trntest-lint` clean on all changed files; a real, live end-to-end notebook run, its output
+(`manifest.csv`/`orbit_sequence.csv`) inspected directly in the dataset folder.

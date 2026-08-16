@@ -5,10 +5,10 @@ the live demo pipeline's own EDR picker). This module answers a different questi
 picked to be jointly diverse in solar hour angle -- not which one EDR to render.
 
 Pipeline (each function one notebook cell): `find_orbits` -> `add_maneuver_flags` ->
-`add_acceptable_edr_counts` -> `enumerate_candidate_datasets` -> `select_diverse_datasets`. See
-`docs/plan.md`'s architecture table and the notebook's own markdown cells for the per-step
-rationale (the "illuminated node" concept, the circular-mean "center" statistics, the greedy
-farthest-point diversity criterion).
+`add_acceptable_edr_counts` -> `enumerate_candidate_datasets` -> `select_diverse_datasets` ->
+`resolve_orbit_sequence`. See `docs/plan.md`'s architecture table and the notebook's own markdown
+cells for the per-step rationale (the "illuminated node" concept, the circular-mean "center"
+statistics, the greedy farthest-point diversity criterion).
 """
 
 from datetime import datetime
@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import spiceypy as spice
 
-from trntest import catalog, illumination, maneuver_detection, spice_kernels, tie_points
+from trntest import catalog, dataset, illumination, maneuver_detection, spice_kernels, tie_points
 from trntest.config import TrntestConfig
 
 
@@ -236,3 +236,45 @@ def select_diverse_datasets(
         )
 
     return candidates.iloc[chosen].reset_index(drop=True)
+
+
+def resolve_orbit_sequence(
+    orbit_sequence: pd.Series,
+    config: TrntestConfig,
+    min_sun_elevation_deg: float = 15.0,
+    max_emission_angle_deg: float = 15.0,
+    throttle_minutes: float | None = None,
+) -> pd.DataFrame:
+    """Turns one selected orbit sequence (one row of `select_diverse_datasets`' output -- needs
+    `start_utc`/`end_utc`) into a real, `TrnTestDataSet`-ready images table (`dataset.
+    DATASET_COLUMNS`). Deliberately takes exactly one row, not the whole table -- resolve one orbit
+    sequence into a dataset at a time, the same "iterate fast on one image/one entry" discipline
+    this project already follows elsewhere (`image_generation.py`'s `populate(limit=1)`), not all
+    `n_datasets` selected sequences at once.
+
+    Thin wrapper around `dataset.images_for_window` -- does NOT fetch full EDR pixel data (`.IMG`)
+    for any candidate, only small per-candidate XML labels (see `dataset.evaluate_candidate_image`),
+    paced at `cache.py`'s usual `_REQUEST_PACING_SECONDS`, not a bulk data transfer -- and a cheap
+    catalog-metadata pre-filter (`dataset._prefilter_by_catalog_metadata`) runs first, so most of a
+    raw window's candidates never reach that real per-candidate step at all (confirmed necessary
+    live: a real one-window resolve attempt without this pre-filter, several hundred raw candidates,
+    tripped a real rate limit on the LROC EDR host). `max_emission_angle_deg=15.0` (matching
+    `add_acceptable_edr_counts`'s own default) is passed through so resolving enforces the same
+    nadir/"typical mapping mode" criterion that made this orbit sequence's source window acceptable
+    in the first place -- unlike `select_dataset()`'s own sun-elevation-only definition.
+    `attach_cdr=False`: confirmed `wac.py` is the only real consumer of the `cdr_*` columns anywhere
+    in this codebase, and it's already superseded by `isis_wac.py` (see `_finalize_images`'s
+    docstring) -- `TrnTestEntry`/`TrnTestImage` never read them, so skip that extra per-candidate
+    network round-trip here. `throttle_minutes=None` (default) keeps every acceptable candidate --
+    unlike `select_dataset()`'s own 5-minute default, thinning here isn't obviously wanted yet (an
+    orbit-sequence window was already chosen for being densely acceptable, not searched fresh), so
+    leave it to the caller to opt in."""
+    return dataset.images_for_window(
+        orbit_sequence["start_utc"],
+        orbit_sequence["end_utc"],
+        config,
+        min_sun_elevation_deg,
+        throttle_minutes,
+        attach_cdr=False,
+        max_emission_angle_deg=max_emission_angle_deg,
+    )
