@@ -169,6 +169,15 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 - **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
   shows: that you merged, a one-line summary of what changed, and that they should `git pull
   origin main` next time they hit a good stopping point (not mid-edit).
+- **Before kicking off anything that will fire a lot of real requests at an external host** (a
+  bulk cold-cache sweep across a wide date range, a full-year catalog query, anything else that'll
+  touch many distinct not-yet-cached files/pages), message the other running agents *first*, not
+  just after. `cache.py`'s request pacing (`_REQUEST_PACING_SECONDS`) is calibrated per-process —
+  it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
+  independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
+  API, Lunaserv) at the same time; the combined rate can still trip a real server-side limiter (see
+  the Phase 36 incident `cache.py` itself documents). Messaging first gives everyone a chance to
+  stagger or postpone, which a message sent only after starting can't do.
 - **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
   two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
   about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),

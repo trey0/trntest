@@ -31,6 +31,7 @@ CATALOG_COLUMNS = [
     "start_time",
     "stop_time",
     "incidence_angle_deg",
+    "emission_angle_deg",
     "center_lat_deg",
     "center_lon_deg",
 ]
@@ -93,6 +94,7 @@ def parse_catalog_entries(xml_text: str) -> pd.DataFrame:
                     "start_time": _parse_ode_datetime(_required_field(product, "UTC_start_time")),
                     "stop_time": _parse_ode_datetime(_required_field(product, "UTC_stop_time")),
                     "incidence_angle_deg": float(_required_field(product, "Incidence_angle")),
+                    "emission_angle_deg": float(_required_field(product, "Emission_angle")),
                     "center_lat_deg": float(_required_field(product, "Center_latitude")),
                     "center_lon_deg": float(_required_field(product, "Center_longitude")),
                 }
@@ -130,11 +132,21 @@ def list_products(
         }
         if extra_params:
             params.update(extra_params)
-        page_df = parse_catalog_entries(query_ode(params, config))
-        if page_df.empty:
+        xml_text = query_ode(params, config)
+        # Whether to fetch another page must be decided from the server's own raw entry count, not
+        # len(page_df) below -- a page can (and, confirmed live on a real full-year query, does)
+        # have a handful of entries `parse_catalog_entries` drops for a missing/malformed field
+        # (see its own docstring), landing page_df just under _PAGE_SIZE even though the server sent
+        # a genuinely full page with more results still to come. Using the parsed count as the
+        # "was this the last page" signal silently truncated a real year-long query to its first
+        # 5000 raw entries (4996 parsed) out of what should have been ~100k.
+        raw_entry_count = xml_text.count("<Product>")
+        if raw_entry_count == 0:
             break
-        frames.append(page_df)
-        if len(page_df) < _PAGE_SIZE:
+        page_df = parse_catalog_entries(xml_text)
+        if not page_df.empty:
+            frames.append(page_df)
+        if raw_entry_count < _PAGE_SIZE:
             break
         offset += _PAGE_SIZE
     if not frames:

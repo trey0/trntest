@@ -4,6 +4,44 @@ import pytest
 from trntest import illumination
 
 
+def test_circular_distance_deg_across_the_antimeridian():
+    assert illumination.circular_distance_deg(-179.0, 179.0) == pytest.approx(2.0)
+
+
+def test_circular_distance_deg_no_wraparound_needed():
+    assert illumination.circular_distance_deg(10.0, 40.0) == pytest.approx(30.0)
+
+
+def test_circular_distance_deg_is_symmetric():
+    assert illumination.circular_distance_deg(-179.0, 179.0) == illumination.circular_distance_deg(179.0, -179.0)
+
+
+def test_circular_mean_deg_across_the_antimeridian():
+    assert illumination.circular_mean_deg(-170.0, 160.0) == pytest.approx(175.0)
+
+
+def test_circular_mean_deg_no_wraparound_needed():
+    assert illumination.circular_mean_deg(10.0, 40.0) == pytest.approx(25.0)
+
+
+def test_circular_mean_deg_matches_plain_average_far_from_the_antimeridian():
+    assert illumination.circular_mean_deg(-30.0, 30.0) == pytest.approx(0.0)
+
+
+def test_unwrap_relative_deg_pushes_the_angle_past_the_antimeridian():
+    # From a reference near +180, an angle just past -180 is really just a few degrees further on.
+    assert illumination.unwrap_relative_deg(175.0, -179.0) == pytest.approx(181.0)
+
+
+def test_unwrap_relative_deg_is_a_no_op_far_from_the_antimeridian():
+    assert illumination.unwrap_relative_deg(10.0, 40.0) == pytest.approx(40.0)
+
+
+def test_unwrap_relative_deg_round_trips_through_wrap_deg():
+    unwrapped = illumination.unwrap_relative_deg(175.0, -179.0)
+    assert illumination._wrap_deg(unwrapped) == pytest.approx(-179.0)
+
+
 def test_terminator_offset_deg_at_subsolar_meridian():
     assert illumination.terminator_offset_deg(0.0, 0.0) == pytest.approx(90.0)
 

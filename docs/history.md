@@ -3392,3 +3392,108 @@ Verified: full `pytest` suite (192 tests, 3 new for `pose_alignment.py` covering
 pattern as the existing similarity/apply_correction tests) passes; `trntest-lint` clean; real Docker
 re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors; all four blink-overlay GIFs
 visually reviewed live by the user in their own running Jupyter Lab.
+
+## Phase 56 (2026-08-16) — `notebooks/select_datasets.py`: illuminated-node orbit statistics and a
+greedy multi-dataset selection algorithm
+
+New exploratory notebook (separate from, and not touching, `data_set_selection.ipynb`/
+`dataset_manifest.csv`) built incrementally with the user across one long session, working through a
+sequence of real design questions rather than a single upfront spec:
+
+1. **The "illuminated node" concept**: every LRO orbit has an ascending and descending node
+   (~180 deg apart in longitude); only one is typically sunlit, picked as whichever has the higher
+   sun elevation. Per-orbit statistics collected: that node's longitude, the solar hour angle there
+   (`illumination.hour_angle_deg`, new -- -90/0/+90 = sunrise/noon/sunset, sign confirmed against
+   real SPICE data, not just derived), acceptable-WAC-EDR count (real catalog data, sun-elevation +
+   emission-angle filtered -- "typical nadir mapping mode"), and a maneuver flag
+   (`maneuver_detection.find_maneuver_candidates`, Phase 50-51's module, its first real consumer).
+2. **First plot** (orbit-level scatter, longitude vs. hour angle): iterated live through several real
+   rendering problems, not just parameter tuning -- a connecting line colored by time of year was
+   completely invisible under a dense marker layer at ~13 orbits/day regardless of alpha/zorder
+   (tried both orderings), eventually dropped entirely per the user's own observation that markers
+   alone read as a continuous curve at this density anyway; the "Oranges" colormap's white zero-end
+   was indistinguishable from the figure background (fixed by switching to `viridis`, which is also
+   perceptually uniform and varies in hue as well as lightness -- easier to read a value off a
+   marker's color, a plain user ask: "a colormap that makes it easier to figure out values from
+   colors").
+3. **Second plot**: a straightforward sun-elevation-vs-acceptable-EDR-count 2D histogram, which
+   turned up an almost-perfect linear correlation (expected, since sun elevation is one of the two
+   acceptance filters) plus a real, separate population at EDR-count=0 even at 60-90 deg sun
+   elevation -- flagged, not chased further this session.
+4. **Multi-dataset selection**: a dataset is `DATASET_LENGTH_ORBITS` (24, ~2 days) consecutive
+   orbits, acceptable if every orbit is acceptable (no maneuver, minimum per-orbit EDR count) and
+   contains no illuminated-node flip (needed so the circular-mean "center" longitude/hour-angle
+   actually behaves like an average of nearby values). Selection: greedy farthest-point/max-min
+   diversity in center hour angle, each pick excluding future candidates within a tunable center-
+   longitude separation or sharing orbits with it, seeded (no diversity to compare against yet) by
+   the single most robust candidate. Confirmed with the user this counts as "well-posed" only after
+   nailing down: circular mean/distance for longitude (wraparound: -170/+160 average to +175, not
+   -5; `illumination.circular_mean_deg`/`circular_distance_deg`, new), an explicit diversity
+   objective (max-min, not just "diverse"), a first-pick seeding rule, and an explicit non-overlap
+   constraint. Real, non-obvious algorithm behavior surfaced and explained when the user asked why
+   loosening a threshold produced *fewer* selected datasets, not more or the same: greedy farthest-
+   point selection optimizes diversity of the chosen set at each step, not total achievable count --
+   a larger candidate pool can change an early pick's winner (traced concretely: pick 1 differed
+   between the two runs), cascading into a different, still-locally-optimal but not-necessarily-
+   larger final sequence. Per explicit user request, `select_diverse_datasets` now takes a target
+   `n_datasets` and raises `RuntimeError` (rather than silently returning fewer) if the exclusion
+   constraints exhaust the candidate pool first.
+5. **Plot finalized**: axes pegged to their logical ranges (-180/180 longitude, -90/90 hour angle,
+   45/30-degree ticks), wide aspect ratio, horizontal colorbar to maximize marker-resolving width, a
+   black/medium-grey "underline" per selected dataset (from `underline_offset_deg` below the first
+   orbit's own longitude/hour-angle to the same below the last orbit's) split at the +/-180
+   wraparound via a new `illumination.unwrap_relative_deg` (draw in an unwrapped coordinate, clip/
+   split wherever it crosses +/-180) -- an earlier orange/magenta pairing was hard to distinguish at
+   a glance, black/grey reads unambiguously.
+6. **Promoted to library code** per explicit user request ("most cells should become one-liner
+   calls... key tunable parameters exposed"): the whole pipeline moved to a new
+   `src/trntest/dataset_selection.py` (`find_orbits`/`add_maneuver_flags`/`add_acceptable_edr_counts`/
+   `enumerate_candidate_datasets`/`select_diverse_datasets`, one function per notebook cell) and two
+   new `plotting.py` functions (`plot_illuminated_node_scatter`/`plot_sun_elevation_vs_edr_count`),
+   leaving the notebook itself as tunable constants plus one-line calls. While moving `find_orbits`,
+   also fixed the initial kernel-furnish call to use the caller's own `period_start` instead of a
+   hardcoded, unrelated fixture date left over from copy-paste -- a legitimate cleanup, though it
+   incidentally flipped one extremely close greedy-selection tie via a different SPK-segment
+   priority in an overlap region (harmless, same candidate/orbit counts either way).
+
+**Two real, independent bugs found and fixed along the way, both outside the notebook's own new
+code:**
+
+- **`illumination.find_node_crossings` was needlessly calling `fetch_and_furnish` (full CK
+  resolution) per node crossing**, even though the classification it does (`spacecraft_lonlat_deg`)
+  is pure position -- no pointing/CK needed at all. Confirmed via profiling (~70% of the function's
+  own runtime) and, more seriously, a real crash: at full-year scale, sweeping across many months,
+  `fetch_and_furnish`'s default `isis_resolved` CK source (cached per a single fixed
+  `config.edr_product`) can have a filename-encoded date range that nominally overlaps a faraway
+  query epoch while the file's *actual* `ckcov` coverage doesn't, tripping its own trust-but-verify
+  check. Fixed by dropping the per-crossing `fetch_and_furnish` call entirely (SPK is already
+  furnished for the whole window; LSK/PCK are the caller's existing responsibility, same convention
+  `utc_to_et` already documents) -- also a real, incidental performance win.
+- **`catalog.list_products`'s pagination silently truncated large queries.** It decided whether to
+  fetch another page from `len(page_df) < _PAGE_SIZE` -- the *parsed* row count -- but a page can
+  (and, on a real full-year query, did) have a handful of entries `parse_catalog_entries` drops for
+  a missing/malformed field, landing the parsed count just under `_PAGE_SIZE` even though the server
+  sent a genuinely full page with more results still to come. This silently truncated a real
+  full-year EDR query to its first 5000 raw entries (4996 parsed) out of what should have been
+  ~53k -- confirmed live by directly re-querying and counting raw `<Product>` tags in the response.
+  Fixed by deciding continuation from the server's own raw entry count instead; added a regression
+  test (`test_list_products_keeps_paginating_past_a_page_with_a_parse_failure`) since this path had
+  no test coverage at all before (unsurprising: no existing caller had ever queried widely enough to
+  trigger it).
+
+**Also added, from a genuine near-incident mid-session**: before running the notebook's first
+full-year cold-cache sweep (~50-70 real HTTP requests across NAIF/PDS ODE, estimated and explained
+to the user before executing), the user asked to verify it would be "kind to the server" --
+confirmed `cache.py`'s existing per-request pacing (`_REQUEST_PACING_SECONDS`, from the Phase 36
+rate-limit incident) already covers this generically, then the user asked for a new, durable rule:
+message other running agents *before* starting anything request-heavy, not just after, so concurrent
+agents can stagger rather than risk their independently-safe bursts combining into a real rate-limit
+trip. Added as a new bullet in `docs/environment.md`'s "Agent-to-agent messaging" section, then
+immediately followed in-session (messaged `a1-30` before the real sweep).
+
+Verified: full `pytest` suite (211 tests: 5 new for `illumination.py`'s circular-math helpers, 1 new
+regression test for `catalog.py`'s pagination fix) passes; `trntest-lint` clean (`ruff format`/
+`ruff check`/`mypy`) on all changed/new files; multiple real, live Docker re-runs of
+`notebooks/select_datasets.py` end to end across every design iteration (not just the final one),
+each visually reviewed by the user in their own running Jupyter Lab (a persistent `docker compose up`
+server started mid-session at their request, on this worktree's assigned port 8889).
