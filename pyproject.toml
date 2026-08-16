@@ -23,6 +23,19 @@ dependencies = [
     "pillow",
     "affine",
     "opencv-python-headless",
+    # CPU-only wheels -- installed from PyTorch's own CPU index in a dedicated Docker layer *before*
+    # this project's own `uv pip install -e .`, so the resolver doesn't pull PyPI's default
+    # CUDA-bundled build (huge, unusable without a GPU/NVIDIA driver, neither present in this
+    # container). See docker/Dockerfile and docs/data-sources.md's "LightGlue tie-point matching"
+    # section. `kornia` (plain PyPI, no special index) is `lightglue`'s own real runtime dependency
+    # (its DISK extractor loads pretrained weights via `kornia.feature.DISK.from_pretrained`) --
+    # listed here, not left to `lightglue`'s own requirements.txt, since that file also declares
+    # `opencv-python` (conflicts with `opencv-python-headless` above -- both provide `cv2`) and an
+    # independently-pinned `kornia` version; `lightglue` itself is installed `--no-deps` for exactly
+    # this reason (Dockerfile only, deliberately not listed here -- see that file's comment).
+    "torch",
+    "torchvision",
+    "kornia",
 ]
 
 [project.optional-dependencies]
@@ -45,12 +58,14 @@ packages = ["src/trntest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# "heavy" tests need live SPICE kernels/network access (e.g. maneuver_detection.py's real-SPK
-# tests) -- excluded by default so plain `pytest` stays fast/host-runnable (see README's Tests
-# section); run them with `scripts/run_heavy_tests.sh` (inside Docker) or `pytest -m heavy`
-# directly, which overrides this default (a later -m wins over addopts' earlier one).
+# "heavy" tests need live network access -- SPICE kernels (e.g. maneuver_detection.py's real-SPK
+# tests) or a pretrained-weight download (e.g. pose_alignment.py's LightGlue tests, first-run only,
+# cached under TORCH_HOME after) -- excluded by default so plain `pytest` stays fast/host-runnable
+# (see README's Tests section); run them with `scripts/run_heavy_tests.sh` (inside Docker) or
+# `pytest -m heavy` directly, which overrides this default (a later -m wins over addopts' earlier
+# one).
 addopts = "-m 'not heavy'"
-markers = ["heavy: needs live SPICE kernels + network access (NAIF); run inside Docker"]
+markers = ["heavy: needs live network access (NAIF SPICE, or a pretrained-weight host); run inside Docker"]
 
 [tool.ruff]
 line-length = 120
@@ -108,3 +123,13 @@ ignore_missing_imports = true
 # as `ignore_missing_imports` but for a "found, wrong stubs" module rather than a "not found" one.
 module = ["cv2.*"]
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# lightglue ships no stubs at all (a real "module not found" case, unlike cv2's above); torch ships
+# its own but mypy still can't fully resolve some of its internal generic/C-extension-backed types
+# from this project's call sites -- `ignore_missing_imports` covers both uniformly. Only the modules
+# this project imports directly (torch, lightglue) need an entry here -- torchvision/kornia are
+# real transitive runtime dependencies (lightglue's own internals use them) but never imported by
+# this project's own code, so mypy never looks at them and an entry for either is flagged "unused".
+module = ["torch.*", "lightglue.*"]
+ignore_missing_imports = true

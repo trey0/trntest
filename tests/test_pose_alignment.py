@@ -97,6 +97,26 @@ def test_match_features_recovers_a_known_pixel_shift():
     assert implied_shift[1] == pytest.approx(dy, abs=2)
 
 
+@pytest.mark.heavy
+def test_match_features_lightglue_recovers_a_known_pixel_shift():
+    # Same fixture/shift as test_match_features_recovers_a_known_pixel_shift, for a direct
+    # apples-to-apples comparison -- heavy (not fast) because DISK/LightGlue's pretrained weights
+    # are a real network fetch on a cold TORCH_HOME cache (see docs/caching.md).
+    texture = _synthetic_texture(300)
+    to_image = texture
+    to_valid = np.ones_like(to_image, dtype=bool)
+    dx, dy = 35, 20
+    from_image = texture[dy : dy + 200, dx : dx + 200]
+    from_valid = np.ones_like(from_image, dtype=bool)
+
+    from_points, to_points = pose_alignment.match_features_lightglue(from_image, from_valid, to_image, to_valid)
+
+    assert len(from_points) >= 4
+    implied_shift = np.median(to_points - from_points, axis=0)
+    assert implied_shift[0] == pytest.approx(dx, abs=2)
+    assert implied_shift[1] == pytest.approx(dy, abs=2)
+
+
 def test_pixel_points_to_map_applies_the_affine_transform():
     transform = rasterio.transform.from_origin(100, 200, 2, 2)  # pixel (0,0) -> map (100, 200)
     points_px = np.array([[0.0, 0.0], [5.0, 5.0]])

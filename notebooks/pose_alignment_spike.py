@@ -223,3 +223,47 @@ plotting.plot_overlay_toggle(basemap_path, corrected_affine_path, title="Affine-
 
 # %%
 plotting.plot_overlay_toggle(basemap_path, corrected_homography_path, title="Homography-corrected WAC over basemap")
+
+# %% [markdown]
+# ## A second matcher: LightGlue, compared directly against SIFT
+#
+# `pose_alignment.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
+# extractor (DISK) + learned matcher (LightGlue) -- tried specifically to push match count/quality
+# higher for more challenging future EDRs (shadowed terrain, low texture) than SIFT can reliably
+# deliver. Same inputs (the native-GSD-downsampled `wac_image`/`basemap_image` from above), same
+# downstream pipeline (map coordinates -> `fit_homography_correction`, the model Phase 54's direct
+# user visual inspection validated as giving a real, non-noise improvement) -- only the matcher
+# itself differs, for a direct, apples-to-apples comparison against the SIFT-based homography result
+# already shown above.
+
+# %%
+basemap_points_px_lg, wac_points_px_lg = pose_alignment.match_features_lightglue(
+    basemap_image, basemap_valid, wac_image, wac_valid
+)
+print(f"SIFT:      {len(basemap_points_px)} matched points")
+print(f"LightGlue: {len(basemap_points_px_lg)} matched points")
+
+basemap_points_map_lg = pose_alignment.pixel_points_to_map(basemap_points_px_lg, basemap_transform)
+wac_points_map_lg = pose_alignment.pixel_points_to_map(wac_points_px_lg, wac_transform)
+
+homography_lg, inliers_homography_lg, residuals_homography_lg_m = pose_alignment.fit_homography_correction(
+    wac_points_map_lg, basemap_points_map_lg
+)
+inlier_residuals_lg_m = residuals_homography_lg_m[inliers_homography_lg]
+print(
+    f"\nSIFT homography:      inliers {inliers_homography.sum():3d}/{len(inliers_homography)}   "
+    f"residual mean {residuals_homography_m[inliers_homography].mean():5.0f}m "
+    f"({residuals_homography_m[inliers_homography].mean() / target_gsd_m:.2f}px)"
+)
+print(
+    f"LightGlue homography: inliers {inliers_homography_lg.sum():3d}/{len(inliers_homography_lg)}   "
+    f"residual mean {inlier_residuals_lg_m.mean():5.0f}m ({inlier_residuals_lg_m.mean() / target_gsd_m:.2f}px)"
+)
+
+# %%
+corrected_homography_lg_path = pose_alignment.apply_homography_correction(
+    wac_path, homography_lg, alignment_dir / "wac_corrected_homography_lightglue.tif"
+)
+plotting.plot_overlay_toggle(
+    basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap (LightGlue matches)"
+)

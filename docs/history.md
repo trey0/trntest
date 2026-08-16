@@ -3392,3 +3392,79 @@ Verified: full `pytest` suite (192 tests, 3 new for `pose_alignment.py` covering
 pattern as the existing similarity/apply_correction tests) passes; `trntest-lint` clean; real Docker
 re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors; all four blink-overlay GIFs
 visually reviewed live by the user in their own running Jupyter Lab.
+
+## Phase 55 (2026-08-16) — LightGlue as a second tie-point matcher, ~3x the match count at
+equivalent quality; merged to `main`
+
+User-requested follow-up to Phase 54's stopping point: try LightGlue (a deep-learned local-feature
+extractor + learned matcher) instead of/alongside SIFT, hoping to push match count/quality higher --
+specifically as insurance for future, more challenging EDRs (shadowed terrain, low texture) that
+classical SIFT might not deliver enough tie points on at all, even though the current default
+candidate doesn't itself need it.
+
+**A real, consequential choice surfaced during research, resolved before any code was written**:
+LightGlue's most common pairing, SuperPoint, ships pretrained weights and inference code carrying a
+Magic Leap proprietary-style notice ("does not convey or imply any rights to reproduce, disclose or
+distribute... or to manufacture, use, or sell anything that it may describe"), not a standard
+permissive OSS license -- confirmed via direct inspection of the pinned commit's actual source file,
+not secondhand summary. Flagged to the user rather than assumed; DISK (Apache-2.0) chosen instead --
+the other LightGlue-supported extractor with comparable published match quality and no such
+restriction.
+
+**No official `lightglue` PyPI package** — pinned to a specific commit
+(`git+https://github.com/cvg/LightGlue.git@eb42fee2d71449efb0aa5c10549752b5d75384d8`) for
+reproducibility, since upstream's own `pyproject.toml` has no real version (`version = "0.0"`).
+Installed `--no-deps`, deliberately *not* also listed in this project's own `pyproject.toml`
+dependencies (unlike every other Python dependency here) -- LightGlue's declared `requirements.txt`
+would reinstall a conflicting `opencv-python` alongside this project's own `opencv-python-headless`
+(both provide `cv2`, colliding on install) and a separately-pinned `kornia`/`torch`/`torchvision`.
+Confirmed via direct source inspection (not assumption) that `lightglue/__init__.py` eagerly imports
+*every* extractor submodule regardless of which one is actually used, so `torchvision` (via
+`aliked.py`'s `torchvision.ops.deform_conv2d`) and `kornia` (via several submodules, including
+`disk.py`) are real hard import-time dependencies of the whole package even though only DISK is
+used -- both added directly to this project's own `pyproject.toml` instead, alongside `torch`.
+
+**CPU-only torch, a real Docker/`uv` wrinkle**: `uv pip install` (the pip-compatible interface this
+project's Dockerfile uses, not the `uv add`/`uv sync` project workflow) doesn't read
+`[tool.uv.sources]`/`[[tool.uv.index]]` from `pyproject.toml` at all -- confirmed before attempting
+it, avoiding a wasted rebuild cycle. Fixed with the standard Docker pattern instead: a dedicated
+`RUN uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu` step before
+the main project install, so torch/torchvision are already satisfied (correct CPU wheels, no
+`nvidia-*` runtime packages) by the time the main `-e '.[dev]'` install runs. Verified CPU-only is
+safe for the whole LightGlue/DISK code path (no custom CUDA extension compiled or loaded anywhere in
+it) via direct source inspection, and confirmed via a real published benchmark (~20 FPS at 512
+keypoints on an Intel i7 10700K) that this project's one-shot notebook-cell usage doesn't need a GPU
+regardless.
+
+Added `pose_alignment.match_features_lightglue` — same `(from_points_px, to_points_px)` contract as
+`match_features`, a drop-in alternative. Two deliberate departures from `match_features`, both
+explained in the function's own docstring: (1) no `_sobel_edges` preprocessing first -- DISK/
+LightGlue are deep features trained on natural imagery, not edge maps, so feeding them
+edge-filtered input would fight what they were trained on rather than help; (2) no internal
+homography/fundamental-matrix RANSAC verification pass afterward -- every caller already runs its
+own RANSAC when fitting a correction, so a second geometric-verification pass would be duplicated
+work. Pretrained weights (LightGlue matcher + DISK extractor, ~50MB total) are real network fetches
+on first use, cached under `TORCH_HOME` (`docker/Dockerfile` sets this to `/workspace/cache/torch`,
+matching this project's existing shared-`cache/` convention -- see `docs/caching.md`'s new section).
+
+Wired into `pose_alignment_spike.py` as a direct, side-by-side comparison against the existing
+SIFT-based `match_features`, feeding the same downstream `fit_homography_correction` (Phase 54's
+validated model) for an apples-to-apples result. Live result on the current default candidate: SIFT
+259 matches / 189 homography inliers / 146m (0.69px) mean inlier residual, vs. LightGlue **767**
+matches / **573** inliers / 164m (0.78px) -- roughly **3x** the match/inlier count at a very slightly
+*looser* per-point fit, not a strictly better one. **Direct user visual comparison of the new
+blink overlay against the existing ones**: "the quality of the alignment seems pretty much
+equivalent to the previous approach, but it's heartening to have more matches to work with" --
+confirms the honest read of the numbers (not a quality win on this already-easy, well-textured,
+unshadowed candidate) while validating the actual motivation (headroom for harder future EDRs this
+candidate doesn't itself test). Kept; merged to `main` (this branch's exploratory module and
+notebook are now part of `main`, still not wired into `image_generation.py`'s pipeline).
+
+Verified: full `pytest` suite (197 fast + 4 heavy, one new heavy test --
+`test_match_features_lightglue_recovers_a_known_pixel_shift`, following the same
+`@pytest.mark.heavy` convention `maneuver_detection.py`'s tests established, needing live network
+access for the pretrained-weight download) all pass; `trntest-lint` clean (`ruff format`/`check`,
+mypy, notebook sync); real Docker image rebuild (torch/torchvision/kornia/lightglue added, ~2.1GB
+image growth) and full re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors; new
+blink-overlay GIF visually reviewed live by the user in their own running Jupyter Lab, matching the
+printed statistics.

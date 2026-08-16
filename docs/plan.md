@@ -378,7 +378,12 @@ changes against them.
   projection-informed alignment (an actual camera-model correction — fixing the SPICE-derived pose
   directly, or the `jigsaw`/`findfeatures` space-resection route above, now with real evidence a
   correction is warranted at all) rather than continuing to refine this 2D homography spike further.
-  Not picked up yet. See `docs/history.md`'s dated entries (Phases 52–54) for the full trail.
+  Not picked up yet. **LightGlue (DISK extractor) added as a second matcher**
+  (`pose_alignment.match_features_lightglue`, `~3x` SIFT's match/inlier count on the default
+  candidate, 767 vs. 259, at a very slightly looser per-point fit — not a quality win on this
+  already-easy candidate, but real headroom for future shadowed/low-texture EDRs SIFT might not
+  find enough points on at all; direct user visual confirmation the alignment quality holds).
+  See `docs/history.md`'s dated entries (Phases 52–55) for the full trail.
 
 ## Development history
 
