@@ -129,6 +129,67 @@ def test_fit_similarity_correction_recovers_a_known_transform_and_flags_outliers
     assert (correction.c, correction.f) == pytest.approx((50, -30), abs=1.0)
 
 
+class _FakeCamera:
+    def __init__(self, cross_track_width_km, km_per_frame):
+        self.cross_track_width_km = cross_track_width_km
+        self.km_per_frame = km_per_frame
+
+
+def test_native_wac_gsd_m_returns_the_coarser_axis():
+    # Cross-track: 70.4 km / 704 samples = 100 m/px. Along-track: 2.1 km / 14 lines = 150 m/px.
+    camera = _FakeCamera(cross_track_width_km=70.4, km_per_frame=2.1)
+
+    assert pose_alignment.native_wac_gsd_m(camera) == pytest.approx(150.0)
+
+
+def test_downsample_to_gsd_halves_dimensions_and_preserves_bright_region_mean(tmp_path):
+    # A 40x40, 1 m/px raster: bright (100) in the left half, dark (0) in the right half.
+    data = np.zeros((40, 40), dtype="float32")
+    data[:, :20] = 100.0
+    transform = rasterio.transform.from_origin(0, 40, 1, 1)
+    src_path = tmp_path / "src.tif"
+    _write_raster(src_path, data, transform, nodata=-3.4028235e38)
+
+    out_path = pose_alignment.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
+
+    with rasterio.open(out_path) as src:
+        out = src.read(1)
+        assert src.res[0] == pytest.approx(2.0)
+    assert out.shape == (20, 20)
+    # Area-averaging a uniform 100/0 half-and-half raster should reproduce the same clean split,
+    # not blur it into a gradient or a single-value block the way a coarser/wrong filter might.
+    assert out[:, :10] == pytest.approx(100.0)
+    assert out[:, 10:] == pytest.approx(0.0)
+
+
+def test_downsample_to_gsd_handles_uint8_raster_with_no_nodata(tmp_path):
+    # The basemap ortho this function is also called on (lunaserv.despeckle_and_shade_ortho's
+    # output) is uint8 with no nodata tag -- confirmed live to crash if a float sentinel fallback is
+    # blindly applied regardless of dtype (GDAL can't represent -3.4e38 in a uint8 buffer).
+    data = np.zeros((40, 40), dtype="uint8")
+    data[:, :20] = 200
+    transform = rasterio.transform.from_origin(0, 40, 1, 1)
+    src_path = tmp_path / "src.tif"
+    _write_raster(src_path, data, transform, nodata=None)
+
+    out_path = pose_alignment.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
+
+    with rasterio.open(out_path) as src:
+        out = src.read(1)
+    assert out.shape == (20, 20)
+    assert out[:, :10] == pytest.approx(200.0, abs=1)
+    assert out[:, 10:] == pytest.approx(0.0, abs=1)
+
+
+def test_downsample_to_gsd_rejects_upsampling(tmp_path):
+    data = np.zeros((10, 10), dtype="float32")
+    src_path = tmp_path / "src.tif"
+    _write_raster(src_path, data, rasterio.transform.from_origin(0, 10, 2, 2))
+
+    with pytest.raises(ValueError):
+        pose_alignment.downsample_to_gsd(src_path, target_gsd_m=1.0, out_path=tmp_path / "up.tif")
+
+
 def test_apply_correction_shifts_a_known_marker_pixel(tmp_path):
     data = np.zeros((50, 50), dtype="float32")
     data[25, 25] = 1.0  # a single bright marker pixel

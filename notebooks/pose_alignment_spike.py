@@ -64,15 +64,38 @@ print("Basemap ortho:", basemap_path)
 # The basemap ortho covers a much larger area than the WAC crop's own real footprint -- cropping to
 # match (`pose_alignment.crop_to_footprint`, padded 15%) gives the feature matcher a far smaller,
 # more relevant search space; confirmed empirically to matter for match quality, not just compute.
-# `to_uint8_for_matching` converts each raster to 8-bit (OpenCV's feature detectors can't even load
-# a raw float32 GeoTIFF), stretching over valid pixels only.
+#
+# Both `wac_path` and the basemap ortho are on the same ~100 m/px working grid (`config.
+# DEFAULT_DEM_TARGET_GSD_M`) -- but that's genuinely native resolution for the basemap
+# (`luna_wac_global`'s own ~100 m/px mosaic) and *not* for this WAC crop: `isis_wac.
+# run_cam2map_for_crop`'s `PIXRES=map` forces its output onto that same 100 m/px grid regardless of
+# the camera's own real resolution at this pose, which a direct `cam2map PIXRES=camera` probe found
+# to be ~184 m/px for this candidate (~1.8x coarser -- see `docs/history.md`'s dated entry). Matching
+# SIFT keypoints on the interpolated-not-actually-resolved 100 m/px grid risks treating resampling
+# texture (and the `PATCHSIZE=1` warp-patch seam artifact still faintly visible there, per
+# `docs/plan.md`'s open items) as real structure. `pose_alignment.native_wac_gsd_m` estimates the
+# WAC crop's real native GSD from the camera's own already-computed ground geometry (no extra ISIS
+# call), and `downsample_to_gsd` (area-averaging, the correct decimation filter -- see its own
+# docstring for why nearest/bilinear would be wrong here) brings both rasters down to that scale
+# before matching. `to_uint8_for_matching` then converts each to 8-bit (OpenCV's feature detectors
+# can't even load a raw float32 GeoTIFF), stretching over valid pixels only.
 
 # %%
 basemap_cropped_path = pose_alignment.crop_to_footprint(
     basemap_path, wac_path, entry.per_image_config.output_dir / "alignment" / "basemap_cropped.tif"
 )
-wac_image, wac_valid = pose_alignment.to_uint8_for_matching(wac_path)
-basemap_image, basemap_valid = pose_alignment.to_uint8_for_matching(basemap_cropped_path)
+
+target_gsd_m = pose_alignment.native_wac_gsd_m(entry.camera)
+print(f"Downsampling to the WAC crop's estimated native resolution: {target_gsd_m:.0f} m/px")
+wac_matching_path = pose_alignment.downsample_to_gsd(
+    wac_path, target_gsd_m, entry.per_image_config.output_dir / "alignment" / "wac_matching_res.tif"
+)
+basemap_matching_path = pose_alignment.downsample_to_gsd(
+    basemap_cropped_path, target_gsd_m, entry.per_image_config.output_dir / "alignment" / "basemap_matching_res.tif"
+)
+
+wac_image, wac_valid = pose_alignment.to_uint8_for_matching(wac_matching_path)
+basemap_image, basemap_valid = pose_alignment.to_uint8_for_matching(basemap_matching_path)
 print(f"WAC: {wac_image.shape}, valid {wac_valid.mean():.1%}")
 print(f"Basemap: {basemap_image.shape}, valid {basemap_valid.mean():.1%}")
 
@@ -97,9 +120,9 @@ print(f"{len(basemap_points_px)} matched points survived ratio/symmetry/RANSAC v
 # correspondences and false positives, not a single clean, trustworthy correction on its own.
 
 # %%
-with rasterio.open(basemap_cropped_path) as src:
+with rasterio.open(basemap_matching_path) as src:
     basemap_transform = src.transform
-with rasterio.open(wac_path) as src:
+with rasterio.open(wac_matching_path) as src:
     wac_transform = src.transform
 
 basemap_points_map = pose_alignment.pixel_points_to_map(basemap_points_px, basemap_transform)

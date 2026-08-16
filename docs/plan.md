@@ -359,9 +359,16 @@ changes against them.
   plausible model, not asserted as physically correct — see the module's own docstring) via RANSAC,
   and applies it to the WAC raster's own georeferencing so it drops into the existing
   `plotting.plot_overlay_toggle` unmodified. `notebooks/pose_alignment_spike.py` exercises the whole
-  pipeline against the current default candidate: 106 matches, 53 real inliers (145m mean residual
-  vs. 651m for the 43 rejected outliers if forced to fit) — a real signal, not yet validated enough
-  to wire into the main pipeline. See `docs/history.md`'s dated entry.
+  pipeline against the current default candidate — a real signal, not yet validated enough to wire
+  into the main pipeline. **Follow-up**: the map-projected WAC crop being matched against turned out
+  to be substantially oversampled — `cam2map`'s `PIXRES=map` forces its output onto the basemap's
+  ~100 m/px working grid, but a direct measurement (`cam2map PIXRES=camera`) found the crop's own
+  real native resolution is ~184 m/px (~1.8x coarser), specific to the WAC side (the basemap ortho is
+  genuinely ~100 m/px native). Added `pose_alignment.native_wac_gsd_m`/`downsample_to_gsd`
+  (area-averaging) to match at native resolution instead of the interpolated grid; live result:
+  matches more than doubled (106 → 259), inliers nearly doubled (53 → 91), and inlier residual
+  tightened from 1.45px to 0.84px once measured in native pixels. See `docs/history.md`'s dated
+  entries (Phases 50–51) for the full trail.
 
 ## Development history
 

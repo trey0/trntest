@@ -40,6 +40,10 @@ from trntest.lunaserv import pad_bbox
 # reads without `masked=True` in a few places (e.g. `plotting.valid_pixel_mask`'s own threshold) --
 # matched here rather than reinvented, since `isis_wac.run_cam2map_for_crop`'s own output uses it.
 _FLOAT_NODATA_MAGNITUDE_THRESHOLD = 1e30
+# The concrete sentinel value itself (float32 min), used as a fallback when a raster's own GDAL
+# nodata tag isn't set -- both `apply_correction` and `downsample_to_gsd` need an explicit nodata
+# value to pass to `rasterio.warp.reproject` so resampling doesn't blend real data with padding.
+_ISIS_FLOAT_NODATA = -3.4028235e38
 
 # cv2.BFMatcher.knnMatch(k=2)'s own fixed neighbor count -- a descriptor with fewer than this many
 # candidate neighbors can't be ratio-tested at all, not an independently tunable minimum.
@@ -99,6 +103,88 @@ def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fract
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(out_path, "w", **profile) as dst:
             dst.write(data, 1)
+    return out_path
+
+
+def native_wac_gsd_m(camera) -> float:
+    """Estimates the WAC crop's own real native ground sample distance -- i.e. before
+    `isis_wac.run_cam2map_for_crop`'s `PIXRES=map` forces its output onto the basemap's ~100 m/px
+    working grid (see that function's docstring) -- directly from `camera`'s already-ray-traced
+    cross-track/along-track ground geometry (`Camera.cross_track_width_km`/`km_per_frame`, computed
+    by `camera.compute_n_frames_for_square_crop`), rather than an extra ISIS `cam2map PIXRES=camera`
+    probe call. WAC is a pushframe sensor with genuinely anisotropic native resolution -- 704
+    cross-track samples vs. 14 along-track TDI lines per VIS framelet, covering different real
+    ground extents -- so this returns the *coarser* of the two axes: downsampling the map-projected
+    (isotropic) product any finer than that would still be interpolating detail that was never
+    actually resolved in that direction. Confirmed against a direct measurement (`cam2map
+    PIXRES=camera`, no map override) on this project's current default candidate: this function
+    returns 211 m/px (cross-track; along-track was 151 m/px) vs. ISIS's own camera model reporting
+    184 m/px for the same crop -- same order of magnitude and, being the coarser estimate, on the
+    conservative side for choosing a downsample target, not a substitute for the exact figure if one
+    is ever needed elsewhere."""
+    cross_track_gsd_m = camera.cross_track_width_km * 1000.0 / 704.0
+    along_track_gsd_m = camera.km_per_frame * 1000.0 / 14.0
+    return max(cross_track_gsd_m, along_track_gsd_m)
+
+
+def downsample_to_gsd(
+    raster_path,
+    target_gsd_m: float,
+    out_path,
+    resampling: rasterio.warp.Resampling = rasterio.warp.Resampling.average,
+) -> Path:
+    """Resamples `raster_path` (band 1) onto a coarser grid at `target_gsd_m` m/px, same CRS and
+    origin -- used to bring a map-projected product's pixel grid back down toward its own real
+    native resolution (see `native_wac_gsd_m`) before feature matching, instead of matching SIFT
+    keypoints on a grid that's been interpolated finer than the sensor actually resolved (confirmed,
+    via a direct `cam2map PIXRES=camera` probe, to be a real ~1.8x linear oversampling on this
+    project's own default candidate -- see `docs/history.md`'s dated entry).
+
+    `resampling=Resampling.average` (not the default nearest/bilinear) is the deliberate choice for
+    genuinely *shrinking* real imagery -- it approximates what a coarser-GSD sensor would actually
+    have integrated over each output pixel, rather than just picking or blending between a few
+    existing samples the way nearest/bilinear do. This is a real accuracy difference for downsampling
+    specifically (unlike `apply_correction`'s bilinear resample, which resamples at essentially the
+    same scale, where the choice matters far less).
+
+    Raises `ValueError` if `target_gsd_m` isn't actually coarser than the source's own resolution --
+    this function downsamples, it doesn't upsample."""
+    with rasterio.open(raster_path) as src:
+        src_res = src.res[0]
+        if target_gsd_m <= src_res:
+            raise ValueError(f"target_gsd_m ({target_gsd_m:.1f}) must exceed the source's own {src_res:.1f} m/px")
+        scale = target_gsd_m / src_res
+        new_width = max(1, round(src.width / scale))
+        new_height = max(1, round(src.height / scale))
+        dst_transform = src.transform * affine.Affine.scale(scale, scale)
+
+        data = src.read(1)
+        # `_ISIS_FLOAT_NODATA` is only a valid fallback for float rasters (e.g. `wac_path`'s
+        # calibrated I/F cube) -- the basemap ortho this function is also used on
+        # (`lunaserv.despeckle_and_shade_ortho`'s output) is `uint8` with no real nodata concept, and
+        # that huge-magnitude sentinel isn't representable in its dtype at all (confirmed live: GDAL
+        # raises rather than silently truncating it).
+        nodata = src.nodata
+        if nodata is None and np.issubdtype(data.dtype, np.floating):
+            nodata = _ISIS_FLOAT_NODATA
+        out = np.full((new_height, new_width), nodata if nodata is not None else 0, dtype=data.dtype)
+        rasterio.warp.reproject(
+            source=data,
+            destination=out,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs=src.crs,
+            src_nodata=nodata,
+            dst_nodata=nodata,
+            resampling=resampling,
+        )
+        profile = src.profile.copy()
+        profile.update(height=new_height, width=new_width, transform=dst_transform)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(out, 1)
     return out_path
 
 
@@ -243,7 +329,7 @@ def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Pa
         data = src.read(1)
         src_transform = src.transform
         src_crs = src.crs
-        nodata = src.nodata if src.nodata is not None else -3.4028235e38
+        nodata = src.nodata if src.nodata is not None else _ISIS_FLOAT_NODATA
         corrected_src_transform = correction * src_transform
 
         out = np.full_like(data, nodata)

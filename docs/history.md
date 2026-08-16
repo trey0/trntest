@@ -3302,3 +3302,54 @@ deterministic synthetic fixtures, including a real recovered-known-shift check f
 itself, not just the pure-math functions) passes; `trntest-lint` clean (`ruff format`/`check`, mypy,
 notebook sync); real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors;
 extracted and visually inspected both blink-overlay GIF outputs from the real executed notebook.
+
+## Phase 51 (2026-08-16, same `feature/alignment` branch) — Matching at the WAC crop's real native
+resolution instead of the interpolated 100 m/px working grid, substantially improves match count and
+per-pixel residual
+
+Prompted by a direct user question about input quality rather than a further correction-model
+change: is Phase 50's map-projected WAC crop grossly oversampled for feature matching? A direct
+measurement (`cam2map PIXRES=camera`, no map-file override, on the current default candidate) found
+the crop's own real native resolution is **184 m/px** -- confirmed independently via the pipeline's
+already-ray-traced cross-track/along-track ground geometry (211 m/px cross-track, 151 m/px
+along-track, same order of magnitude, anisotropic as expected for a pushframe sensor). `cam2map`'s
+`PIXRES=map` forces the actual mapprojected output onto the basemap's ~100 m/px working grid
+regardless -- a real ~1.8x linear (~3.4x area) oversampling by interpolation, specific to the WAC
+side: the basemap ortho (`luna_wac_global`) is a genuine ~100 m/px native mosaic, so only the WAC
+crop was being upsampled before matching.
+
+Added to `pose_alignment.py`: `native_wac_gsd_m(camera)` estimates the crop's native GSD from
+`Camera`'s already-computed `cross_track_width_km`/`km_per_frame` fields (no extra ISIS call),
+taking the *coarser* of the two anisotropic axes so the single isotropic downsample target never
+claims resolution finer than either direction actually resolves. `downsample_to_gsd` resamples a
+raster onto a coarser grid via `Resampling.average` specifically (not bilinear/nearest -- the
+correct decimation filter for genuinely shrinking imagery, approximating what a coarser-GSD sensor
+would have actually integrated over, per direct user guidance to get this right). Wired into
+`pose_alignment_spike.py`: both the WAC crop and the footprint-cropped basemap are downsampled to
+the estimated native GSD before `to_uint8_for_matching`/`match_features`; the fit and
+`apply_correction` are unaffected (both operate in real map coordinates / the original full-res
+grid), so no other plumbing changed.
+
+A real bug surfaced immediately on the first live run: `downsample_to_gsd`'s nodata fallback
+originally assumed `apply_correction`'s existing convention (ISIS's float32 `-3.4e38` sentinel)
+unconditionally -- crashed on the basemap ortho, which is `uint8` (`lunaserv.
+despeckle_and_shade_ortho`'s shaded output) with no real nodata concept and can't represent that
+sentinel at all. Fixed: the float sentinel fallback now only applies when the source raster's own
+dtype is floating-point; other dtypes fall through to `src.nodata` (`None` if the file has no tag,
+which is correct for a dense raster like the basemap). A regression test locks this in
+(`test_downsample_to_gsd_handles_uint8_raster_with_no_nodata`).
+
+Live result on the current default candidate, matching at the estimated 211 m/px native resolution
+instead of the interpolated 100 m/px grid: matches surviving ratio/symmetry/RANSAC verification more
+than doubled (106 -> 259), inliers nearly doubled (53 -> 91), and the fit is meaningfully tighter
+once measured in the pixel units that actually matter -- inlier residual **1.45px -> 0.84px**
+(145m/100m vs. 177m/211m; the raw meter number looks slightly worse only because each pixel now
+covers ~2x more ground). Supports the oversampling hypothesis: real texture at native resolution
+gives the matcher more genuine signal and fewer spurious high-frequency matches (plausibly including
+some driven by the still-faintly-visible `cam2map` `PATCHSIZE=1` warp-patch seam artifact, Phase 49)
+than matching on an interpolated grid did. Still exploratory, still on `feature/alignment`, not
+merged to `main` -- this is a matching-quality improvement to the existing spike, not by itself a
+decision to adopt the similarity-transform correction as a finished pipeline feature.
+
+Verified: full `pytest` suite (189 tests, 4 new for `pose_alignment.py`) passes; `trntest-lint`
+clean; real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors.
