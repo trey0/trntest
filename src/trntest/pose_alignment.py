@@ -292,9 +292,12 @@ def fit_similarity_correction(
     pushframe sensor's extended-exposure capture (potentially more, if pose drifts during the
     exposure), and the mapping from those onto a 2D map-space distortion isn't simple or
     one-to-one, so there's no first-principles case that similarity (or any fixed DOF count) is
-    exactly right. Start simple for interpretability; escalate to a richer model (full affine,
-    homography) only if there are enough independent, well-distributed tie points to support it
-    without just overfitting noise -- an empirical question, not one this function decides.
+    exactly right. Start simple for interpretability; escalate to a richer model (`fit_affine_correction`,
+    `fit_homography_correction`) only if there are enough independent, well-distributed tie points to
+    support it without just overfitting noise -- an empirical question, not one this function decides
+    (Phase 51's native-resolution downsampling raised the default candidate's inlier count from 53 to
+    91, motivating the first real attempt at those richer models -- see `docs/history.md`'s dated
+    entry for what that comparison found).
 
     Returns `(correction, inlier_mask, residuals_m)`: `correction` is an `affine.Affine` mapping
     `from_points_map`-space coordinates onto the fitted `to_points_map`-space location (apply it to
@@ -310,6 +313,51 @@ def fit_similarity_correction(
     predicted = (matrix[:, :2] @ from_points_map.T).T + matrix[:, 2]
     residuals_m = np.linalg.norm(predicted - to_points_map, axis=1)
     return correction, inliers.ravel().astype(bool), residuals_m
+
+
+def fit_affine_correction(
+    from_points_map: np.ndarray, to_points_map: np.ndarray, ransac_threshold_m: float = 300.0
+) -> tuple[affine.Affine, np.ndarray, np.ndarray]:
+    """Fits a full affine transform (6 degrees of freedom -- translation, rotation, independent x/y
+    scale, and shear, via `cv2.estimateAffine2D`'s own internal RANSAC) mapping `from_points_map`
+    onto `to_points_map`. A strictly richer model than `fit_similarity_correction`'s 4-DOF fit (same
+    inputs/RANSAC threshold convention, same `affine.Affine` return type, so it's a drop-in
+    alternative -- `apply_correction` composes with either identically, since it never inspects which
+    of an `affine.Affine`'s 6 possible degrees of freedom are actually non-trivial). See
+    `fit_similarity_correction`'s docstring for why *some* fixed model is used at all despite none
+    being asserted as physically "correct"."""
+    src = from_points_map.astype("float32")
+    dst = to_points_map.astype("float32")
+    matrix, inliers = cv2.estimateAffine2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_threshold_m)
+    correction = affine.Affine(*matrix[0], *matrix[1])
+    predicted = (matrix[:, :2] @ from_points_map.T).T + matrix[:, 2]
+    residuals_m = np.linalg.norm(predicted - to_points_map, axis=1)
+    return correction, inliers.ravel().astype(bool), residuals_m
+
+
+def fit_homography_correction(
+    from_points_map: np.ndarray, to_points_map: np.ndarray, ransac_threshold_m: float = 300.0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Fits a full projective homography (8 degrees of freedom, via `cv2.findHomography`'s own
+    internal RANSAC) mapping `from_points_map` onto `to_points_map` -- the richest of this module's
+    three correction models (see `fit_similarity_correction`'s docstring for why none of them is
+    asserted as the physically "correct" one). Unlike `fit_similarity_correction`/
+    `fit_affine_correction`, a homography's bottom row isn't `[0, 0, 1]` (it's projective, not
+    affine), so it isn't representable as an `affine.Affine` at all -- apply it via
+    `apply_homography_correction`, not `apply_correction`.
+
+    Returns `(homography, inlier_mask, residuals_m)`: `homography` is the raw 3x3 matrix
+    `cv2.findHomography` returns, mapping a homogeneous `[x, y, 1]` map coordinate to another
+    homogeneous `[x', y', w]` one (`predicted = (homography @ [x, y, 1]) / w`, matching the
+    convention `apply_homography_correction`'s own pixel-space composition relies on)."""
+    src = from_points_map.astype("float64")
+    dst = to_points_map.astype("float64")
+    homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransac_threshold_m)
+    src_h = np.hstack([src, np.ones((len(src), 1))])
+    projected = (homography @ src_h.T).T
+    predicted = projected[:, :2] / projected[:, 2:3]
+    residuals_m = np.linalg.norm(predicted - dst, axis=1)
+    return homography, mask.ravel().astype(bool), residuals_m
 
 
 def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Path:
@@ -349,4 +397,48 @@ def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Pa
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(out_path, "w", **profile) as dst:
             dst.write(out, 1)
+    return out_path
+
+
+def apply_homography_correction(src_raster_path, homography: np.ndarray, out_path) -> Path:
+    """Applies `homography` (from `fit_homography_correction`) to `src_raster_path`'s own real
+    georeferencing and resamples back onto its original pixel grid -- the homography counterpart to
+    `apply_correction` (which only handles `affine.Affine` corrections, since it composes two affines
+    directly). A homography can't be composed with a raster's affine transform that way, and
+    `rasterio.warp.reproject` has no projective-transform mode -- instead, this builds the single
+    pixel-space projective matrix equivalent to "pixel -> map (`src_transform`) -> corrected map
+    (`homography`) -> map (`src_transform`'s own inverse)" and warps directly via
+    `cv2.warpPerspective`, which does understand a full 3x3 projective matrix. `src_transform`'s own
+    2x3 affine coefficients are lifted to a 3x3 homogeneous matrix (bottom row `[0, 0, 1]`) purely to
+    make that composition well-defined -- the *result*, `pixel_homography`, is genuinely projective in
+    general, unlike either of its two affine ends.
+
+    Same output semantics as `apply_correction`: the corrected raster lands back on its own original
+    pixel grid, so it drops straight into `plotting.plot_overlay`/`plot_overlay_toggle` unchanged."""
+    with rasterio.open(src_raster_path) as src:
+        data = src.read(1)
+        src_transform = src.transform
+        nodata = src.nodata if src.nodata is not None else _ISIS_FLOAT_NODATA
+        profile = src.profile.copy()
+
+    src_matrix = np.array(
+        [
+            [src_transform.a, src_transform.b, src_transform.c],
+            [src_transform.d, src_transform.e, src_transform.f],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    pixel_homography = np.linalg.inv(src_matrix) @ homography @ src_matrix
+    out = cv2.warpPerspective(
+        data,
+        pixel_homography,
+        (data.shape[1], data.shape[0]),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=float(nodata),
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(out, 1)
     return out_path

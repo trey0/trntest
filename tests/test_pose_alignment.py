@@ -129,6 +129,54 @@ def test_fit_similarity_correction_recovers_a_known_transform_and_flags_outliers
     assert (correction.c, correction.f) == pytest.approx((50, -30), abs=1.0)
 
 
+def test_fit_affine_correction_recovers_a_known_transform_and_flags_outliers():
+    rng = np.random.default_rng(2)
+    from_points = rng.uniform(0, 1000, (30, 2))
+    # A genuine 6-DOF affine transform (independent x/y scale + shear) -- not decomposable into
+    # translation+rotation+uniform scale, unlike fit_similarity_correction's test fixture.
+    true_transform = affine.Affine(1.05, 0.03, 50, -0.02, 0.97, -30)
+    to_points = np.array([true_transform * tuple(p) for p in from_points])
+
+    to_points_with_outliers = to_points.copy()
+    to_points_with_outliers[:5] += rng.uniform(500, 1000, (5, 2))
+
+    correction, inliers, residuals_m = pose_alignment.fit_affine_correction(
+        from_points, to_points_with_outliers, ransac_threshold_m=10.0
+    )
+
+    assert not inliers[:5].any()
+    assert inliers[5:].all()
+    assert residuals_m[5:].max() < 5.0
+    assert residuals_m[:5].min() > 100.0
+    assert (correction.a, correction.b, correction.d, correction.e) == pytest.approx(
+        (1.05, 0.03, -0.02, 0.97), abs=0.01
+    )
+    assert (correction.c, correction.f) == pytest.approx((50, -30), abs=1.0)
+
+
+def test_fit_homography_correction_recovers_a_known_transform_and_flags_outliers():
+    rng = np.random.default_rng(3)
+    from_points = rng.uniform(0, 1000, (30, 2))
+    # A genuine projective transform (non-trivial bottom row) -- not representable as affine.Affine
+    # at all, unlike fit_similarity_correction's/fit_affine_correction's test fixtures.
+    true_h = np.array([[1.02, 0.01, 40.0], [-0.01, 0.98, -25.0], [0.00015, 0.00008, 1.0]])
+    from_h = np.hstack([from_points, np.ones((30, 1))])
+    projected = (true_h @ from_h.T).T
+    to_points = projected[:, :2] / projected[:, 2:3]
+
+    to_points_with_outliers = to_points.copy()
+    to_points_with_outliers[:5] += rng.uniform(500, 1000, (5, 2))
+
+    homography, inliers, residuals_m = pose_alignment.fit_homography_correction(
+        from_points, to_points_with_outliers, ransac_threshold_m=10.0
+    )
+
+    assert not inliers[:5].any()
+    assert inliers[5:].all()
+    assert residuals_m[5:].max() < 5.0
+    assert residuals_m[:5].min() > 100.0
+
+
 class _FakeCamera:
     def __init__(self, cross_track_width_km, km_per_frame):
         self.cross_track_width_km = cross_track_width_km
@@ -206,4 +254,25 @@ def test_apply_correction_shifts_a_known_marker_pixel(tmp_path):
     # The marker's real map position should have moved by the correction; converting the shifted
     # marker's new pixel location back through the (unchanged) output transform confirms it landed
     # at map (25+10, 25-5) = (35, 20) -> pixel (col=35, row=30) in the original 0..50 grid.
+    assert (marker_col, marker_row) == (35, 30)
+
+
+def test_apply_homography_correction_shifts_a_known_marker_pixel(tmp_path):
+    data = np.zeros((50, 50), dtype="float32")
+    data[25, 25] = 1.0  # a single bright marker pixel
+    transform = rasterio.transform.from_origin(0, 50, 1, 1)
+    src_path = tmp_path / "src.tif"
+    _write_raster(src_path, data, transform, nodata=0.0)
+
+    # A homography that's a pure translation in map space (+10 east, -5 north) -- exercises the full
+    # pixel-space composition (src_transform lift/inverse, cv2.warpPerspective) without also needing
+    # this test to account for a genuine perspective term's nonlinear pixel movement; same expected
+    # marker location as test_apply_correction_shifts_a_known_marker_pixel's equivalent translation,
+    # confirming the two application paths agree on their shared (affine) subset.
+    homography = np.array([[1.0, 0.0, 10.0], [0.0, 1.0, -5.0], [0.0, 0.0, 1.0]])
+    out_path = pose_alignment.apply_homography_correction(src_path, homography, tmp_path / "corrected.tif")
+
+    with rasterio.open(out_path) as src:
+        out = src.read(1)
+    marker_row, marker_col = np.unravel_index(np.argmax(out), out.shape)
     assert (marker_col, marker_row) == (35, 30)

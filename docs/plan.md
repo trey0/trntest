@@ -367,8 +367,18 @@ changes against them.
   genuinely ~100 m/px native). Added `pose_alignment.native_wac_gsd_m`/`downsample_to_gsd`
   (area-averaging) to match at native resolution instead of the interpolated grid; live result:
   matches more than doubled (106 → 259), inliers nearly doubled (53 → 91), and inlier residual
-  tightened from 1.45px to 0.84px once measured in native pixels. See `docs/history.md`'s dated
-  entries (Phases 50–51) for the full trail.
+  tightened from 1.45px to 0.84px once measured in native pixels.
+  **Concluded (for this exercise): the correspondences are real, not RANSAC noise.** With enough
+  inliers to support it, added `fit_affine_correction`/`fit_homography_correction`
+  (`apply_homography_correction` for the latter, since a homography isn't an `affine.Affine`) and
+  compared all three models' blink overlays side by side. Direct user visual inspection of the
+  homography overlay: "beautiful... real benefit to the higher-order model here, not just noise."
+  **User's own conclusion, the deliberate stopping point for this branch of investigation**: this
+  validates that real, usable correspondences exist here — the next real step is a proper
+  projection-informed alignment (an actual camera-model correction — fixing the SPICE-derived pose
+  directly, or the `jigsaw`/`findfeatures` space-resection route above, now with real evidence a
+  correction is warranted at all) rather than continuing to refine this 2D homography spike further.
+  Not picked up yet. See `docs/history.md`'s dated entries (Phases 50–52) for the full trail.
 
 ## Development history
 

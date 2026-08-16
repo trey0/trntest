@@ -3353,3 +3353,42 @@ decision to adopt the similarity-transform correction as a finished pipeline fea
 
 Verified: full `pytest` suite (189 tests, 4 new for `pose_alignment.py`) passes; `trntest-lint`
 clean; real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors.
+
+## Phase 52 (2026-08-16, same `feature/alignment` branch) — Full affine and homography fits confirm
+the tie-point correspondences are real: visually validated, exercise concluded here
+
+With Phase 51's native-resolution downsampling giving 91 inliers (up from 53), the module's own
+long-standing "richer model, once there are enough points" deferral (`fit_similarity_correction`'s
+docstring) had a real dataset to test against. Added `fit_affine_correction` (6 DOF: independent
+x/y scale + shear, via `cv2.estimateAffine2D`) and `fit_homography_correction` (8 DOF: full
+projective, via `cv2.findHomography`), plus `apply_homography_correction` -- a homography isn't
+representable as an `affine.Affine` (non-trivial bottom row), so it can't reuse `apply_correction`'s
+"compose two affines, then `rasterio.warp.reproject`" path; instead it composes `src_transform`
+(lifted to a homogeneous 3x3 matrix), the homography, and `src_transform`'s own inverse into a
+single pixel-space projective matrix and warps directly via `cv2.warpPerspective`. All three models
+are fit from the *same* match set and applied/compared side by side in
+`pose_alignment_spike.py` (four blink overlays: uncorrected, similarity, affine, homography), with
+residuals reported in native WAC pixels (`target_gsd_m`), not just meters.
+
+Live result on the default candidate: similarity 91/259 inliers (177m/0.84px mean residual), affine
+178/259 (143m/0.68px), homography 189/259 (146m/0.69px, 298m/1.41px max -- the only model whose max
+residual improved too). The inlier-count jump is expected to be partly mechanical (more DOF lets a
+model bend to satisfy the fixed 300m RANSAC threshold for more of the scattered matches, not
+necessarily because those points are all genuinely better-explained) -- flagged explicitly before
+the user looked, precisely so the numbers alone wouldn't be oversold as proof.
+
+**Direct user visual inspection of the homography blink overlay settled it**: "beautiful... real
+benefit to the higher-order model here, not just noise." **User's own conclusion, recorded verbatim
+as the actual stopping point for this exercise**: the correspondences this pipeline finds are
+validated as real (not just RANSAC accepting noise within a loose threshold) -- confirmed strongly
+enough to justify feeding them into a proper projection-informed alignment (a real camera-model
+correction, e.g. actually fixing the SPICE-derived pose or pursuing `jigsaw`/`findfeatures`-style
+space resection now that there's real evidence a correction is warranted at all -- see
+`docs/plan.md`'s open items) rather than continuing to refine this 2D homography spike further. Not
+picked up in this session -- a deliberate stop, not an abandoned thread.
+
+Verified: full `pytest` suite (192 tests, 3 new for `pose_alignment.py` covering `fit_affine_correction`/
+`fit_homography_correction`/`apply_homography_correction` with the same known-transform-plus-outliers
+pattern as the existing similarity/apply_correction tests) passes; `trntest-lint` clean; real Docker
+re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors; all four blink-overlay GIFs
+visually reviewed live by the user in their own running Jupyter Lab.

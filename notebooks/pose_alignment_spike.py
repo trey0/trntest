@@ -27,16 +27,22 @@
 #
 # The approach, implemented in `src/trntest/pose_alignment.py`: feature-match the already
 # map-projected WAC crop directly against the basemap (both already in the same map projection, no
-# camera model needed for the matching step itself), fit a similarity transform (translation +
-# rotation + uniform scale) from the matches via RANSAC, apply it to the WAC raster's own
-# georeferencing, and compare the result against the basemap via the *existing*,
-# unmodified `plotting.plot_overlay_toggle` blink comparator.
+# camera model needed for the matching step itself; downsampled first to the WAC crop's own real
+# native resolution -- see the "Crop the basemap" section below, and `docs/history.md`'s Phase 51
+# entry for why), fit a 2D correction from the matches via RANSAC, apply it to the WAC raster's own
+# georeferencing, and compare the result against the basemap via the *existing*, unmodified
+# `plotting.plot_overlay_toggle` blink comparator.
 #
-# Similarity, not a richer model: deliberately the simplest plausible correction to start from, not
+# Three correction models are fit from the same match set and compared directly: `fit_similarity_correction`
+# (translation + rotation + uniform scale, 4 DOF), `fit_affine_correction` (adds independent x/y
+# scale and shear, 6 DOF), and `fit_homography_correction` (full projective, 8 DOF). None is
 # asserted as physically "correct" -- a real camera pose error has 6 degrees of freedom before even
 # accounting for this being a pushframe sensor's extended-exposure capture, and the mapping from
 # those onto a 2D map-space distortion isn't simple or one-to-one, so there's no first-principles
-# case that any fixed DOF count is exactly right. See `fit_similarity_correction`'s own docstring.
+# case that any fixed DOF count is exactly right; richer models were left for later specifically
+# until there were enough well-distributed inliers to support them without overfitting (Phase 51's
+# downsampling fix raised that count from 53 to 91). See `fit_similarity_correction`'s own docstring
+# for the full rationale.
 
 # %%
 import numpy as np
@@ -134,43 +140,82 @@ print(f"Raw offset distance: mean {raw_distances_m.mean():.0f}m, std {raw_distan
 print(f"Range: {raw_distances_m.min():.0f}m - {raw_distances_m.max():.0f}m")
 
 # %% [markdown]
-# ## Fit the pose correction
+# ## Fit the pose correction: similarity, full affine, and homography
 #
 # `fit_similarity_correction` maps the WAC's own (possibly-wrong) claimed positions onto the
 # basemap's trusted ones, with its own internal RANSAC separating real, consistent correspondences
 # from outliers -- report both, not just the inliers, since how bad the rejected points really are
 # is itself useful information about match-set quality.
+#
+# Phase 51's native-resolution downsampling raised the default candidate's inlier count from 53 to
+# 91 -- enough to make a first real attempt at the richer models `fit_similarity_correction`'s own
+# docstring always left open: `fit_affine_correction` (6 DOF: independent x/y scale and shear, not
+# just uniform scale) and `fit_homography_correction` (8 DOF: full projective). All three are fit
+# from the *same* match set below for a direct, apples-to-apples comparison -- residuals are also
+# reported in native WAC pixels (dividing by `target_gsd_m`), not just meters, since that's the unit
+# that actually says whether a correction is doing better than pixel-level noise.
 
 # %%
-correction, inliers, residuals_m = pose_alignment.fit_similarity_correction(wac_points_map, basemap_points_map)
-
-scale = np.sqrt(correction.a**2 + correction.d**2)
-rotation_deg = np.degrees(np.arctan2(correction.d, correction.a))
-print(f"Inliers: {inliers.sum()} / {len(inliers)}")
-print(
-    f"Fitted scale: {scale:.4f}  rotation: {rotation_deg:.3f} deg  translation: ({correction.c:.1f}, {correction.f:.1f}) m"
+correction_similarity, inliers_similarity, residuals_similarity_m = pose_alignment.fit_similarity_correction(
+    wac_points_map, basemap_points_map
 )
-print(f"Inlier residuals: mean {residuals_m[inliers].mean():.0f}m, max {residuals_m[inliers].max():.0f}m")
-if (~inliers).any():
-    print(f"Outlier residuals (if forced to fit): mean {residuals_m[~inliers].mean():.0f}m")
+correction_affine, inliers_affine, residuals_affine_m = pose_alignment.fit_affine_correction(
+    wac_points_map, basemap_points_map
+)
+homography, inliers_homography, residuals_homography_m = pose_alignment.fit_homography_correction(
+    wac_points_map, basemap_points_map
+)
+
+for name, inliers, residuals_m in [
+    ("similarity (4 DOF)", inliers_similarity, residuals_similarity_m),
+    ("affine (6 DOF)", inliers_affine, residuals_affine_m),
+    ("homography (8 DOF)", inliers_homography, residuals_homography_m),
+]:
+    inlier_residuals_m = residuals_m[inliers]
+    print(
+        f"{name:20s}  inliers {inliers.sum():3d}/{len(inliers)}   "
+        f"residual mean {inlier_residuals_m.mean():5.0f}m ({inlier_residuals_m.mean() / target_gsd_m:.2f}px)   "
+        f"max {inlier_residuals_m.max():5.0f}m ({inlier_residuals_m.max() / target_gsd_m:.2f}px)"
+    )
+
+scale = np.sqrt(correction_similarity.a**2 + correction_similarity.d**2)
+rotation_deg = np.degrees(np.arctan2(correction_similarity.d, correction_similarity.a))
+print(
+    f"\nSimilarity fit: scale {scale:.4f}  rotation {rotation_deg:.3f} deg  "
+    f"translation ({correction_similarity.c:.1f}, {correction_similarity.f:.1f}) m"
+)
 
 # %% [markdown]
-# ## Apply the correction and compare via the existing blink overlay
+# ## Apply each correction and compare via the existing blink overlay
 #
-# `apply_correction` composes the fitted transform with the WAC raster's own georeferencing and
-# resamples back onto its original grid, so it drops straight into the *existing*
-# `plotting.plot_overlay_toggle` blink comparator with no further plumbing changes -- both the
-# uncorrected and corrected overlays are shown below for direct comparison. A blink comparator is
-# the right tool for judging a shift this small (a few pixels): far more sensitive than a static
-# side-by-side crop.
+# `apply_correction` composes an `affine.Affine` fit (similarity or full affine -- both are affine,
+# so it handles either identically) with the WAC raster's own georeferencing and resamples back onto
+# its original grid; `apply_homography_correction` does the projective equivalent for the homography
+# fit (see its own docstring for why a homography needs a different code path). All three corrected
+# rasters drop straight into the *existing* `plotting.plot_overlay_toggle` blink comparator with no
+# further plumbing changes. A blink comparator is the right tool for judging a shift this small (a
+# few pixels): far more sensitive than a static side-by-side crop.
 
 # %%
-corrected_wac_path = pose_alignment.apply_correction(
-    wac_path, correction, entry.per_image_config.output_dir / "alignment" / "wac_corrected.tif"
+alignment_dir = entry.per_image_config.output_dir / "alignment"
+corrected_similarity_path = pose_alignment.apply_correction(
+    wac_path, correction_similarity, alignment_dir / "wac_corrected_similarity.tif"
+)
+corrected_affine_path = pose_alignment.apply_correction(
+    wac_path, correction_affine, alignment_dir / "wac_corrected_affine.tif"
+)
+corrected_homography_path = pose_alignment.apply_homography_correction(
+    wac_path, homography, alignment_dir / "wac_corrected_homography.tif"
 )
 
 # %%
 plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap")
 
 # %%
-plotting.plot_overlay_toggle(basemap_path, corrected_wac_path, title="Tie-point-corrected WAC over basemap")
+plotting.plot_overlay_toggle(basemap_path, corrected_similarity_path, title="Similarity-corrected WAC over basemap")
+
+# %%
+plotting.plot_overlay_toggle(basemap_path, corrected_affine_path, title="Affine-corrected WAC over basemap")
+
+# %%
+plotting.plot_overlay_toggle(basemap_path, corrected_homography_path, title="Homography-corrected WAC over basemap")
