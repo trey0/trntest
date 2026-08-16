@@ -28,14 +28,18 @@ end-to-end against the current default dataset candidate.
 Requires `opencv-python-headless` for SIFT/RANSAC (`cv2`) -- not needed anywhere else in this
 project, added as a real dependency specifically for this module."""
 
+import functools
 from pathlib import Path
 
 import affine
 import cv2
+import lightglue
+import lightglue.utils
 import numpy as np
 import rasterio
 import rasterio.warp
 import rasterio.windows
+import torch
 
 from trntest.lunaserv import pad_bbox
 
@@ -271,6 +275,70 @@ def match_features(
         return pts1_h, pts2_h
     inliers_f = mask_f.ravel().astype(bool)
     return pts1_h[inliers_f], pts2_h[inliers_f]
+
+
+@functools.cache
+def _lightglue_models() -> tuple[lightglue.DISK, lightglue.LightGlue]:
+    """Constructs (and, via `functools.cache`, memoizes process-wide) the DISK extractor + LightGlue
+    matcher -- both load real pretrained weights over the network on first use (see
+    docs/data-sources.md's "LightGlue tie-point matching" section), so this avoids
+    re-downloading/re-initializing them on every `match_features_lightglue` call within one process.
+
+    DISK, not SuperPoint (LightGlue's more commonly-used pairing): SuperPoint's inference code and
+    pretrained weights carry a proprietary-style notice, not a standard permissive license -- see
+    docs/data-sources.md for the full reasoning behind this choice."""
+    return lightglue.DISK(max_num_keypoints=2048).eval(), lightglue.LightGlue(features="disk").eval()
+
+
+def match_features_lightglue(
+    from_image: np.ndarray,
+    from_valid: np.ndarray,
+    to_image: np.ndarray,
+    to_valid: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Matches `from_image` against `to_image` (both `to_uint8_for_matching`'s output) via DISK
+    (deep-learned local features) + LightGlue (a learned, attention-based matcher) instead of
+    `match_features`'s classical SIFT+ratio-test+RANSAC pipeline -- tried specifically to push match
+    count/quality higher for more challenging future EDRs (shadowed terrain, low texture) than SIFT
+    can reliably deliver. Unlike `match_features`, this doesn't run the raw uint8 images through
+    `_sobel_edges` first: DISK/LightGlue are deep features trained directly on natural RGB/grayscale
+    imagery (not edge maps), and are already designed to be more robust to cross-sensor appearance
+    changes than classical descriptors, so feeding them the same edge-filtered input `match_features`
+    needs would be fighting what they were actually trained on, not helping them -- an empirical
+    question worth revisiting if match quality doesn't hold up in practice, not a settled one.
+
+    Also unlike `match_features`, this doesn't run its own homography/fundamental-matrix RANSAC
+    verification pass afterward -- LightGlue is specifically designed to output high-precision
+    matches directly (its own `filter_threshold`, not a separate geometric check, is what LightGlue's
+    own paper reports doing that job), and every caller of this function's output already runs its
+    own RANSAC when fitting a correction (`fit_similarity_correction`/`fit_affine_correction`/
+    `fit_homography_correction`), so a redundant geometric-verification pass here would just be
+    duplicated work, not additional safety.
+
+    Returns `(from_points_px, to_points_px)`, same contract as `match_features` (same-length arrays
+    of matched `(x, y)` pixel coordinates in each input image's own pixel space) -- a drop-in
+    alternative anywhere `match_features` is used."""
+    extractor, matcher = _lightglue_models()
+
+    with torch.no_grad():
+        feats0 = extractor.extract(lightglue.utils.numpy_image_to_torch(from_image))
+        feats1 = extractor.extract(lightglue.utils.numpy_image_to_torch(to_image))
+        matches01 = matcher({"image0": feats0, "image1": feats1})
+
+    feats0, feats1, matches01 = (lightglue.utils.rbd(x) for x in (feats0, feats1, matches01))
+    matches = matches01["matches"].numpy()
+    pts0 = feats0["keypoints"].numpy()[matches[:, 0]]
+    pts1 = feats1["keypoints"].numpy()[matches[:, 1]]
+
+    # Defensive valid-pixel filter, same concern `_sobel_edges`'s own masking addresses for SIFT: a
+    # keypoint can still land right at a nodata/padding boundary even though the network was fed
+    # already-zeroed invalid pixels.
+    rows0 = np.clip(pts0[:, 1].round().astype(int), 0, from_valid.shape[0] - 1)
+    cols0 = np.clip(pts0[:, 0].round().astype(int), 0, from_valid.shape[1] - 1)
+    rows1 = np.clip(pts1[:, 1].round().astype(int), 0, to_valid.shape[0] - 1)
+    cols1 = np.clip(pts1[:, 0].round().astype(int), 0, to_valid.shape[1] - 1)
+    valid = from_valid[rows0, cols0] & to_valid[rows1, cols1]
+    return pts0[valid].astype(np.float32), pts1[valid].astype(np.float32)
 
 
 def pixel_points_to_map(points_px: np.ndarray, transform: rasterio.Affine) -> np.ndarray:

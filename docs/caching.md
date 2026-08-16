@@ -22,6 +22,7 @@ cache/
   robbins_craters/lunar_crater_database_robbins_2018.zip   (one whole file, ~92MB -- see docs/data-sources.md)
   isis_ck_resolution/<edr_product>.json   (persisted spiceinit CK resolution -- see below)
   naif_latest_metakernel/<year>.txt   (persisted "latest metakernel" resolution -- see below)
+  torch/hub/checkpoints/...   (LightGlue/DISK pretrained weights -- see below)
 ```
 
 `isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
@@ -158,3 +159,18 @@ different caching shape than the rest of this project, worth calling out explici
   archived or re-fetched fresh each session — but genuinely worth knowing before running `archive.sh`
   without thinking about it, unlike the rest of this project's cache contents, which are small enough
   not to matter either way.
+
+## LightGlue/DISK pretrained-weight caching
+
+`src/trntest/pose_alignment.py`'s `match_features_lightglue` (see `docs/data-sources.md`'s
+"LightGlue tie-point matching" section) loads two real pretrained-weight files on first use — the
+LightGlue matcher's own weights (fetched from a `github.com/cvg/LightGlue` release via
+`torch.hub.load_state_dict_from_url`) and DISK's extractor weights (fetched via
+`kornia.feature.DISK.from_pretrained`, which also routes through `torch.hub` internally) — tens of
+MB total, not a "one whole big file" case like Astropedia above. Both follow `torch.hub`'s own
+caching convention (a stable path keyed by filename, skipped on a second call), not
+`cache.cached_get` — this project doesn't own that fetch code, unlike everything above. `docker/
+Dockerfile` sets `TORCH_HOME=/workspace/cache/torch` so that cache lands under this project's own
+shared `cache/` (survives container rebuilds, same as everything else here) instead of torch's own
+default `~/.cache/torch`, which would live inside the container and be silently re-fetched on every
+rebuild otherwise.

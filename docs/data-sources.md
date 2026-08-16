@@ -1153,3 +1153,53 @@ synthetic camera's boresight directly at that real point (`camera.look_at_rotati
 against the original SPICE X axis for roll). See `docs/history.md`'s dated entry for the full
 investigation, including the (built, then reverted) correction-rotation attempt and why live
 validation caught it before it shipped.
+
+## LightGlue tie-point matching
+
+`src/trntest/pose_alignment.py`'s `match_features_lightglue` is a second feature-matcher option
+alongside the module's original SIFT-based `match_features` (see `docs/history.md`'s dated entries
+for the pose-alignment investigation this module is part of) — a deep-learned local-feature
+extractor (DISK) + learned matcher (LightGlue) pair, tried specifically to push match count/quality
+higher for more challenging future EDRs (shadowed terrain, low texture) than classical SIFT can
+reliably deliver.
+
+- **No official PyPI package.** `cvg/LightGlue`'s own `pyproject.toml` declares `version = "0.0"`
+  and reads dependencies from a separate `requirements.txt`; the upstream-documented install is
+  `git clone` + `pip install -e .`. `docker/Dockerfile` instead installs directly from a pinned git
+  commit (`lightglue @ git+https://github.com/cvg/LightGlue.git@<sha>`) for reproducibility — a
+  floating `@main` reference would silently change behavior on every image rebuild.
+- **Installed `--no-deps`, deliberately not listed in `pyproject.toml`'s own `dependencies`.**
+  LightGlue's `requirements.txt` (`torch`, `torchvision`, `numpy`, `opencv-python`, `matplotlib`,
+  `kornia`) would otherwise reinstall `opencv-python` alongside this project's own
+  `opencv-python-headless` — both provide the `cv2` import and collide on install (confirmed: this
+  is a real, known footgun, not a hypothetical one — pip/uv resolve them as two independently-named
+  packages and don't detect the import-name clash, so both get installed and silently
+  overwrite each other's files depending on install order). This project supplies `torch`/
+  `torchvision` (CPU-only wheels, see `docker/Dockerfile`'s comment) and `kornia` (plain PyPI)
+  itself instead, plus `opencv-python-headless` already covers the `cv2` import LightGlue's own code
+  needs at import time (`lightglue/utils.py`, `lightglue/disk.py`, `lightglue/sift.py` all `import
+  cv2` at module load — confirmed via direct inspection of the pinned commit's source, since
+  `lightglue/__init__.py` eagerly imports every extractor submodule regardless of which one is
+  actually used, so all of their import-time dependencies apply unconditionally: `torchvision` is a
+  hard dependency too, via `aliked.py`'s `torchvision.ops.deform_conv2d`, even though this project
+  only uses DISK).
+- **DISK, not SuperPoint, as the local-feature extractor** — SuperPoint is the more commonly-used
+  LightGlue pairing in tutorials/benchmarks, but its inference file and pretrained weights (`lightglue/
+  superpoint.py`, adapted from Magic Leap's original release) carry a proprietary-style notice ("The
+  receipt or possession of this source code and/or related information does not convey or imply any
+  rights to reproduce, disclose or distribute its contents, or to manufacture, use, or sell anything
+  that it may describe"), not a standard permissive OSS license — a real constraint for a repo pushed
+  publicly. DISK (Apache-2.0) and ALIKED (BSD-3-Clause) are the other two extractors LightGlue ships
+  pretrained weights for, comparable match quality to SuperPoint in the paper's own benchmarks;
+  DISK was chosen as the direct drop-in with no further licensing question. Explicit user decision,
+  not assumed.
+- **Pretrained weights** (LightGlue matcher + DISK extractor) are fetched from a `github.com/cvg/
+  LightGlue` release and via `kornia.feature.DISK.from_pretrained` respectively, both through
+  `torch.hub` — cached under `TORCH_HOME` (`docker/Dockerfile` sets this to `/workspace/cache/torch`,
+  see `docs/caching.md`'s own section on this), tens of MB total, fetched once.
+- **CPU-only**: confirmed via direct inspection of the pinned commit's source that no file in the
+  LightGlue/DISK code path attempts to compile or load a custom CUDA extension at import or runtime
+  — `aliked.py`'s `torchvision.ops.deform_conv2d` (the one op that could plausibly need a CUDA
+  build) works fine on CPU tensors. Real published CPU benchmark: ~20 FPS at 512 keypoints on an
+  Intel i7 10700K — this project isn't latency-sensitive (a one-shot notebook cell, not a real-time
+  loop), so CPU-only is a straightforward choice, no GPU passthrough needed in `docker-compose.yml`.
