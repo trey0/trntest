@@ -3092,3 +3092,172 @@ high-pass quantitative comparison after the user caught the initial "clean" read
 valid-coverage/runtime measurements (all above); full `pytest` suite (179 tests) passes; `trntest-
 lint` clean; real Docker re-run of `image_generation.ipynb` end to end, no errors (Phase 6B's
 `cam2map` call now taking ~21s vs. ~15s pre-fix, matching the measured `PATCHSIZE=1` cost).
+
+## Phase 50 (2026-08-16) — Maneuver detection for TRN-OD dataset selection, from a data-set
+selection discussion
+
+Started from the user wanting to think through dataset selection for TRN-based orbit determination
+testing: images used as OD input need to be maneuver-free in between, but there's no known public
+source for LRO's flight-dynamics team's own maneuver log ("small forces file"). Worked through this
+in stages, each one informing the next:
+
+1. **`lrodv` CK kernel spike (negative result)**: NAIF's yearly LRO metakernels split CK pointing
+   into five flavors, one of which (`lrodv`) is documented as "delta-V/maneuver attitude" -- a
+   plausible-looking public proxy for maneuver timing, worth checking before building anything more
+   elaborate. Checked file coverage for 2010/2012/2018 (`spice_kernels.parse_metakernel` against
+   each year's manifest): all three years have exactly 12 `lrodv` files, same ~30-33 day
+   contiguous, overlapping cadence as `lrolc` (routine WAC pointing) -- i.e. continuous coverage
+   across the whole year, not short files clustered around discrete burns. Ruled out as a
+   maneuver-timing signal.
+2. **Literature research**: found Mesarch, "Long-Term Orbit Operations for the Lunar Reconnaissance
+   Orbiter," AAS-23-234 (2023), NTRS 20230010952 -- see `docs/data-sources.md`'s new "LRO maneuver
+   detection" section for the full facts pulled from it. Key finding: LRO's orbit has had **zero
+   stationkeeping maneuvers since 2016** (an unmaintained "drift" orbit ever since), and that
+   paper's own Eclipse Phasing Maneuver table has a gap covering all of H2 2019 -- so H2 2019
+   (which also happens to encompass this repo's fixture EDR, `M1329714703CE`, 2019-11-30) can only
+   contain small (~0.05-0.3 m/s) reaction-wheel momentum-unload events, if anything.
+3. **Discontinuity-detection experiment**: the user asked whether momentum unloads specifically
+   (not just the far larger, already-ruled-out stationkeeping burns) could be detected directly from
+   LRO's public reconstructed-orbit SPK, given they'd corrupt a TRN-OD solve just as much as a
+   bigger burn would. Sampled the osculating two-body semi-major axis (`spice.oscltx`) at 2-minute
+   cadence across H2 2019 and compared it before/after each sample over a one-orbital-period window
+   (cancels most of the periodic gravity-driven oscillation, isolates real persistent steps) --
+   found 12 clean candidates, 0.07-0.25 m/s each, 11-30 days apart, matching the paper's "every 2-4
+   weeks" cadence and 0.05-0.3 m/s magnitude almost exactly. A real, working signal, not noise --
+   the plot showed sharp, isolated spikes 5-15x above the noise floor between events.
+4. **Consolidation**: turned the spike into `src/trntest/maneuver_detection.py`
+   (`detect_discontinuities`/`sample_osculating_semimajor_axis`/`find_maneuver_candidates`/
+   `ManeuverCandidate`/`candidate_utc`) with real test coverage, per the user's request to
+   consolidate before adding tests. `detect_discontinuities` itself is pure/SPICE-free (plain numpy
+   over an already-sampled series), letting most of the test suite (synthetic-input false-positive/
+   injected-step/two-separated-steps/too-short-series cases) run fast, matching this repo's existing
+   fast-test philosophy. The two real-SPICE tests -- rerunning the H2 2019 check as an actual
+   assertion, plus a new positive-control check against a short 2010 window (pre-frozen-orbit,
+   correctly finds real >2 m/s stationkeeping-scale events, confirming the detector isn't just
+   tuned to the small H2 2019 case) -- need live SPICE kernels and NAIF network access, which this
+   repo's existing test suite had never needed before.
+
+That last point motivated a new project-wide capability: **a `@pytest.mark.heavy` split**, since
+`pytest`'s existing documented contract ("nothing that needs live SPICE kernels, network access, or
+the ASP binaries") would otherwise have been broken by this pair of tests. Added the `heavy` pytest
+marker (`pyproject.toml`, with `addopts = "-m 'not heavy'"` so plain `pytest` is unaffected -- a
+later `-m heavy` on the command line overrides that default, the standard idiom for this), plus
+`scripts/run_heavy_tests.sh` (thin wrapper around `docker compose run --rm demo pytest -m heavy`,
+since heavy tests need the Docker image's spiceypy + real network access, unlike the rest of the
+suite). Documented in README's Tests section. This is a reusable pattern for any future test that
+legitimately needs the real Docker/SPICE/network stack, not just this module's.
+
+One real debugging detour worth recording: the first version of the synthetic-input fast tests used
+a perfectly analytic sinusoid with no noise, which made the before/after median diff *exactly* 0.0
+at every non-injected-step sample -- degenerating the MAD-based threshold to exactly 0.0 too (via
+`detect_discontinuities`'s own `threshold <= 0` guard, added for exactly this "no signal at all"
+edge case) and silently suppressing detection of the real injected step as well. Fixed by adding a
+tiny (1m std) noise floor to the synthetic series, matching what any real reconstructed SPK actually
+looks like (never *exactly* periodic) -- a good reminder that an idealized synthetic test can be
+*less* representative than the real data it's meant to stand in for.
+
+`maneuver_detection.py` is not yet wired into `dataset.select_dataset()`'s candidate filtering --
+still a standalone tool (`find_maneuver_candidates(start_dt, end_dt, config)`) for vetting a
+candidate date range by hand, per `docs/plan.md`'s architecture table entry.
+
+Verified: `scripts/run_heavy_tests.sh tests/test_maneuver_detection.py` (2 heavy tests) and plain
+`pytest tests/test_maneuver_detection.py` (4 fast tests) both pass in Docker; full default `pytest`
+run (183 tests) still passes with the 2 heavy tests correctly deselected; `trntest-lint` clean
+(`ruff format`/`ruff check`/`mypy`) on all new/changed files.
+
+## Phase 51 (2026-08-16) — Maneuver detection: replaced (a, e, i) with (h, eps), fixing a real
+literature-confirmed blind spot
+
+Follow-on to Phase 50, same day. The user raised a sharp objection to the single-channel (semi-major
+axis only) detector: a reaction-wheel momentum unload's net impulse has 3 DOF of direction, and if
+it's orthogonal to the velocity vector (purely radial or purely normal), it does zero work and
+wouldn't show up in `a` at all -- proposed generalizing to a weighted Euclidean norm over 3 orbital
+parameters, guessing `(a, e, i)` as the right set.
+
+Working through the physics (Gauss's variational equations) confirmed the concern was not just
+plausible but *specifically already true in the literature*: Mesarch et al., AAS-23-234, states
+outright that early-mission momentum unloads were flown "in the +/- orbit normal direction to
+minimize the along-track perturbative effects of firing LRO's ACS thrusters" -- i.e. deliberately
+designed to be invisible to exactly the along-track/energy-based check Phase 50 shipped. `(a, e, i)`
+was a reasonable first guess but has its own gap: inclination's Gauss-equation sensitivity to a
+normal impulse is scaled by `cos(argument of latitude)` and vanishes at node crossings -- a momentum
+unload, firing whenever momentum happens to build up, has no reason to avoid that phase, so `i` alone
+would just relocate the blind spot rather than close it.
+
+Reconsidered the approach entirely rather than bolting a 3rd channel onto the existing 2 (per the
+user's explicit invitation to do so): dropped classical orbital elements altogether in favor of two
+quantities with *exact* (not Gauss-equation-linearized) impulse response --
+
+- **Specific angular momentum `h = r x v`**: `Delta h = r x Delta v` exactly, for any impulse size,
+  since position is unchanged mid-burn. This is a *linear*, always-exact map with a clean, phase-
+  INDEPENDENT null on the radial component only (`r x (anything parallel to r) = 0`, always -- not
+  "at certain orbital phases"). Tracking the full 3-vector (not a derived scalar like inclination)
+  is what avoids the node-crossing blind spot `i` alone would have.
+- **Specific orbital energy `eps = v^2/2 - GM/r`**: `Delta eps = v.Delta v` to an excellent
+  approximation (the `|Delta v|^2/2` correction is 3+ orders of magnitude smaller at these burn
+  scales) -- captures the radial+tangential sensitivity `h` structurally can't.
+
+Detection: same before/after one-orbital-period median-window diff as Phase 50, generalized to all 4
+channels (h_x, h_y, h_z, eps) at once, each normalized by its own robust (MAD-based) noise floor and
+combined via quadrature (`sqrt(sum of squared per-channel z-scores)`) -- self-calibrating rather than
+needing hand-derived, phase-dependent analytic sensitivity weights (the user's original "weight by
+sensitivity" instinct, just derived empirically per-channel instead of analytically per-element).
+Bonus this enabled: at each detected peak, the observed `(Delta h, Delta eps)` can be inverted
+(weighted least squares) to reconstruct an actual 3D impulse estimate, decomposed into
+radial/tangential/normal (RTN) components -- replacing the old tangential-only magnitude estimate,
+which would have been systematically wrong (too small) for exactly the normal-dominant events this
+redesign now detects.
+
+Rewrote `src/trntest/maneuver_detection.py` around this (dropped `spice.oscltx`/osculating elements
+entirely -- just `spkezr` state vectors now, actually simpler than before) and rebuilt
+`tests/test_maneuver_detection.py`'s fast tests on a real RK4-integrated two-body propagator with
+directly injected impulses (radial/tangential/normal each isolated), rather than the old ad hoc
+sinusoid-plus-step synthetic series -- a much stronger fixture, and directly demonstrates the fix:
+a purely-normal injected impulse (the literature-documented blind spot) is now correctly detected and
+attributed, which the old single-channel version structurally could not do.
+
+Three real bugs found and fixed via this rebuild, each informative in its own right:
+
+1. **Sign flip in the first tangential-impulse test attempt**: the test injected the impulse along
+   `v0`'s direction *at periapsis* (t=0), but the injection point (`MID_SAMPLE`) landed near
+   apoapsis, where the local velocity direction is reversed -- an exact-magnitude, opposite-sign
+   result was the tell. Fixed by computing the injection direction from an unperturbed reference
+   propagation *at the actual injection point*, not the initial state. A test bug, not a detector bug.
+2. **Spurious near-duplicate candidates from window-edge ripple**: with very clean synthetic noise,
+   the sliding before/after window comparison produced two extra candidates a few micro-m/s in
+   magnitude (six orders of magnitude below the real 0.2 m/s injected event) a few minutes after the
+   real one, as the window transitioned past the step in slightly different ways. Fixed by skipping a
+   full window past each detected peak (not just past the immediate contiguous over-threshold run)
+   before resuming the scan -- real distinct maneuvers are always far more than one window apart, so
+   this can't merge two genuine events.
+3. **A real numerical instability, caught by the heavy H2-2019 test, not a synthetic one**: an
+   unregularized weighted least-squares solve reported +373 m/s *radial* for the first H2 2019
+   candidate (2019-07-02) -- an SVD check confirmed why: near apsis, `v_R -> 0`, so BOTH `[r x]`
+   (always) and `v.dv` (there specifically) lose sensitivity to the radial direction at once, giving
+   the weighted measurement matrix a singular value ~3.6e-6x its largest -- far too small to trust,
+   but not literally machine-precision-zero, so `numpy.linalg.lstsq`'s default `rcond=None` cutoff
+   didn't truncate it, and ordinary least-squares amplified whatever noise was in that direction into
+   a wildly implausible number. Fixed with an explicit `rcond=1e-2` cutoff, which correctly reports
+   ~0 for that direction instead. Following up on this quantitatively (checking the actual singular
+   values at the point of *maximum* radial velocity for LRO's real ~0.02 eccentricity, not just right
+   at apsis) revealed the gap is broader than "narrow, apsis-adjacent" as first assumed: for an orbit
+   this close to circular, radial-impulse recovery is weak (a few percent conditioning) essentially
+   everywhere, not just in a brief window near periapsis/apoapsis passage -- updated the module
+   docstring and the corresponding fast test (`test_detect_discontinuities_finds_radial_impulse_
+   without_blowing_up`, renamed from `_finds_radial_impulse`) to assert detection-without-blowup
+   rather than accurate radial recovery, which isn't achievable here.
+
+The rebuilt detector then surfaced a genuinely new, substantive finding on real data, not just a
+robustness improvement: several H2 2019 candidates are **normal-direction-dominant**, up to ~2.1 m/s
+total -- several times larger than the ~0.07-0.25 m/s the old tangential-only estimate reported for
+the *same dates*, since that estimate was structurally blind to exactly the component driving them.
+Cross-checked against a short 2010 window (pre-frozen-orbit): real stationkeeping pairs are
+unmistakable (`combined_z` in the hundreds, ~5.2-5.6 m/s, tangential-dominant, alternating sign,
+~2h38m apart -- matching the paper's "~3 hours" and posigrade/retrograde description almost exactly),
+cleanly separated from momentum-unload-scale candidates in the same window (`combined_z` single-to-
+low-double-digits). Updated `docs/data-sources.md`'s "LRO maneuver detection" section and
+`docs/plan.md`'s architecture table entry with the new method and this finding.
+
+Verified: all 5 fast + 2 heavy tests in `tests/test_maneuver_detection.py` pass (heavy via
+`scripts/run_heavy_tests.sh`); full default `pytest` (184 tests) passes with heavy tests correctly
+deselected; `trntest-lint` clean (`ruff format`/`ruff check`/`mypy`) on all changed files.

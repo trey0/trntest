@@ -75,6 +75,13 @@ DEFAULT_WAC_VIS_COLOR_FOV_DEG = 61.4
 DEFAULT_MOON_RADIUS_KM = 1737.4
 DEFAULT_MOON_RADIUS_M = DEFAULT_MOON_RADIUS_KM * 1000.0
 
+# GRAIL-derived lunar GM (DE430/DE440), km^3/s^2 -- not available via spice.bodvrd from any kernel
+# this project furnishes (pck00010.tpc has body radii/orientation, not GM), so kept as a plain
+# constant here rather than resolved from SPICE. Only consumer is maneuver_detection.py's osculating
+# two-body element computation, where its precision is irrelevant next to the cm/s-scale signal
+# being detected.
+DEFAULT_MOON_GM_KM3_S2 = 4902.80007
+
 # Working-grid resolution (the per-camera local Orthographic CRS both the ortho and the final,
 # locally-reprojected DEM share) -- despite the name, this no longer also governs the DEM's own
 # *fetch* resolution from Lunaserv (see `dem_native_ppd`/`lunaserv_dem_srs` below); it's fetched
@@ -175,6 +182,7 @@ class TrntestConfig:
     image_size: int = DEFAULT_IMAGE_SIZE
     wac_vis_color_fov_deg: float = DEFAULT_WAC_VIS_COLOR_FOV_DEG
     moon_radius_km: float = DEFAULT_MOON_RADIUS_KM
+    moon_gm_km3_s2: float = DEFAULT_MOON_GM_KM3_S2
     dem_target_gsd_m: float = DEFAULT_DEM_TARGET_GSD_M
     dem_padding_fraction: float = DEFAULT_DEM_PADDING_FRACTION
 

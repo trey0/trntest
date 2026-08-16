@@ -111,7 +111,15 @@ pytest
 
 Covers the pure/deterministic logic (geometry helpers, config resolution, byte-layout unpacking,
 `Session`'s delegation) — nothing that needs live SPICE kernels, network access, or the ASP
-binaries, so it runs anywhere the dev dependencies are installed.
+binaries, so it runs anywhere the dev dependencies are installed. Tests needing any of that (real
+SPICE kernel furnishing, live NAIF fetches — e.g. `tests/test_maneuver_detection.py`'s ground-truth
+checks against real LRO trajectory data) are marked `@pytest.mark.heavy` and excluded from this
+default run (`pyproject.toml`'s `addopts`); run them inside Docker instead:
+
+```sh
+scripts/run_heavy_tests.sh              # all heavy tests
+scripts/run_heavy_tests.sh -k maneuver  # or narrow with normal pytest args
+```
 
 ## Git pre-commit hook
 
