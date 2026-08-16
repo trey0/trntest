@@ -3261,3 +3261,44 @@ low-double-digits). Updated `docs/data-sources.md`'s "LRO maneuver detection" se
 Verified: all 5 fast + 2 heavy tests in `tests/test_maneuver_detection.py` pass (heavy via
 `scripts/run_heavy_tests.sh`); full default `pytest` (184 tests) passes with heavy tests correctly
 deselected; `trntest-lint` clean (`ruff format`/`ruff check`/`mypy`) on all changed files.
+
+## Phase 52 (2026-08-16, `feature/alignment` branch, not merged to `main`) — Preserved the tie-point
+pose-alignment spike as real, checked-in code
+
+Continuation of Phase 49's alignment investigation, done live via ad hoc shell commands and scratch
+scripts (not committed) -- the user asked to get it to a real, reproducible, checked-in state before
+going further. Consolidated into `src/trntest/pose_alignment.py` (a new module: `to_uint8_for_matching`,
+`crop_to_footprint`, `match_features`, `pixel_points_to_map`, `fit_similarity_correction`,
+`apply_correction`) plus `notebooks/pose_alignment_spike.py`/`.ipynb`, a real notebook exercising the
+whole pipeline against the current default dataset candidate. Added `opencv-python-headless` (for
+`cv2`'s SIFT/RANSAC -- not needed anywhere else in this project) and `affine` (already an indirect
+`rasterio` dependency, now direct since this module imports it itself) to `pyproject.toml`; `cv2`
+needed a `follow_imports = "skip"` mypy override (its bundled stubs are real but incomplete/
+inconsistent with the runtime API -- a genuine `SIFT_create` attr-defined error, not a "module not
+found" case `ignore_missing_imports` would fix) plus one inline `# type: ignore` the override alone
+didn't clear.
+
+Two real design points surfaced turning the spike into real code, both from direct user pushback,
+kept in the module's own docstrings so they don't get silently re-litigated later: (1) matching two
+already-map-projected rasters directly needs `crop_to_footprint` to bound the basemap down to the
+WAC's own real extent first -- confirmed empirically to matter for match quality, not just compute;
+and (2) `fit_similarity_correction` uses a similarity transform (translation+rotation+uniform scale)
+*not* because that's asserted as the physically correct model -- a real 6-DOF camera pose error on a
+pushframe sensor's extended-exposure capture doesn't map cleanly onto any fixed 2D DOF count, so
+that would be overclaiming -- but as the simplest starting point for interpretability, with richer
+models an explicitly open empirical question for later, contingent on having enough well-distributed
+tie points to support them without overfitting.
+
+Real, checked-in-code run against the current default candidate: 106 matched points, 53 inliers
+under the similarity fit (145m mean inlier residual vs. 651m mean if the 53 outliers are forced to
+fit) -- broadly consistent with the live spike's own numbers (which used a slightly different
+basemap footprint/crop), confirming the module correctly reproduces the investigation, not just that
+it runs. Deliberately **not merged into `main`** -- pushed to its own `feature/alignment` branch,
+since this is still an unvalidated exploratory approach (see `docs/plan.md`'s open items), not a
+finished pipeline feature.
+
+Verified: full `pytest` suite (185 tests, 6 new for `pose_alignment.py` covering each function with
+deterministic synthetic fixtures, including a real recovered-known-shift check for `match_features`
+itself, not just the pure-math functions) passes; `trntest-lint` clean (`ruff format`/`check`, mypy,
+notebook sync); real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors;
+extracted and visually inspected both blink-overlay GIF outputs from the real executed notebook.

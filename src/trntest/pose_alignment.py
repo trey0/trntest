@@ -1,0 +1,266 @@
+"""Tie-point-based pose/registration correction for a map-projected raster (e.g. the real-WAC
+Phase 6B overlay, `isis_wac.run_cam2map_for_crop`'s output) against a trusted reference raster
+already in the same map projection (e.g. `dem_ortho_result.ortho`) -- feature-match the two rasters,
+fit a 2D correction from the matches, and apply it to the source raster's own georeferencing.
+
+This exists because the real-WAC overlay is visibly not perfectly aligned with the basemap (small,
+"not huge" per direct user observation) -- see `docs/plan.md`'s open items ("camera-pose alignment")
+for the full research trail this module is the result of, including why the two most obvious
+approaches don't apply here: ASP's own `bundle_adjust`/`pc_align`/`image_align` route corrects
+cameras via ASP's `mapproject`, which is the CSM/Pushframe path already abandoned elsewhere in this
+project for a confirmed severe bug; and ISIS's own `jigsaw` + `findfeatures` (the architecturally
+"right" tool, real USGS-documented practice for single-image space resection against a basemap) hits
+a real, unresolved blocker where its control-point-construction step discards every match regardless
+of `TARGET=`/`GEOMTYPE=` settings, likely because the basemap here is a plain GDAL-exported GeoTIFF,
+not something ISIS itself map-projected.
+
+This module works entirely in 2D image/map space instead, sidestepping both: match two already
+map-projected, same-CRS rasters directly (no camera model, no ISIS control network), fit a 2D
+correction, and apply it to the source raster's own affine transform. **Not a finished, validated
+pipeline feature** -- this is the preserved, checked-in form of an exploratory spike (see
+`docs/history.md`'s dated entry), kept on its own branch pending further validation, not wired into
+`image_generation.py`'s main pipeline. `notebooks/pose_alignment_spike.py` exercises this module
+end-to-end against the current default dataset candidate.
+
+Requires `opencv-python-headless` for SIFT/RANSAC (`cv2`) -- not needed anywhere else in this
+project, added as a real dependency specifically for this module."""
+
+from pathlib import Path
+
+import affine
+import cv2
+import numpy as np
+import rasterio
+import rasterio.warp
+import rasterio.windows
+
+from trntest.lunaserv import pad_bbox
+
+# ISIS's own nodata/special-pixel sentinel convention for float32 rasters this project already
+# reads without `masked=True` in a few places (e.g. `plotting.valid_pixel_mask`'s own threshold) --
+# matched here rather than reinvented, since `isis_wac.run_cam2map_for_crop`'s own output uses it.
+_FLOAT_NODATA_MAGNITUDE_THRESHOLD = 1e30
+
+# cv2.BFMatcher.knnMatch(k=2)'s own fixed neighbor count -- a descriptor with fewer than this many
+# candidate neighbors can't be ratio-tested at all, not an independently tunable minimum.
+_KNN_NEIGHBORS_FOR_RATIO_TEST = 2
+# Minimum point correspondences each RANSAC geometric model needs to be fit at all (a property of
+# the models themselves, not a chosen tuning knob): 4 for a homography, 8 for the fundamental
+# matrix's 8-point algorithm.
+_MIN_POINTS_FOR_HOMOGRAPHY = 4
+_MIN_POINTS_FOR_FUNDAMENTAL_MATRIX = 8
+
+
+def to_uint8_for_matching(raster_path, percentile: float = 99.9) -> tuple[np.ndarray, np.ndarray]:
+    """Reads band 1 of `raster_path` and returns `(uint8_image, valid_mask)`, ready for OpenCV
+    feature matching -- OpenCV's feature detectors need 8-bit input (confirmed empirically: its TIFF
+    reader can't even load a raw float32 GeoTIFF, e.g. `isis_wac.run_cam2map_for_crop`'s calibrated
+    I/F output). A plain 0/`percentile`-th-percentile linear stretch over the *valid* pixels only
+    (matching `plotting`'s own stretch convention elsewhere in this project) -- computing the
+    percentile over the whole array, including large invalid/nodata regions (e.g. a mapprojected
+    crop's own padding outside its real rotated footprint), would be a no-op here since nodata reads
+    as a huge-magnitude sentinel, but is avoided on principle since it's the wrong statistic
+    regardless of this particular sentinel's value. Invalid pixels come back as `0` in the returned
+    image and `False` in `valid_mask`."""
+    with rasterio.open(raster_path) as src:
+        data = src.read(1).astype("float64")
+    valid = np.isfinite(data) & (np.abs(data) < _FLOAT_NODATA_MAGNITUDE_THRESHOLD)
+    vmax = np.percentile(data[valid], percentile)
+    scaled = np.zeros_like(data)
+    scaled[valid] = np.clip(data[valid] / vmax * 255, 0, 255)
+    return scaled.astype("uint8"), valid
+
+
+def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fraction: float = 0.15) -> Path:
+    """Crops `reference_path` (e.g. the basemap ortho, typically much larger than the area actually
+    being compared) down to `footprint_source_path`'s own real valid-data bounding box, padded by
+    `pad_fraction` (via `lunaserv.pad_bbox`, reused rather than reinvented -- same "pad generously"
+    convention this project already uses for WMS fetch AOIs). Matching the two rasters' real extent
+    like this matters for feature matching specifically: an unmatched, much-larger reference frame
+    gives OpenCV's matcher a far larger, mostly-irrelevant search space to false-match against,
+    confirmed empirically to hurt match quality, not just waste compute."""
+    with rasterio.open(footprint_source_path) as src:
+        data = src.read(1)
+        valid = np.isfinite(data) & (np.abs(data.astype("float64")) < _FLOAT_NODATA_MAGNITUDE_THRESHOLD)
+        rows = np.where(valid.any(axis=1))[0]
+        cols = np.where(valid.any(axis=0))[0]
+        r0, r1, c0, c1 = rows.min(), rows.max(), cols.min(), cols.max()
+        minx, maxy = src.transform * (c0, r0)
+        maxx, miny = src.transform * (c1, r1)
+
+    padded = pad_bbox((minx, miny, maxx, maxy), pad_fraction)
+    with rasterio.open(reference_path) as src:
+        window = rasterio.windows.from_bounds(*padded, transform=src.transform)
+        data = src.read(1, window=window)
+        out_transform = src.window_transform(window)
+        profile = src.profile.copy()
+        profile.update(height=data.shape[0], width=data.shape[1], transform=out_transform)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(data, 1)
+    return out_path
+
+
+def _sobel_edges(image: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Sobel gradient-magnitude, percentile-normalized over valid pixels only (see
+    `to_uint8_for_matching` for why: normalizing over the whole array lets a large invalid/padding
+    region's own sharp valid/invalid boundary dominate the stretch and wash out real content
+    contrast) -- confirmed empirically necessary here: without masking, WAC keypoint counts came out
+    an order of magnitude lower (848 vs. 40000+) due to exactly this. Matches `findfeatures`'
+    `FILTER=SOBEL` option, used for the same reason: the WAC crop and the basemap are different
+    sensors/processing pipelines with different tone curves, and edge/gradient content is far more
+    consistent across that gap than raw intensity is."""
+    gx = cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    vmax = np.percentile(mag[valid], 99.5)
+    out = np.clip(mag / vmax * 255, 0, 255).astype("uint8")
+    out[~valid] = 0
+    return out
+
+
+def match_features(
+    from_image: np.ndarray,
+    from_valid: np.ndarray,
+    to_image: np.ndarray,
+    to_valid: np.ndarray,
+    ratio: float = 0.8,
+    ransac_reproj_threshold_px: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Matches `from_image` against `to_image` (both `to_uint8_for_matching`'s output) via SIFT on
+    Sobel-filtered versions of each (see `_sobel_edges`), a mutual (both-directions) Lowe's ratio
+    test, and two RANSAC geometric-consistency passes (homography, then epipolar/fundamental
+    matrix) -- the same pipeline ISIS's own `findfeatures` uses internally (confirmed by matching its
+    reported match counts closely: 47 vs. its own 46 on the same real image pair), reimplemented
+    directly in OpenCV because `findfeatures` doesn't expose raw matched pixel coordinates, only
+    summary counts, and (separately, see the module docstring) its own control-point-construction
+    step doesn't work with this project's plain-GeoTIFF basemap regardless.
+
+    Returns `(from_points_px, to_points_px)`, same-length arrays of matched `(x, y)` pixel
+    coordinates in each input image's own pixel space -- convert to real map coordinates via each
+    raster's own `rasterio` transform before comparing the two (they're different crops with
+    different origins, so raw pixel coordinates aren't directly comparable -- see
+    `pixel_points_to_map`)."""
+    sift = cv2.SIFT_create()  # type: ignore[attr-defined]  # real at runtime; cv2's bundled stubs miss it
+    from_edges = _sobel_edges(from_image, from_valid)
+    to_edges = _sobel_edges(to_image, to_valid)
+    kp1, des1 = sift.detectAndCompute(from_edges, None)
+    kp2, des2 = sift.detectAndCompute(to_edges, None)
+
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+    matches_12 = bf.knnMatch(des1, des2, k=2)
+    matches_21 = bf.knnMatch(des2, des1, k=2)
+
+    def _ratio_test(matches, ratio):
+        good = {}
+        for pair in matches:
+            if len(pair) < _KNN_NEIGHBORS_FOR_RATIO_TEST:
+                continue
+            m, n = pair
+            if m.distance < ratio * n.distance:
+                good[(m.queryIdx, m.trainIdx)] = m
+        return good
+
+    good_12 = _ratio_test(matches_12, ratio)
+    good_21 = _ratio_test(matches_21, ratio)
+    symmetric = [m for (q, t), m in good_12.items() if (t, q) in good_21]
+
+    pts1 = np.array([kp1[m.queryIdx].pt for m in symmetric], dtype=np.float32)
+    pts2 = np.array([kp2[m.trainIdx].pt for m in symmetric], dtype=np.float32)
+    if len(pts1) < _MIN_POINTS_FOR_HOMOGRAPHY:
+        return pts1, pts2
+
+    _, mask_h = cv2.findHomography(pts1, pts2, cv2.RANSAC, ransac_reproj_threshold_px)
+    inliers_h = mask_h.ravel().astype(bool)
+    pts1_h, pts2_h = pts1[inliers_h], pts2[inliers_h]
+    if len(pts1_h) < _MIN_POINTS_FOR_FUNDAMENTAL_MATRIX:
+        return pts1_h, pts2_h
+
+    _, mask_f = cv2.findFundamentalMat(pts1_h, pts2_h, cv2.FM_RANSAC, ransac_reproj_threshold_px, 0.99)
+    if mask_f is None:
+        return pts1_h, pts2_h
+    inliers_f = mask_f.ravel().astype(bool)
+    return pts1_h[inliers_f], pts2_h[inliers_f]
+
+
+def pixel_points_to_map(points_px: np.ndarray, transform: rasterio.Affine) -> np.ndarray:
+    """Converts `(x, y)` pixel coordinates (as returned by `match_features`) to real map coordinates
+    via `transform` (a raster's own `rasterio` affine transform) -- the necessary step before
+    comparing points from two different rasters, since two independently-cropped rasters don't share
+    a pixel origin even when they share a CRS/scale."""
+    xs, ys = transform * (points_px[:, 0], points_px[:, 1])
+    return np.stack([xs, ys], axis=1).astype("float64")
+
+
+def fit_similarity_correction(
+    from_points_map: np.ndarray, to_points_map: np.ndarray, ransac_threshold_m: float = 300.0
+) -> tuple[affine.Affine, np.ndarray, np.ndarray]:
+    """Fits a similarity transform (translation + rotation + uniform scale -- 4 degrees of freedom,
+    via `cv2.estimateAffinePartial2D`'s own internal RANSAC) that maps `from_points_map` onto
+    `to_points_map`, both real map-coordinate arrays (see `pixel_points_to_map`). Similarity, not a
+    full 8-DOF homography (`match_features`'s own internal RANSAC passes use homography/epipolar
+    models, appropriate *there* for match verification, not for this fit): deliberately the
+    *simplest* plausible correction model to start from, not asserted as the physically "correct"
+    one -- a real camera pose error has 6 degrees of freedom before even accounting for this being a
+    pushframe sensor's extended-exposure capture (potentially more, if pose drifts during the
+    exposure), and the mapping from those onto a 2D map-space distortion isn't simple or
+    one-to-one, so there's no first-principles case that similarity (or any fixed DOF count) is
+    exactly right. Start simple for interpretability; escalate to a richer model (full affine,
+    homography) only if there are enough independent, well-distributed tie points to support it
+    without just overfitting noise -- an empirical question, not one this function decides.
+
+    Returns `(correction, inlier_mask, residuals_m)`: `correction` is an `affine.Affine` mapping
+    `from_points_map`-space coordinates onto the fitted `to_points_map`-space location (apply it to
+    a raster's own transform via `apply_correction`); `inlier_mask` marks which input points RANSAC
+    accepted; `residuals_m` is each point's real distance (meters, or whatever unit the input map
+    coordinates are in) from where the fitted transform predicts it should land, for *all* input
+    points including outliers (so callers can inspect how bad the rejected points really are, not
+    just how good the accepted ones are)."""
+    src = from_points_map.astype("float32")
+    dst = to_points_map.astype("float32")
+    matrix, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_threshold_m)
+    correction = affine.Affine(*matrix[0], *matrix[1])
+    predicted = (matrix[:, :2] @ from_points_map.T).T + matrix[:, 2]
+    residuals_m = np.linalg.norm(predicted - to_points_map, axis=1)
+    return correction, inliers.ravel().astype(bool), residuals_m
+
+
+def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Path:
+    """Applies `correction` (from `fit_similarity_correction`) to `src_raster_path`'s own real
+    georeferencing and resamples it back onto its own original pixel grid -- so the output drops
+    into `plotting.plot_overlay`/`plot_overlay_toggle` exactly like the uncorrected raster did, no
+    further plumbing changes needed. Composes `correction` with the source's existing transform
+    (`correction * src_transform`, i.e. "first go from pixel to the original, possibly-wrong map
+    position, then apply the fitted correction") and resamples via `rasterio.warp.reproject`, not a
+    bare metadata edit: a metadata-only fix would be valid for a translation-only correction (the
+    pixel grid stays rectilinear), but a real fitted rotation/scale component would leave the raster's
+    own affine transform non-rectilinear in a way `plotting.py`'s `rioxarray`/`xarray`-based display
+    path isn't set up to handle (it assumes a plain north-up grid throughout this project, matching
+    every other raster this pipeline produces) -- reprojecting onto the original grid keeps that
+    assumption true regardless of what the fitted correction turns out to contain."""
+    with rasterio.open(src_raster_path) as src:
+        data = src.read(1)
+        src_transform = src.transform
+        src_crs = src.crs
+        nodata = src.nodata if src.nodata is not None else -3.4028235e38
+        corrected_src_transform = correction * src_transform
+
+        out = np.full_like(data, nodata)
+        rasterio.warp.reproject(
+            source=data,
+            destination=out,
+            src_transform=corrected_src_transform,
+            src_crs=src_crs,
+            dst_transform=src_transform,
+            dst_crs=src_crs,
+            src_nodata=nodata,
+            dst_nodata=nodata,
+            resampling=rasterio.warp.Resampling.bilinear,
+        )
+        profile = src.profile.copy()
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(out, 1)
+    return out_path

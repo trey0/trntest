@@ -351,11 +351,17 @@ changes against them.
   single images, but a real `findfeatures` spike found its control-point-construction step discards
   every match regardless of `TARGET=`/`GEOMTYPE=` settings — likely because the basemap is a plain
   GDAL-exported GeoTIFF, not something ISIS itself map-projected, so it lacks whatever ISIS-native
-  geometry metadata that step needs (not yet confirmed or fixed). A hand-rolled OpenCV
-  reimplementation of the same matching (SIFT + ratio/symmetry/RANSAC/epipolar, reproducing
-  `findfeatures`' own ~46 match count) showed real-world offset scatter between matched pairs (std
-  344m vs. mean 659m, individual distances 88m–1.6km) too large to trust as a clean pose-correction
-  input as-is. Not picked back up yet.
+  geometry metadata that step needs (not yet confirmed or fixed).
+  **In progress, on `feature/alignment` (not merged to `main`)**: a from-scratch 2D approach
+  sidestepping both blockers — `src/trntest/pose_alignment.py` feature-matches the already
+  map-projected WAC crop directly against the basemap (no camera model, no ISIS control network),
+  fits a similarity transform (translation+rotation+uniform scale, deliberately the simplest
+  plausible model, not asserted as physically correct — see the module's own docstring) via RANSAC,
+  and applies it to the WAC raster's own georeferencing so it drops into the existing
+  `plotting.plot_overlay_toggle` unmodified. `notebooks/pose_alignment_spike.py` exercises the whole
+  pipeline against the current default candidate: 106 matches, 53 real inliers (145m mean residual
+  vs. 651m for the 43 rejected outliers if forced to fit) — a real signal, not yet validated enough
+  to wire into the main pipeline. See `docs/history.md`'s dated entry.
 
 ## Development history
 

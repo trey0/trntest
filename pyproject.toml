@@ -21,6 +21,8 @@ dependencies = [
     "pvl",
     "ipython",
     "pillow",
+    "affine",
+    "opencv-python-headless",
 ]
 
 [project.optional-dependencies]
@@ -96,3 +98,13 @@ check_untyped_defs = true
 [[tool.mypy.overrides]]
 module = ["spiceypy.*", "rasterio.*", "pandas.*", "geopandas.*", "shapely.*", "pvl.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# cv2 ships its own bundled stubs (so it isn't a "missing imports" case `ignore_missing_imports`
+# above would fix) but they're incomplete/inconsistent enough with the real runtime API (confirmed:
+# a real `SIFT_create` attr-defined error and several cascading arg-type errors from functions that
+# genuinely exist and work at runtime) to be actively misleading rather than helpful here --
+# `follow_imports = "skip"` treats the whole module as untyped `Any` instead, same practical effect
+# as `ignore_missing_imports` but for a "found, wrong stubs" module rather than a "not found" one.
+module = ["cv2.*"]
+follow_imports = "skip"
