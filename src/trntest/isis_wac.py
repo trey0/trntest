@@ -667,20 +667,39 @@ def run_cam2map_for_crop(
     crop's own real footprint, matching how `sat_sim`/`mapproject` never render more than the
     camera's own FOV either.
 
-    **`WARPALGORITHM=forwardpatch PATCHSIZE=4`, not the `AUTOMATIC` default.** ISIS's own docs say
-    `AUTOMATIC` is "recommended... for push frame cameras" (it picks `FORWARDPATCH` with
-    `PATCHSIZE` set to the full framelet height, 14, specifically so a patch never crosses a
-    framelet boundary) -- but confirmed empirically this leaves large, real diagonal gaps at this
-    map resolution: `AUTOMATIC`'s patches fit an affine transform per patch from its four corners,
-    and *silently drop* any patch whose affine fit isn't within 0.1px of the camera model's own
-    computation (per `cam2map -help`'s parameter docs) -- a 14-line-tall patch apparently fails that
-    check for roughly half the framelets here (confirmed present even on the *full*, uncropped cube,
-    not just the crop -- see the module docstring). A much smaller `PATCHSIZE=4` (explicit
-    `FORWARDPATCH`, since `PATCHSIZE` is locked/ignored under `AUTOMATIC`) fits each small patch
-    accurately enough to pass that check everywhere tested: overall valid coverage went from ~47%
-    to ~71% (matching the crop's own real footprint, no more diagonal gaps), while content stayed
-    essentially identical (crop-vs-full correlation 0.9954 with this patch size, vs. 0.9999986 at
-    the default -- both excellent; the tiny drop is patch-fit noise, not a correctness regression).
+    **`WARPALGORITHM=forwardpatch PATCHSIZE=1`, not the `AUTOMATIC` default (or a larger explicit
+    `PATCHSIZE`).** ISIS's own docs say `AUTOMATIC` is "recommended... for push frame cameras" (it
+    picks `FORWARDPATCH` with `PATCHSIZE` set to the full framelet height, 14, specifically so a
+    patch never crosses a framelet boundary) -- but confirmed empirically this leaves large, real
+    diagonal gaps at this map resolution: `AUTOMATIC`'s patches fit an affine transform per patch
+    from its four corners, and *silently drop* any patch whose affine fit isn't within 0.1px of the
+    camera model's own computation (per `cam2map -help`'s parameter docs) -- a 14-line-tall patch
+    apparently fails that check for roughly half the framelets here (confirmed present even on the
+    *full*, uncropped cube, not just the crop -- see the module docstring). A smaller explicit
+    `PATCHSIZE` (since `PATCHSIZE` is locked/ignored under `AUTOMATIC`) fits each small patch
+    accurately enough to pass that check everywhere tested: overall valid coverage goes from ~47%
+    (`AUTOMATIC`) to ~71% (matching the crop's own real footprint, no more diagonal gaps) at any
+    `PATCHSIZE` from 1-4.
+
+    **`PATCHSIZE=1` specifically, not the `4` an earlier version of this used**: a real, visible
+    striping artifact in the mapprojected output -- found while investigating a real-WAC/basemap
+    overlay misalignment the user noticed, confirmed via a direct `PATCHSIZE` sweep (1/2/4/8/14) on
+    the same crop at native resolution -- gets markedly worse at `PATCHSIZE=8`/`14`, and `PATCHSIZE=1`
+    is a real, visible improvement over the `4` this pipeline used before. **Not a complete fix**: a
+    high-pass (Gaussian-blur-subtracted) comparison against the old `PATCHSIZE=4` output found only a
+    modest ~2.4% reduction in fine-scale energy, and a faint residual pattern remains visible at
+    `PATCHSIZE=1` on close inspection -- consistent with genuine, modest photometric discontinuities
+    where the resampled product transitions between adjacent framelets (an inherent, small artifact
+    of any patch-based warp), not the more severe missing/bad-data-looking pattern `PATCHSIZE=4`
+    showed. `PATCHSIZE=4` was originally chosen using only an aggregate crop-vs-full-cube correlation
+    number (0.9954 vs. 0.9999986 at the ISIS default) and dismissed as "patch-fit noise, not a
+    correctness regression" -- correlation is a poor diagnostic for a *structured*,
+    spatially-concentrated artifact like this, since it's dominated by the much larger unaffected
+    bulk of the image, not the boundary pixels where the artifact actually lives. `PATCHSIZE=1` costs
+    real runtime (~16s vs. ~10s for this crop, confirmed timed) but doesn't trade away coverage at
+    all (71.39% vs. 71.38%, essentially identical) -- a real, worthwhile improvement, just not a
+    complete elimination; diminishing returns past this point. See `docs/history.md`'s dated entry
+    for the full striping investigation.
 
     Converts the resulting multi-band cube (WAC VIS carries 5 filter bands) to a single-band GeoTIFF
     via `gdal_translate -b 1`, matching this pipeline's existing band-1 convention
@@ -703,7 +722,7 @@ def run_cam2map_for_crop(
             "pixres=map",
             "defaultrange=camera",
             "warpalgorithm=forwardpatch",
-            "patchsize=4",
+            "patchsize=1",
         ]
     )
 

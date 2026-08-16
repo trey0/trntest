@@ -3037,3 +3037,58 @@ three affected notebooks end to end (`along_track_correction.ipynb`, `hapke_hill
 `image_generation.ipynb`), no errors; confirmed directly (not just assumed) that
 `image_generation.ipynb`'s own `dem_ortho_result.ortho` now resolves to
 `ortho_shaded_hapke_atc.tif`, the new default's real filename.
+
+## Phase 49 (2026-08-16) — Found and substantially reduced a real `cam2map` striping artifact in
+6B, found while investigating camera-pose alignment
+
+Started from the user noticing the real-WAC/basemap overlay (6B) wasn't perfectly aligned and asking
+whether ASP's bundle-adjustment tools could correct the underlying SPICE-derived pose (see
+`docs/plan.md`'s open items for the full alignment-tooling research trail: `bundle_adjust`/
+`image_align` conflict with the already-abandoned CSM/`mapproject` Pushframe bug; ISIS's own
+`jigsaw`+`findfeatures` space-resection-against-a-basemap route being architecturally sound but
+blocked on cross-sensor feature matching, itself explored via a real `findfeatures` spike -- see
+that section for the matching investigation's own outcome). While visually checking the WAC image at
+native resolution (not the earlier full-frame view, where it wasn't visible), a real, structured
+striping artifact turned up in `isis_wac.run_cam2map_for_crop`'s output -- distinct from, and not
+fixed by, the already-known dead-column framestitch artifact (confirmed by applying
+`plotting._fill_dead_columns_for_display`'s interpolation to a real copy of the source cube via
+GDAL's ISIS3 driver `rw+` support and re-running `cam2map`: zero visible change).
+
+Root-caused via a direct `PATCHSIZE` sweep (1/2/4/8/14) re-running `cam2map` on the same crop cube,
+same native-resolution zoomed region: the striping gets markedly worse at `PATCHSIZE=8`/`14`, and
+`PATCHSIZE=1` looked clean in an initial percentile-stretched comparison against the existing
+pipeline default (`PATCHSIZE=4`, chosen in an earlier phase using only an aggregate crop-vs-full
+correlation number) -- confirming this is a `cam2map` warp-patch-boundary artifact, not something in
+the source data. **Not a complete fix, caught by direct user visual inspection of the real pipeline
+output** (not the earlier ad hoc comparison files): a faint residual striping remains visible at
+`PATCHSIZE=1` on close inspection. Quantified with a high-pass (Gaussian-blur-subtracted) comparison
+against the old `PATCHSIZE=4` output: only a modest ~2.4% reduction in fine-scale energy (std 0.00256
+vs. 0.00262) -- real, but far more modest than the initial "clean" read suggested. Judged (by the
+user) consistent with genuine, modest photometric discontinuities at framelet transitions, inherent
+to any patch-based warp, not the more severe missing/bad-data-looking pattern `PATCHSIZE=4` showed --
+and a reasonable stopping point, diminishing returns past here. `PATCHSIZE=1` costs real runtime
+(~16s vs. ~10s for one crop, confirmed timed) but no coverage trade-off (71.39% vs. 71.38%,
+essentially identical) -- a real, worthwhile improvement, just not full elimination. Changed
+`run_cam2map_for_crop`'s `PATCHSIZE=4` to `PATCHSIZE=1`.
+
+Also notable from the alignment side-investigation itself (kept here rather than a separate entry,
+since the striping fix was its main actionable outcome): a `findfeatures` spike matching the
+mapprojected WAC crop against the basemap found real feature-matching machinery working correctly
+(thousands of keypoints, dozens of matches surviving ratio/symmetry/RANSAC/epipolar verification),
+but ISIS's control-point-construction step discarding 100% of them regardless of `TARGET=`/
+`GEOMTYPE=` settings tried -- traced to the basemap being a plain GDAL-exported GeoTIFF rather than
+something ISIS itself map-projected, so it lacks whatever ISIS-native geometry metadata that step
+needs, independent of the striping issue. A hand-rolled OpenCV reimplementation of the same matching
+pipeline (needed since `findfeatures` doesn't expose raw match coordinates) reproduced the same ~46
+match count, but real-world offset statistics between matched pairs (mean 659m, std 344m, individual
+distances spanning 88m-1.6km) showed far too much scatter to represent a single clean rigid pose
+correction -- likely a mix of some real correspondences buried in false matches, not a usable
+control-point set as-is. Camera-pose alignment itself remains unresolved; this phase's concrete
+result is the striping fix, which matters independent of the pose question for any real use of the
+mapprojected WAC output.
+
+Verified: real `PATCHSIZE` sweep with side-by-side native-resolution visual comparison, a follow-up
+high-pass quantitative comparison after the user caught the initial "clean" read overstating it, and
+valid-coverage/runtime measurements (all above); full `pytest` suite (179 tests) passes; `trntest-
+lint` clean; real Docker re-run of `image_generation.ipynb` end to end, no errors (Phase 6B's
+`cam2map` call now taking ~21s vs. ~15s pre-fix, matching the measured `PATCHSIZE=1` cost).

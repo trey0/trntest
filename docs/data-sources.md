@@ -936,10 +936,23 @@ model even on the known-good full cube) had missed both. Full investigation (see
   that check was failing for roughly half the framelets here (confirmed on the *full* cube too, not
   crop-specific — a raw boolean-grid dump of the output, not a coarse row/column average, is what
   actually revealed the real diagonal gap bands; coarse averaging was too blunt to catch it).
-  **Fix**: explicit `WARPALGORITHM=forwardpatch PATCHSIZE=4` — verified coverage went from ~47% to
-  ~71% (matching the crop's real footprint, no more gaps) with content correlation still excellent
-  (0.9954, vs. 0.9999986 at the broken default — the small drop is patch-fit noise, not a real
-  regression).
+  **Fix (partial — see caveat below)**: explicit `WARPALGORITHM=forwardpatch PATCHSIZE=1` — verified
+  coverage went from ~47% to ~71% (matching the crop's real footprint, no more gaps), same as any
+  `PATCHSIZE` from 1-4. An earlier version of this fix used `PATCHSIZE=4`, verified only by aggregate
+  crop-vs-full-cube correlation (0.9954 vs. 0.9999986 at the broken default) and judged good enough —
+  that correlation check missed a second, real problem the same way the original coverage check did:
+  a visible striping artifact, confirmed via a direct `PATCHSIZE` sweep (1/2/4/8/14 at native
+  resolution) to get markedly worse at 8/14, with `PATCHSIZE=1` a real, visible improvement over the
+  `4` this pipeline used before — aggregate correlation is dominated by the much larger unaffected
+  bulk of the image, not the boundary pixels where a structured artifact like this actually
+  concentrates. **Not a complete fix**: a high-pass (Gaussian-blur-subtracted) comparison found only
+  a modest ~2.4% reduction in fine-scale energy between `PATCHSIZE=1` and the old `PATCHSIZE=4`, and
+  a faint residual remains visible on close inspection at `PATCHSIZE=1` — direct user visual
+  confirmation matches this: consistent with genuine, modest photometric discontinuities at framelet
+  transitions (inherent to any patch-based warp), not the more severe missing/bad-data-looking
+  pattern `PATCHSIZE=4` showed. Diminishing returns past this point — not pursued further.
+  `PATCHSIZE=1` costs real runtime (~16s vs. ~10s for one crop) but no coverage trade-off (71.39% vs.
+  71.38%, essentially identical).
 - **Position residual — real at the time, since found to not be reproducible (see "ISIS's own LRO
   kernel database" below for the full Phase 27 follow-up)**. Even after the fixes above, the crop's
   designated center pixel (checked directly via `campt`, not just an aggregate valid-pixel centroid)

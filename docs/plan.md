@@ -327,6 +327,34 @@ changes against them.
   raises if literally none resolve), which is the right behavior for a candidate this display doesn't
   suit well, rather than something to chase with more geometry machinery. See `docs/history.md`'s
   dated entry.
+- **Resolved (partially — see "Open" below)**: 6B's real-WAC/basemap overlay is visibly not
+  perfectly aligned (small, "not huge" per direct user observation). Investigated whether an ASP
+  bundle-adjustment tool could correct the SPICE-derived pose via feature-matching against the
+  basemap. **Found a real, unrelated bug, substantially (not fully) improved**:
+  `isis_wac.run_cam2map_for_crop`'s own `PATCHSIZE=4` (chosen in an earlier phase using only an
+  aggregate crop-vs-full correlation number) introduces a real, visible striping artifact —
+  confirmed via a direct `PATCHSIZE` sweep (1/2/4/8/14) at native resolution; switched to
+  `PATCHSIZE=1` (no coverage trade-off, ~6s/crop runtime cost). A high-pass quantitative check found
+  only a modest ~2.4% reduction in fine-scale energy versus the old default, and a faint residual
+  remains visible on close inspection — judged consistent with genuine, modest photometric
+  discontinuities at framelet transitions (inherent to any patch-based warp), not the more severe
+  missing/bad-data-looking pattern `PATCHSIZE=4` showed, and a reasonable stopping point (diminishing
+  returns past here). Distinct from, and not fixed by, the already-known framestitch dead-column
+  artifact — confirmed by patching that artifact out of a real cube copy (via GDAL's ISIS3 `rw+`
+  write support) and re-running `cam2map`: zero visible change. See `docs/history.md`'s dated entry.
+  **Open**: the actual camera-pose-correction question itself is unresolved. Research trail: ASP's
+  standard `bundle_adjust`/`pc_align`/`image_align` recipe applies corrections via ASP's own
+  `mapproject`, which is the CSM/Pushframe route already abandoned elsewhere in this pipeline for a
+  confirmed severe bug — a dead end. ISIS's own `jigsaw` + `findfeatures` (space resection against a
+  basemap, staying camera-model-native) is architecturally sound and USGS-documented practice for
+  single images, but a real `findfeatures` spike found its control-point-construction step discards
+  every match regardless of `TARGET=`/`GEOMTYPE=` settings — likely because the basemap is a plain
+  GDAL-exported GeoTIFF, not something ISIS itself map-projected, so it lacks whatever ISIS-native
+  geometry metadata that step needs (not yet confirmed or fixed). A hand-rolled OpenCV
+  reimplementation of the same matching (SIFT + ratio/symmetry/RANSAC/epipolar, reproducing
+  `findfeatures`' own ~46 match count) showed real-world offset scatter between matched pairs (std
+  344m vs. mean 659m, individual distances 88m–1.6km) too large to trust as a clean pose-correction
+  input as-is. Not picked back up yet.
 
 ## Development history
 
