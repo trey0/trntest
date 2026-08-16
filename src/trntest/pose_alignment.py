@@ -16,9 +16,12 @@ not something ISIS itself map-projected.
 
 This module works entirely in 2D image/map space instead, sidestepping both: match two already
 map-projected, same-CRS rasters directly (no camera model, no ISIS control network), fit a 2D
-correction, and apply it to the source raster's own affine transform. **Not a finished, validated
-pipeline feature** -- this is the preserved, checked-in form of an exploratory spike (see
-`docs/history.md`'s dated entry), kept on its own branch pending further validation, not wired into
+correction, and apply it to the source raster's own affine transform. **Validated, but not wired
+into the main pipeline**: direct user visual inspection of the homography-corrected blink overlay
+confirmed the correspondences this module finds are real, not RANSAC accepting noise (see
+`docs/history.md`'s dated entries) -- concluded as the deliberate stopping point for this 2D
+approach, with the next real step being a proper projection-informed (camera-model) alignment
+rather than further refinement here, so this stays a standalone tool, not wired into
 `image_generation.py`'s main pipeline. `notebooks/pose_alignment_spike.py` exercises this module
 end-to-end against the current default dataset candidate.
 

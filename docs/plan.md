@@ -352,8 +352,8 @@ changes against them.
   every match regardless of `TARGET=`/`GEOMTYPE=` settings — likely because the basemap is a plain
   GDAL-exported GeoTIFF, not something ISIS itself map-projected, so it lacks whatever ISIS-native
   geometry metadata that step needs (not yet confirmed or fixed).
-  **In progress, on `feature/alignment` (not merged to `main`)**: a from-scratch 2D approach
-  sidestepping both blockers — `src/trntest/pose_alignment.py` feature-matches the already
+  **Implemented, not yet wired into the main pipeline**: a from-scratch 2D approach sidestepping
+  both blockers — `src/trntest/pose_alignment.py` feature-matches the already
   map-projected WAC crop directly against the basemap (no camera model, no ISIS control network),
   fits a similarity transform (translation+rotation+uniform scale, deliberately the simplest
   plausible model, not asserted as physically correct — see the module's own docstring) via RANSAC,

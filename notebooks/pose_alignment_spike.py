@@ -22,8 +22,12 @@
 # into that (see `docs/plan.md`'s open items, "camera-pose alignment", for the full research trail:
 # why ASP's `bundle_adjust`/`pc_align`/`image_align` and ISIS's own `jigsaw`+`findfeatures` routes
 # both hit real blockers, and `docs/history.md`'s dated entries for how this notebook's own approach
-# was arrived at). **Not a finished, validated pipeline feature** -- this stays on its own branch,
-# not wired into `image_generation.py`'s main pipeline, until the approach is validated further.
+# was arrived at). **Validated, but not wired into the main pipeline** -- direct user visual
+# inspection of the homography-corrected blink overlay below confirmed the correspondences this
+# notebook finds are real, not RANSAC accepting noise (see `docs/history.md`'s dated entries),
+# concluded as the deliberate stopping point for this 2D approach; the next real step is a proper
+# projection-informed (camera-model) alignment, not further refinement here, so this stays a
+# standalone tool, not wired into `image_generation.py`'s main pipeline.
 #
 # The approach, implemented in `src/trntest/pose_alignment.py`: feature-match the already
 # map-projected WAC crop directly against the basemap (both already in the same map projection, no
