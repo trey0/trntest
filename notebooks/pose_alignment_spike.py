@@ -28,7 +28,7 @@
 # The approach, implemented in `src/trntest/pose_alignment.py`: feature-match the already
 # map-projected WAC crop directly against the basemap (both already in the same map projection, no
 # camera model needed for the matching step itself; downsampled first to the WAC crop's own real
-# native resolution -- see the "Crop the basemap" section below, and `docs/history.md`'s Phase 51
+# native resolution -- see the "Crop the basemap" section below, and `docs/history.md`'s Phase 53
 # entry for why), fit a 2D correction from the matches via RANSAC, apply it to the WAC raster's own
 # georeferencing, and compare the result against the basemap via the *existing*, unmodified
 # `plotting.plot_overlay_toggle` blink comparator.
@@ -40,7 +40,7 @@
 # accounting for this being a pushframe sensor's extended-exposure capture, and the mapping from
 # those onto a 2D map-space distortion isn't simple or one-to-one, so there's no first-principles
 # case that any fixed DOF count is exactly right; richer models were left for later specifically
-# until there were enough well-distributed inliers to support them without overfitting (Phase 51's
+# until there were enough well-distributed inliers to support them without overfitting (Phase 53's
 # downsampling fix raised that count from 53 to 91). See `fit_similarity_correction`'s own docstring
 # for the full rationale.
 
@@ -147,7 +147,7 @@ print(f"Range: {raw_distances_m.min():.0f}m - {raw_distances_m.max():.0f}m")
 # from outliers -- report both, not just the inliers, since how bad the rejected points really are
 # is itself useful information about match-set quality.
 #
-# Phase 51's native-resolution downsampling raised the default candidate's inlier count from 53 to
+# Phase 53's native-resolution downsampling raised the default candidate's inlier count from 53 to
 # 91 -- enough to make a first real attempt at the richer models `fit_similarity_correction`'s own
 # docstring always left open: `fit_affine_correction` (6 DOF: independent x/y scale and shear, not
 # just uniform scale) and `fit_homography_correction` (8 DOF: full projective). All three are fit

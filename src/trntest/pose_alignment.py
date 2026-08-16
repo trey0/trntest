@@ -295,7 +295,7 @@ def fit_similarity_correction(
     exactly right. Start simple for interpretability; escalate to a richer model (`fit_affine_correction`,
     `fit_homography_correction`) only if there are enough independent, well-distributed tie points to
     support it without just overfitting noise -- an empirical question, not one this function decides
-    (Phase 51's native-resolution downsampling raised the default candidate's inlier count from 53 to
+    (Phase 53's native-resolution downsampling raised the default candidate's inlier count from 53 to
     91, motivating the first real attempt at those richer models -- see `docs/history.md`'s dated
     entry for what that comparison found).
 

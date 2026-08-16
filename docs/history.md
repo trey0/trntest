@@ -3303,12 +3303,12 @@ itself, not just the pure-math functions) passes; `trntest-lint` clean (`ruff fo
 notebook sync); real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors;
 extracted and visually inspected both blink-overlay GIF outputs from the real executed notebook.
 
-## Phase 51 (2026-08-16, same `feature/alignment` branch) — Matching at the WAC crop's real native
+## Phase 53 (2026-08-16, same `feature/alignment` branch) — Matching at the WAC crop's real native
 resolution instead of the interpolated 100 m/px working grid, substantially improves match count and
 per-pixel residual
 
 Prompted by a direct user question about input quality rather than a further correction-model
-change: is Phase 50's map-projected WAC crop grossly oversampled for feature matching? A direct
+change: is Phase 52's map-projected WAC crop grossly oversampled for feature matching? A direct
 measurement (`cam2map PIXRES=camera`, no map-file override, on the current default candidate) found
 the crop's own real native resolution is **184 m/px** -- confirmed independently via the pipeline's
 already-ray-traced cross-track/along-track ground geometry (211 m/px cross-track, 151 m/px
@@ -3354,10 +3354,10 @@ decision to adopt the similarity-transform correction as a finished pipeline fea
 Verified: full `pytest` suite (189 tests, 4 new for `pose_alignment.py`) passes; `trntest-lint`
 clean; real Docker re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors.
 
-## Phase 52 (2026-08-16, same `feature/alignment` branch) — Full affine and homography fits confirm
+## Phase 54 (2026-08-16, same `feature/alignment` branch) — Full affine and homography fits confirm
 the tie-point correspondences are real: visually validated, exercise concluded here
 
-With Phase 51's native-resolution downsampling giving 91 inliers (up from 53), the module's own
+With Phase 53's native-resolution downsampling giving 91 inliers (up from 53), the module's own
 long-standing "richer model, once there are enough points" deferral (`fit_similarity_correction`'s
 docstring) had a real dataset to test against. Added `fit_affine_correction` (6 DOF: independent
 x/y scale + shear, via `cv2.estimateAffine2D`) and `fit_homography_correction` (8 DOF: full

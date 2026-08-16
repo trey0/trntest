@@ -378,7 +378,7 @@ changes against them.
   projection-informed alignment (an actual camera-model correction — fixing the SPICE-derived pose
   directly, or the `jigsaw`/`findfeatures` space-resection route above, now with real evidence a
   correction is warranted at all) rather than continuing to refine this 2D homography spike further.
-  Not picked up yet. See `docs/history.md`'s dated entries (Phases 50–52) for the full trail.
+  Not picked up yet. See `docs/history.md`'s dated entries (Phases 52–54) for the full trail.
 
 ## Development history
 
