@@ -3692,3 +3692,66 @@ only source text.
 
 Verified: full `pytest` suite (209 tests) passes; `trntest-lint --all` clean (`ruff format`/
 `ruff check`/`mypy`/notebook sync/notebook warnings) across every file, not just the changed ones.
+
+## Phase 60 (2026-08-17, `feature/reproject` branch, not merged) — Building `reproject`, the third
+`TrnTestImage` type, found and fixed a real synthetic-camera FOV bug along the way
+
+Started on the third, reserved-but-unbuilt `TrnTestImage` type (`docs/dataset-plan.md`): `sat_sim`
+fed by the real WAC crop's own reflectance (`isis_wac.run_cam2map_for_crop`) instead of the Lunaserv
+basemap, through the *same* synthetic camera as `hillshade` (byte-identical pose/FOV/intrinsics,
+so the two are directly comparable) -- per the user's own framing, "use `sat_sim` but for input data
+use the RDR of our WAC crop essentially." User flagged upfront that the synthetic FOV might not
+reliably stay inside the real WAC swath and asked to test on one real image first, rather than
+assume.
+
+That instinct was right. First live test (`M1327210646CE`) found a real, asymmetric `NODATA` gap:
+96.3% overall valid, but the outer edge ring only 79.4%, bottom two corners 53-58%, and (per direct
+user visual inspection of the render) the entire bottom row empty, "thicker" at the top. Root-caused
+to two coupled effects (both confirmed by decomposing real ground positions into cross-track/
+along-track components, not just eyeballing): (1) `build_camera()`'s `fv = fu` calibrates the
+along-track FOV to a flat, non-perspective target (`n_frames_for_square_crop * km_per_frame`) but
+renders it through the same real ray-traced perspective projection `fu`'s own cross-track target
+uses -- a real, confirmed ~4.2km/2.8% overshoot; (2) even after fixing that alone, the far corners
+stayed elongated *cross-track* too (~81-82km vs. the crop's own near-constant ~70km), because a
+corner ray combines both angular offsets at once and lands farther out in *both* components the more
+oblique it is -- a coupling a standard 4-parameter pinhole (`fu,fv,cu,cv`) can't fully separate,
+since `fu` can't depend on `py`. Two earlier, partial fix attempts (symmetric `fv` shrink; then an
+asymmetric `fv`/`cv` solve against the along-track edge *midpoint*) each helped some but plateaued
+around 75-82% at the worst corner -- diagnosed and moved past each, not just tuned further.
+
+**Fix that reached 100%**: shrink `fu` by a tuned `FU_SCALE` (0.93), then solve `fv`/`cv`
+independently by ray-tracing the actual *corner* (both offsets together, not just one axis) against
+the real crop's own measured near/far corner ground truth (`entry.crop_footprint`, real ISIS
+`campt`), with an additional `AT_MARGIN` (0.93) shrink -- both deliberately conservative per the
+user's own explicit call mid-investigation: "we can accept a bit of arbitrary shrinkage on the frame
+sensor FOV if that's what it takes to solve the problem reliably... there is some variation due to
+terrain and we would want to build in a bit of margin in any case." Result on the one tested image:
+valid pixels 96.3% -> 100.0%, worst corner 53.6% -> 100.0%.
+
+**Two other things found along the way**: (1) a real process bug -- the spike notebook's early cells
+called `dataset.populate(limit=1)` before grabbing `entry = dataset[0]`; since entry 0 already had
+`crop`+`hillshade` from a prior `image_generation.ipynb` run, `populate(limit=1)` silently advanced
+to the next *undone* entry instead and did real, unintended Lunaserv/Astropedia fetches + ISIS
+generation on 3 unrelated manifest rows (confirmed via `dataset.status()`) -- fixed by dropping the
+`populate()` call, since entry 0 never needed it. General trap worth remembering: `populate(limit=N)`
+on an already-populated entry advances the queue, it doesn't no-op. (2) A user-prompted architectural
+observation, not acted on: the *existing* boresight correction (`build_camera()`'s `look_at_rotation`
+re-aiming, `docs/data-sources.md`'s "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was
+modeled as a frame *rotation* -- the user's own words, "it was always going to be more correct to
+model it as a bias in `cv`, since that's what it is in the real WAC VIS," which this investigation's
+own `cv`-bias fix (for a different problem) ended up validating the shape of. Revisiting the original
+boresight correction that way is a separate, bigger change, not started.
+
+**Deliberately not merged to `main`** -- pushed to its own `feature/reproject` branch, same pattern
+as `feature/alignment`: unvalidated past one image, and not yet wired into a real
+`TrnTestReprojectImage` class (still ad hoc notebook code producing a second, `_fovfix`-suffixed
+`.tsai`/camera alongside the normal one). Session ended here for token-budget reasons -- full status,
+open questions (does a single `(FU_SCALE, AT_MARGIN)` generalize across images or does the solve need
+to run fresh per-image; where the corrected FOV should live without changing `hillshade`/`crop`'s own
+FOV; the boresight-bias-vs-rotation question above) captured in
+`docs/reproject-fov-investigation.md`, referenced from `docs/plan.md`'s open items, for whoever picks
+this up next.
+
+Verified: no test/lint changes this phase (notebook-only work); real, live Docker re-runs of
+`notebooks/reproject_spike.py` at every stage of the investigation (not just the final one), each
+inspected via its own printed coverage numbers and rendered output.

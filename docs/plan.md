@@ -96,6 +96,13 @@ short of `populate()` -- no rendering from this notebook yet.
   overlay/base GIF), not the plain `plotting.plot_overlay` the design doc names, since the notebook
   had already adopted the toggle version and reverting it would be a real UX regression, not a
   neutral relocation. `reproject` remains unimplemented (reserved folder only), as designed.
+- **In progress, `feature/reproject` branch (not merged): building `reproject`** (`sat_sim` fed by
+  the real WAC crop instead of the Lunaserv basemap, through the same camera as `hillshade`). Found
+  and fixed a real synthetic-camera FOV bug along the way (the FOV didn't fully fit inside the real
+  crop's own footprint -- confirmed two coupled root causes, a working fix on one test image, several
+  real next steps before it's ready to wire into a real `TrnTestReprojectImage` class) — see
+  `docs/reproject-fov-investigation.md` for the full trail and what's left; start there before
+  picking this back up.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
