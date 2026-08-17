@@ -3641,3 +3641,54 @@ incident retry above, so the resolve cell finished in under a second with zero f
 Verified: full `pytest` suite (209 fast tests, 2 new for `_prefilter_by_catalog_metadata`) passes;
 `trntest-lint` clean on all changed files; a real, live end-to-end notebook run, its output
 (`manifest.csv`/`orbit_sequence.csv`) inspected directly in the dataset folder.
+
+## Phase 59 (2026-08-17) — Removed `notebooks/data_set_selection.py`/`.ipynb` and the now-dead
+`select_dataset()` code path
+
+With Phase 58's bridge in place, the user was ready to retire the original catalog-driven selection
+notebook. Investigated first rather than assuming scope: `dataset_manifest.csv` (the checked-in
+selection result) turned out to be read by five other notebooks (`image_generation.py`,
+`hapke_hillshade.py`, `pose_alignment_spike.py`, `along_track_correction.py`, mentioned by
+`select_datasets.py`), all with no runtime dependency on `data_set_selection.ipynb` *itself* — only
+on the CSV file it last wrote. Two explicit scope decisions confirmed with the user before touching
+anything:
+
+1. **Freeze `dataset_manifest.csv`, delete the notebook** (over rewiring the manifest-reading
+   notebooks onto `select_datasets.py`'s new pipeline, or leaving the manifest/notebook alone
+   entirely) — the CSV stays exactly as it is, just no longer regenerable via that notebook; the
+   demo pipeline is otherwise unaffected.
+2. **Also delete `dataset.select_dataset()`** (+ `session.select_dataset()` + its `__init__.py`
+   export) once confirmed it had zero remaining callers anywhere in the codebase, not even tests —
+   genuinely dead code once the notebook was gone, not just an unused convenience wrapper. Its
+   shared internals (`_evaluate_illuminated_candidates`, `_finalize_images`) stay, since
+   `dataset.images_for_window()` (Phase 58) still uses them.
+
+Deleting `select_dataset()` cascaded one level further: its own private helpers
+(`_candidate_geometry_windows`, `_pick_best_window`, `DEFAULT_SEARCH_START`) had no other caller and
+were removed with it, which in turn left `illumination.node_terminator_offset_deg` and
+`illumination.find_ascending_node_crossings` with zero callers (neither had test coverage either) —
+removed as the same dead-code cleanup, not a separate decision. `illumination.find_node_crossings`
+(the more general function `find_ascending_node_crossings` wrapped) stays — still live, called by
+`dataset_selection.find_orbits`.
+
+Reworded every docstring/comment across `dataset.py`, `dataset_selection.py`, `session.py`,
+`__init__.py`, `camera.py`, `config.py`, `spice_kernels.py`, `cache.py`, `notebooks/wac_isis.py`,
+`notebooks/image_generation.py`, `notebooks/select_datasets.py`, `AGENTS.md`, `README.md`,
+`docs/environment.md`, `docs/plan.md`, `docs/dataset-plan.md`, and `docs/data-sources.md` that
+described `select_dataset()`/`data_set_selection.ipynb` as the *current* live behavior — pointing
+each at its real current equivalent (`images_for_window()`, the frozen `dataset_manifest.csv`,
+`dataset_selection.add_maneuver_flags`) instead. Left alone, deliberately, every mention that's
+already a historical citation of a specific past incident or run (this file's own past entries,
+`docs/caching.md`'s Phase 36 citation, `docs/data-sources.md`'s "the product the live demo
+notebook's `select_dataset()` path actually chose" passage, `old_notebooks/` — an explicitly frozen,
+unmaintained archive per its own README) — those are accurate statements about what happened at the
+time, not claims about the code as it stands today, same distinction this project's history entries
+have always been trusted to preserve.
+
+Notebook re-sync: `image_generation.py`/`select_datasets.py`/`wac_isis.py` only had markdown/comment
+cells edited (no code cells touched), so `jupytext --sync` regenerated their `.ipynb` twins without
+needing a real re-execution — confirmed via diff that no cell outputs or `execution_count`s changed,
+only source text.
+
+Verified: full `pytest` suite (209 tests) passes; `trntest-lint --all` clean (`ruff format`/
+`ruff check`/`mypy`/notebook sync/notebook warnings) across every file, not just the changed ones.

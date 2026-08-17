@@ -465,9 +465,10 @@ gap:
   real stationkeeping pairs there are unmistakable (`combined_z` in the hundreds, ~5.2–5.6 m/s,
   tangential-dominant, alternating sign, ~2h38m apart — matching the paper's "~3 hours" and 2-burn
   posigrade/retrograde description almost exactly), cleanly separated from momentum-unload-scale
-  candidates in the same window. Not yet wired into `dataset.select_dataset()`'s candidate
-  filtering — currently a standalone tool (`find_maneuver_candidates(start_dt, end_dt, config)`) for
-  vetting a candidate date range by hand.
+  candidates in the same window. Wired into `dataset_selection.add_maneuver_flags` (flags a whole
+  orbit-level table at once) — not into `dataset.images_for_window()`'s own per-candidate filtering;
+  also usable standalone (`find_maneuver_candidates(start_dt, end_dt, config)`) for vetting a
+  candidate date range by hand.
 
 ## ISIS's own LRO kernel database (USGS S3, not NAIF)
 
@@ -616,8 +617,9 @@ Phase 27 for the full investigation.
 
 ### Reference/regression-test EDR products
 
-The live default image-selection path is `dataset.select_dataset()` (catalog-driven — see
-`docs/plan.md`), not any single hardcoded product. Two specific products remain useful as known
+The live default image comes from the checked-in, now-frozen `notebooks/dataset_manifest.csv` — a
+real, catalog-driven multi-orbit search's result (see `docs/plan.md`), not any single hardcoded
+product. Two specific products remain useful as known
 test fixtures (one per yaw state, used to validate the axis-convention/chirality fix above still
 holds for both):
 

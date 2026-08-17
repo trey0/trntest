@@ -1,6 +1,6 @@
-"""Catalog-driven WAC dataset selection and generation: `select_dataset()` queries the real LROC
-catalog for a multi-orbit window with favorable illumination geometry and returns a throttled,
-illumination-filtered image list; `generate_dataset()` takes that list and generates real synthetic
+"""Catalog-driven WAC dataset selection and generation: `images_for_window()` queries the real LROC
+catalog for real EDR candidates in a given time window and returns a throttled, illumination-
+filtered image list for it; `generate_dataset()` takes that list and generates real synthetic
 images for it, reusing the existing single-image pipeline (`camera.build_camera`,
 `lunaserv.fetch_dem_and_ortho`, `render.run_sat_sim`), just parameterized per image.
 `generate_dataset()` also computes each image's real WAC crop footprint
@@ -8,24 +8,28 @@ images for it, reusing the existing single-image pipeline (`camera.build_camera`
 DEM/ortho AOI is always sized to cover both the synthetic camera's own footprint and the real WAC
 crop's -- not just a notebook-local concern, since any caller of `generate_dataset()` may want to
 display the real WAC crop later (see `GenerationResult.crop_footprint`).
+
+The window itself is picked elsewhere: `dataset_selection.py`'s orbit-level pipeline
+(`find_orbits` -> ... -> `select_diverse_datasets`) picks it, and `dataset_selection.
+resolve_orbit_sequence` is the usual caller of `images_for_window()` here. An earlier
+`select_dataset()` (its own from-scratch geometry search over a fresh date range, not a
+pre-selected window) filled this role before `dataset_selection.py` existed; removed once nothing
+called it anymore (see `docs/history.md`'s dated entry) -- `images_for_window()`'s window-scoped
+catalog query/evaluate/finalize tail is what it factored out of that removed function.
 """
 
 import dataclasses
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import spiceypy as spice
 
-from trntest import cache, camera, catalog, illumination, lunaserv, render, spice_kernels, tie_points
+from trntest import cache, camera, catalog, illumination, lunaserv, render, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
 from trntest.render import RenderResult
-
-# Same neighborhood as this repo's original single-demo product, so calling select_dataset() with
-# no arguments is reproducible and "just works."
-DEFAULT_SEARCH_START = datetime(2019, 11, 1, tzinfo=UTC)
 
 DATASET_COLUMNS = [
     "product_id",
@@ -96,7 +100,7 @@ def evaluate_candidate_image(edr_row: pd.Series, config: TrntestConfig, min_sun_
     `lrowac2isis` + `spiceinit` pipeline per distinct `edr_product` -- fine for the handful of
     deliberate, final camera-pose computations elsewhere (`build_camera`, `isis_wac.run_pipeline`),
     but a real O(candidates) blowup here (confirmed live: >100 candidates each triggering their own
-    ~15-30s ISIS round-trip in one `select_dataset()` sweep). Safe to force the cheap NAIF path for
+    ~15-30s ISIS round-trip in one `images_for_window()` sweep). Safe to force the cheap NAIF path for
     this specific bulk/exploratory use: confirmed (`docs/history.md`'s Phase 27) that both sources
     give numerically identical pointing for this product/date range -- `isis_resolved`'s only real
     advantage is matching ISIS's own resolution by construction, not accuracy, so it isn't worth
@@ -141,21 +145,6 @@ def throttle_by_time(images: pd.DataFrame, min_gap_minutes: float) -> pd.DataFra
             keep_positions.append(position)
             last_kept_time = start_time
     return sorted_images.iloc[keep_positions].reset_index(drop=True)
-
-
-def _candidate_geometry_windows(
-    node_ets: list[float], num_orbits: int, min_lan_offset_deg: float
-) -> list[tuple[float, float]]:
-    """Every sliding window of num_orbits *consecutive* ascending-node crossings (N+1 crossings
-    bound N orbits) where every crossing in the window is >= min_lan_offset_deg off the terminator."""
-    node_ets = sorted(node_ets)
-    passing = {et for et in node_ets if illumination.node_terminator_offset_deg(et) >= min_lan_offset_deg}
-    windows = []
-    for i in range(len(node_ets) - num_orbits):
-        window_nodes = node_ets[i : i + num_orbits + 1]
-        if all(et in passing for et in window_nodes):
-            windows.append((window_nodes[0], window_nodes[-1]))
-    return windows
 
 
 _ILLUMINATED_COLUMNS = [
@@ -214,49 +203,12 @@ def _evaluate_illuminated_candidates(
             rows.append({**edr_row.to_dict(), **extra})
     if dropped:
         print(
-            f"select_dataset: {len(dropped)} of {len(edr_candidates)} candidate(s) skipped "
+            f"dataset: {len(dropped)} of {len(edr_candidates)} candidate(s) skipped "
             "(geometry/coverage edge case, not a fetch failure):"
         )
         for product_id, exc_type, message in dropped:
             print(f"  {product_id}: {exc_type}: {message}")
     return pd.DataFrame(rows, columns=_ILLUMINATED_COLUMNS)
-
-
-def _pick_best_window(
-    candidate_windows: list[tuple[float, float]],
-    illuminated_df: pd.DataFrame,
-    num_orbits: int,
-    min_images_per_orbit: int | None,
-) -> tuple[datetime, datetime, pd.DataFrame]:
-    """Pick the geometry-valid window with the highest minimum per-orbit illuminated-image count
-    (or, if min_images_per_orbit is given, the first window that clears that floor)."""
-    best_window: tuple[datetime, datetime, pd.DataFrame] | None = None
-    best_floor = -1
-    for window_start_et, window_end_et in candidate_windows:
-        window_start_dt = illumination.et_to_datetime(window_start_et)
-        window_end_dt = illumination.et_to_datetime(window_end_et)
-        in_window = illuminated_df[
-            (illuminated_df["start_time"] >= window_start_dt) & (illuminated_df["start_time"] < window_end_dt)
-        ]
-        if in_window.empty:
-            continue
-        per_orbit_counts = in_window.groupby("orbit_number").size()
-        if len(per_orbit_counts) < num_orbits:
-            continue
-        floor = int(per_orbit_counts.min())
-        if min_images_per_orbit is not None:
-            if floor >= min_images_per_orbit:
-                return window_start_dt, window_end_dt, in_window
-        elif floor > best_floor:
-            best_floor = floor
-            best_window = (window_start_dt, window_end_dt, in_window)
-
-    if best_window is None:
-        raise ValueError(
-            "No geometry-valid window had sufficient per-orbit WAC image availability -- try a "
-            "larger max_search_days, or lower min_sun_elevation_deg/min_lan_offset_deg."
-        )
-    return best_window
 
 
 def _attach_cdr_fields(throttled: pd.DataFrame, config: TrntestConfig) -> pd.DataFrame:
@@ -266,7 +218,7 @@ def _attach_cdr_fields(throttled: pd.DataFrame, config: TrntestConfig) -> pd.Dat
     for _, edr_row in throttled.iterrows():
         cdr_row = catalog.find_matching_cdr(edr_row, config)
         if cdr_row is None:
-            print(f"select_dataset: no matching CDR found for {edr_row['product_id']}, skipping")
+            print(f"dataset: no matching CDR found for {edr_row['product_id']}, skipping")
             continue
         merged = edr_row.to_dict()
         merged["cdr_volume"] = cdr_row["volume"]
@@ -280,11 +232,9 @@ def _attach_cdr_fields(throttled: pd.DataFrame, config: TrntestConfig) -> pd.Dat
 def _finalize_images(
     illuminated: pd.DataFrame, config: TrntestConfig, throttle_minutes: float | None, attach_cdr: bool = True
 ) -> pd.DataFrame:
-    """Shared tail of both `select_dataset()` and `images_for_window()`: optional throttling, CDR
-    matching (`_attach_cdr_fields`), and rename/select into `DATASET_COLUMNS`. Split out so
-    `select_dataset()` can reuse its own already-computed `illuminated_df` slice for the window it
-    picked (no redundant catalog/evaluation work), while `images_for_window()` computes its own for
-    an externally-chosen window -- same finishing logic either way.
+    """`images_for_window()`'s tail: optional throttling, CDR matching (`_attach_cdr_fields`), and
+    rename/select into `DATASET_COLUMNS`. Split out from `images_for_window()` on its own merits
+    (a plain, reusable finishing step), though it's currently only called from there.
 
     `attach_cdr=False` skips `_attach_cdr_fields` (one real network round-trip per candidate) and
     fills the four `cdr_*` columns with `None` instead -- confirmed (grep) that `wac.py` is the only
@@ -292,8 +242,8 @@ def _finalize_images(
     `isis_wac.py` as the live real-WAC comparison method (kept only for its own test coverage, not
     called by either notebook). `TrnTestEntry`/`TrnTestImage` never read `cdr_*` at all. Still
     included as `DATASET_COLUMNS`-shaped `None`s (not dropped from the schema) so callers that do
-    still want CDR fields (`select_dataset()`'s own default) and callers that don't
-    (`dataset_selection.resolve_orbit_sequence`) share one manifest schema."""
+    want CDR fields and callers that don't (`dataset_selection.resolve_orbit_sequence`, the default
+    everywhere else) share one manifest schema."""
     images = throttle_by_time(illuminated, throttle_minutes) if throttle_minutes is not None else illuminated
     if attach_cdr:
         result = _attach_cdr_fields(images, config)
@@ -332,7 +282,7 @@ def _prefilter_by_catalog_metadata(
     compute emission angle, so if a caller passes this, the catalog value (plus margin) is the
     *only* emission-angle enforcement applied, matching how `dataset_selection.
     add_acceptable_edr_counts` already uses it directly. `None` (default) skips emission filtering
-    entirely, matching `select_dataset()`'s own long-standing "illuminated" definition (sun
+    entirely, matching this project's original, long-standing "illuminated" definition (sun
     elevation only) -- opt-in territory for callers that want it (`dataset_selection.
     resolve_orbit_sequence` does)."""
     sun_elevation_deg = 90.0 - edr_candidates["incidence_angle_deg"]
@@ -352,7 +302,7 @@ def images_for_window(
     max_emission_angle_deg: float | None = None,
     prefilter_margin_deg: float = 5.0,
 ) -> pd.DataFrame:
-    """Bless every acceptable WAC EDR in `[start_dt, end_dt)` into a `TrnTestDataSet`-ready images
+    """Resolve every acceptable WAC EDR in `[start_dt, end_dt)` into a `TrnTestDataSet`-ready images
     table (columns: `DATASET_COLUMNS`) -- the real per-candidate camera-pose/sun-elevation evaluation
     (`_evaluate_illuminated_candidates`, not just catalog metadata like
     `dataset_selection.add_acceptable_edr_counts` computes for counting purposes) plus, by default,
@@ -362,75 +312,22 @@ def images_for_window(
     Runs `_prefilter_by_catalog_metadata` first (see its own docstring) so the expensive real
     per-candidate step only ever runs on candidates already plausible by catalog metadata alone --
     a raw window's candidate count is typically dominated by clearly-unacceptable EDRs.
-    `max_emission_angle_deg=None` (default) matches `select_dataset()`'s own sun-elevation-only
+    `max_emission_angle_deg=None` (default) matches this project's original sun-elevation-only
     "illuminated" definition; pass it to also enforce a nadir/"typical mapping mode" cutoff, as
     `dataset_selection.resolve_orbit_sequence` does, matching what made its source window acceptable
     in the first place.
 
-    This is `select_dataset()`'s own tail end (window already chosen -> resolve it), factored out so
-    any other window-*selection* method can reuse the resolution step without also reusing
-    `select_dataset()`'s own window-*search* logic -- e.g. `dataset_selection.resolve_orbit_sequence`,
-    given one already-selected orbit-sequence span instead of searching for one itself."""
+    Takes an already-chosen window, not a search range -- `dataset_selection.resolve_orbit_sequence`
+    is the usual caller, given one selected orbit-sequence span from `dataset_selection.
+    select_diverse_datasets`. An earlier `select_dataset()` searched for its own window from a fresh
+    date range and reused this same evaluate/finalize tail internally; removed once nothing called
+    it anymore (see `docs/history.md`'s dated entry)."""
     edr_candidates = catalog.list_products(config, catalog.EDR_PRODUCT_TYPE, start_dt, end_dt)
     edr_candidates = _prefilter_by_catalog_metadata(
         edr_candidates, min_sun_elevation_deg, max_emission_angle_deg, prefilter_margin_deg
     )
     illuminated_df = _evaluate_illuminated_candidates(edr_candidates, config, min_sun_elevation_deg)
     return _finalize_images(illuminated_df, config, throttle_minutes, attach_cdr)
-
-
-def select_dataset(
-    config: TrntestConfig | None = None,
-    search_start: datetime | None = None,
-    num_orbits: int = 12,
-    min_lan_offset_deg: float = 30.0,
-    throttle_minutes: float = 5.0,
-    min_sun_elevation_deg: float = 10.0,
-    max_search_days: float = 30.0,
-    min_images_per_orbit: int | None = None,
-) -> pd.DataFrame:
-    """Query the real LROC catalog for a ~num_orbits-orbit window with favorable illumination
-    geometry (ascending node >= min_lan_offset_deg off the terminator, so either the ascending or
-    descending pass is well-lit) and good WAC data availability, and return the throttled,
-    illumination-filtered image list for it as a DataFrame (columns: DATASET_COLUMNS).
-
-    By default (min_images_per_orbit=None) picks the geometry-valid window with the highest minimum
-    per-orbit illuminated-image count, evaluated exhaustively over the search range. Pass
-    min_images_per_orbit to instead take the first geometry-valid window that clears that floor.
-    """
-    config = config or load_config()
-    search_start = search_start or DEFAULT_SEARCH_START
-
-    spice_kernels.fetch_and_furnish(search_start, config)  # gets LSK etc. loaded for utc_to_et
-    start_et = illumination.utc_to_et(search_start)
-    end_et = start_et + max_search_days * 86400.0
-
-    node_ets = illumination.find_ascending_node_crossings(start_et, end_et, config)
-    candidate_windows = _candidate_geometry_windows(node_ets, num_orbits, min_lan_offset_deg)
-    if not candidate_windows:
-        raise ValueError(
-            f"No {num_orbits}-orbit window found with ascending node >= {min_lan_offset_deg} deg "
-            f"off the terminator within {max_search_days} days of {search_start}. Try a larger "
-            "max_search_days."
-        )
-
-    edr_candidates = catalog.list_products(
-        config, catalog.EDR_PRODUCT_TYPE, search_start, search_start + timedelta(days=max_search_days)
-    )
-    illuminated_df = _evaluate_illuminated_candidates(edr_candidates, config, min_sun_elevation_deg)
-
-    window_start_dt, window_end_dt, window_images = _pick_best_window(
-        candidate_windows, illuminated_df, num_orbits, min_images_per_orbit
-    )
-
-    result = _finalize_images(window_images, config, throttle_minutes)
-
-    per_orbit_counts = window_images.groupby("orbit_number").size().to_dict()
-    print(
-        f"select_dataset: {len(result)} images across {result['orbit_number'].nunique()} orbits "
-        f"({window_start_dt} to {window_end_dt}); per-orbit counts: {per_orbit_counts}"
-    )
-    return result
 
 
 def _per_image_config(row: pd.Series, config: TrntestConfig, output_dir: Path) -> TrntestConfig:

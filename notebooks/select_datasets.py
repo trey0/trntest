@@ -16,9 +16,9 @@
 # %% [markdown]
 # # Dataset selection v2: which orbits/epochs make good TRN-OD test data?
 #
-# **Exploratory, early-stage** -- not wired into the demo pipeline. Will eventually replace
-# `data_set_selection.ipynb`'s selection logic, but doesn't yet: that notebook and
-# `dataset_manifest.csv` are untouched, so the existing demo keeps working unchanged while this one
+# **Exploratory, early-stage** -- not wired into the demo pipeline. `dataset_manifest.csv` (the
+# demo's frozen image selection, see `../docs/history.md`'s dated entry for the notebook that used
+# to regenerate it) is untouched, so the existing demo keeps working unchanged while this one
 # develops independently.
 #
 # The near-term goal here isn't picking one image -- it's building intuition about which *orbits*
@@ -148,7 +148,7 @@ plotting.plot_illuminated_node_scatter(orbits_df, PERIOD_START, PERIOD_END, sele
 # `selected_datasets` is orbit-level -- a start/end UTC window, no images yet. `dataset_selection.
 # resolve_orbit_sequence` turns exactly one selected row into a real, `TrnTestDataSet`-ready images
 # table (`dataset.DATASET_COLUMNS`) -- the same real per-candidate EDR-label fetch + SPICE pose
-# `select_dataset()` has always used, just windowed to this one selected span, and only after a
+# `dataset.images_for_window` always uses, just windowed to this one selected span, and only after a
 # cheap catalog-metadata pre-filter narrows the raw candidate list first.
 #
 # Deliberately resolves only `selected_datasets.iloc[0]`, not all `N_DATASETS` picks -- same
@@ -168,7 +168,7 @@ images
 # `dataset.populate()` later (see `docs/dataset-plan.md`). Stops here -- no rendering in this
 # notebook.
 #
-# Uses its own `orbit_sequence_dataset` folder, separate from `data_set_selection.py`'s
+# Uses its own `orbit_sequence_dataset` folder, separate from `image_generation.py`'s
 # `trn_dataset` -- this v2 pipeline is still exploratory (see this notebook's intro), not yet the
 # demo's canonical dataset. Also writes `orbit_sequence.csv` alongside `manifest.csv`: the one
 # selected-orbit-window row this dataset's images were resolved from, kept for debugging/provenance

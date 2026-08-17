@@ -110,11 +110,11 @@ automatically.
   these additive/localized (a new dated `history.md` entry, a small targeted edit elsewhere) rather
   than restructuring, so conflicts stay small and mergeable — resolving them is expected, not a sign
   something went wrong.
-- **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Re-running
-  `data_set_selection.py` and committing its output changes which real image *every* subsequent
-  `image_generation.py` run renders, for every agent and the user, not just yours. Fine to run
-  read-only (e.g. while warming cache) without committing; don't commit a changed manifest unless
-  you specifically mean to change the demo's target image.
+- **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Frozen since
+  the notebook that used to regenerate it was removed (see `docs/history.md`'s dated entry) — it
+  determines which real image *every* `image_generation.py` run renders, for every agent and the
+  user, not just yours. Don't commit a changed manifest unless you specifically mean to change the
+  demo's target image.
 - **If a merge conflict lands in a `.ipynb`, don't try to resolve it in the `.ipynb` itself** —
   its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the real source of
   truth), then regenerate the `.ipynb` from scratch with `scripts/run_notebook.sh

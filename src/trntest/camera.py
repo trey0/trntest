@@ -4,7 +4,7 @@ approximates the FOV of that part of the real swath.
 
 `config.target_frame_index` is the START of the along-track crop; the actual pose epoch is that
 crop's own temporal midpoint (see `build_camera`). Its default (440) is only meaningful for this
-repo's original single-demo product -- the live default path, `trntest.dataset.select_dataset`/
+repo's original single-demo product -- the live default path, `trntest.dataset.images_for_window`/
 `generate_dataset`, sets it per-product instead, anchored at each product's own temporal midpoint
 and filtered by illumination there. See docs/history.md (Phase 2) for how 440 was originally chosen.
 """

@@ -5,15 +5,18 @@ models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories
 with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See `docs/plan.md`
 for the full approach and status, and `AGENTS.md` for how the docs in this repo are organized.
 
-The demo logic is the installable `trntest` Python package (`src/trntest/`); two notebooks drive
-it via a small `Session` facade. `notebooks/data_set_selection.py`/`.ipynb` queries the real LROC
-catalog for a favorable image and writes it to the checked-in `notebooks/dataset_manifest.csv`;
-`notebooks/image_generation.py`/`.ipynb` reads that manifest and renders/validates it (no runtime
-dependency on `data_set_selection.ipynb` itself — rerun that notebook and commit its updated
-manifest to change which real image gets rendered). Each is tracked as a jupytext-paired pair: the
+The demo logic is the installable `trntest` Python package (`src/trntest/`); `notebooks/
+image_generation.py`/`.ipynb` drives it via a small `Session` facade, reading the checked-in
+`notebooks/dataset_manifest.csv` (a frozen selection of a favorable real LROC EDR image -- see
+`docs/history.md`'s dated entry for how it was picked and why the notebook that originally
+generated it was later removed) and rendering/validating it. Tracked as a jupytext-paired pair: the
 `.py` (percent format) is the source of truth for review/diff/lint/IDE work, and the `.ipynb`
 (fully executed, viewable directly in GitHub's file browser — no separate publishing step needed)
 carries the real outputs.
+
+`notebooks/select_datasets.py`/`.ipynb` is a separate, early-stage/exploratory notebook for picking
+*multiple* maneuver-free multi-orbit TRN-OD test datasets -- see its own module docstring and
+`docs/plan.md`.
 
 ## Build & run
 
@@ -34,11 +37,11 @@ own machine:
 ssh -L 8888:localhost:8888 <this-host>
 ```
 
-then open `http://localhost:8888` in a browser. Open `notebooks/data_set_selection.py` or
-`notebooks/image_generation.py` — the bundled `jupyterlab-jupytext` extension renders either as a
-live, editable notebook (equivalent to opening its paired `.ipynb` directly). After making
-changes, run `scripts/run_notebook.sh notebooks/<name>.py` to regenerate and re-execute the
-`.ipynb` before committing (see "Viewing the rendered demo" below).
+then open `http://localhost:8888` in a browser. Open `notebooks/image_generation.py` — the bundled
+`jupyterlab-jupytext` extension renders it as a live, editable notebook (equivalent to opening its
+paired `.ipynb` directly). After making changes, run `scripts/run_notebook.sh notebooks/<name>.py`
+to regenerate and re-execute the `.ipynb` before committing (see "Viewing the rendered demo"
+below).
 
 For one-off commands instead of the notebook server:
 
@@ -139,19 +142,16 @@ any clone with just Docker installed -- no host-side Python setup required.
 
 ## Viewing the rendered demo
 
-The git-tracked `notebooks/data_set_selection.ipynb` and `notebooks/image_generation.ipynb` carry
-real, fully-executed outputs and render natively in GitHub's file browser (markdown, code, and
-outputs, including images) — just click either file in the repo. No separate publishing step,
-HTML build, or GitHub Pages setup.
+The git-tracked `notebooks/image_generation.ipynb` carries real, fully-executed outputs and
+renders natively in GitHub's file browser (markdown, code, and outputs, including images) — just
+click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
 
-`notebooks/data_set_selection.py`/`notebooks/image_generation.py` (jupytext percent format, each
-paired with its own `.ipynb` via inline metadata) are the actual source of truth: they're what you
-edit, what gets `ruff`/`mypy`-checked, and what stays diffable — the `.ipynb`'s own diff will
-always be noisy since it carries outputs, which is expected. After editing a notebook, regenerate
-and re-execute its `.ipynb` before committing:
+`notebooks/image_generation.py` (jupytext percent format, paired with its own `.ipynb` via inline
+metadata) is the actual source of truth: it's what you edit, what gets `ruff`/`mypy`-checked, and
+what stays diffable — the `.ipynb`'s own diff will always be noisy since it carries outputs, which
+is expected. After editing the notebook, regenerate and re-execute its `.ipynb` before committing:
 
 ```sh
-scripts/run_notebook.sh notebooks/data_set_selection.py
 scripts/run_notebook.sh notebooks/image_generation.py
 ```
 

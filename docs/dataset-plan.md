@@ -33,8 +33,10 @@ synthetic camera's pixel grid) is new, untested ground technically, and explicit
 folder/naming convention and class hierarchy account for it existing later (a future
 `TrnTestReprojectImage(TrnTestImage)`, possibly even subclassing `TrnTestHillshadeImage` since it
 would go through the same `sat_sim`-render-then-mapproject shape, just fed a different `--ortho`
-source), but no generation code targets it yet. Both existing notebooks (`data_set_selection.py`,
-`image_generation.py`) should get wired up to the new code in the same pass that implements it.
+source), but no generation code targets it yet. `image_generation.py` should get wired up to the new
+code in the same pass that implements it (`data_set_selection.py`, the other notebook at the time
+this was written, was later removed once `dataset_manifest.csv` was frozen -- see `docs/history.md`'s
+dated entry).
 
 ## On-disk layout & naming
 
@@ -341,6 +343,12 @@ first, so it still has **no runtime dependency on `data_set_selection.ipynb` hav
 environment — matching the property established when the flagship notebook was originally split).
 `create()` is idempotent (safe to call from both), so this is not a race or a duplicate-work
 concern.
+
+**Update, later session**: `data_set_selection.py`/`.ipynb` was removed once nothing else depended
+on re-running it (`dataset_manifest.csv` frozen as a static checked-in file instead) — see
+`docs/history.md`'s dated entry. `image_generation.py`'s own `TrnTestDataSet.create()` call, as
+described above, is unaffected -- it never had a runtime dependency on the other notebook to begin
+with.
 
 ## Notebook rewiring
 

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-# A from-cold `dataset.select_dataset()` sweep calls `cached_get` up to ~1600 times in a plain
+# A from-cold `dataset.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
 # sequential loop with no pacing at all between requests -- confirmed (docs/history.md's Phase 36
 # follow-up) to be enough on its own, no concurrent caller needed, to trip a real server-side
 # rate limiter (~3.5 req/s sustained for ~8 minutes). This fixed floor between real requests (never

@@ -1,6 +1,8 @@
 """Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`) -- distinct from
-`dataset.py`'s catalog-driven *single-image* selection (`select_dataset()`/`generate_dataset()`,
-the live demo pipeline's own EDR picker). This module answers a different question: which
+`dataset.py`'s catalog-driven *single-image* evaluation (`images_for_window()`/`generate_dataset()`,
+the live demo pipeline's own EDR picker), which `resolve_orbit_sequence` below hands an
+already-selected orbit-sequence window to resolve, not the other way around. This module answers a
+different question: which
 *multi-day spans of consecutive orbits* make good maneuver-free TRN orbit-determination test data,
 picked to be jointly diverse in solar hour angle -- not which one EDR to render.
 
@@ -261,12 +263,13 @@ def resolve_orbit_sequence(
     tripped a real rate limit on the LROC EDR host). `max_emission_angle_deg=15.0` (matching
     `add_acceptable_edr_counts`'s own default) is passed through so resolving enforces the same
     nadir/"typical mapping mode" criterion that made this orbit sequence's source window acceptable
-    in the first place -- unlike `select_dataset()`'s own sun-elevation-only definition.
+    in the first place -- unlike `images_for_window()`'s own sun-elevation-only default.
     `attach_cdr=False`: confirmed `wac.py` is the only real consumer of the `cdr_*` columns anywhere
     in this codebase, and it's already superseded by `isis_wac.py` (see `_finalize_images`'s
     docstring) -- `TrnTestEntry`/`TrnTestImage` never read them, so skip that extra per-candidate
     network round-trip here. `throttle_minutes=None` (default) keeps every acceptable candidate --
-    unlike `select_dataset()`'s own 5-minute default, thinning here isn't obviously wanted yet (an
+    unlike the older, now-removed `select_dataset()`'s own 5-minute default (see `docs/history.md`'s
+    dated entry); thinning here isn't obviously wanted yet (an
     orbit-sequence window was already chosen for being densely acceptable, not searched fresh), so
     leave it to the caller to opt in."""
     return dataset.images_for_window(

@@ -194,15 +194,3 @@ def find_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -
 
     eps_s = 5.0
     return [(et, latitude_at(et - eps_s) < 0 < latitude_at(et + eps_s)) for et in all_crossings]
-
-
-def find_ascending_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -> list[float]:
-    """Ascending-node (latitude crossing from south to north) epochs in [start_et, end_et] -- see
-    `find_node_crossings` (this just filters its result to the ascending ones)."""
-    return [et for et, is_ascending in find_node_crossings(start_et, end_et, config) if is_ascending]
-
-
-def node_terminator_offset_deg(et: float) -> float:
-    node_lon, _ = spacecraft_lonlat_deg(et)
-    sub_solar_lon, _ = sub_solar_lonlat_deg(et)
-    return terminator_offset_deg(node_lon, sub_solar_lon)

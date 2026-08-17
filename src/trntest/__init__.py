@@ -24,7 +24,6 @@ from trntest.dataset import (
     GenerationResult,
     generate_dataset,
     read_manifest,
-    select_dataset,
     write_manifest,
 )
 from trntest.lunaserv import DemOrthoResult, fetch_dem_and_ortho
@@ -58,7 +57,6 @@ __all__ = [
     "run_sat_sim",
     "read_csm_state",
     "fetch_and_furnish",
-    "select_dataset",
     "generate_dataset",
     "write_manifest",
     "read_manifest",

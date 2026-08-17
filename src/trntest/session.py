@@ -76,10 +76,6 @@ class Session:
     def fetch_and_furnish(self, target_dt: datetime) -> list[str]:
         return spice_kernels.fetch_and_furnish(target_dt, config=self.config)
 
-    @_inherit_doc(dataset.select_dataset)
-    def select_dataset(self, **kwargs) -> pd.DataFrame:
-        return dataset.select_dataset(config=self.config, **kwargs)
-
     @_inherit_doc(dataset.generate_dataset)
     def generate_dataset(self, images: pd.DataFrame, limit: int | None = None, **kwargs) -> list[GenerationResult]:
         return dataset.generate_dataset(images, config=self.config, limit=limit, **kwargs)
