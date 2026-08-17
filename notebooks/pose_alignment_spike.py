@@ -53,7 +53,7 @@ import numpy as np
 import rasterio
 
 import trntest
-from trntest import isis_wac, plotting, pose_alignment
+from trntest import control_network, isis_wac, plotting, pose_alignment
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -266,4 +266,49 @@ corrected_homography_lg_path = pose_alignment.apply_homography_correction(
 )
 plotting.plot_overlay_toggle(
     basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap (LightGlue matches)"
+)
+
+# %% [markdown]
+# ## Toward a proper projection-aware (3D) alignment: real ISIS control points
+#
+# Everything above corrects the WAC raster's own map-space georeferencing after the fact -- a 2D
+# fix, not a camera-pose one. The next step (see `docs/plan.md`'s open items) is a real `jigsaw`
+# bundle adjustment over the camera's actual exterior orientation (6 DOF: position + attitude,
+# degree-0/frozen for a first pass), using these same matched tie points as control points.
+#
+# `jigsaw` needs, per tie point, the real *image-space* pixel it was observed at (in the original,
+# pre-`cam2map` WAC crop cube -- the cube `jigsaw` will actually adjust) and a trusted 3D ground
+# location -- not the map-projected pixel positions `match_features`/`match_features_lightglue`
+# return. `control_network.resolve_control_points` converts between the two: see its own docstring
+# for exactly how (a deterministic un-warp of `cam2map`'s own resampling on the WAC side, direct
+# georeferencing on the basemap side) and why it's deliberately **ellipsoid-only for now, not real
+# DEM elevation** -- this pipeline's entire existing ground<->image geometry
+# (`isis_wac.run_spiceinit`'s `shape=ellipsoid`) already is, and feeding elevation-aware ground truth
+# into a camera model that's still ellipsoid-only would conflate real camera-pose error with the
+# ellipsoid-vs-real-terrain gap -- worst exactly at high-relief features like crater rims, which is
+# where the parallax-like effect motivating this whole investigation was actually seen. A DEM-aware
+# shape model is a deliberate, real follow-up, not attempted here.
+#
+# Using the LightGlue match set (more tie points to work with than SIFT's).
+
+# %%
+ground_to_image_model = isis_wac.resolve_ground_to_image_model(
+    entry.stitched, entry.crop_result, entry.per_image_config
+)
+with rasterio.open(wac_path) as src:
+    map_crs = src.crs
+
+observed_pixels, ground_lonlat = control_network.resolve_control_points(
+    wac_points_map_lg, basemap_points_map_lg, map_crs, ground_to_image_model, entry.per_image_config
+)
+print(f"{len(observed_pixels)} real ISIS control points resolved (from {len(wac_points_map_lg)} LightGlue matches)")
+print(
+    f"Observed pixel (sample, line) range: "
+    f"({observed_pixels[:, 0].min():.0f}-{observed_pixels[:, 0].max():.0f}, "
+    f"{observed_pixels[:, 1].min():.0f}-{observed_pixels[:, 1].max():.0f})"
+)
+print(
+    f"Ground point (lon, lat) range: "
+    f"({ground_lonlat[:, 0].min():.3f}-{ground_lonlat[:, 0].max():.3f}, "
+    f"{ground_lonlat[:, 1].min():.3f}-{ground_lonlat[:, 1].max():.3f})"
 )

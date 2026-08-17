@@ -384,6 +384,17 @@ changes against them.
   already-easy candidate, but real headroom for future shadowed/low-texture EDRs SIFT might not
   find enough points on at all; direct user visual confirmation the alignment quality holds).
   See `docs/history.md`'s dated entries (Phases 52–55) for the full trail.
+  **In progress (session in progress as of 2026-08-17, not yet complete): a real projection-aware
+  3D bundle adjustment.** `src/trntest/control_network.py` (done, tested) converts tie points into
+  real ISIS control points. ISIS's own `jigsaw` was tried and hit a real, root-caused, unfixable
+  bug in its PushFrame framelet search (confirmed via a tautological, mathematically-guaranteed-
+  zero-error control network that still produced huge `jigsaw` residuals) -- pivoted to a
+  hand-rolled Python ground-to-image forward projection instead (`src/trntest/wac_camera_model.py`,
+  optics chain validated to exact 0.000px agreement with real `campt` output; the framelet *search*
+  itself and the actual optimizer are not yet built). **See `docs/wac-jigsaw-investigation.md` for
+  the full technical detail** (exact ISIS source citations, every constant's provenance, the
+  serial-number bug and its fix, and the precise remaining-work list) -- written specifically to
+  resume this from a fresh session.
 
 ## Development history
 

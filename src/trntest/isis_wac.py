@@ -362,6 +362,23 @@ def ground_point_at_pixel(cub_path: Path, sample: float, line: float) -> tuple[f
     return float(ground_point["PositiveEast360Longitude"]), float(ground_point["PlanetocentricLatitude"])
 
 
+def cube_serial_number(cub_path: Path) -> str:
+    """`cub_path`'s ISIS Serial Number, via `getsn` -- the identifier a control network measure uses
+    to say which cube it belongs to (`control_network.write_control_network`). Confirmed live on this
+    project's real stitched/cropped WAC cubes: `getsn` returns the literal string `"Unknown"`, not a
+    real mission-specific SN, for every product tried -- the Archive group looks complete
+    (`ProductId`/`OrbitNumber`/etc. all present), so this is presumably WAC-VIS's own SN translation
+    table expecting a label field this project's `framestitch`->`crop` chain doesn't preserve, not a
+    missing-data bug on this project's side. Not treated as an error: a single-image control network
+    only has one cube in play, so `"Unknown"` is unambiguous by construction as long as it's used
+    consistently for that same cube everywhere (which it is here, since it's re-derived from the same
+    real `getsn` call rather than hardcoded) -- `jigsaw` resolves the same cube to the same SN itself
+    when it opens it, so the mapping still lines up correctly even though the string isn't a
+    meaningful mission identifier."""
+    result = subprocess.run(["getsn", f"from={cub_path}"], capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
 @dataclasses.dataclass(frozen=True)
 class IsdGenerateResult:
     json_path: Path

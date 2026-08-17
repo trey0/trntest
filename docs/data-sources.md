@@ -1203,3 +1203,38 @@ reliably deliver.
   build) works fine on CPU tensors. Real published CPU benchmark: ~20 FPS at 512 keypoints on an
   Intel i7 10700K — this project isn't latency-sensitive (a one-shot notebook cell, not a real-time
   loop), so CPU-only is a straightforward choice, no GPU passthrough needed in `docker-compose.yml`.
+
+## ISIS PushFrame `campt` ground-to-image: a real, scattered ~38% failure rate, not an edge artifact
+
+`control_network.resolve_control_points` (see its own module docstring) queries `isis_wac.
+ground_to_image_pixel` once per matched tie point, against the original (pre-`cam2map`) WAC crop
+cube's native PushFrame camera model. On the current default candidate, a real 767-point LightGlue
+match set resolved only 477 (290 failures, ~38%) — investigated directly rather than assumed benign,
+since the project's own Phase 30 precedent (`_CROP_EDGE_MARGIN_PX`) already established that `campt`
+has real numerical instability near a cropped cube's edge, making that the obvious first suspect.
+
+**Ruled out**: edge proximity. A direct measurement (distance from each matched pixel to the nearest
+invalid/padding pixel, via `cv2.distanceTransform`) found resolved and dropped points have nearly
+identical edge-distance distributions (median 119px vs. 122px in the downsampled matching grid), and
+the drop rate stays ~38-39% even 40+px from the boundary — not concentrated at the crop's own edge at
+all, contrary to the Phase 30 pattern.
+
+**Actual cause, confirmed live**: every one of the 290 failures is ISIS's "no surface intersection"
+error specifically (zero were "not inside cube" — checked directly via each failing query's real
+`campt` stderr, not assumed) — a fundamentally different failure than an index just missing the
+cube's own pixel-array bounds. This matches a real, independently-documented upstream ISIS issue for
+PushFrame cameras specifically: `GetLocalNormal`'s calculation can land outside the correct framelet
+during the ground-to-image solve, producing an erroneous local normal and a failed/non-convergent
+intersection search (DOI-USGS/ISIS3 GitHub issue #4256) — a known numerical fragility in ISIS's own
+PushFrame geometry, not a bug introduced by this project's code, and consistent with failures
+scattered roughly uniformly through the image rather than concentrated anywhere in particular.
+
+**Not currently a concern for terrain-relief bias, but worth re-checking once it would be**: this
+project's control points are still ellipsoid-only (`isis_wac.run_spiceinit`'s `shape=ellipsoid`, see
+`control_network.py`'s own docstring for why) — a smooth ellipsoid's local surface normal varies only
+slowly with position, so there's no real steep-terrain trigger for the local-normal bug to hit yet.
+If/when a real DEM-aware shape model is added (a planned follow-up, see `docs/plan.md`'s open items),
+this failure mode could plausibly get *worse* specifically at high-relief features like crater rims —
+exactly the terrain the user's own visual parallax observation (motivating the whole 3D-alignment
+investigation) depends on. Re-run this same edge-distance/failure-kind check against real terrain
+once that lands, rather than assuming the ellipsoid-only finding still holds.
