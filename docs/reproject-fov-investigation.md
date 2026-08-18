@@ -1,12 +1,14 @@
 # Investigation: the `reproject` `TrnTestImage` type, and a real synthetic-camera FOV bug found along the way
 
-**Status: exploratory, unvalidated on more than one image, not merged to `main`.** Lives on branch
+**Status: fix validated across 4 real images, still not merged to `main`.** Lives on branch
 `feature/reproject` (`notebooks/reproject_spike.py`/`.ipynb`, uncommitted-to-`main` by design, same
 pattern as `feature/alignment`'s `pose_alignment_spike.py` -- see `docs/history.md`'s Phase 52
-entry). Session ended here for token-budget reasons, not because the investigation concluded --
-picking this up should start by reading `notebooks/reproject_spike.py` itself (the real trail,
-including two now-superseded fix attempts kept visible in its cell history/git log) and this file,
-then testing the fix on 2-3 more real images before trusting it.
+entry). The fixed `(FU_SCALE=0.93, AT_MARGIN=0.93)` constants, originally tuned on one image, were
+re-run unchanged against 3 more real candidates spanning a wide latitude/off-nadir range (38.5°N to
+-67.5°S) and reached ~100% valid-pixel coverage on all four -- see "Validated: the fix generalizes"
+below. What's left before this is ready to wire into a real `TrnTestReprojectImage` class: the
+where-should-the-corrected-FOV-live decision and the separate boresight-bias tangent, both still
+open (see "What's NOT done yet").
 
 ## What `reproject` is
 
@@ -66,14 +68,35 @@ crop's own ISIS `campt`-based footprint corners, `entry.crop_footprint`):
 Result on `M1327210646CE`: valid pixels 96.3% -> **100.0%**, worst corner 53.6% -> **100.0%**.
 `fu: 215.58 -> 235.25` (`cu` unchanged, 128.0), `fv: 215.58 -> 249.40`, `cv: 128.0 -> 133.26`.
 
+## Validated: the fix generalizes across 4 real images
+
+`notebooks/reproject_spike.py`'s later cells (`evaluate_reproject_coverage`, search for
+"Validating the fix across more images") re-ran the *same* `(FU_SCALE=0.93, AT_MARGIN=0.93)`
+constants -- unchanged, not retuned -- against 3 more real candidates already available in the
+`trn_dataset` folder (crop+hillshade already generated from the accidental `populate(limit=1)`
+advance documented below), spanning a wide latitude/off-nadir range: `M1327211014CE` (55.4°N),
+`M1327211334CE` (70.7°N), `M1327215525CE` (-67.5°S), against the original `M1327210646CE`
+(38.5°N). "Baseline" here means the corner-ray `fv`/`cv` solve *without* the `FU_SCALE`/`AT_MARGIN`
+shrink (i.e. `fu_scale=1.0, at_margin=1.0` -- already better than the fully-uncorrected `fv=fu`
+starting point earlier in this doc, so these baseline numbers are higher than the 96.3%/53.6% above):
+
+| product_id | baseline overall | baseline worst corner | fixed overall | fixed worst corner |
+|---|---|---|---|---|
+| M1327210646CE | 99.2% | 77.1% | 100.0% | 100.0% |
+| M1327211014CE | 98.9% | 70.8% | 100.0% | 99.8% |
+| M1327211334CE | 97.8% | 58.0% | 100.0% | 100.0% |
+| M1327215525CE | 95.5% | 57.8% | 100.0% | 100.0% |
+
+All four reach ~100% (worst case 99.8%, on the corner-ray solve alone -- negligible) with the fixed
+constants, unchanged from image to image. This resolves the "per-image solve or fixed constant?"
+question below: **a single fixed `(FU_SCALE, AT_MARGIN)` pair holds up** across this range, at least
+for candidates from the same manifest/EDR family this demo already uses -- no evidence yet that it
+needs to vary per-image. Not proof it holds at every possible off-nadir angle/latitude in general
+(all 4 are still non-polar, WAC-VIS, similar `n_frames_for_square_crop`), but a real, meaningful
+result: this isn't one image's overfit tuning.
+
 ## What's NOT done yet
 
-- **Only tested on one image.** `FU_SCALE=0.93`/`AT_MARGIN=0.93` are this candidate's own tuned
-  values, not validated as generally-good constants -- next step is running the same solve on 2-3
-  more real candidates (different off-nadir angles, different latitudes) and checking whether a
-  single fixed `(FU_SCALE, AT_MARGIN)` pair holds up, or whether the solve needs to run fresh
-  per-image (it's cheap -- pure ray-trace math, no extra ISIS/network calls -- so per-image is
-  probably fine and more robust than a hardcoded constant; leaning that direction but not decided).
 - **Not wired into `camera.build_camera()` or a real `TrnTestReprojectImage` class.** Still ad hoc
   notebook code (`notebooks/reproject_spike.py`) computing a second, `_fovfix`-suffixed `.tsai` and
   camera object alongside the normal one, not integrated into the pipeline. Building the real

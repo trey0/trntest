@@ -99,8 +99,12 @@ short of `populate()` -- no rendering from this notebook yet.
 - **In progress, `feature/reproject` branch (not merged): building `reproject`** (`sat_sim` fed by
   the real WAC crop instead of the Lunaserv basemap, through the same camera as `hillshade`). Found
   and fixed a real synthetic-camera FOV bug along the way (the FOV didn't fully fit inside the real
-  crop's own footprint -- confirmed two coupled root causes, a working fix on one test image, several
-  real next steps before it's ready to wire into a real `TrnTestReprojectImage` class) — see
+  crop's own footprint -- confirmed two coupled root causes; the fix (`FU_SCALE=0.93`,
+  `AT_MARGIN=0.93`) is now validated unchanged across 4 real candidates spanning 38.5°N to
+  -67.5°S, all reaching ~100% valid-pixel coverage). Real next steps before it's ready to wire into
+  a real `TrnTestReprojectImage` class: where the corrected FOV should live (would change
+  `hillshade`/`crop`'s FOV too if placed inside `build_camera()` itself, vs. a `reproject`-specific
+  camera variant), plus a separate boresight-bias tangent raised along the way — see
   `docs/reproject-fov-investigation.md` for the full trail and what's left; start there before
   picking this back up.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever

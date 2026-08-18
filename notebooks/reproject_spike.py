@@ -35,6 +35,7 @@ import dataclasses
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import spiceypy as spice
 
 import trntest
@@ -372,3 +373,134 @@ plotting.plot_raster(fixed_render.rendered_tif, cmap="gray")
 # %%
 plotting.plot_raster(reproject_render.rendered_tif, cmap="gray")
 plotting.plot_raster(entry.hillshade.raster_path, cmap="gray")
+
+# %% [markdown]
+# ## Validating the fix across more images
+#
+# `FU_SCALE=0.93`/`AT_MARGIN=0.93` above were tuned on `M1327210646CE` alone -- the real open
+# question from `docs/reproject-fov-investigation.md`: do those same two constants also close the
+# gap on other real candidates with their own different off-nadir geometry, or does the solve need
+# retuning per image? (`fv`/`cv` are already solved fresh per image, against that image's own real
+# `crop_footprint` -- only `FU_SCALE`/`AT_MARGIN` are fixed constants being tested for generality
+# here.) Three more manifest rows already have `crop`+`hillshade` populated -- the same accidental
+# `populate(limit=1)` advance documented above, now reused rather than wasted -- spanning a wide
+# geometry range: `M1327211014CE` (28.7 deg sun elevation, 55.4N), `M1327211334CE` (15.8 deg sun
+# elevation, 70.7N), `M1327215525CE` (19.4 deg sun elevation, -67.5S).
+
+
+# %%
+def evaluate_reproject_coverage(entry, *, fu_scale: float, at_margin: float) -> dict:
+    """Run one entry's crop -> reproject -> render -> coverage pipeline, applying the same FOV fix
+    as the cells above (`fu_scale=1.0, at_margin=1.0` reproduces the *uncorrected* baseline: `fv`/
+    `cv` solved against the real crop footprint with no shrink, `fu` untouched). Returns overall/
+    edge-ring/worst-corner valid-pixel fractions."""
+    wac_ortho_path = isis_wac.run_cam2map_for_crop(entry.crop_result, entry.dem_ortho_result, entry.per_image_config)
+    dem_ortho = lunaserv.result_from_files(wac_ortho_path, entry.dem_ortho_result.dem)
+
+    c_km = np.array(entry.camera.camera_center_moon_me_m) / 1000.0
+    r_cam_to_me = np.array(entry.camera.r_cam_to_me)
+    cu = session.config.image_size / 2.0
+    boresight_ground_km = camera_module.boresight_ground_point_km(c_km, r_cam_to_me)
+    along_track_axis_me = np.array(entry.camera.camera_along_track_direction_moon_me)
+    cross_track_axis_me = r_cam_to_me[:, 0]
+
+    def decompose(ground_km: np.ndarray) -> tuple[float, float]:
+        rel = ground_km - boresight_ground_km
+        return float(np.dot(rel, cross_track_axis_me)), float(np.dot(rel, along_track_axis_me))
+
+    crop_at_km = {}
+    for name, lonlat in entry.crop_footprint.items():
+        if name == "center" or lonlat is None:
+            continue
+        lon, lat = lonlat
+        ground_km = np.array(spice.latrec(session.config.moon_radius_km, np.radians(lon), np.radians(lat)))
+        _, crop_at_km[name] = decompose(ground_km)
+    target_near_km = -np.mean([v for v in crop_at_km.values() if v < 0])
+    target_far_km = np.mean([v for v in crop_at_km.values() if v >= 0])
+
+    def corner_ground_km(half_angle_u: float, half_angle_v: float, sign_u: float, sign_v: float) -> np.ndarray:
+        direction_cam = np.array([sign_u * np.tan(half_angle_u), sign_v * np.tan(half_angle_v), 1.0])
+        direction_cam = direction_cam / np.linalg.norm(direction_cam)
+        direction_me = r_cam_to_me @ direction_cam
+        t = camera_module.ray_sphere_intersect_range(c_km, direction_me)
+        assert t is not None, "corner FOV ray does not intersect the Moon"
+        return c_km + t * direction_me
+
+    def solve_half_angle_v(half_angle_u: float, target_km: float, sign_v: float, hi: float = np.radians(45.0)) -> float:
+        lo = 1e-4
+        for _ in range(60):
+            mid = (lo + hi) / 2.0
+            _, at = decompose(corner_ground_km(half_angle_u, mid, 1.0, sign_v))
+            magnitude = sign_v * at
+            lo, hi = (mid, hi) if magnitude < target_km else (lo, mid)
+        return (lo + hi) / 2.0
+
+    original_half_angle_rad = np.radians(session.config.wac_vis_color_fov_deg / 2.0)
+    half_angle_u = original_half_angle_rad * fu_scale
+    fu = cu / np.tan(half_angle_u)
+    near_half_angle_rad = solve_half_angle_v(half_angle_u, target_near_km * at_margin, sign_v=-1.0)
+    far_half_angle_rad = solve_half_angle_v(half_angle_u, target_far_km * at_margin, sign_v=1.0)
+    fv = session.config.image_size / (np.tan(near_half_angle_rad) + np.tan(far_half_angle_rad))
+    cv = fv * np.tan(near_half_angle_rad)
+
+    footprint = camera_module.footprint_lonlat(c_km, r_cam_to_me, fu, fv, cu, cv, session.config.image_size)
+    tsai_path = (
+        entry.per_image_config.output_dir / f"camera_{entry.product_id}_scale{fu_scale:.2f}_{at_margin:.2f}.tsai"
+    )
+    camera_module.write_tsai(tsai_path, np.array(entry.camera.camera_center_moon_me_m), r_cam_to_me, fu, fv, cu, cv)
+    scaled_camera = dataclasses.replace(entry.camera, tsai_path=tsai_path, footprint_lonlat_deg=footprint)
+
+    rendered = render.run_sat_sim(scaled_camera, dem_ortho, entry.per_image_config)
+    data = plotting.read_raster_band(rendered.rendered_tif)
+    valid_mask = plotting.valid_pixel_mask(data)
+
+    edge = max(1, data.shape[0] // 20)
+    ring = np.zeros_like(valid_mask)
+    ring[:edge, :] = ring[-edge:, :] = ring[:, :edge] = ring[:, -edge:] = True
+
+    c = edge * 2
+    corner_valid = {
+        name: float(valid_mask[sl].mean())
+        for name, sl in [
+            ("top-left", (slice(0, c), slice(0, c))),
+            ("top-right", (slice(0, c), slice(-c, None))),
+            ("bottom-left", (slice(-c, None), slice(0, c))),
+            ("bottom-right", (slice(-c, None), slice(-c, None))),
+        ]
+    }
+    return {
+        "overall_valid": float(valid_mask.mean()),
+        "edge_ring_valid": float(valid_mask[ring].mean()),
+        "worst_corner_valid": min(corner_valid.values()),
+        "corner_valid": corner_valid,
+    }
+
+
+# %%
+validation_entries = [dataset[i] for i in range(4)]
+validation_results = []
+for val_entry in validation_entries:
+    baseline = evaluate_reproject_coverage(val_entry, fu_scale=1.0, at_margin=1.0)
+    fixed = evaluate_reproject_coverage(val_entry, fu_scale=FU_SCALE, at_margin=AT_MARGIN)
+    validation_results.append({"product_id": val_entry.product_id, "baseline": baseline, "fixed": fixed})
+    print(f"{val_entry.product_id}:")
+    print(f"  baseline: overall={baseline['overall_valid']:.1%}  worst corner={baseline['worst_corner_valid']:.1%}")
+    print(f"  fixed:    overall={fixed['overall_valid']:.1%}  worst corner={fixed['worst_corner_valid']:.1%}")
+
+# %% [markdown]
+# Summary table -- does the one image's tuned `(FU_SCALE, AT_MARGIN)` generalize?
+
+# %%
+summary = pd.DataFrame(
+    [
+        {
+            "product_id": r["product_id"],
+            "baseline_overall": r["baseline"]["overall_valid"],
+            "baseline_worst_corner": r["baseline"]["worst_corner_valid"],
+            "fixed_overall": r["fixed"]["overall_valid"],
+            "fixed_worst_corner": r["fixed"]["worst_corner_valid"],
+        }
+        for r in validation_results
+    ]
+)
+summary

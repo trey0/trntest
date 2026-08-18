@@ -3755,3 +3755,40 @@ this up next.
 Verified: no test/lint changes this phase (notebook-only work); real, live Docker re-runs of
 `notebooks/reproject_spike.py` at every stage of the investigation (not just the final one), each
 inspected via its own printed coverage numbers and rendered output.
+
+## Phase 61 (2026-08-18, `feature/reproject` branch, still not merged) — Validated Phase 60's FOV
+fix generalizes across 4 real images
+
+Picked back up per Phase 60's own stated next step: does the tuned `(FU_SCALE=0.93, AT_MARGIN=0.93)`
+pair hold up on other real candidates, or does the solve need retuning per image? Added a reusable
+`evaluate_reproject_coverage()` to `notebooks/reproject_spike.py` (the same crop→reproject→render→
+coverage pipeline as Phase 60's investigation, refactored into a function so it could run repeatedly)
+and re-ran the *same*, unchanged constants against 3 more real candidates already available in the
+`trn_dataset` folder (crop+hillshade already generated from Phase 60's own accidental
+`populate(limit=1)` advance — reused rather than wasted, and avoided repeating that same mistake by
+never calling `populate()` again in this pass), deliberately spanning a wide latitude/off-nadir
+range: `M1327211014CE` (55.4°N), `M1327211334CE` (70.7°N), `M1327215525CE` (-67.5°S), against the
+original `M1327210646CE` (38.5°N).
+
+**Result: all four reach ~100% valid-pixel coverage with the unmodified constants** (worst case
+99.8%, negligible) — up from a 95.5-99.2% "solve-only" baseline (the corner-ray `fv`/`cv` solve alone,
+no `FU_SCALE`/`AT_MARGIN` shrink) whose own worst corner ranged 57.8-77.1%. This resolves Phase 60's
+open "per-image solve or fixed constant?" question: a single fixed constant pair holds up across this
+range, at least for candidates from the same manifest/EDR family this demo already uses — no evidence
+yet that per-image retuning is needed. Not proof it holds at every conceivable off-nadir angle/
+latitude (all 4 tested are still non-polar WAC-VIS with similar `n_frames_for_square_crop`), but a
+real, meaningful result: the original fix wasn't overfit to one image.
+
+Full first-run timing (before a lint-driven reformat, re-run to confirm results were unchanged, see
+below) showed the added validation pass costs ~155s of real Docker time (`cam2map` + `sat_sim` run
+per candidate per baseline/fixed pair, 8 renders total) — consistent with Phase 60's own per-run cost,
+not surprising or a new performance concern.
+
+Still not wired into a real `TrnTestReprojectImage` class — the open items from Phase 60 (where the
+corrected FOV should live; the boresight-bias-vs-rotation tangent) are unchanged and still the actual
+blockers, not this validation gap. See `docs/reproject-fov-investigation.md`'s "Validated: the fix
+generalizes across 4 real images" section for the full table and discussion.
+
+Verified: no test/lint changes needed to `src/trntest/` itself; `trntest-lint --all` flagged one
+`ruff format` issue in the new notebook code (a too-long line), fixed and the notebook re-run to
+confirm identical results post-format; full `trntest-lint --all` clean after.
