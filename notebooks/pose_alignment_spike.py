@@ -49,11 +49,14 @@
 # for the full rationale.
 
 # %%
+import warnings
+
 import numpy as np
 import rasterio
+from scipy.spatial.transform import Rotation
 
 import trntest
-from trntest import control_network, isis_wac, plotting, pose_alignment
+from trntest import control_network, isis_wac, plotting, pose_alignment, tie_points, wac_camera_model
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -312,3 +315,79 @@ print(
     f"({ground_lonlat[:, 0].min():.3f}-{ground_lonlat[:, 0].max():.3f}, "
     f"{ground_lonlat[:, 1].min():.3f}-{ground_lonlat[:, 1].max():.3f})"
 )
+
+# %% [markdown]
+# ## The real fit: `jigsaw`'s hand-rolled fallback
+#
+# `jigsaw` itself hit a real, root-caused, unfixable bug in its PushFrame framelet search (see
+# `docs/wac-jigsaw-investigation.md` for the full trail: a tautological, mathematically
+# guaranteed-zero-error control network still produced ~350px `jigsaw` residuals). Pivoted to a
+# hand-rolled Python ground-to-image forward projection (`src/trntest/wac_camera_model.py`) instead
+# -- its optics chain is validated to exact (0.000px) agreement with real `campt` output, and its
+# framelet search (`find_framelet_and_project`) is validated to 0.00m ground error round-tripped
+# through `campt`'s trusted inverse.
+#
+# `fit_pose_correction` fits a single, frozen 6-DOF `PoseCorrection` (3 position, meters, MOON_ME;
+# 3 rotation, composed on the camera side -- matching this project's own precedent that WAC-VIS's
+# real boresight offset is frame-constant, not time-varying) against real control points, via
+# `scipy.optimize.least_squares`. `calibrate_et_per_crop_line` derives the crop's own line-to-ET
+# relationship from 2 real `campt` `EphemerisTime` queries, rather than hand-deriving
+# `crop_window_for_camera`'s row-offset/flip bookkeeping.
+
+# %%
+ground_points_me_m = (
+    np.array(
+        [
+            tie_points.lonlat_to_ground_km(lon_deg, lat_deg, entry.per_image_config.moon_radius_km)
+            for lon_deg, lat_deg in ground_lonlat
+        ]
+    )
+    * 1000.0
+)
+
+with warnings.catch_warnings():
+    # NotGeoreferencedWarning is expected for an ISIS .cub at this pipeline stage (no geotransform
+    # yet, not a bug) -- see plotting.read_raster_band's own docstring for this same suppression.
+    warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+    with rasterio.open(entry.crop_result.cub_path) as src:
+        n_lines = src.height
+n_framelets = n_lines // wac_camera_model.FRAMELET_HEIGHT
+et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(entry.crop_result.cub_path, n_lines)
+print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.6f}")
+
+# %% [markdown]
+# Baseline (uncorrected) residuals -- how far off the existing, uncorrected SPICE-derived pose
+# already is, at each real control point -- for a direct before/after comparison against the fit.
+
+# %%
+baseline_residuals_px = []
+for ground_pt, obs in zip(ground_points_me_m, observed_pixels, strict=True):
+    predicted = wac_camera_model.find_framelet_and_project(ground_pt, n_framelets, et0, et_per_line)
+    if predicted is not None:
+        baseline_residuals_px.append((predicted[0] - obs[0], predicted[1] - obs[1]))
+baseline_residuals_px = np.array(baseline_residuals_px)
+baseline_norms = np.linalg.norm(baseline_residuals_px, axis=1)
+print(
+    f"Baseline (uncorrected): {len(baseline_residuals_px)}/{len(observed_pixels)} points resolved, "
+    f"residual mean {baseline_norms.mean():.2f}px, max {baseline_norms.max():.2f}px"
+)
+
+# %%
+fit = wac_camera_model.fit_pose_correction(ground_points_me_m, observed_pixels, n_framelets, et0, et_per_line)
+
+fit_norms = np.linalg.norm(fit.residuals_px, axis=1)
+# A control point that lands outside crop coverage under the fitted correction gets a fixed, large
+# penalty residual (see fit_pose_correction's own docstring) -- filtered out here for the mean/max
+# stats below since it's a sentinel, not a real pixel error; reported separately if it happens.
+RESOLVED_RESIDUAL_THRESHOLD_PX = 100.0  # well below _UNRESOLVED_RESIDUAL_PX, well above any real fit
+resolved = fit_norms < RESOLVED_RESIDUAL_THRESHOLD_PX
+print(f"Fit success: {fit.success}")
+print(f"delta_position_m (MOON_ME): {fit.correction.delta_position_m}")
+rotvec_deg = np.degrees(Rotation.from_matrix(fit.correction.delta_rotation).as_rotvec())
+print(f"delta_rotation (deg, camera-frame rotation vector): {rotvec_deg}")
+print(
+    f"Fitted: {resolved.sum()}/{len(observed_pixels)} points resolved, "
+    f"residual mean {fit_norms[resolved].mean():.2f}px, max {fit_norms[resolved].max():.2f}px"
+)
+if not resolved.all():
+    print(f"WARNING: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
