@@ -336,12 +336,17 @@ def plot_isis_comparison(
     synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
     real_rot = np.rot90(real_display, rotations.k_crop)
 
-    synthetic_width_km = camera.cross_track_width_km
+    # synthetic_width_km != synthetic_height_km in general once camera.solve_corrected_fov shrinks
+    # the FOV (see its docstring) -- and, independently, no longer necessarily equal to
+    # crop_width_km/crop_height_km either, since that correction only shrinks the synthetic render,
+    # not the real crop's own (unrelated) window.
+    synthetic_width_km = camera.render_cross_track_km
+    synthetic_height_km = camera.render_along_track_km
     crop_width_km = camera.cross_track_width_km
     crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 6))
-    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_width_km, 0])
+    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_height_km, 0])
     axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
     axes[1].imshow(real_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
     axes[1].set_title("Real WAC (ISIS-processed, brightness-matched to synthetic, north-up)")
@@ -352,7 +357,7 @@ def plot_isis_comparison(
     for name, r in tie_point_results.items():
         px, py = r["synthetic_px"]
         _plot_tie_point_marker(
-            axes[0], name, px, py, rotations.k_synthetic, h_syn, w_syn, synthetic_width_km, synthetic_width_km
+            axes[0], name, px, py, rotations.k_synthetic, h_syn, w_syn, synthetic_width_km, synthetic_height_km
         )
         col, row = r["crop_px"]
         _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)

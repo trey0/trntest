@@ -7,8 +7,14 @@ that can be populated incrementally/resumably, including across separate `docker
 workers via the filesystem-based task queue at the bottom of this module. See docs/dataset-plan.md
 for the full design this implements -- start there before changing anything here.
 
-First-pass scope is `crop` + `hillshade` generation only; `reproject` is reserved (folder exists,
-no generation code targets it yet) -- see docs/dataset-plan.md.
+First-pass scope was `crop` + `hillshade` generation only; `reproject` (`TrnTestReprojectImage`,
+`sat_sim` fed by the real WAC crop's own reflectance instead of the Lunaserv/Astropedia basemap,
+through the exact same camera as `hillshade`) is now implemented too, but deliberately kept out of
+`PRODUCT_TYPES` (`populate()`/`status()`'s default) -- opt-in only (pass
+`product_types=(..., "reproject")` explicitly) until it's wired into a notebook and validated at
+dataset scale, not just the one image `docs/reproject-fov-investigation.md` cross-validated. See
+docs/dataset-plan.md for the original design and docs/reproject-fov-investigation.md for
+`reproject`'s own history.
 """
 
 import abc
@@ -27,7 +33,8 @@ from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
-PRODUCT_TYPES = ("crop", "hillshade")
+PRODUCT_TYPES = ("crop", "hillshade")  # "reproject" is implemented (TrnTestReprojectImage) but opt-in
+# only -- pass product_types=("crop", "hillshade", "reproject") explicitly; see module docstring.
 
 
 class TrnTestEntry:
@@ -111,9 +118,13 @@ class TrnTestEntry:
     def hillshade(self) -> "TrnTestHillshadeImage":
         return TrnTestHillshadeImage(self)
 
+    @functools.cached_property
+    def reproject(self) -> "TrnTestReprojectImage":
+        return TrnTestReprojectImage(self)
+
     @property
     def images_by_type(self) -> dict[str, "TrnTestImage"]:
-        return {"crop": self.crop, "hillshade": self.hillshade}
+        return {"crop": self.crop, "hillshade": self.hillshade, "reproject": self.reproject}
 
 
 class TrnTestDataSet:
@@ -428,11 +439,12 @@ class TrnTestHillshadeImage(TrnTestImage):
 
     @property
     def width_km(self) -> float:
-        return self.entry.camera.cross_track_width_km
+        return self.entry.camera.render_cross_track_km
 
     @property
     def height_km(self) -> float:
-        return self.entry.camera.cross_track_width_km  # square by construction
+        return self.entry.camera.render_along_track_km  # not necessarily == width_km -- see
+        # camera.solve_corrected_fov's docstring for why the corrected FOV isn't exactly square
 
     @property
     def footprint_lonlat_deg(self) -> dict:
@@ -455,10 +467,66 @@ class TrnTestHillshadeImage(TrnTestImage):
     def _mapprojected_path(self) -> Path:
         # _work/, not hillshade/ -- same "don't spill mapproject's own intermediates into the
         # canonical named pair's folder" reasoning as TrnTestCropImage's own override.
+        # camera_type="csm" (the default) against self.sidecar_json_path is safe again now that
+        # render._correct_csm_focal_length_anisotropy fixes up cam_gen's sidecar in place (see its
+        # own docstring) -- an earlier version of this call used camera_type="pinhole" against
+        # entry.camera.tsai_path directly as a workaround, before the sidecar itself was corrected
+        # at the source.
         out_path = self.entry.per_image_config.output_dir / (self.raster_path.stem + "-mapproj.tif")
         return render.run_mapproject_image(
             self.raster_path, self.sidecar_json_path, out_path, self.entry.dem_ortho_result, self.entry.per_image_config
         )
+
+
+class TrnTestReprojectImage(TrnTestHillshadeImage):
+    """The synthetic `sat_sim` render, textured with the real WAC crop's own reflectance
+    (`isis_wac.run_cam2map_for_crop`) instead of the Lunaserv/Astropedia basemap --
+    `reproject/<edr_product>_reproject.tif` + its CSM/ISD sidecar. The user's own framing: "use
+    `sat_sim` but for input data use the RDR of our WAC crop essentially."
+
+    Subclasses `TrnTestHillshadeImage`, not `TrnTestImage` directly, since it goes through the exact
+    same sat_sim-render-then-mapproject shape (per docs/dataset-plan.md's own note) -- only the
+    `--ortho` texture source differs, so `raster_path`/`sidecar_json_path`/`render_label`/
+    `_generate_impl` are the only overrides needed; `width_km`/`height_km`/`footprint_lonlat_deg`/
+    `rotation_k`/`tie_point_px_key`/`_mapprojected_path` are all inherited unchanged (dynamic
+    dispatch already picks up this class's own `raster_path`/`sidecar_json_path` inside the
+    inherited `_mapprojected_path`).
+
+    Uses `self.entry.camera` -- the exact same `Camera` `hillshade` renders with, not a separate one
+    -- so the two are byte-identical in pose *and* FOV (`camera.build_camera()`'s FOV correction is
+    applied once, shared by every product type that renders through it -- see
+    `solve_corrected_fov`'s docstring), deliberately, for pixel-grid-identical comparison between
+    them later (e.g. SSIM/LPIPS/diff scoring) -- see docs/reproject-fov-investigation.md. `crop` (the
+    real image, this class's own texture source) is unaffected and naturally larger, providing the
+    margin `reproject`'s render needs."""
+
+    @property
+    def raster_path(self) -> Path:
+        return self.entry.dataset_folder / "reproject" / f"{self.entry.edr_product}_reproject.tif"
+
+    @property
+    def sidecar_json_path(self) -> Path:
+        return self.entry.dataset_folder / "reproject" / f"{self.entry.edr_product}_reproject.json"
+
+    @property
+    def render_label(self) -> str:
+        return "Synthetic (sat_sim, real-WAC-textured)"
+
+    @functools.cached_property
+    def _reproject_dem_ortho(self) -> DemOrthoResult:
+        """The real WAC crop's own reflectance, reprojected (`isis_wac.run_cam2map_for_crop`) and
+        wrapped as a `DemOrthoResult` sharing `entry.dem_ortho_result`'s own DEM -- only the imagery
+        source changes, matching `notebooks/reproject_spike.py`'s validated approach."""
+        wac_ortho_path = isis_wac.run_cam2map_for_crop(
+            self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
+        )
+        return lunaserv.result_from_files(wac_ortho_path, self.entry.dem_ortho_result.dem)
+
+    def _generate_impl(self) -> None:
+        render_result = render.run_sat_sim(self.entry.camera, self._reproject_dem_ortho, self.entry.per_image_config)
+        self.raster_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(render_result.rendered_tif, self.raster_path)
+        shutil.copy(render_result.csm_json, self.sidecar_json_path)
 
 
 # -- Task queue: filesystem-only, no persisted job DB -- task list is always manifest rows x

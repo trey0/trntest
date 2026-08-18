@@ -1,14 +1,21 @@
 # Investigation: the `reproject` `TrnTestImage` type, and a real synthetic-camera FOV bug found along the way
 
-**Status: fix validated across 4 real images, still not merged to `main`.** Lives on branch
-`feature/reproject` (`notebooks/reproject_spike.py`/`.ipynb`, uncommitted-to-`main` by design, same
-pattern as `feature/alignment`'s `pose_alignment_spike.py` -- see `docs/history.md`'s Phase 52
-entry). The fixed `(FU_SCALE=0.93, AT_MARGIN=0.93)` constants, originally tuned on one image, were
-re-run unchanged against 3 more real candidates spanning a wide latitude/off-nadir range (38.5°N to
--67.5°S) and reached ~100% valid-pixel coverage on all four -- see "Validated: the fix generalizes"
-below. What's left before this is ready to wire into a real `TrnTestReprojectImage` class: the
-where-should-the-corrected-FOV-live decision and the separate boresight-bias tangent, both still
-open (see "What's NOT done yet").
+**Status: implemented and live-validated, still on `feature/reproject`, not yet merged to `main`.
+Session ended here for token-budget reasons, mid-way through chasing one unresolved residual --
+picking this up should start with "OPEN: an unexplained small residual in the CSM mapproject path"
+below, not with a fresh read of everything above it.**
+
+The FOV fix is folded into `camera.build_camera()` itself (`solve_corrected_fov`) and
+`TrnTestReprojectImage(TrnTestHillshadeImage)` is a real class in `src/trntest/trn_dataset.py` --
+`notebooks/reproject_spike.py`/`.ipynb` (still on this branch, uncommitted-to-`main` by design, same
+pattern as `feature/alignment`'s `pose_alignment_spike.py`) is now superseded exploratory history,
+not the current implementation; it computes its own separate `_fovfix` camera/tsai rather than using
+`build_camera()`'s built-in correction and will not run against current code without updating (not
+worth doing -- see "What's NOT done yet"). What's left before merging to `main`: notebook wiring
+(nothing currently generates `reproject` by default -- see `trn_dataset.PRODUCT_TYPES`), validation
+at full dataset scale (so far: 4 images for the FOV fix itself, 1 image through the real class
+end-to-end), the boresight-bias tangent (still open, separate, not started), and the CSM residual
+below.
 
 ## What `reproject` is
 
@@ -97,17 +104,162 @@ result: this isn't one image's overfit tuning.
 
 ## What's NOT done yet
 
-- **Not wired into `camera.build_camera()` or a real `TrnTestReprojectImage` class.** Still ad hoc
-  notebook code (`notebooks/reproject_spike.py`) computing a second, `_fovfix`-suffixed `.tsai` and
-  camera object alongside the normal one, not integrated into the pipeline. Building the real
-  `TrnTestReprojectImage(TrnTestImage)` subclass (per `docs/dataset-plan.md`'s original reservation)
-  should reuse this fix, but needs a decision first on where the corrected `(fu, fv, cu, cv)` should
-  live -- inside `build_camera()` itself (would change `hillshade`'s and `crop`'s FOV too, not just
-  `reproject`'s -- probably *not* desired, since `hillshade`/`crop` don't have this coverage problem)
-  vs. a `reproject`-specific camera variant that shares pose/attitude with `entry.camera` but not FOV
-  (more likely right, but changes the "identical camera across all three product types" property the
-  user explicitly wanted -- worth re-confirming with them once this is revisited, since it's now FOV
-  that would differ, not pose/attitude).
+- **Resolved: wired into `camera.build_camera()` and a real `TrnTestReprojectImage` class.** The
+  where-should-the-corrected-FOV-live question was settled by the user's own requirement: `reproject`
+  and `hillshade` should stay pixel-grid-identical (`(fu,fv,cu,cv)` byte-for-byte), since a future
+  goal is SSIM/LPIPS/diff-style scoring between them, which needs a shared pixel grid -- only
+  possible if the correction lives inside `build_camera()` itself, applied once, not a
+  `reproject`-specific camera variant. The earlier worry that this would degrade `crop`'s already-
+  validated alignment against `hillshade` turned out not to apply: that alignment is about *pose*
+  (`look_at_rotation`'s target, "0.000km residual"), not FOV/size -- `crop` and `hillshade` were
+  never required to be the same size, only correctly co-located, so shrinking `hillshade`'s FOV
+  doesn't touch it. `crop` (real source data) stays its own, naturally larger real footprint,
+  providing the margin `reproject`'s render needs -- exactly the shape the user described: "crop
+  needs to stay a bit larger since it's serving as source data and there needs to be some margin."
+  `TrnTestReprojectImage(TrnTestHillshadeImage)` needed only 4 overrides (`raster_path`/
+  `sidecar_json_path`/`render_label`/`_generate_impl` -- feeding a WAC-crop-textured `DemOrthoResult`
+  into the same `render.run_sat_sim` call `hillshade` uses); `_mapprojected_path` and the
+  `width_km`/`height_km`/`footprint_lonlat_deg`/`rotation_k`/`tie_point_px_key` properties are all
+  inherited unchanged. Live-validated end to end (private scratch dataset, not the shared demo
+  folder): `hillshade`/`reproject` confirmed byte-identical `width_km`/`height_km`, both 100% valid
+  coverage, `plot_vs_basemap`/`plot_overlay` both produce correct, well-aligned figures.
+- **Resolved along the way: `footprint_lonlat`'s `"center"` entry was hardcoded to the geometric
+  image-center pixel** (`size/2, size/2`), not the boresight ray `(cu, cv)` -- harmless before this
+  fix (the two were always equal, `cu=cv=size/2` everywhere), but wrong once the principal point can
+  be offset. Every consumer of `footprint_lonlat_deg["center"]` (AOI centering in `lunaserv.py`, sun-
+  angle lookups, `orientation.py`'s display rotation) wants the real pose target, not the literal
+  image-center pixel. Fixed; confirmed live the corrected `"center"` now matches the real crop's own
+  `campt`-derived center exactly (0.0 deg delta, both lon and lat).
+- **Resolved along the way, a real regression caught by re-running the flagship demo notebook**:
+  `plotting.plot_isis_comparison` and `TrnTestHillshadeImage.width_km`/`height_km` both reused
+  `Camera.cross_track_width_km` (crop-window-derived) as a stand-in for the *synthetic render's own*
+  real width/height and assumed the render was exactly square -- both true before this fix (`fu=fv`,
+  derived from the same half-angle the crop window used), false after. Added
+  `Camera.render_cross_track_km`/`render_along_track_km` (`camera.footprint_width_height_km`, a real
+  ground-chord measurement of the actual corrected footprint) and switched both consumers to use
+  them; `cross_track_width_km` itself is untouched, still correctly describing the real crop's own
+  extent (`TrnTestCropImage.width_km`, `pose_alignment.py`'s crop GSD calc) -- unaffected by a
+  synthetic-camera-only fix.
+- **Resolved along the way, a second real regression found by re-running the flagship notebook**:
+  `tie_points.select_tie_points`'s 5 QA-overlay tie points dropped from 5-of-5 resolving (the demo's
+  own documented default-candidate result) to 1-of-5 once the FOV fix was wired in. Root cause:
+  `tie_points.die5_points` anchored its points on the shared bbox's own naive
+  `(lon_min+lon_max)/2, (lat_min+lat_max)/2` midpoint, not the true shared boresight center -- fine
+  while the synthetic footprint was symmetric around its own center (midpoint == true center by
+  construction), wrong once `solve_corrected_fov` made it asymmetric (near corners ~91k m from
+  center, far corners ~100k m) enough to shift the naive midpoint measurably off the true center --
+  confirmed live: even the "center" test point itself landed outside the real crop's pushframe FOV
+  ("no surface intersection"). Fixed by anchoring `die5_points` on an explicit `center` argument
+  (`select_tie_points`'s already-computed `synthetic_center`) instead, with each of the 4 corner
+  points scaled by its own reach from `center` to its own side of the bbox. Live-validated: 5 of 5
+  tie points resolve again on `M1327210646CE`, and the "center" tie point's real crop pixel now lands
+  within ~2px of the crop's own true center pixel.
+- **Resolved along the way, a third real regression -- this one caught only by the user's own direct
+  visual inspection in Jupyter Lab, not by anything automated**: Phase 5B's blink overlay (`entry.
+  hillshade.plot_overlay()`, the true pixel-for-pixel `mapproject`-based geometry check, previously
+  "always very accurately aligned" per the user) came out visibly misaligned once the FOV fix was
+  wired in. Root cause: `TrnTestHillshadeImage._mapprojected_path()` reprojects via ASP `mapproject
+  -t csm`, using a CSM Frame model-state JSON `cam_gen` converts from our own `.tsai` -- but the CSM
+  Frame sensor model (`USGS_ASTRO_FRAME_SENSOR_MODEL`) has only one, *isotropic* `m_focalLength`
+  field, no separate fu/fv. Confirmed live: `cam_gen` silently averages an asymmetric `fu`/`fv` into
+  that one field (`(235.25+249.40)/2 = 242.32`, matching the JSON's actual value to 10 significant
+  figures) -- harmless while `fu=fv` always held (lossless average of two equal numbers), a real,
+  measurable ~5% one-axis distortion once `solve_corrected_fov` made them differ. Quantified directly:
+  the CSM-reprojected footprint's own bounding box came out nearly square (143.1x142.6 km, ratio
+  1.0035) while the correct one (computed via `mapproject -t pinhole`, using the `.tsai` directly --
+  ASP's Pinhole model has no such isotropy limitation) is properly non-square (146.0x139.1 km, ratio
+  1.049), matching `Camera.render_cross_track_km`/`render_along_track_km`'s own real ~1.05 ratio.
+  First fix attempt: generalized `render.run_mapproject_image` (`camera_path`/`camera_type` instead
+  of a hardcoded CSM sidecar) and switched `TrnTestHillshadeImage._mapprojected_path` to
+  `camera_type="pinhole"` against `entry.camera.tsai_path` directly, bypassing the lossy CSM sidecar
+  entirely -- worked, but the user asked a sharper question: is this a fundamental CSM limitation, or
+  just `cam_gen`'s own conversion being lossy (with a hopeful eye toward keeping CSM, since a correct
+  standalone ISD sidecar matters for `docs/plan.md`'s still-open "acceptable stand-in for a literal
+  ISD file" question)? Investigated properly rather than assuming: `cam_gen --help` only exposes a
+  single `--focal-length`/`--pixel-pitch` (no per-axis flags) -- but `ale`'s own real-instrument CSM
+  formatters (`ale/drivers/lro_drivers.py`, installed in this image) populate the model's
+  `m_iTransL`/`m_iTransS`/`m_transX`/`m_transY` fields directly from NAIF's real, genuinely
+  anisotropic `INS<id>_ITRANSL`/`ITRANSS`/`TRANSX`/`TRANSY` instrument-kernel keywords for actual
+  flight cameras -- proving the CSM Frame model itself fully supports per-axis anisotropy via those
+  fields, entirely independent of the single `m_focalLength`. Confirmed empirically by hand-patching
+  a `cam_gen`-produced sidecar (pivoting `m_focalLength` to `fu`, rescaling `m_iTransL`/`m_transY` by
+  `fv/fu`/`fu/fv`) and re-running `mapproject -t csm`: the reprojected footprint came out 146.3x139.2
+  km, matching the correct `-t pinhole` result (146.0x139.1 km) to ~0.2% -- vs. the original broken
+  CSM output's 143.1x142.6 km. So `cam_gen`'s conversion is the actual bug, not the model.
+
+  **Final fix**: `render._correct_csm_focal_length_anisotropy` restores the sidecar itself, called
+  right after `cam_gen` in `run_sat_sim` -- pivots `m_focalLength` to `fu`, rescales whichever of
+  `m_iTransL`'s two coefficients `cam_gen` set nonzero by `fv/fu` (and `m_transY`'s matching
+  coefficient by the reciprocal), preserving sign rather than assuming a fixed index/sign convention.
+  `TrnTestHillshadeImage._mapprojected_path` (and `TrnTestReprojectImage`, inherited) reverted back to
+  the CSM sidecar (`camera_type="csm"`, the default) now that it's correct at the source --
+  `run_mapproject_image` stayed generalized (`camera_path`/`camera_type`) as good hygiene, even
+  though its one live caller no longer needs `"pinhole"`. Live-validated across all 4 candidates used
+  throughout this investigation: the auto-corrected CSM sidecar's own `mapproject -t csm` footprint
+  matches the from-the-`.tsai` `-t pinhole` ground truth to within 0.00-0.27% on each, confirming the
+  fix generalizes, not just for one hand-tuned case. `TrnTestCropImage`'s own `_mapprojected_path`
+  (ISIS `cam2map`, not ASP `mapproject`) was never affected by any of this.
+
+  **Notable**: none of this session's own automated checks (pytest, the FOV coverage validation, even
+  a direct visual check of `TrnTestReprojectImage`'s own overlay output) caught the original
+  regression -- only the user's own side-by-side comparison against their memory of the *previous*
+  (always-correct) Phase 5B alignment did. A real reminder that "didn't crash and looked plausible in
+  isolation" isn't the same bar as "matches a previously-established, known-good baseline." And the
+  user's own follow-up question -- "is this really a CSM limitation, or just cam_gen?" -- led to a
+  better, more foundational fix (the sidecar itself is now correct for any future consumer, not just
+  the one call site that happened to need it) than the first, narrower workaround would have been.
+
+  **OPEN: an unexplained small residual remains in the CSM mapproject path -- picked up here next.**
+  The user pushed further on the "matched to within ~0.27%" claim above ("that sounds high") -- right
+  to, since it turned out to be masking something. Chased it live, in order:
+  1. **Control test**: re-ran the identical `mapproject -t pinhole` command twice on the same camera
+     and diffed the outputs -- bit-for-bit identical (`std=0.0000`), confirming `mapproject` itself is
+     fully deterministic with zero inherent noise floor. Any disagreement between `-t csm` and
+     `-t pinhole` is therefore real, not implementation jitter.
+  2. **Precise point-placement check** (exact known ground points -- the camera's own footprint
+     center + 4 corners, real `campt`/ray-sphere ground truth -- converted to pixel row/col via each
+     output raster's own `rasterio` transform, not texture cross-correlation, which turned out to be
+     too noisy/ambiguous to trust -- an earlier FFT-correlation attempt gave inconsistent, seemingly
+     patch-location-dependent offsets that didn't survive this more direct check): on
+     `M1327210646CE`'s real corrected camera (`fu=235.25, fv=249.40`), CSM and pinhole disagree by a
+     **constant** offset at all 5 points -- (row -1, col +8) px, not growing toward the edges. A
+     constant (not distance-scaling) offset rules out a residual anisotropy/scale error -- it's a
+     positional bias instead.
+  3. **Symmetric-camera control** (`fu=fv=235.25`, `cu=cv=128.0` -- reconstructed via
+     `camera.footprint_lonlat`/`write_tsai` directly, matching how this project's camera always
+     worked before this session): CSM and pinhole agree **exactly**, 0px at all 5 points. This proves
+     the residual is specific to the asymmetric-FOV correction, not a pre-existing CSM-vs-Pinhole
+     implementation quirk that was always there and just never noticed.
+  4. **Raw (uncorrected) vs. corrected CSM, both vs. pinhole**, same 5 points: raw `cam_gen` output
+     disagreed with pinhole by (row -16, col +9); the corrected version disagrees by (row +1, col -8).
+     The row axis (the one `_correct_csm_focal_length_anisotropy` actually rescales, via `m_iTransL`/
+     `m_transY`) improved by ~16x. **The confusing part**: the column axis (`m_iTransS`/`m_transX`,
+     never touched by the correction) also *changed* between raw and corrected -- expected, since
+     changing `m_focalLength` (which the correction does pivot, from the averaged value to `fu`)
+     feeds into `xf` for both axes before the per-axis transform applies -- but per the model derived
+     for this fix, pivoting to `fu` with `m_iTransS`'s coefficient left at `1` *should* make the
+     column axis land exactly on `fu * x/z`, matching pinhole exactly (0 residual) -- it doesn't (-8px
+     residual instead). So there's a real gap between the derived model and the CSM Frame model's
+     actual internal math that this session did not close, without `usgscsm`'s own source (only the
+     compiled `.so` was available in this image -- `find / -iname '*usgscsm*'` for what's on disk).
+
+  **Numbers to reproduce this immediately, without redoing the diagnostic work**: entry 0
+  (`M1327210646CE`), `fu=235.24707571465046, fv=249.40000663655198`. Compare `mapproject -t csm`
+  (using `render_result.csm_json`, i.e. after `_correct_csm_focal_length_anisotropy` already ran)
+  against `mapproject -t pinhole` (using `camera.tsai_path` directly) for the same rendered image;
+  convert `camera.footprint_lonlat_deg`'s 5 points to each output's own local Orthographic meters
+  (`lunaserv.orthographic_xy_m`) and look up `rasterio` `.index()` in each raster -- should reproduce
+  (row -1, col +8) (pinhole minus csm, or thereabouts -- sign convention wasn't triple-checked, verify
+  fresh). **Net assessment**: not fully closed, but the residual (~1-8px out of a ~1400-1460px image,
+  <0.6% of a ~140-160km footprint, constant not growing) is far smaller than the original bug (~5%,
+  growing toward the edges) -- the user was mid-decision between accepting this, reverting the live
+  `mapproject` call back to `camera_type="pinhole"` (proven exact throughout this whole
+  investigation, zero residual, but leaves the exported CSM sidecar itself imperfect for other future
+  consumers), or continuing to chase the exact cause, when the session ended for token-budget reasons.
+  **Left as-is (CSM path, `camera_type="csm"` default) rather than reverted** -- it's a real,
+  substantial, live-validated improvement over the original bug either way; reverting without being
+  asked would have been a unilateral call on an open question. Whoever picks this up should re-read
+  this section, decide, and either accept/document or continue the debugging trail above.
 - **A related but separate architectural point from the user, not acted on**: the existing boresight
   correction (`camera.build_camera()`'s `look_at_rotation` re-aiming, `docs/data-sources.md`'s
   "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was modeled as a *rotation* of the
@@ -125,6 +277,19 @@ result: this isn't one image's overfit tuning.
   ortho fetch and crop/hillshade generation for an unrelated product). Fixed by removing the
   `populate()` call entirely, since entry 0 never needed it -- worth remembering as a general trap:
   `populate(limit=N)` on an already-populated entry advances the queue, it doesn't no-op.
+- **Still open: `reproject` isn't wired into any notebook, and only validated on 1 image end-to-end
+  through the real `TrnTestReprojectImage` class** (the FOV fix itself has 4-image coverage; the
+  class wrapping it doesn't yet). Not in `trn_dataset.PRODUCT_TYPES` (`populate()`'s default) --
+  opt-in only. `notebooks/reproject_spike.py` itself is now stale relative to `build_camera()`'s
+  built-in correction (still computes its own separate `_fovfix` camera/tsai) -- not worth updating,
+  since it already did its job (finding and validating the fix); the real implementation lives in
+  `src/trntest/camera.py`/`trn_dataset.py` now, this notebook is exploratory history.
+- **Still open: the FOV-corrected `Camera`'s wider ripple effects were caught reactively (via
+  re-running `image_generation.ipynb`), not proactively enumerated** -- two real regressions were
+  found and fixed this way (`plot_isis_comparison`/`width_km`/`height_km`, `die5_points`'s
+  anchoring), but there's no guarantee every consumer of `Camera`'s fields has been checked;
+  `grep -rn "cross_track_width_km\|focal_length_px\|principal_point"` across `src/trntest/` is a
+  reasonable starting point if something else looks off after this branch is picked back up again.
 
 ## Key facts for whoever picks this up
 
