@@ -390,12 +390,16 @@ changes against them.
   PushFrame framelet search (confirmed via a tautological, mathematically-guaranteed-zero-error
   control network that still produced huge `jigsaw` residuals) -- pivoted to a hand-rolled Python
   ground-to-image forward projection instead (`src/trntest/wac_camera_model.py`), now complete
-  end-to-end: the optics chain (validated to exact 0.000px agreement with real `campt`) and the
+  end-to-end: the optics chain (validated to exact 0.000px agreement with real `campt`), the
   framelet search (`find_framelet_and_project`/`calibrate_et_per_crop_line`, live-validated to
   0.00m ground error round-tripped through `campt`'s trusted inverse across the crop's full extent;
   along the way, confirmed real ~29% ground-coverage overlap between adjacent framelets, previously
-  only suspected). Only the actual `scipy.optimize.least_squares` fit against real control points is
-  not yet built. **See `docs/wac-jigsaw-investigation.md` for the full technical detail** (exact
+  only suspected, and fixed a real bug where the bisection search hardcoded a framelet-index
+  direction that isn't universal across LRO's periodic yaw flips), and the optimizer
+  (`fit_pose_correction`, a single frozen 6-DOF correction via `scipy.optimize.least_squares`,
+  validated on synthetic data with a known injected correction). Only the actual fit against real
+  control points (not synthetic validation data) and the corrected-overlay notebook wiring are not
+  yet done. **See `docs/wac-jigsaw-investigation.md` for the full technical detail** (exact
   ISIS source citations, every constant's provenance, the serial-number bug and its fix, and the
   precise remaining-work list) -- written specifically to resume this from a fresh session.
 

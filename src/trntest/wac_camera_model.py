@@ -24,23 +24,41 @@ case, not a correctness bug, resolved via a center-line tiebreak chosen for opti
 reasons, not "recovering the right answer"). Live-validated end-to-end against the current default
 candidate: forward-project a real crop pixel's own ground point, round-trip through `campt`'s
 trusted image-to-ground -- 0.00m ground error across a 3x3 grid spanning the crop's full
-sample/line range. **Not yet done**: the actual `scipy.optimize.least_squares` fit against real
-control points (see `docs/wac-jigsaw-investigation.md`'s "Remaining work"). Only WAC-VIS's default
-band (band 1, NAIF code -85631) is supported -- this project's own `isis_wac.py` never requests a
-different band anywhere, and neither `campt` nor `jigsaw` expose a way to.
+sample/line range.
+
+**The optimizer is now implemented** (`fit_pose_correction`, `PoseCorrection`) -- a single, frozen
+6-DOF correction (3 position + 3 rotation, not a per-framelet fit) applied identically on top of
+every framelet's own real SPICE pose, fit via `scipy.optimize.least_squares` against real control
+points. **Not yet done**: an actual fit against `pose_alignment`'s real basemap-derived tie points
+(not just synthetic/tautological validation data), and wiring a corrected overlay into
+`notebooks/pose_alignment_spike.py` (see `docs/wac-jigsaw-investigation.md`'s "Remaining work").
+Only WAC-VIS's default band (band 1, NAIF code -85631) is supported -- this project's own
+`isis_wac.py` never requests a different band anywhere, and neither `campt` nor `jigsaw` expose a
+way to.
 
 Only the ground-to-image direction is implemented here. Image-to-ground stays on
 `campt`/`isis_wac.ground_point_at_pixel`, already proven reliable throughout this project's
 history -- there was never a reason to replace it (see the investigation doc for why the two
 directions have very different risk profiles for this camera)."""
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 from trntest import isis_wac
 from trntest.camera import camera_pose_moon_me
 from trntest.wac import SAMPLES
+
+# A large, fixed (not scaled by how far off) residual used when a candidate pose correction makes a
+# control point's ground point project outside the crop's real coverage entirely -- keeps
+# `scipy.optimize.least_squares`'s residual function well-defined (finite, no crash) without
+# fabricating a fake pixel location. Should essentially never trigger from a near-zero starting
+# correction (`fit_pose_correction`'s `x0`), since the base, uncorrected model already resolves
+# every real control point -- see the module docstring's own live-validation numbers.
+_UNRESOLVED_RESIDUAL_PX = 1000.0
 
 # WAC-VIS band 1 (bandid=3, 415nm filter, NAIF code -85631) -- confirmed to be ISIS's own default
 # band for any WAC-VIS cube (LroWideAngleCamera's constructor always calls SetBand(1) at the end
@@ -140,22 +158,59 @@ def _center_line(framelet_index: int) -> float:
     return framelet_index * FRAMELET_HEIGHT + (FRAMELET_HEIGHT + 1) / 2.0
 
 
-def _project_at_framelet(ground_me_m: np.ndarray, framelet_index: int, et0: float, et_per_line: float):
+@dataclasses.dataclass(frozen=True)
+class PoseCorrection:
+    """A single, frozen (not time-varying) 6-DOF correction applied identically on top of every
+    framelet's own real per-frame SPICE pose -- not a per-framelet fit; see
+    `docs/wac-jigsaw-investigation.md`'s "the plan, in one paragraph" for why a single degree-0
+    correction is the deliberate scope for this first pass. `delta_position_m` is added directly to
+    the real camera position (`camera.camera_pose_moon_me`'s `C_meters`, MOON_ME frame).
+    `delta_rotation` (3x3) is composed on the *camera* side (`R_corrected = R_original @
+    delta_rotation`), modeling a fixed mounting/boresight-style correction to the camera's own
+    internal frame -- matches this project's own precedent that WAC-VIS's real boresight offset is
+    frame-constant, not time-varying (`docs/data-sources.md`), rather than a bias applied in the
+    inertial/ME frame (which would instead suggest a trajectory error, not a camera-model one)."""
+
+    delta_position_m: np.ndarray
+    delta_rotation: np.ndarray
+
+    @staticmethod
+    def identity() -> "PoseCorrection":
+        return PoseCorrection(delta_position_m=np.zeros(3), delta_rotation=np.eye(3))
+
+
+def _project_at_framelet(
+    ground_me_m: np.ndarray,
+    framelet_index: int,
+    et0: float,
+    et_per_line: float,
+    correction: PoseCorrection | None = None,
+):
     """Real per-framelet SPICE pose (`camera.camera_pose_moon_me` at that framelet's own real
     center-line ET -- the *actual* WAC-VIS instrument pointing at that instant, not this project's
-    synthetic re-aimed camera) then `project_in_known_framelet` through it."""
+    synthetic re-aimed camera), optionally adjusted by a `PoseCorrection`, then
+    `project_in_known_framelet` through it."""
     et = et0 + et_per_line * _center_line(framelet_index)
     c_m, r_cam_to_me, _, _ = camera_pose_moon_me(et)
+    if correction is not None:
+        c_m = c_m + correction.delta_position_m
+        r_cam_to_me = r_cam_to_me @ correction.delta_rotation
     return project_in_known_framelet(ground_me_m, c_m, r_cam_to_me)
 
 
 def find_framelet_and_project(
-    ground_me_m: np.ndarray, n_framelets: int, et0: float, et_per_line: float
+    ground_me_m: np.ndarray,
+    n_framelets: int,
+    et0: float,
+    et_per_line: float,
+    correction: PoseCorrection | None = None,
 ) -> tuple[float, float] | None:
     """Given an arbitrary 3D ground point (body-fixed ME, meters) with no prior image coordinates,
     finds which framelet of a `n_framelets`-framelet crop actually images it and returns its real
     `(sample, line)` in the crop cube's own 1-based convention -- or `None` if no framelet does
-    (point genuinely outside the crop's real coverage).
+    (point genuinely outside the crop's real coverage). `correction`, when given, is applied to
+    every framelet's real SPICE pose identically before projecting (see `PoseCorrection`) -- used by
+    `fit_pose_correction` to evaluate a candidate correction's residuals during optimization.
 
     Two-stage search, deliberately *not* `jigsaw`'s own spacecraft-distance-minimizing heuristic
     (the confirmed site of its bug, see the module docstring and `docs/wac-jigsaw-investigation.md`):
@@ -163,10 +218,13 @@ def find_framelet_and_project(
     1. **Discrete integer-framelet bisection**, using `project_in_known_framelet`'s own
        `within_framelet_line` as the monotonic search signal (a fixed ground point's image line
        moves monotonically across the sensor as the spacecraft advances along-track, over this
-       crop's short real timespan) -- `within_framelet_line < 1` means the point was imaged by an
-       earlier framelet, `> FRAMELET_HEIGHT` means a later one, narrowing to a single bracketing
-       framelet (or an adjacent pair, if the true answer sits right on a boundary) in O(log
-       n_framelets) real pose evaluations.
+       crop's short real timespan) -- narrowing to a single bracketing framelet (or an adjacent
+       pair, if the true answer sits right on a boundary) in O(log n_framelets) real pose
+       evaluations. Whether `within_framelet_line` *increases* or *decreases* with framelet index is
+       measured live from the two range endpoints, not assumed -- it flips with this pass's real yaw
+       state (same underlying cause as `camera.reverse_crop_along_track`), so a hardcoded direction
+       would silently converge to the wrong framelet for a pass with the opposite sign (caught live
+       via a synthetic test candidate, not yet observed on a real one).
     2. **A real 2D containment check** (`1 <= sample <= SAMPLES`, `1 <= within_framelet_line <=
        FRAMELET_HEIGHT`) on the bracketing framelet(s) from step 1 -- not just trusting the
        bisection's own endpoint, since the monotonic signal alone doesn't guarantee the sample axis
@@ -191,22 +249,33 @@ def find_framelet_and_project(
        containment boundary) maximizes the neighborhood of nearby ground/pose perturbations that
        stay on the same framelet's smooth reprojection chart, before a small step would flip the
        choice to a different framelet entirely (a discontinuity gradient-based optimization can't
-       handle well)."""
+       handle well).
+
+       `within_framelet_line`'s sign of change per framelet step is **not assumed fixed** -- it
+       depends on this pass's real yaw state (same underlying cause as `camera.
+       reverse_crop_along_track`/`boresight_rotation_k`: LRO's WAC undergoes periodic 180-degree yaw
+       flips), so the direction is measured live from the two range endpoints before bisecting,
+       rather than hardcoded to whichever direction one validated real candidate happened to have
+       (caught live: a synthetic test candidate with the opposite sign converged to a completely
+       wrong framelet under the hardcoded-direction version of this function)."""
     lo, hi = 0, n_framelets - 1
+    _, within_line_lo = _project_at_framelet(ground_me_m, lo, et0, et_per_line, correction)
+    _, within_line_hi = _project_at_framelet(ground_me_m, hi, et0, et_per_line, correction)
+    increasing = within_line_hi > within_line_lo
     while lo < hi:
         mid = (lo + hi) // 2
-        _, within_line = _project_at_framelet(ground_me_m, mid, et0, et_per_line)
-        if within_line < 1.0:
-            hi = mid
-        elif within_line > FRAMELET_HEIGHT:
+        _, within_line = _project_at_framelet(ground_me_m, mid, et0, et_per_line, correction)
+        if 1.0 <= within_line <= FRAMELET_HEIGHT:
+            lo = hi = mid
+        elif (within_line < 1.0) == increasing:
             lo = mid + 1
         else:
-            lo = hi = mid
+            hi = mid
 
     candidates = [f for f in (lo - 1, lo, lo + 1) if 0 <= f < n_framelets]
     valid = []
     for f in candidates:
-        sample, within_line = _project_at_framelet(ground_me_m, f, et0, et_per_line)
+        sample, within_line = _project_at_framelet(ground_me_m, f, et0, et_per_line, correction)
         if 1.0 <= sample <= SAMPLES and 1.0 <= within_line <= FRAMELET_HEIGHT:
             valid.append((f, sample, within_line))
     if not valid:
@@ -215,3 +284,62 @@ def find_framelet_and_project(
     f, sample, within_line = min(valid, key=lambda v: abs(v[2] - (FRAMELET_HEIGHT + 1) / 2.0))
     line = f * FRAMELET_HEIGHT + within_line
     return sample, line
+
+
+@dataclasses.dataclass(frozen=True)
+class PoseCorrectionFit:
+    correction: PoseCorrection
+    residuals_px: np.ndarray  # (N, 2) -- final (sample, line) residuals per control point, at the fit
+    success: bool
+    cost: float  # scipy's own 0.5 * sum(residuals**2), for comparing fits
+
+
+def fit_pose_correction(
+    ground_points_me_m: np.ndarray,
+    observed_pixels: np.ndarray,
+    n_framelets: int,
+    et0: float,
+    et_per_line: float,
+) -> PoseCorrectionFit:
+    """Fits a single, frozen 6-DOF `PoseCorrection` (3 position + 3 rotation, degree-0 -- see that
+    class's own docstring for why) against real control points, via
+    `scipy.optimize.least_squares`. `ground_points_me_m` (N, 3) and `observed_pixels` (N, 2,
+    `(sample, line)` in the crop's own 1-based convention) are same-length paired arrays -- e.g.
+    `control_network.resolve_control_points`'s output (`ground_lonlat` converted to MOON_ME meters
+    via `tie_points.lonlat_to_ground_km`) and `observed_pixels` directly.
+
+    The rotation correction is parameterized as a 3-vector rotation vector (`scipy.spatial.transform.
+    Rotation.from_rotvec`, the standard small-angle/exponential-map parameterization for a pose
+    refinement close to identity -- avoids the gimbal-lock and non-uniqueness issues of an Euler-angle
+    parameterization) rather than 3 separate angles.
+
+    Residual = predicted-minus-observed pixel, `(sample, line)`, for every control point, computed
+    via `find_framelet_and_project` under the candidate correction; a control point whose ground
+    point falls outside the crop's coverage under some candidate correction gets a fixed
+    `_UNRESOLVED_RESIDUAL_PX` penalty rather than crashing the solve (see that constant's own
+    docstring -- should essentially never trigger starting from `x0=0`, since the uncorrected model
+    already resolves every real control point).
+
+    Starts from `x0 = 0` (no correction) -- the right starting point here, since it's already known
+    to be close to correct (the overlay's own visible misalignment is small, "not huge" per direct
+    user observation), not an arbitrary default."""
+    n_points = len(ground_points_me_m)
+
+    def residuals(x: np.ndarray) -> np.ndarray:
+        correction = PoseCorrection(delta_position_m=x[:3], delta_rotation=Rotation.from_rotvec(x[3:]).as_matrix())
+        out = np.full(2 * n_points, _UNRESOLVED_RESIDUAL_PX)
+        for i in range(n_points):
+            result = find_framelet_and_project(
+                ground_points_me_m[i], n_framelets, et0, et_per_line, correction=correction
+            )
+            if result is not None:
+                pred_sample, pred_line = result
+                out[2 * i] = pred_sample - observed_pixels[i, 0]
+                out[2 * i + 1] = pred_line - observed_pixels[i, 1]
+        return out
+
+    fit = least_squares(residuals, np.zeros(6))
+    correction = PoseCorrection(delta_position_m=fit.x[:3], delta_rotation=Rotation.from_rotvec(fit.x[3:]).as_matrix())
+    return PoseCorrectionFit(
+        correction=correction, residuals_px=fit.fun.reshape(n_points, 2), success=fit.success, cost=fit.cost
+    )
