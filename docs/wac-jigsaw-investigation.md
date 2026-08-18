@@ -105,7 +105,7 @@ it for anything -- see `pose_alignment.py`'s own docstring for a precedent this 
 learned the hard way (an earlier hand-rolled `findfeatures` reimplementation that wasn't
 trustworthy) for why that validation step is non-negotiable, not optional polish.
 
-## Part 3: the hand-rolled forward projection -- optics chain done and validated; framelet search not yet built
+## Part 3: the hand-rolled forward projection -- optics chain and framelet search done and validated
 
 `src/trntest/wac_camera_model.py` (new this session, not yet committed) implements WAC-VIS band 1's
 real optics chain -- camera-frame pinhole projection -> `LroWideAngleCameraDistortionMap`'s real
@@ -127,24 +127,40 @@ run behind it) -- the ET-per-framelet affine relationship was calibrated from 2 
 `EphemerisTime` values rather than hand-deriving ISIS's own frame-index/crop-offset bookkeeping
 (deliberately -- fewer places to get a sign/offset wrong).
 
+**Resolved this session: the framelet search** (`wac_camera_model.find_framelet_and_project`,
+`calibrate_et_per_crop_line`). Implemented per the agreed design: discrete integer-framelet
+bisection (monotonic `within_framelet_line` signal) to a bracketing framelet, then a real 2D
+containment check (`1 <= sample <= SAMPLES`, `1 <= within_framelet_line <= FRAMELET_HEIGHT`) --
+deliberately not `jigsaw`'s own distance-minimization heuristic. `calibrate_et_per_crop_line`
+derives the crop's own line-to-ET affine relationship from 2 real `campt` `EphemerisTime` queries at
+the first/last framelet centers, rather than hand-deriving `crop_window_for_camera`'s row-offset/
+flip bookkeeping.
+
+**Real overlap confirmed to actually occur** (previously flagged as unconfirmed): adjacent
+framelets' `within_framelet_line` advances by ~9.9 lines per framelet step, not the full
+`FRAMELET_HEIGHT`=14 -- a real ~29% ground-coverage overlap, independently corroborated by this
+project's own earlier `docs/data-sources.md` note (from the `usgscsm`/`jigsaw` bug investigation)
+that adjacent Pushframe exposures have real overlapping coverage. **This is not a correctness
+problem**: a ground point legitimately has more than one valid image-space solution in an overlap
+band, and any of them is equally correct -- there is no need to recover whichever specific pixel a
+prior observation happened to be measured at (a framing this session tried and the user corrected).
+The center-line tiebreak (picking whichever valid framelet puts the point deepest inside its own
+valid range) exists for a different reason: keeping the choice *smooth* under small pose
+perturbations, so a downstream optimizer doesn't see a discontinuous jump between framelets as it
+takes steps -- not "recovering the right answer" among several equally valid ones.
+
+**Validation, following the doc's own agreed rigorous direction** (forward-then-check via the
+already-reliable inverse, not naive forward-vs-original-pixel comparison, which can legitimately
+differ in overlap zones for a fully correct implementation): live Docker run against the current
+default candidate (`M1327210646CE`, 70-framelet crop) -- forward-projected a 3x3 grid of real crop
+pixels' own ground points (`campt` image-to-ground), fed each result back through
+`ground_point_at_pixel`, and got **0.00m ground error on all 9 points**, spanning the crop's full
+sample/line range. `et_per_line * FRAMELET_HEIGHT` also reproduced the real interframe delay
+(1.40625s) exactly, cross-confirming the ET calibration has no sign/scale bug.
+
 **Remaining work, in order**:
-1. **The framelet search** (given an arbitrary 3D ground point with no image coordinates, which
-   framelet images it) -- not yet implemented. Agreed design (see the conversation this doc
-   summarizes): discrete integer-framelet bisection (monotonic along-track distance/angle as a
-   function of framelet index, over this crop's short real timespan) to get a good starting
-   candidate, then **explicit 2D pinhole+distortion projection and real containment check
-   (`0 <= sample < 704`, `0 <= within_framelet_line < 14`) on the bracketing framelet(s)** --
-   deliberately *not* `jigsaw`'s own distance-minimization heuristic, since that's the likely site
-   of its bug. If both bracketing framelets validly contain the point (real overlap -- unconfirmed
-   whether this actually occurs for this product; `NumLinesOverlap=0` in the label but that field's
-   exact meaning wasn't verified), use whichever puts the point closer to that framelet's own center
-   line (the user's own proposed tiebreak).
-2. **Validation of the search** (not just the optics chain): the *rigorous* round-trip direction is
-   forward-then-check-via-the-already-reliable-inverse (ground point -> our forward projector,
-   whichever framelet it picks -> feed that resulting pixel through `ground_point_at_pixel` -> must
-   recover the same ground point) -- NOT naive forward-vs-original-pixel comparison, which can
-   legitimately fail in real overlap zones even for a correct implementation (a subtlety the user
-   raised and this project agreed is the correct framing).
+1. ~~The framelet search~~ -- done, see above.
+2. ~~Validation of the search~~ -- done, see above.
 3. **The optimizer**: `scipy.optimize.least_squares` over 6 parameters (3 position km, 3 rotation),
    residual = predicted-minus-observed pixel across all resolved control points from
    `resolve_control_points`. Not started.
@@ -154,22 +170,19 @@ run behind it) -- the ET-per-framelet affine relationship was calibrated from 2 
 
 ## Repo state / how to resume
 
-This work happened directly in the `a1` worktree, mostly as ad hoc scratch scripts (not committed)
-plus two new real modules written at the very end of the session:
+All of Part 1 and 2's work is committed on `feature/alignment` (WIP commit `504b9ff`):
 - `src/trntest/control_network.py` + `tests/test_control_network.py` -- done, tested, real.
-- `src/trntest/isis_wac.py`'s new `cube_serial_number` helper -- done, real (used by
+- `src/trntest/isis_wac.py`'s `cube_serial_number` helper -- done, real (used by
   `control_network.write_control_network`).
 - `scripts/isis_write_control_network.py` -- done, real.
-- `src/trntest/wac_camera_model.py` + `tests/test_wac_camera_model.py` -- optics chain done,
-  validated (see above), framelet search NOT included.
-- `notebooks/pose_alignment_spike.py`'s control-network section -- written and notebook-verified
-  this session (prints real control-point counts/ranges).
+- `src/trntest/wac_camera_model.py` + `tests/test_wac_camera_model.py` -- optics chain, validated.
+- `notebooks/pose_alignment_spike.py`'s control-network section.
 
-None of this is committed yet as of this doc being written -- see the user's own instruction to
-commit on an appropriate branch to preserve it. `feature/alignment` (already merged to `main`
-earlier this session) is the natural home if continuing this exact thread, or a new branch (e.g.
-`feature/jigsaw-fallback`) if the merged state should stay clean of an admittedly-incomplete
-in-progress piece -- the user's call, not decided here.
+A later session added Part 3's framelet search (`find_framelet_and_project`,
+`calibrate_et_per_crop_line`, plus `isis_wac.ephemeris_time_at_pixel`), its own real unit tests
+(synthetic, mocked -- no live ISIS needed to test the search algorithm itself), and the live Docker
+validation described above -- not yet committed as of this doc being updated. `feature/alignment` is
+still the home branch. What's left: the optimizer (item 3 above) and the real fit (item 4).
 
 The `Instructions.trn`/`LroWacSerialNumber.trn` serial-number patch (Part 2, Blocker 1) is **not**
 in `docker/Dockerfile` -- it was only ever applied inside ad hoc scratch shell scripts this session

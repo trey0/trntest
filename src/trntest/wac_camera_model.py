@@ -11,13 +11,22 @@ from -- none of this is guessed or approximated.
 
 **Validated to exact (0.000px) agreement with real `campt` output** across a well-distributed grid
 of real pixels, for the *optics chain only* (camera-frame projection -> distortion -> focal-plane
-map -> detector map), given an already-known-correct framelet. **Not yet implemented**: the
-framelet *search* itself (given an arbitrary 3D ground point with no image coordinates, which
-framelet images it) -- see the module docstring's own "Remaining work" section in
-`docs/wac-jigsaw-investigation.md` for the agreed design (discrete integer-framelet bisection +
-explicit 2D containment check on bracketing framelets, deliberately not ISIS's own distance-
-heuristic approach, which is the likely site of `jigsaw`'s bug). Only WAC-VIS's default band
-(band 1, NAIF code -85631) is supported -- this project's own `isis_wac.py` never requests a
+map -> detector map), given an already-known-correct framelet.
+
+**The framelet search is now implemented** (`find_framelet_and_project`, `calibrate_et_per_crop_line`)
+-- given an arbitrary 3D ground point with no prior image coordinates, finds which framelet of a
+crop actually images it. Discrete integer-framelet bisection (using `within_framelet_line` as a
+monotonic search signal) to a bracketing framelet, then a real 2D containment check, deliberately
+not ISIS's own distance-minimizing heuristic (the likely site of `jigsaw`'s bug) -- see
+`find_framelet_and_project`'s own docstring for the full design, and confirmed-live details (real
+~29% ground-coverage overlap between adjacent framelets, and why that's a legitimate multi-solution
+case, not a correctness bug, resolved via a center-line tiebreak chosen for optimizer-smoothness
+reasons, not "recovering the right answer"). Live-validated end-to-end against the current default
+candidate: forward-project a real crop pixel's own ground point, round-trip through `campt`'s
+trusted image-to-ground -- 0.00m ground error across a 3x3 grid spanning the crop's full
+sample/line range. **Not yet done**: the actual `scipy.optimize.least_squares` fit against real
+control points (see `docs/wac-jigsaw-investigation.md`'s "Remaining work"). Only WAC-VIS's default
+band (band 1, NAIF code -85631) is supported -- this project's own `isis_wac.py` never requests a
 different band anywhere, and neither `campt` nor `jigsaw` expose a way to.
 
 Only the ground-to-image direction is implemented here. Image-to-ground stays on
@@ -25,7 +34,13 @@ Only the ground-to-image direction is implemented here. Image-to-ground stays on
 history -- there was never a reason to replace it (see the investigation doc for why the two
 directions have very different risk profiles for this camera)."""
 
+from pathlib import Path
+
 import numpy as np
+
+from trntest import isis_wac
+from trntest.camera import camera_pose_moon_me
+from trntest.wac import SAMPLES
 
 # WAC-VIS band 1 (bandid=3, 415nm filter, NAIF code -85631) -- confirmed to be ISIS's own default
 # band for any WAC-VIS cube (LroWideAngleCamera's constructor always calls SetBand(1) at the end
@@ -89,3 +104,114 @@ def project_in_known_framelet(
     cube_sample = raw_sample - COLOR_SAMPLE_OFFSET
     within_framelet_line = raw_line - BAND_START_LINE
     return cube_sample, within_framelet_line
+
+
+def calibrate_et_per_crop_line(cub_path: Path, n_lines: int) -> tuple[float, float]:
+    """`(et0, et_per_line)` such that a framelet `f`'s real acquisition ephemeris time is
+    `et0 + et_per_line * center_line(f)`, `center_line(f) = f * FRAMELET_HEIGHT + (FRAMELET_HEIGHT +
+    1) / 2` (ISIS 1-based line convention -- framelet 0 spans cube lines 1..14, center 7.5).
+
+    Calibrated from two real `campt` `EphemerisTime` queries (`isis_wac.ephemeris_time_at_pixel`) at
+    the center lines of the crop's first and last framelets, rather than hand-deriving
+    `crop_window_for_camera`'s row-offset/flip bookkeeping to relate a crop line back to
+    `camera.frame_et`'s own full-swath `frame_index` -- deliberately, to keep the sign/offset
+    surface area small (see `docs/wac-jigsaw-investigation.md`). This is not an approximation: a
+    pushframe sensor's real per-framelet ET is *exactly* affine in framelet index (each framelet
+    advances by the same real `interframe_delay_s`), so two real points fully determine it -- the
+    two-point fit isn't fit to noisy data, it's just avoiding re-deriving a known-linear
+    relationship's offset/slope by hand.
+
+    `n_lines` is the crop cube's real total line count (`FRAMELET_HEIGHT * n_framelets`); any fixed,
+    valid sample column works for the ET query (`campt`'s `EphemerisTime` depends only on which
+    framelet a line falls in, not the sample within it) -- the crop's own horizontal center is used
+    here for no particular reason beyond being unambiguously valid."""
+    sample = SAMPLES / 2.0
+    n_framelets = n_lines / FRAMELET_HEIGHT
+    line_a = (FRAMELET_HEIGHT + 1) / 2.0
+    line_b = (n_framelets - 1) * FRAMELET_HEIGHT + (FRAMELET_HEIGHT + 1) / 2.0
+    et_a = isis_wac.ephemeris_time_at_pixel(cub_path, sample, line_a)
+    et_b = isis_wac.ephemeris_time_at_pixel(cub_path, sample, line_b)
+    et_per_line = (et_b - et_a) / (line_b - line_a)
+    et0 = et_a - et_per_line * line_a
+    return et0, et_per_line
+
+
+def _center_line(framelet_index: int) -> float:
+    return framelet_index * FRAMELET_HEIGHT + (FRAMELET_HEIGHT + 1) / 2.0
+
+
+def _project_at_framelet(ground_me_m: np.ndarray, framelet_index: int, et0: float, et_per_line: float):
+    """Real per-framelet SPICE pose (`camera.camera_pose_moon_me` at that framelet's own real
+    center-line ET -- the *actual* WAC-VIS instrument pointing at that instant, not this project's
+    synthetic re-aimed camera) then `project_in_known_framelet` through it."""
+    et = et0 + et_per_line * _center_line(framelet_index)
+    c_m, r_cam_to_me, _, _ = camera_pose_moon_me(et)
+    return project_in_known_framelet(ground_me_m, c_m, r_cam_to_me)
+
+
+def find_framelet_and_project(
+    ground_me_m: np.ndarray, n_framelets: int, et0: float, et_per_line: float
+) -> tuple[float, float] | None:
+    """Given an arbitrary 3D ground point (body-fixed ME, meters) with no prior image coordinates,
+    finds which framelet of a `n_framelets`-framelet crop actually images it and returns its real
+    `(sample, line)` in the crop cube's own 1-based convention -- or `None` if no framelet does
+    (point genuinely outside the crop's real coverage).
+
+    Two-stage search, deliberately *not* `jigsaw`'s own spacecraft-distance-minimizing heuristic
+    (the confirmed site of its bug, see the module docstring and `docs/wac-jigsaw-investigation.md`):
+
+    1. **Discrete integer-framelet bisection**, using `project_in_known_framelet`'s own
+       `within_framelet_line` as the monotonic search signal (a fixed ground point's image line
+       moves monotonically across the sensor as the spacecraft advances along-track, over this
+       crop's short real timespan) -- `within_framelet_line < 1` means the point was imaged by an
+       earlier framelet, `> FRAMELET_HEIGHT` means a later one, narrowing to a single bracketing
+       framelet (or an adjacent pair, if the true answer sits right on a boundary) in O(log
+       n_framelets) real pose evaluations.
+    2. **A real 2D containment check** (`1 <= sample <= SAMPLES`, `1 <= within_framelet_line <=
+       FRAMELET_HEIGHT`) on the bracketing framelet(s) from step 1 -- not just trusting the
+       bisection's own endpoint, since the monotonic signal alone doesn't guarantee the sample axis
+       also lands in range. **Real overlap confirmed to actually occur for this product** (live
+       Docker validation: adjacent framelets' `within_framelet_line` advances by ~9.9 lines per
+       framelet step, not the full `FRAMELET_HEIGHT`=14 -- a ~4-line/~29% real overlap, matching
+       `docs/data-sources.md`'s independent note, from the `usgscsm` bug investigation, that
+       adjacent Pushframe exposures have real ground-coverage overlap). When more than one framelet
+       validly contains the point, picks whichever puts the point closer to that framelet's own
+       center line (the user's own proposed tiebreak) -- deliberately *not* keyed to the bisection's
+       own convergence index, which is just an artifact of the search path (which valid framelet the
+       binary search happens to land on first), not a geometrically meaningful signal.
+
+       A ground point genuinely landing in two different, both-valid framelets (confirmed live: real
+       overlap in this crop's coverage, `ground_err` 0.00m against `campt`'s trusted inverse either
+       way) isn't a correctness problem to resolve -- ground-to-image legitimately has more than one
+       valid solution there, and any of them is an equally correct answer; there's no need to recover
+       whichever specific pixel a prior observation happened to be measured at. What the center-line
+       tiebreak is actually for: for a downstream optimizer, the choice needs to stay *smooth* as
+       pose parameters are perturbed during the fit, not just correct at one exact point -- picking
+       the framelet where the point sits deepest inside its valid range (farthest from either
+       containment boundary) maximizes the neighborhood of nearby ground/pose perturbations that
+       stay on the same framelet's smooth reprojection chart, before a small step would flip the
+       choice to a different framelet entirely (a discontinuity gradient-based optimization can't
+       handle well)."""
+    lo, hi = 0, n_framelets - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        _, within_line = _project_at_framelet(ground_me_m, mid, et0, et_per_line)
+        if within_line < 1.0:
+            hi = mid
+        elif within_line > FRAMELET_HEIGHT:
+            lo = mid + 1
+        else:
+            lo = hi = mid
+
+    candidates = [f for f in (lo - 1, lo, lo + 1) if 0 <= f < n_framelets]
+    valid = []
+    for f in candidates:
+        sample, within_line = _project_at_framelet(ground_me_m, f, et0, et_per_line)
+        if 1.0 <= sample <= SAMPLES and 1.0 <= within_line <= FRAMELET_HEIGHT:
+            valid.append((f, sample, within_line))
+    if not valid:
+        return None
+
+    f, sample, within_line = min(valid, key=lambda v: abs(v[2] - (FRAMELET_HEIGHT + 1) / 2.0))
+    line = f * FRAMELET_HEIGHT + within_line
+    return sample, line

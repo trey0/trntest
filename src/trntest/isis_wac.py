@@ -362,6 +362,29 @@ def ground_point_at_pixel(cub_path: Path, sample: float, line: float) -> tuple[f
     return float(ground_point["PositiveEast360Longitude"]), float(ground_point["PlanetocentricLatitude"])
 
 
+def ephemeris_time_at_pixel(cub_path: Path, sample: float, line: float) -> float:
+    """Real SPICE ephemeris time (seconds past J2000) `campt` resolves for a given image pixel --
+    same `campt` call as `ground_point_at_pixel`, just reading `EphemerisTime` instead of
+    `GroundPoint`'s lon/lat. Used by `wac_camera_model.calibrate_et_per_crop_line` to empirically
+    calibrate a crop cube's own line-to-ET relationship (two real queries, not a hand-derived
+    `crop_window_for_camera` row-offset/flip calculation) -- see that function's docstring."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={cub_path}",
+            "type=image",
+            f"sample={sample}",
+            f"line={line}",
+            "format=pvl",
+            "allowoutside=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(pvl.loads(result.stdout)["GroundPoint"]["EphemerisTime"].value)
+
+
 def cube_serial_number(cub_path: Path) -> str:
     """`cub_path`'s ISIS Serial Number, via `getsn` -- the identifier a control network measure uses
     to say which cube it belongs to (`control_network.write_control_network`). Confirmed live on this
