@@ -1,9 +1,11 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pytest
+import rasterio
 
-from trntest import isis_wac, tie_points
+from trntest import isis_wac, tie_points, wac_camera_model
 from trntest.camera import Camera
 from trntest.config import TrntestConfig
 
@@ -73,42 +75,60 @@ def test_inscribed_bbox_shrinks_for_skewed_quadrilateral():
     assert lat_max - lat_min < 10.0
 
 
-_FAKE_MODEL = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+def _write_fake_crop_cube(path: Path, n_framelets: int = 5) -> None:
+    """A minimal real (not mocked) single-band raster, just so `resolve_crop_pixels` can read a
+    real `n_lines` off it via `rasterio` -- matches this project's existing test convention of real
+    small fixture files over mocking rasterio's own internals (see e.g. test_craters.py)."""
+    n_lines = n_framelets * wac_camera_model.FRAMELET_HEIGHT
+    with rasterio.open(path, "w", driver="GTiff", height=n_lines, width=10, count=1, dtype="uint8") as dst:
+        dst.write(np.zeros((n_lines, 10), dtype="uint8"), 1)
 
 
-def test_resolve_crop_pixels_merges_successful_points_with_isis_convention_offset(monkeypatch):
+def _fake_crop_result(tmp_path: Path) -> "isis_wac.CropResult":
+    cub_path = tmp_path / "crop.cub"
+    _write_fake_crop_cube(cub_path)
+    return isis_wac.CropResult(cub_path=cub_path)
+
+
+def test_resolve_crop_pixels_merges_successful_points_with_isis_convention_offset(tmp_path, monkeypatch):
     points = {"center": {"lonlat": (10.0, 20.0), "synthetic_px": (5.0, 6.0)}}
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: (100.0, 50.0))
+    monkeypatch.setattr(wac_camera_model, "calibrate_et_per_crop_line", lambda cub_path, n_lines: (0.0, 1.0))
+    monkeypatch.setattr(wac_camera_model, "find_framelet_and_project", lambda *args, **kwargs: (100.0, 50.0))
 
-    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+    resolved = tie_points.resolve_crop_pixels(points, _fake_crop_result(tmp_path), config=TrntestConfig())
 
     assert resolved["center"]["synthetic_px"] == (5.0, 6.0)  # other fields preserved
     assert resolved["center"]["crop_px"] == (99.5, 49.5)  # ISIS's 1-based Sample/Line -> 0-based corner
 
 
-def test_resolve_crop_pixels_drops_points_that_dont_project(monkeypatch, capsys):
+def test_resolve_crop_pixels_drops_points_that_dont_project(tmp_path, monkeypatch, capsys):
     points = {
         "top_left": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)},
         "center": {"lonlat": (2.0, 2.0), "synthetic_px": (1.0, 1.0)},
     }
 
-    def fake_ground_to_image_pixel(model, lon, lat):
-        return None if lon == 1.0 else (10.0, 10.0)
+    calls = []
 
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", fake_ground_to_image_pixel)
+    def fake_find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line, correction=None):
+        calls.append(ground_me_m)
+        return None if len(calls) == 1 else (10.0, 10.0)
 
-    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+    monkeypatch.setattr(wac_camera_model, "calibrate_et_per_crop_line", lambda cub_path, n_lines: (0.0, 1.0))
+    monkeypatch.setattr(wac_camera_model, "find_framelet_and_project", fake_find_framelet_and_project)
+
+    resolved = tie_points.resolve_crop_pixels(points, _fake_crop_result(tmp_path), config=TrntestConfig())
 
     assert set(resolved) == {"center"}
     assert "top_left" in capsys.readouterr().out
 
 
-def test_resolve_crop_pixels_raises_if_none_resolve(monkeypatch):
+def test_resolve_crop_pixels_raises_if_none_resolve(tmp_path, monkeypatch):
     points = {"center": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)}}
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: None)
+    monkeypatch.setattr(wac_camera_model, "calibrate_et_per_crop_line", lambda cub_path, n_lines: (0.0, 1.0))
+    monkeypatch.setattr(wac_camera_model, "find_framelet_and_project", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError):
-        tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+        tie_points.resolve_crop_pixels(points, _fake_crop_result(tmp_path), config=TrntestConfig())
 
 
 def _fake_camera(n_frames_for_square_crop: int, reverse: bool) -> Camera:

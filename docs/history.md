@@ -3951,3 +3951,64 @@ reverting without being asked would have been a unilateral call on a question th
 weighing. See `docs/reproject-fov-investigation.md`'s "OPEN: an unexplained small residual" section
 (added this session) for exact repro numbers and the full diagnostic trail, so whoever picks this up
 doesn't have to re-derive any of it.
+
+## Phase 63 (2026-08-19, `feature/reproject` branch, merged to `main`) — Closed the CSM residual by reverting to an isotropic FOV; fixed a real, unrelated tie-point bug found along the way
+
+Picked up Phase 62's open CSM-vs-pinhole residual. First did one more diagnostic round before
+deciding anything: reconstructed `cam_gen`'s pristine, pre-correction sidecar (inverting
+`_correct_csm_focal_length_anisotropy`'s own known operations) and tried three different, but
+mathematically equivalent, ways of splitting the `fu`/`fv` anisotropy across the CSM state's fields
+(pivot `m_focalLength` to `fu`, the shipped correction; pivot to `fv` instead; leave `m_focalLength`
+at the original average and scale both `iTrans` fields). All three gave the *identical* residual,
+`(row -1, col +8)`, at every point -- ruling out an encoding bug on this project's side definitively,
+and confirming the residual is a genuine `usgscsm` quirk with anisotropic Frame models, not
+fixable without its source.
+
+The user reconsidered the anisotropic FOV correction itself in light of this: it was only ever a
+nice-to-have (more of the real crop's margin used, not a correctness requirement), and it had now
+cost three real bugs (this residual, the `cam_gen` `m_focalLength` collapse from Phase 62, and the
+`die5_points` anchoring regression from Phase 61) -- with a real risk that other downstream CSM/ISIS
+consumers of this data would hit the same kind of friction. Decision: revert `camera.
+solve_corrected_fov` to isotropic -- solve `fu`/`fv` exactly as before (same two independent
+half-angle solves), but collapse them to one shared `f = max(fu, fv)` applied to both axes, rather
+than keeping them separate; `cv` re-derived against this shared `f` to keep the near edge exactly on
+target. Checked empirically before committing to it: across the same 4 real candidates the
+anisotropic fix was validated on, the isotropic version reaches **100.0% coverage on every one**
+(actually improving `M1327211014CE`'s 99.83% worst-corner to 100%), at the cost of a ~4-6% smaller
+cross-track footprint (along-track was already the binding constraint -- `fv > fu` -- on all 4, so
+along-track extent is essentially untouched). `render._correct_csm_focal_length_anisotropy` deleted
+outright as dead code (a no-op once `fu == fv` always), along with its dedicated tests. Re-running
+the flagship notebook end to end confirmed `mapproject -t csm` and `-t pinhole` now agree exactly
+(0px at all 5 points) and the real WAC-crop reproject coverage check still hits 100%. 210 tests pass,
+lint clean. See `docs/reproject-fov-investigation.md`'s "RESOLVED: reverted to an isotropic FOV"
+section for the full trail.
+
+**A second, unrelated bug found and fixed along the way.** The isotropic revert's smaller footprint
+moved the demo's default candidate's die5 tie points enough that one (`top_right`) started dropping
+during `tie_points.resolve_crop_pixels` -- initially misdiagnosed (via pattern-matching onto this
+project's own already-documented `_CROP_EDGE_MARGIN_PX` crop-edge numerical instability) as an
+edge-of-crop effect from the smaller footprint. Checked the actual ISIS error text rather than
+trusting that assumption, prompted by a cross-agent conversation with `feature/alignment`'s own
+session (`a1`): the real error was "no surface intersection", not "not inside cube" -- the signature
+of a completely different, pre-existing bug `a1` had independently found and root-caused
+(`docs/wac-jigsaw-investigation.md`): `campt`'s own ground-to-image solve has a real, *scattered*
+(~38% on this same default candidate, no edge concentration -- `a1` measured resolved-vs-dropped
+edge-distance directly and found no significant difference) failure rate for WAC's Pushframe sensor,
+a known upstream ISIS bug (`PushFrameCameraGroundMap::GetLocalNormal`, DOI-USGS/ISIS3#4256) entirely
+unrelated to the FOV revert -- which just moved `top_right`'s die5 position enough to land in that
+pre-existing failure mode where no point had before. Fixed once `a1`'s `wac_camera_model.
+find_framelet_and_project` (`feature/alignment`, merged to `main` this session) landed: a from-scratch
+reimplementation of ISIS's own WAC-VIS camera model, validated to exact (0.000px) agreement with real
+`campt` output, whose own containment check sidesteps the bug entirely rather than working around it.
+`tie_points.resolve_crop_pixels` now calls it instead of `isis_wac.ground_to_image_pixel`/
+`resolve_ground_to_image_model` (both kept, still used by `a1`'s own pose-correction work). Live-
+validated: all 5 die5 points resolve again on the default candidate. 233 tests pass, lint clean.
+
+Also: two `feature/alignment` merges landed on `main` this session (`a1`'s pose-correction/
+`wac_camera_model`/`control_network.py` work), each pulled into this worktree at a clean stopping
+point; a real, harmless (confirmed live: byte-identical downstream fit numbers) concurrency race on
+`isis_wac.run_isd_generate`'s non-atomic `scratch/isis_wac/` write was found and documented in
+`docs/environment.md`'s "Other sharp edges" section, the same class of issue as the already-documented
+GLD100 fetch race. `reproject` itself remains not wired into any notebook and not dataset-scale
+validated -- still the real remaining work before this branch is done; see
+`docs/reproject-fov-investigation.md`'s intro for the current punch list.
