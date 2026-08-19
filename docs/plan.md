@@ -435,24 +435,33 @@ short of `populate()` -- no rendering from this notebook yet.
   already-easy candidate, but real headroom for future shadowed/low-texture EDRs SIFT might not
   find enough points on at all; direct user visual confirmation the alignment quality holds).
   See `docs/history.md`'s dated entries (Phases 52–55) for the full trail.
-  **In progress (as of 2026-08-18, not yet complete): a real projection-aware 3D bundle
-  adjustment.** `src/trntest/control_network.py` (done, tested) converts tie points into real ISIS
-  control points. ISIS's own `jigsaw` was tried and hit a real, root-caused, unfixable bug in its
-  PushFrame framelet search (confirmed via a tautological, mathematically-guaranteed-zero-error
-  control network that still produced huge `jigsaw` residuals) -- pivoted to a hand-rolled Python
-  ground-to-image forward projection instead (`src/trntest/wac_camera_model.py`), now complete
-  end-to-end: the optics chain (validated to exact 0.000px agreement with real `campt`), the
-  framelet search (`find_framelet_and_project`/`calibrate_et_per_crop_line`, live-validated to
-  0.00m ground error round-tripped through `campt`'s trusted inverse across the crop's full extent;
-  along the way, confirmed real ~29% ground-coverage overlap between adjacent framelets, previously
-  only suspected, and fixed a real bug where the bisection search hardcoded a framelet-index
-  direction that isn't universal across LRO's periodic yaw flips), and the optimizer
-  (`fit_pose_correction`, a single frozen 6-DOF correction via `scipy.optimize.least_squares`,
-  validated on synthetic data with a known injected correction). Only the actual fit against real
-  control points (not synthetic validation data) and the corrected-overlay notebook wiring are not
-  yet done. **See `docs/wac-jigsaw-investigation.md` for the full technical detail** (exact
-  ISIS source citations, every constant's provenance, the serial-number bug and its fix, and the
-  precise remaining-work list) -- written specifically to resume this from a fresh session.
+  **Done, with a real, honest negative-ish result (as of 2026-08-19): a projection-aware 3D bundle
+  adjustment, now fit against real control points and visually compared.** `src/trntest/
+  control_network.py` (done, tested) converts tie points into real ISIS control points. ISIS's own
+  `jigsaw` was tried and hit a real, root-caused, unfixable bug in its PushFrame framelet search
+  (confirmed via a tautological, mathematically-guaranteed-zero-error control network that still
+  produced huge `jigsaw` residuals) -- pivoted to a hand-rolled Python ground-to-image forward
+  projection instead (`src/trntest/wac_camera_model.py`), complete end-to-end: the optics chain
+  (validated to exact 0.000px agreement with real `campt`), the framelet search
+  (`find_framelet_and_project`/`calibrate_et_per_crop_line`, live-validated to 0.00m ground error
+  round-tripped through `campt`'s trusted inverse), and the optimizer (`fit_pose_correction`, a
+  single frozen 6-DOF correction via `scipy.optimize.least_squares`). Fit against the real 477-point
+  control network (from 767 LightGlue matches): residual mean 4.42px -> 3.36px, dominated by a small
+  (~0.18deg) camera-frame rotation. `isis_wac.apply_pose_correction_to_crop` bakes the fitted
+  correction into a copy of the crop cube's cached pointing (patches the `InstrumentPointing`
+  Table's `ConstantRotation` via `tabledump`/`csv2table`, live cross-validated to <=0.015px against
+  the forward projector's own prediction) so the existing, unmodified `cam2map`/
+  `plotting.plot_overlay_toggle` path reprojects and displays it with no new warp code -- wired into
+  `notebooks/pose_alignment_spike.py`, reviewed live by the user. **The real finding**: this only
+  closes ~24% of the real gap (residual ~813m -> ~618m at this crop's own ~184m/px native GSD, both
+  well above the homography spike's own ~150-165m) -- a single frozen 6-DOF rigid pose correction
+  doesn't explain most of the true misalignment. Leading suspect, not yet tested: this pipeline's
+  ground truth is still ellipsoid-only (no DEM elevation, see `control_network.py`'s own docstring),
+  which would show up as spatially-varying error a rigid pose bias can't capture but a flexible 2D
+  homography can silently absorb -- a DEM-aware shape model (`spiceinit shape=user`) is the
+  planned next step. **See `docs/wac-jigsaw-investigation.md` for the full technical detail** (exact
+  ISIS source citations, every constant's provenance, the serial-number bug and its fix) and
+  `docs/data-sources.md`'s `campt`/`tabledump`/`csv2table` entries for the reusable mechanism facts.
 
 ## Development history
 

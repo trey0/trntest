@@ -198,11 +198,19 @@ tested so far.
 1. ~~The framelet search~~ -- done, see above.
 2. ~~Validation of the search~~ -- done, see above.
 3. ~~The optimizer~~ -- done, see above.
-4. **A real fit** against the actual basemap-derived tie points (not just synthetic validation
-   data) -- `control_network.resolve_control_points`'s `observed_pixels`/`ground_lonlat` (converted
-   to MOON_ME meters via `tie_points.lonlat_to_ground_km`) feed directly into
-   `fit_pose_correction`. Then a corrected overlay comparison via the existing
-   `plotting.plot_overlay_toggle`, wired into `notebooks/pose_alignment_spike.py`.
+4. ~~A real fit against the actual basemap-derived tie points, and a corrected-overlay visual
+   comparison~~ -- done (2026-08-19). Fit against the real 477-point control network (from 767
+   LightGlue matches): residual mean 4.42px -> 3.36px, dominated by a small (~0.18deg) camera-frame
+   rotation. The corrected pose is baked into a copy of the crop cube via
+   `isis_wac.apply_pose_correction_to_crop` (patches the cached `InstrumentPointing` Table's
+   `ConstantRotation` via `tabledump`/`csv2table` -- see `docs/data-sources.md`'s own entry on this
+   mechanism and its real gotchas, and `docs/corrected-overlay-cam2map-plan.md` for the full
+   implementation trail) so the existing, unmodified `cam2map`/`plotting.plot_overlay_toggle` path
+   reprojects and displays it, wired into `notebooks/pose_alignment_spike.py` and reviewed live by
+   the user. **Real result, not a full win**: the fit only closes ~24% of the real gap (~813m ->
+   ~618m of residual at this crop's own ~184m/px native GSD, vs. the homography spike's own
+   ~150-165m) -- see `docs/plan.md`'s status line for the full writeup and the leading suspect
+   (ellipsoid-only ground truth, no DEM elevation) motivating the next step: a DEM-aware shape model.
 
 ## Repo state / how to resume
 
@@ -219,8 +227,14 @@ A later session added Part 3 in full: the framelet search (`find_framelet_and_pr
 bisection fix, and the optimizer (`fit_pose_correction`, `PoseCorrection`), each with real unit
 tests (synthetic/mocked, no live ISIS needed to test the algorithms themselves) plus the live Docker
 validation described above. `scipy` is now a real `pyproject.toml` dependency (added this session).
-What's left: the real fit against actual control points and the corrected-overlay notebook wiring
-(item 4 above).
+
+A still-later session (2026-08-19) completed item 4: the real fit, `isis_wac.
+apply_pose_correction_to_crop`, and the corrected-overlay notebook wiring -- see that item's own
+entry above for the real result. Also batched `control_network.resolve_control_points`'s per-point
+`campt` calls (`isis_wac.ground_to_image_pixels_batch`, ~230s -> ~3s on the real 767-point set, see
+`docs/data-sources.md`), unrelated to the alignment question itself but found while working the same
+notebook. What's left for this investigation as a whole: the DEM-aware ground truth follow-up noted
+in item 4 and `docs/plan.md`'s status line.
 
 The `Instructions.trn`/`LroWacSerialNumber.trn` serial-number patch (Part 2, Blocker 1) is **not**
 in `docker/Dockerfile` -- it was only ever applied inside ad hoc scratch shell scripts this session
