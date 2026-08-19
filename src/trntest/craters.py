@@ -15,10 +15,10 @@ import shapely.affinity
 import shapely.geometry
 
 from trntest import cache, lunaserv, plotting
-from trntest.config import TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 
 # The database's own declared CRS (see docs/data-sources.md): Planetocentric latitude, Positive-East
-# longitude, on a perfect sphere -- `config.moon_radius_m` already matches this exactly (1,737,400m),
+# longitude, on a perfect sphere -- `MOON_RADIUS_M` already matches this exactly (1,737,400m),
 # same convention `lunaserv.py` uses throughout.
 _MOON_GEOGRAPHIC_CRS_TEMPLATE = "+proj=longlat +R={radius_m} +no_defs"
 
@@ -80,7 +80,7 @@ def ensure_geopackage(config: TrntestConfig | None = None) -> Path:
     zip_path = cache.fetch_robbins_craters(config.cache_root, config.robbins_craters_url)
     gpkg_path = geopackage_path(zip_path)
     if not gpkg_path.exists():
-        _convert_to_geopackage(zip_path, gpkg_path, config.moon_radius_m)
+        _convert_to_geopackage(zip_path, gpkg_path, MOON_RADIUS_M)
     return gpkg_path
 
 
@@ -169,7 +169,7 @@ def crater_overlay_layer(
     with rasterio.open(raster_path) as src:
         raster_crs, raster_bounds = src.crs, src.bounds
 
-    geo_crs = _MOON_GEOGRAPHIC_CRS_TEMPLATE.format(radius_m=config.moon_radius_m)
+    geo_crs = _MOON_GEOGRAPHIC_CRS_TEMPLATE.format(radius_m=MOON_RADIUS_M)
     minlon, minlat, maxlon, maxlat = rasterio.warp.transform_bounds(raster_crs, geo_crs, *raster_bounds)
     # `transform_bounds` returns longitude in the standard -180..180 convention regardless of the
     # destination CRS's own definition -- confirmed empirically (a real AOI centered at 264.757 deg

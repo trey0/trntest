@@ -1,6 +1,7 @@
 import csv
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -91,6 +92,18 @@ def test_ground_point_at_pixel_parses_campt_pvl_output():
         lon, lat = isis_wac.ground_point_at_pixel(Path("/fake/stitched.cub"), sample=352.0, line=1806.0)
     assert lon == pytest.approx(169.575768599)
     assert lat == pytest.approx(38.7726704656)
+
+
+def test_ground_point_at_pixel_raises_and_prints_diagnostic_on_campt_failure(capsys):
+    fake_result = subprocess.CompletedProcess(
+        args=["campt"], returncode=1, stdout="some stdout", stderr="**ERROR** bad kernel."
+    )
+    with patch("subprocess.run", return_value=fake_result):
+        with pytest.raises(subprocess.CalledProcessError):
+            isis_wac.ground_point_at_pixel(Path("/fake/stitched.cub"), sample=352.0, line=1806.0)
+    captured = capsys.readouterr()
+    assert "some stdout" in captured.out
+    assert "**ERROR** bad kernel." in captured.out
 
 
 def test_run_pipeline_reuses_existing_stitched_cube_without_rerunning_lrowac2isis(tmp_path):

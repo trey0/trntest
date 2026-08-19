@@ -346,7 +346,12 @@ def ground_point_at_pixel(cub_path: Path, sample: float, line: float) -> tuple[f
     (`PositiveEast360Longitude`/`PlanetocentricLatitude`). `allowoutside=true`: unlike
     `ground_to_image_pixel`'s use case (does a *chosen* ground point actually land in the crop?),
     here the pixel is already known to be a real coordinate in `cub_path`'s own cube -- no
-    "did this even land inside the image" question to answer, so no need for a failure signal."""
+    "did this even land inside the image" question to answer, so no need for a failure signal.
+
+    Not run through `run_quiet` -- like `_catlab`, this call's entire point is its stdout on
+    success, which `run_quiet` discards; failure still prints stdout/stderr before raising, same
+    as `run_quiet` does, so a `campt` diagnostic isn't lost here (this sits on
+    `camera.build_camera()`'s boresight re-aim path, not just a debug/QA one)."""
     result = subprocess.run(
         [
             "campt",
@@ -359,8 +364,12 @@ def ground_point_at_pixel(cub_path: Path, sample: float, line: float) -> tuple[f
         ],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        print(result.stdout, end="")
+        print(result.stderr, end="")
+        result.check_returncode()
     ground_point = pvl.loads(result.stdout)["GroundPoint"]
     return float(ground_point["PositiveEast360Longitude"]), float(ground_point["PlanetocentricLatitude"])
 

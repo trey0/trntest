@@ -32,7 +32,7 @@ import numpy as np
 import rasterio.warp
 
 from trntest import isis_wac
-from trntest.config import TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.tie_points import lonlat_to_ground_km
 
 _WRITER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "isis_write_control_network.py"
@@ -52,7 +52,7 @@ def map_points_to_lonlat(
     elsewhere in this project, see `craters.py`'s own note) -- normalized here via `% 360.0` to match
     `isis_wac.ground_to_image_pixel`'s own `PositiveEast360Longitude` convention."""
     config = config or load_config()
-    geo_crs = f"+proj=longlat +R={config.moon_radius_m} +no_defs"
+    geo_crs = f"+proj=longlat +R={MOON_RADIUS_M} +no_defs"
     lons, lats = rasterio.warp.transform(crs, geo_crs, points_map[:, 0], points_map[:, 1])
     return np.asarray(lons) % 360.0, np.asarray(lats)
 
@@ -175,7 +175,6 @@ def write_control_network(
     `(0.5, 0.5)` itself -- confirmed via direct source inspection, not assumed; feeding it
     already-1-based pixels would double-shift every measure by half a pixel)."""
     config = config or load_config()
-    moon_radius_km = config.moon_radius_km
 
     out_path = Path(out_path)
     csv_path = out_path.with_suffix(".csv")
@@ -187,7 +186,7 @@ def write_control_network(
         writer.writeheader()
         points = zip(observed_pixels, ground_lonlat, strict=True)
         for i, ((sample, line), (lon_deg, lat_deg)) in enumerate(points):
-            x_km, y_km, z_km = lonlat_to_ground_km(lon_deg, lat_deg, moon_radius_km)
+            x_km, y_km, z_km = lonlat_to_ground_km(lon_deg, lat_deg)
             writer.writerow(
                 {
                     "id": f"pt_{i:04d}",

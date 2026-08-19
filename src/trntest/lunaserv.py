@@ -21,7 +21,7 @@ from rasterio.windows import transform as window_transform
 
 from trntest import cache, illumination
 from trntest.camera import Camera
-from trntest.config import DEFAULT_MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.subprocess_utils import run_quiet
 
 # Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
@@ -100,7 +100,7 @@ def union_bbox(bbox1, bbox2):
     return min(minx1, minx2), min(miny1, miny2), max(maxx1, maxx2), max(maxy1, maxy2)
 
 
-def orthographic_xy_m(lon_deg, lat_deg, center_lon_deg, center_lat_deg, radius_m: float = DEFAULT_MOON_RADIUS_M):
+def orthographic_xy_m(lon_deg, lat_deg, center_lon_deg, center_lat_deg, radius_m: float = MOON_RADIUS_M):
     """Forward spherical Orthographic projection (meters) of `(lon_deg, lat_deg)` relative to a
     local tangent point `(center_lon_deg, center_lat_deg)` -- matches Lunaserv's `IAU2000:30166`
     layer projection exactly (same formula, same Moon radius), so a bbox computed here lines up
@@ -112,7 +112,7 @@ def orthographic_xy_m(lon_deg, lat_deg, center_lon_deg, center_lat_deg, radius_m
     return x, y
 
 
-def footprint_bbox_local_m(footprint_lonlat, center_lon_deg, center_lat_deg, radius_m: float = DEFAULT_MOON_RADIUS_M):
+def footprint_bbox_local_m(footprint_lonlat, center_lon_deg, center_lat_deg, radius_m: float = MOON_RADIUS_M):
     """Bounding box (minx, miny, maxx, maxy), in meters, of a camera's footprint corners under the
     local Orthographic projection centered at `(center_lon_deg, center_lat_deg)` -- the metric
     counterpart of `footprint_bbox_deg`, used to size the WMS request against Lunaserv's
@@ -137,7 +137,7 @@ def pixel_dims_for_gsd(bbox, target_gsd_m):
     return width_px, height_px
 
 
-def radius_to_elevation(radius_tif_path, elevation_tif_path, moon_radius_m: float = DEFAULT_MOON_RADIUS_M):
+def radius_to_elevation(radius_tif_path, elevation_tif_path, moon_radius_m: float = MOON_RADIUS_M):
     """Lunaserv's 'numeric_meters_absolute' DTM layer serves planetocentric radius (meters), not
     height above a datum -- subtract the reference radius so ASP sees a normal small-magnitude DEM."""
     with rasterio.open(radius_tif_path) as src:
@@ -380,7 +380,7 @@ def fetch_dem_astropedia(
     (`astropedia_coverage_bbox_deg`, which also raises if the footprint needs data outside the
     file's real coverage) -- `reproject_astropedia_elevation_to_local_grid` needs the bbox to know
     which AOI window to read from the (large, local) file."""
-    deg_bbox = astropedia_coverage_bbox_deg(dst_bbox_m, center_lon_deg, center_lat_deg, config.moon_radius_m)
+    deg_bbox = astropedia_coverage_bbox_deg(dst_bbox_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M)
     path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
     return path, deg_bbox
 
@@ -675,7 +675,7 @@ def hapke_shade_ortho(
     less-accurate version of this correction that used the spacecraft's raw orbital velocity instead."""
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
-    camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, config.moon_radius_m)
+    camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, MOON_RADIUS_M)
     along_track_local_enu = (
         _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
     )
@@ -851,11 +851,11 @@ def fetch_dem_and_ortho(
     # docs/data-sources.md): `IAU2000:30166` reports the Moon's real 1,737,400 m radius (unlike the
     # generic OGC `AUTO:42003` Orthographic code, which is hardcoded to Earth's WGS84 ellipsoid).
     srs = config.lunaserv_srs_template.format(c_lon=center_lon, c_lat=center_lat)
-    unpadded_bbox = footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m)
+    unpadded_bbox = footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M)
     if extra_footprint_lonlat_deg is not None:
         unpadded_bbox = union_bbox(
             unpadded_bbox,
-            footprint_bbox_local_m(extra_footprint_lonlat_deg, center_lon, center_lat, config.moon_radius_m),
+            footprint_bbox_local_m(extra_footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M),
         )
     bbox = pad_bbox(unpadded_bbox, config.dem_padding_fraction)
     width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m)
@@ -892,7 +892,7 @@ def fetch_dem_and_ortho(
         height,
         center_lon,
         center_lat,
-        config.moon_radius_m,
+        MOON_RADIUS_M,
         dem_elevation_path,
     )
 

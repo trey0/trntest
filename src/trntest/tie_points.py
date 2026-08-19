@@ -54,7 +54,7 @@ from trntest.camera import (
     frame_et,
     ray_sphere_intersect_range,
 )
-from trntest.config import DEFAULT_MOON_RADIUS_KM, TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
 
 CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")  # polygon winding order
 
@@ -63,7 +63,7 @@ CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")  # polyg
 _BISECTION_MIN_INTERVAL = 1e-7
 
 
-def lonlat_to_ground_km(lon_deg: float, lat_deg: float, moon_radius_km: float = DEFAULT_MOON_RADIUS_KM) -> np.ndarray:
+def lonlat_to_ground_km(lon_deg: float, lat_deg: float, moon_radius_km: float = MOON_RADIUS_KM) -> np.ndarray:
     return np.array(spice.latrec(moon_radius_km, np.radians(lon_deg), np.radians(lat_deg)))
 
 
@@ -367,7 +367,7 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
 
     results = {}
     for name, (lon, lat) in points.items():
-        ground_km = lonlat_to_ground_km(lon, lat, config.moon_radius_km)
+        ground_km = lonlat_to_ground_km(lon, lat)
         px, py = project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv)
 
         image_size = config.image_size
