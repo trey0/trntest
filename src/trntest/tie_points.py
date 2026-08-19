@@ -18,14 +18,21 @@ Procedure (split into two stages -- see `select_tie_points`/`resolve_crop_pixels
    - synthetic image: a closed-form pinhole inverse (`project_ground_to_synthetic_pixel`), from the
      exact fixed pose that rendered it -- this is exact, not an approximation of some other "real"
      camera model, so it's untouched by the change below.
-   - real WAC crop: **a real ISIS `campt` ground-to-image query** (`isis_wac.ground_to_image_pixel`,
-     via `isis_wac.resolve_ground_to_image_model`) against the actual, already-produced crop cube --
-     not a hand-rolled SPICE approximation. `project_ground_to_crop_pixel`/`_crop_pixel_at_frame`
-     (below) are the **deprecated** predecessor: a frame-index bisection over `camera.py`'s SPICE
-     pose, kept for reference/comparison only. Switched because it measurably disagreed with the
+   - real WAC crop: **`wac_camera_model.find_framelet_and_project`**, a from-scratch reimplementation
+     of ISIS's own WAC-VIS camera model (validated to exact, 0.000px agreement with real ISIS `campt`
+     output) against the actual, already-produced crop cube -- not a hand-rolled SPICE approximation,
+     and not `campt` itself. `project_ground_to_crop_pixel`/`_crop_pixel_at_frame` (below) are the
+     **deprecated** original predecessor: a frame-index bisection over `camera.py`'s SPICE pose, kept
+     for reference/comparison only. First switched to a genuine ISIS `campt` ground-to-image query
+     (`isis_wac.ground_to_image_pixel`) because the SPICE bisection measurably disagreed with the
      real, cube-embedded camera model -- confirmed live on this project's actual default candidate: a
      ~92-96px (out of 994 total lines, ~10%) along-track discrepancy, and 2 of the 5 SPICE-chosen die5
-     points weren't even visible to the real camera at all under its own real geometry. Steps 1-4
+     points weren't even visible to the real camera at all under its own real geometry. Then switched
+     again, off `campt` itself, once a separate investigation (`docs/wac-jigsaw-investigation.md`)
+     found `campt`'s own ground-to-image solve has a real, scattered (~38% on this project's own
+     default candidate) failure rate for WAC's Pushframe sensor -- a known upstream ISIS bug
+     (`PushFrameCameraGroundMap::GetLocalNormal`, confirmed not an edge-of-crop artifact), which
+     `find_framelet_and_project`'s own from-scratch containment check sidesteps entirely. Steps 1-4
      above (point *selection*) are unaffected and still use the SPICE-approximate footprint -- that's
      only ever used to pick plausible candidate points, not to place them; step 5 is where accuracy
      actually matters, and that's what moved to a validated tool. Because step 5's real crop_px
@@ -42,11 +49,15 @@ was negligible, ~0.03%, given the small off-nadir angle); the synthetic image's 
 projection is axis-agnostic (it just uses the real `R` matrix directly).
 """
 
+import warnings
+
 import numpy as np
+import rasterio
+import rasterio.errors
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import isis_wac, wac
+from trntest import isis_wac, wac, wac_camera_model
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -378,24 +389,44 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
     return results
 
 
-def resolve_crop_pixels(tie_points: dict, model: "isis_wac.GroundToImageModel") -> dict:
-    """Fill in each selected tie point's real `crop_px`, via a genuine ISIS `campt` ground-to-image
-    query against the actual WAC crop (`model`, from `isis_wac.resolve_ground_to_image_model`) -- see
-    this module's docstring for why this replaced the deprecated SPICE-only projection below.
-    Converts ISIS's 1-based, pixel-center `Sample`/`Line` convention to this project's existing
-    0-based, pixel-corner convention (`- 0.5`, matching `project_ground_to_synthetic_pixel`'s
-    `cu = image_size / 2.0`-style pinhole formulas) so both images' tie points plot consistently.
+def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: TrntestConfig | None = None) -> dict:
+    """Fill in each selected tie point's real `crop_px`, via `wac_camera_model.
+    find_framelet_and_project` -- a hand-rolled ground-to-image projection validated to exact
+    (0.000px) agreement with real ISIS `campt` output, used instead of `isis_wac.
+    ground_to_image_pixel`/`resolve_ground_to_image_model`'s `campt`-based query because `campt`'s
+    own ground-to-image solve has a real, confirmed, scattered (~38% on this project's own default
+    candidate) failure rate for WAC's Pushframe sensor -- a known upstream ISIS bug
+    (`PushFrameCameraGroundMap::GetLocalNormal`, DOI-USGS/ISIS3#4256), not an edge-of-crop artifact
+    (measured: no significant edge-distance difference between resolved and dropped points). See
+    `docs/wac-jigsaw-investigation.md` for the full investigation and validation trail.
+    `find_framelet_and_project` sidesteps the bug entirely -- a real 2D containment check on a
+    from-scratch reimplementation of ISIS's own optics chain, not ISIS's own buggy solve -- rather
+    than working around it. Converts its `(sample, line)` (ISIS's own 1-based, pixel-center
+    convention) to this project's existing 0-based, pixel-corner convention (`- 0.5`, matching
+    `project_ground_to_synthetic_pixel`'s `cu = image_size / 2.0`-style pinhole formulas) so both
+    images' tie points plot consistently. No `PoseCorrection` is applied here -- this project's own
+    existing SPICE-derived pose, not a1's fitted correction, which is a separate, opt-in refinement
+    for a different use case (`isis_wac.apply_pose_correction_to_crop`).
 
-    Points the real camera doesn't actually see are dropped (with a printed warning), not raised --
-    confirmed live this happens for real, plausible die5 points (`select_tie_points`'s footprint
-    estimate is only ever approximate, see the module docstring); only raises if *none* of the points
-    resolve, since that would mean something is fundamentally wrong, not just an edge case in the
-    approximate footprint."""
+    Points the real camera doesn't actually see, or that still fall in `campt`'s buggy scattered
+    failure mode's counterpart in this reimplementation (a point genuinely outside every framelet's
+    real coverage), are dropped (with a printed warning), not raised -- only raises if *none* of the
+    points resolve, since that would mean something is fundamentally wrong, not just an edge case in
+    the approximate footprint `select_tie_points` uses to pick candidate points."""
+    config = config or load_config()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        with rasterio.open(crop.cub_path) as src:
+            n_lines = src.height
+    n_framelets = n_lines // wac_camera_model.FRAMELET_HEIGHT
+    et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(crop.cub_path, n_lines)
+
     resolved = {}
     dropped = []
     for name, info in tie_points.items():
         lon, lat = info["lonlat"]
-        pixel = isis_wac.ground_to_image_pixel(model, lon, lat)
+        ground_me_m = lonlat_to_ground_km(lon, lat, config.moon_radius_km) * 1000.0
+        pixel = wac_camera_model.find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line)
         if pixel is None:
             dropped.append(name)
             continue
