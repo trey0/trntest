@@ -1,3 +1,4 @@
+import csv
 import dataclasses
 import json
 from pathlib import Path
@@ -208,3 +209,72 @@ def test_apply_pose_correction_to_crop_applies_delta_rotation_transpose(tmp_path
     # the real csv2table label= file this session's scratch validation produced).
     c_written = np.array(written_label["CONSTANTROTATION"]).reshape(3, 3)
     assert c_written == pytest.approx(delta_rotation.T @ c_orig)
+
+
+def _fake_campt_batch_run_quiet(rows):
+    """A `run_quiet` stand-in for `ground_to_image_pixels_batch`: writes `rows` (dicts with
+    Sample/Line/Error keys) as a FLAT-format CSV to whatever `to=` path the real call would have
+    written, standing in for the real `campt usecoordlist=true` subprocess call."""
+
+    def _side_effect(cmd):
+        to_arg = next(a for a in cmd if a.startswith("to="))
+        out_path = Path(to_arg.removeprefix("to="))
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["Sample", "Line", "Error"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    return _side_effect
+
+
+def test_ground_to_image_pixels_batch_parses_rows_and_writes_coordlist_in_lat_lon_order():
+    model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+    lonlat_deg = np.array([[169.5, 38.5], [170.0, 39.0]])
+    rows = [
+        {"Sample": "345.8", "Line": "548.5", "Error": "NULL"},
+        {
+            "Sample": "176.4",  # stale carryover from the prior successful row -- must be ignored
+            "Line": "866.3",
+            "Error": "Requested position does not project in camera model; no surface intersection",
+        },
+    ]
+    written_coordlist = {}
+
+    def fake_run_quiet(cmd):
+        coordlist_arg = next(a for a in cmd if a.startswith("coordlist="))
+        written_coordlist["text"] = Path(coordlist_arg.removeprefix("coordlist=")).read_text()
+        _fake_campt_batch_run_quiet(rows)(cmd)
+
+    with patch.object(isis_wac, "run_quiet", side_effect=fake_run_quiet):
+        pixels = isis_wac.ground_to_image_pixels_batch(model, lonlat_deg)
+
+    assert pixels == [(345.8, 548.5), None]
+    # campt.xml documents ground COORDLIST rows as (latitude, longitude), not (lon, lat) -- confirmed
+    # live this matters: got a stale, wrong result for every row until this order was fixed.
+    assert written_coordlist["text"] == "38.5,169.5\n39.0,170.0\n"
+
+
+def test_ground_to_image_pixels_batch_passes_the_right_campt_flags():
+    model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+    rows = [{"Sample": "1.0", "Line": "2.0", "Error": "NULL"}]
+
+    with patch.object(isis_wac, "run_quiet", side_effect=_fake_campt_batch_run_quiet(rows)) as mock_run_quiet:
+        isis_wac.ground_to_image_pixels_batch(model, np.array([[0.0, 0.0]]))
+
+    cmd = mock_run_quiet.call_args[0][0]
+    assert cmd[0] == "campt"
+    assert "usecoordlist=true" in cmd
+    assert "coordtype=ground" in cmd
+    assert "format=flat" in cmd
+    assert "append=false" in cmd  # campt's own APPEND default (true) would corrupt a reused path
+    assert "allowerror=true" in cmd  # one bad point must not abort the whole batch
+    assert "allowoutside=false" in cmd
+
+
+def test_ground_to_image_pixels_batch_raises_on_row_count_mismatch():
+    model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+    rows = [{"Sample": "1.0", "Line": "2.0", "Error": "NULL"}]  # only 1 row for 2 input points
+
+    with patch.object(isis_wac, "run_quiet", side_effect=_fake_campt_batch_run_quiet(rows)):
+        with pytest.raises(RuntimeError):
+            isis_wac.ground_to_image_pixels_batch(model, np.array([[0.0, 0.0], [1.0, 1.0]]))

@@ -40,10 +40,12 @@ House style matches render.py: frozen dataclass results holding `Path`s, `config
 load_config()`, subprocess calls via the shared `run_quiet` helper (not raw `subprocess.run`).
 """
 
+import csv
 import dataclasses
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -434,9 +436,18 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
     `isd_generate -i` call directly against a cropped cube was tried and found to give wrong
     geometry, which further investigation traced to a real bug in `usgscsm`'s `groundToImage`
     (see the module docstring) rather than anything fixable in the ISD itself. `crop_for_camera`'s
-    real WAC crop no longer uses an ISD at all -- see `run_cam2map_for_crop`."""
+    real WAC crop no longer uses an ISD at all -- see `run_cam2map_for_crop`.
+
+    Idempotent (matching this module's usual convention, e.g. `crop_for_camera`): reuses the file on
+    disk if it already exists, rather than re-running `isd_generate` -- a genuinely expensive call
+    (confirmed live: ~240s for this project's own crop, dominating `resolve_ground_to_image_model`'s
+    total runtime on every single notebook re-run, even though its own real output -- which
+    Pushframe-vs-other `name_model` this instrument resolves to -- never changes for a fixed
+    product)."""
     config = config or load_config()
     json_path = stitched.cub_path.with_suffix(".json")
+    if json_path.exists():
+        return IsdGenerateResult(json_path=json_path)
     run_quiet(["isd_generate", "-i", str(stitched.cub_path), "-o", str(json_path)])
     with open(json_path) as f:
         isd = json.load(f)
@@ -652,6 +663,66 @@ def ground_to_image_pixel(model: GroundToImageModel, lon_deg: float, lat_deg: fl
     label = pvl.loads(result.stdout)
     ground_point = label["GroundPoint"]
     return float(ground_point["Sample"]), float(ground_point["Line"])
+
+
+def ground_to_image_pixels_batch(model: GroundToImageModel, lonlat_deg: np.ndarray) -> list[tuple[float, float] | None]:
+    """Batched ground-to-image lookup for many points at once, via a single real
+    `campt usecoordlist=true` call instead of one `ground_to_image_pixel` subprocess per point --
+    confirmed live to be the dominant real cost of `control_network.resolve_control_points`: each
+    individual `campt` call pays real process-spawn/SPICE-load overhead (~300ms observed), which
+    dominates wall-clock for a multi-hundred-point control network (e.g. 767 points -> ~230s of
+    subprocess overhead alone, collapsed to a single call here).
+
+    `lonlat_deg` is `(N, 2)`, `(lon_deg, lat_deg)` columns -- matching `ground_to_image_pixel`'s own
+    argument order -- reordered to `(latitude, longitude)` only for the COORDLIST file, since
+    `campt`'s own `campt.xml` documents that exact, different column order for `COORDTYPE=ground`
+    (confirmed live: got the same, wrong, stale-looking result for every row until this was fixed).
+
+    `allowerror=true` (confirmed live, not guessed) lets `campt` continue past an individual point
+    that fails to project rather than aborting the whole batch. A failed row's own `Sample`/`Line`
+    fields come back as a stale, meaningless carryover from the last *successful* row in the batch
+    (confirmed live) -- never `NULL`/absent -- so failure is only ever detected via that row's own
+    `Error` field, which is the literal string `"NULL"` on success and a real error message
+    otherwise (e.g. "Requested position does not project in camera model; no surface intersection"),
+    matching `ground_to_image_pixel`'s `None`-on-failure contract for a single point.
+    `append=false` is required -- `campt`'s own default (`APPEND=TRUE`) silently prepends this run's
+    real results after any stale content already at `to=`'s path (confirmed live: reused a fresh
+    `tempfile` dir specifically to avoid ever hitting this on a shared/reused output path).
+
+    Returns a list the same length and order as `lonlat_deg`'s rows -- `None` for any point that
+    doesn't project into `model.cub_path` (the `allowoutside=false` semantics `ground_to_image_pixel`
+    already uses), a real `(sample, line)` tuple otherwise."""
+    lonlat_deg = np.asarray(lonlat_deg)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        coordlist_path = Path(tmp_dir) / "coordlist.csv"
+        out_path = Path(tmp_dir) / "campt_out.flat"
+        with open(coordlist_path, "w") as f:
+            for lon_deg, lat_deg in lonlat_deg:
+                f.write(f"{lat_deg},{lon_deg}\n")
+
+        run_quiet(
+            [
+                "campt",
+                f"from={model.cub_path}",
+                "usecoordlist=true",
+                f"coordlist={coordlist_path}",
+                "coordtype=ground",
+                f"to={out_path}",
+                "format=flat",
+                "append=false",
+                "allowoutside=false",
+                "allowerror=true",
+            ]
+        )
+        with open(out_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+
+    if len(rows) != len(lonlat_deg):
+        raise RuntimeError(
+            f"campt usecoordlist returned {len(rows)} rows for {len(lonlat_deg)} input points -- "
+            "expected exactly one row per point"
+        )
+    return [None if row["Error"] != "NULL" else (float(row["Sample"]), float(row["Line"])) for row in rows]
 
 
 def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:

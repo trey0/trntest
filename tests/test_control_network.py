@@ -38,10 +38,10 @@ def test_resolve_control_points_pairs_and_drops_unresolved_points():
     model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
 
     # The middle point's implied ground point fails to project into the crop (campt returns None);
-    # the other two resolve to distinct, recognizable pixels. side_effect is a plain list, consumed
-    # in the same order resolve_control_points iterates the (paired) input points -- avoids needing
-    # to know the exact projected lon/lat values `map_points_to_lonlat` produces for the fixture.
-    with patch.object(isis_wac, "ground_to_image_pixel", side_effect=[(101.0, 201.0), None, (103.0, 203.0)]):
+    # the other two resolve to distinct, recognizable pixels. The mocked return is a plain list, in
+    # the same order resolve_control_points iterates the (paired) input points -- avoids needing to
+    # know the exact projected lon/lat values `map_points_to_lonlat` produces for the fixture.
+    with patch.object(isis_wac, "ground_to_image_pixels_batch", return_value=[(101.0, 201.0), None, (103.0, 203.0)]):
         observed_pixels, ground_lonlat = control_network.resolve_control_points(
             wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()
         )
@@ -64,7 +64,7 @@ def test_resolve_control_points_raises_if_nothing_resolves():
     basemap_points_map = np.array([[0.0, 0.0]])
     model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
 
-    with patch.object(isis_wac, "ground_to_image_pixel", return_value=None):
+    with patch.object(isis_wac, "ground_to_image_pixels_batch", return_value=[None]):
         with pytest.raises(RuntimeError):
             control_network.resolve_control_points(
                 wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()

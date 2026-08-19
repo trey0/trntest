@@ -76,9 +76,12 @@ def resolve_control_points(
       *original*, pre-`cam2map` WAC crop cube that shows each matched feature. Recovered by
       converting the matched WAC map-pixel to its own implied ground point -- a deterministic
       un-warp of `cam2map`'s own resampling, using *only* the WAC crop's own map projection, not the
-      basemap -- then querying `isis_wac.ground_to_image_pixel` against the original crop cube
-      (`ground_to_image_model`, from `isis_wac.resolve_ground_to_image_model`) for that ground
-      point's real image location. This does not depend on trusting the current camera pose at all:
+      basemap -- then querying `isis_wac.ground_to_image_pixels_batch` (one real batched `campt`
+      call for every point at once, not one subprocess per point -- confirmed live to dominate this
+      function's runtime otherwise, e.g. ~230s of subprocess overhead alone for 767 real matches)
+      against the original crop cube (`ground_to_image_model`, from
+      `isis_wac.resolve_ground_to_image_model`) for that ground point's real image location. This
+      does not depend on trusting the current camera pose at all:
       it's a pure function of the WAC map-pixel and *whatever* camera model produced it, right or
       wrong, and would give the same answer either way.
     - `ground_lonlat` is the trusted ground truth for the same matched feature, taken directly from
@@ -94,12 +97,13 @@ def resolve_control_points(
     wac_lons, wac_lats = map_points_to_lonlat(wac_points_map, map_crs, config)
     basemap_lons, basemap_lats = map_points_to_lonlat(basemap_points_map, map_crs, config)
 
+    wac_lonlat = np.stack([wac_lons, wac_lats], axis=1)
+    pixels = isis_wac.ground_to_image_pixels_batch(ground_to_image_model, wac_lonlat)
+
     observed_pixels = []
     ground_lonlat = []
     n_dropped = 0
-    points = zip(wac_lons, wac_lats, basemap_lons, basemap_lats, strict=True)
-    for wac_lon, wac_lat, basemap_lon, basemap_lat in points:
-        pixel = isis_wac.ground_to_image_pixel(ground_to_image_model, wac_lon, wac_lat)
+    for pixel, basemap_lon, basemap_lat in zip(pixels, basemap_lons, basemap_lats, strict=True):
         if pixel is None:
             n_dropped += 1
             continue
