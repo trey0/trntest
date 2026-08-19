@@ -3468,3 +3468,486 @@ mypy, notebook sync); real Docker image rebuild (torch/torchvision/kornia/lightg
 image growth) and full re-run of `notebooks/pose_alignment_spike.ipynb` end to end, no errors; new
 blink-overlay GIF visually reviewed live by the user in their own running Jupyter Lab, matching the
 printed statistics.
+
+## Phase 57 (2026-08-16) — `notebooks/select_datasets.py`: illuminated-node orbit statistics and a
+greedy multi-dataset selection algorithm
+
+New exploratory notebook (separate from, and not touching, `data_set_selection.ipynb`/
+`dataset_manifest.csv`) built incrementally with the user across one long session, working through a
+sequence of real design questions rather than a single upfront spec:
+
+1. **The "illuminated node" concept**: every LRO orbit has an ascending and descending node
+   (~180 deg apart in longitude); only one is typically sunlit, picked as whichever has the higher
+   sun elevation. Per-orbit statistics collected: that node's longitude, the solar hour angle there
+   (`illumination.hour_angle_deg`, new -- -90/0/+90 = sunrise/noon/sunset, sign confirmed against
+   real SPICE data, not just derived), acceptable-WAC-EDR count (real catalog data, sun-elevation +
+   emission-angle filtered -- "typical nadir mapping mode"), and a maneuver flag
+   (`maneuver_detection.find_maneuver_candidates`, Phase 50-51's module, its first real consumer).
+2. **First plot** (orbit-level scatter, longitude vs. hour angle): iterated live through several real
+   rendering problems, not just parameter tuning -- a connecting line colored by time of year was
+   completely invisible under a dense marker layer at ~13 orbits/day regardless of alpha/zorder
+   (tried both orderings), eventually dropped entirely per the user's own observation that markers
+   alone read as a continuous curve at this density anyway; the "Oranges" colormap's white zero-end
+   was indistinguishable from the figure background (fixed by switching to `viridis`, which is also
+   perceptually uniform and varies in hue as well as lightness -- easier to read a value off a
+   marker's color, a plain user ask: "a colormap that makes it easier to figure out values from
+   colors").
+3. **Second plot**: a straightforward sun-elevation-vs-acceptable-EDR-count 2D histogram, which
+   turned up an almost-perfect linear correlation (expected, since sun elevation is one of the two
+   acceptance filters) plus a real, separate population at EDR-count=0 even at 60-90 deg sun
+   elevation -- flagged, not chased further this session.
+4. **Multi-dataset selection**: a dataset is `DATASET_LENGTH_ORBITS` (24, ~2 days) consecutive
+   orbits, acceptable if every orbit is acceptable (no maneuver, minimum per-orbit EDR count) and
+   contains no illuminated-node flip (needed so the circular-mean "center" longitude/hour-angle
+   actually behaves like an average of nearby values). Selection: greedy farthest-point/max-min
+   diversity in center hour angle, each pick excluding future candidates within a tunable center-
+   longitude separation or sharing orbits with it, seeded (no diversity to compare against yet) by
+   the single most robust candidate. Confirmed with the user this counts as "well-posed" only after
+   nailing down: circular mean/distance for longitude (wraparound: -170/+160 average to +175, not
+   -5; `illumination.circular_mean_deg`/`circular_distance_deg`, new), an explicit diversity
+   objective (max-min, not just "diverse"), a first-pick seeding rule, and an explicit non-overlap
+   constraint. Real, non-obvious algorithm behavior surfaced and explained when the user asked why
+   loosening a threshold produced *fewer* selected datasets, not more or the same: greedy farthest-
+   point selection optimizes diversity of the chosen set at each step, not total achievable count --
+   a larger candidate pool can change an early pick's winner (traced concretely: pick 1 differed
+   between the two runs), cascading into a different, still-locally-optimal but not-necessarily-
+   larger final sequence. Per explicit user request, `select_diverse_datasets` now takes a target
+   `n_datasets` and raises `RuntimeError` (rather than silently returning fewer) if the exclusion
+   constraints exhaust the candidate pool first.
+5. **Plot finalized**: axes pegged to their logical ranges (-180/180 longitude, -90/90 hour angle,
+   45/30-degree ticks), wide aspect ratio, horizontal colorbar to maximize marker-resolving width, a
+   black/medium-grey "underline" per selected dataset (from `underline_offset_deg` below the first
+   orbit's own longitude/hour-angle to the same below the last orbit's) split at the +/-180
+   wraparound via a new `illumination.unwrap_relative_deg` (draw in an unwrapped coordinate, clip/
+   split wherever it crosses +/-180) -- an earlier orange/magenta pairing was hard to distinguish at
+   a glance, black/grey reads unambiguously.
+6. **Promoted to library code** per explicit user request ("most cells should become one-liner
+   calls... key tunable parameters exposed"): the whole pipeline moved to a new
+   `src/trntest/dataset_selection.py` (`find_orbits`/`add_maneuver_flags`/`add_acceptable_edr_counts`/
+   `enumerate_candidate_datasets`/`select_diverse_datasets`, one function per notebook cell) and two
+   new `plotting.py` functions (`plot_illuminated_node_scatter`/`plot_sun_elevation_vs_edr_count`),
+   leaving the notebook itself as tunable constants plus one-line calls. While moving `find_orbits`,
+   also fixed the initial kernel-furnish call to use the caller's own `period_start` instead of a
+   hardcoded, unrelated fixture date left over from copy-paste -- a legitimate cleanup, though it
+   incidentally flipped one extremely close greedy-selection tie via a different SPK-segment
+   priority in an overlap region (harmless, same candidate/orbit counts either way).
+
+**Two real, independent bugs found and fixed along the way, both outside the notebook's own new
+code:**
+
+- **`illumination.find_node_crossings` was needlessly calling `fetch_and_furnish` (full CK
+  resolution) per node crossing**, even though the classification it does (`spacecraft_lonlat_deg`)
+  is pure position -- no pointing/CK needed at all. Confirmed via profiling (~70% of the function's
+  own runtime) and, more seriously, a real crash: at full-year scale, sweeping across many months,
+  `fetch_and_furnish`'s default `isis_resolved` CK source (cached per a single fixed
+  `config.edr_product`) can have a filename-encoded date range that nominally overlaps a faraway
+  query epoch while the file's *actual* `ckcov` coverage doesn't, tripping its own trust-but-verify
+  check. Fixed by dropping the per-crossing `fetch_and_furnish` call entirely (SPK is already
+  furnished for the whole window; LSK/PCK are the caller's existing responsibility, same convention
+  `utc_to_et` already documents) -- also a real, incidental performance win.
+- **`catalog.list_products`'s pagination silently truncated large queries.** It decided whether to
+  fetch another page from `len(page_df) < _PAGE_SIZE` -- the *parsed* row count -- but a page can
+  (and, on a real full-year query, did) have a handful of entries `parse_catalog_entries` drops for
+  a missing/malformed field, landing the parsed count just under `_PAGE_SIZE` even though the server
+  sent a genuinely full page with more results still to come. This silently truncated a real
+  full-year EDR query to its first 5000 raw entries (4996 parsed) out of what should have been
+  ~53k -- confirmed live by directly re-querying and counting raw `<Product>` tags in the response.
+  Fixed by deciding continuation from the server's own raw entry count instead; added a regression
+  test (`test_list_products_keeps_paginating_past_a_page_with_a_parse_failure`) since this path had
+  no test coverage at all before (unsurprising: no existing caller had ever queried widely enough to
+  trigger it).
+
+**Also added, from a genuine near-incident mid-session**: before running the notebook's first
+full-year cold-cache sweep (~50-70 real HTTP requests across NAIF/PDS ODE, estimated and explained
+to the user before executing), the user asked to verify it would be "kind to the server" --
+confirmed `cache.py`'s existing per-request pacing (`_REQUEST_PACING_SECONDS`, from the Phase 36
+rate-limit incident) already covers this generically, then the user asked for a new, durable rule:
+message other running agents *before* starting anything request-heavy, not just after, so concurrent
+agents can stagger rather than risk their independently-safe bursts combining into a real rate-limit
+trip. Added as a new bullet in `docs/environment.md`'s "Agent-to-agent messaging" section, then
+immediately followed in-session (messaged `a1-30` before the real sweep).
+
+Verified: full `pytest` suite (211 tests: 5 new for `illumination.py`'s circular-math helpers, 1 new
+regression test for `catalog.py`'s pagination fix) passes; `trntest-lint` clean (`ruff format`/
+`ruff check`/`mypy`) on all changed/new files; multiple real, live Docker re-runs of
+`notebooks/select_datasets.py` end to end across every design iteration (not just the final one),
+each visually reviewed by the user in their own running Jupyter Lab (a persistent `docker compose up`
+server started mid-session at their request, on this worktree's assigned port 8889).
+
+## Phase 58 (2026-08-16) — Bridging `select_datasets.py`'s orbit-sequence picks into the older
+EDR-list `TrnTestDataSet` world, plus a real LROC rate-limit incident along the way
+
+Phase 57's `select_diverse_datasets` picks *orbit windows* (a start/end UTC span), not individual
+images -- unusable as-is by `TrnTestDataSet`/`TrnTestEntry`, which expect a `dataset.
+DATASET_COLUMNS`-shaped table of individual EDR entries. The user described the target mental model
+(paraphrased): the core object is a list of *image entries*, each with camera parameters and pose;
+an entry's origin need not be an EDR at all (e.g. future-mission orbit propagation, with different
+pluggable generators per origin type); a selected orbit window is best thought of as its own type
+(a plain pandas table is fine, no literal class needed) that becomes the primary argument to a
+constructor turning it into a table of acceptable EDRs. Confirmed the concrete plan with the user,
+who explicitly scoped out generalizing `TrnTestEntry` for non-EDR origins as future work, and gave
+an explicit constraint to carry forward: resolve **one** selected window at a time, not all of them
+-- the same fast-iteration-on-one-item discipline this project has followed throughout (e.g.
+`TrnTestDataSet.populate(limit=1)`).
+
+**Implementation** (`src/trntest/dataset.py`, `dataset_selection.py`):
+
+- `dataset.images_for_window(start_dt, end_dt, config, ...)` -- `select_dataset()`'s own catalog-
+  query/evaluate/finalize tail, generalized from "search fresh over N days" to "evaluate this exact
+  window," sharing `_evaluate_illuminated_candidates`/`_finalize_images` (the latter newly extracted
+  from `select_dataset()`, behavior-preserving) rather than forking the logic.
+- `dataset._prefilter_by_catalog_metadata` -- a cheap pre-filter (sun-elevation from
+  `incidence_angle_deg`, optionally emission angle) computed straight off catalog fields, before any
+  per-candidate network fetch, with a deliberate false-positive-over-false-negative margin
+  (`prefilter_margin_deg`, default 5 deg).
+- `attach_cdr=False` as `images_for_window`'s default: confirmed via grep that the `cdr_*` columns'
+  only real consumer anywhere in the codebase is `wac.py`, itself already superseded by
+  `isis_wac.py` -- a legacy artifact from before ISIS's own functions were found to work directly
+  from EDRs, per the user's own read of it, which the investigation confirmed. Skips an unneeded
+  per-candidate network round-trip for callers (like `resolve_orbit_sequence`) that don't need it.
+- `dataset_selection.resolve_orbit_sequence(orbit_sequence: pd.Series, config, ...)` -- the actual
+  bridge, a thin wrapper around `images_for_window` taking exactly one row (not the whole
+  `select_diverse_datasets` table). Named after an initial user suggestion of "bless" (called "a
+  colorful metaphor" by the user themself, who asked for something more descriptive); renamed to
+  `resolve_orbit_sequence` to match this codebase's existing `resolve_*` naming precedent
+  (`resolve_ground_to_image_model`, `resolve_wac_ck_kernels`, `resolve_crop_pixels`).
+
+**Real incident**: the first live end-to-end test (one real 24-orbit window, 295 raw candidates,
+before the pre-filter existed) tripped a genuine HTTP 429 on `pds.lroc.im-ldi.com` (the LROC EDR
+label host), `Retry-After=3600s`. Reported immediately; messaged peer agent `a1-30` to rule out
+combined load (confirmed uninvolved). Root cause inconclusive (an earlier small smoke test had just
+succeeded on the same host moments before). Mitigated three ways at the user's direction: the
+catalog-metadata pre-filter above (295->207 candidates for this specific window -- a real but
+modest ~30% cut, since a pre-selected "good" window naturally has a high true-positive rate
+already); `attach_cdr=False`; and a general (not host-specific) pacing increase in `cache.py`'s
+`_REQUEST_PACING_SECONDS`, 0.2s -> 0.5s, on explicit instruction ("Let's dial down to 0.5s spacing
+wherever we had spacing before... Hoping that we'll mostly have warm caches in practice"). Verified
+the ban cleared via one targeted re-fetch of the failed product, then re-ran the real test
+successfully: 207 images resolved in 32.7s, zero errors. Also caught, mid-incident, having skipped
+the "ping other agents before request-heavy work" rule (Phase 57) on the retry -- the user asked
+directly ("Did you ping a1 by the way?"); acknowledged the miss and sent a belated heads-up.
+
+**Notebook wiring**: `notebooks/select_datasets.py` gained two cells --
+`dataset_selection.resolve_orbit_sequence(selected_datasets.iloc[0], ...)`, then
+`TrnTestDataSet.create()` on the result into a new `orbit_sequence_dataset` folder (kept separate
+from `data_set_selection.py`'s canonical `trn_dataset`, since this pipeline is still exploratory),
+also writing `orbit_sequence.csv` (the one selected window's own row) alongside `manifest.csv` for
+debugging/provenance, per the user's original suggestion. Stops short of `populate()` -- no
+rendering wired in yet. Executed for real via `scripts/run_notebook.sh` (a host-side script -- it
+itself shells out to `docker compose`, so it must run outside the container, not inside it as first
+attempted) after pinging `a1-30` beforehand this time; the window was already cache-warm from the
+incident retry above, so the resolve cell finished in under a second with zero fresh LROC requests.
+
+Verified: full `pytest` suite (209 fast tests, 2 new for `_prefilter_by_catalog_metadata`) passes;
+`trntest-lint` clean on all changed files; a real, live end-to-end notebook run, its output
+(`manifest.csv`/`orbit_sequence.csv`) inspected directly in the dataset folder.
+
+## Phase 59 (2026-08-17) — Removed `notebooks/data_set_selection.py`/`.ipynb` and the now-dead
+`select_dataset()` code path
+
+With Phase 58's bridge in place, the user was ready to retire the original catalog-driven selection
+notebook. Investigated first rather than assuming scope: `dataset_manifest.csv` (the checked-in
+selection result) turned out to be read by five other notebooks (`image_generation.py`,
+`hapke_hillshade.py`, `pose_alignment_spike.py`, `along_track_correction.py`, mentioned by
+`select_datasets.py`), all with no runtime dependency on `data_set_selection.ipynb` *itself* — only
+on the CSV file it last wrote. Two explicit scope decisions confirmed with the user before touching
+anything:
+
+1. **Freeze `dataset_manifest.csv`, delete the notebook** (over rewiring the manifest-reading
+   notebooks onto `select_datasets.py`'s new pipeline, or leaving the manifest/notebook alone
+   entirely) — the CSV stays exactly as it is, just no longer regenerable via that notebook; the
+   demo pipeline is otherwise unaffected.
+2. **Also delete `dataset.select_dataset()`** (+ `session.select_dataset()` + its `__init__.py`
+   export) once confirmed it had zero remaining callers anywhere in the codebase, not even tests —
+   genuinely dead code once the notebook was gone, not just an unused convenience wrapper. Its
+   shared internals (`_evaluate_illuminated_candidates`, `_finalize_images`) stay, since
+   `dataset.images_for_window()` (Phase 58) still uses them.
+
+Deleting `select_dataset()` cascaded one level further: its own private helpers
+(`_candidate_geometry_windows`, `_pick_best_window`, `DEFAULT_SEARCH_START`) had no other caller and
+were removed with it, which in turn left `illumination.node_terminator_offset_deg` and
+`illumination.find_ascending_node_crossings` with zero callers (neither had test coverage either) —
+removed as the same dead-code cleanup, not a separate decision. `illumination.find_node_crossings`
+(the more general function `find_ascending_node_crossings` wrapped) stays — still live, called by
+`dataset_selection.find_orbits`.
+
+Reworded every docstring/comment across `dataset.py`, `dataset_selection.py`, `session.py`,
+`__init__.py`, `camera.py`, `config.py`, `spice_kernels.py`, `cache.py`, `notebooks/wac_isis.py`,
+`notebooks/image_generation.py`, `notebooks/select_datasets.py`, `AGENTS.md`, `README.md`,
+`docs/environment.md`, `docs/plan.md`, `docs/dataset-plan.md`, and `docs/data-sources.md` that
+described `select_dataset()`/`data_set_selection.ipynb` as the *current* live behavior — pointing
+each at its real current equivalent (`images_for_window()`, the frozen `dataset_manifest.csv`,
+`dataset_selection.add_maneuver_flags`) instead. Left alone, deliberately, every mention that's
+already a historical citation of a specific past incident or run (this file's own past entries,
+`docs/caching.md`'s Phase 36 citation, `docs/data-sources.md`'s "the product the live demo
+notebook's `select_dataset()` path actually chose" passage, `old_notebooks/` — an explicitly frozen,
+unmaintained archive per its own README) — those are accurate statements about what happened at the
+time, not claims about the code as it stands today, same distinction this project's history entries
+have always been trusted to preserve.
+
+Notebook re-sync: `image_generation.py`/`select_datasets.py`/`wac_isis.py` only had markdown/comment
+cells edited (no code cells touched), so `jupytext --sync` regenerated their `.ipynb` twins without
+needing a real re-execution — confirmed via diff that no cell outputs or `execution_count`s changed,
+only source text.
+
+Verified: full `pytest` suite (209 tests) passes; `trntest-lint --all` clean (`ruff format`/
+`ruff check`/`mypy`/notebook sync/notebook warnings) across every file, not just the changed ones.
+
+## Phase 60 (2026-08-17, `feature/reproject` branch, not merged) — Building `reproject`, the third
+`TrnTestImage` type, found and fixed a real synthetic-camera FOV bug along the way
+
+Started on the third, reserved-but-unbuilt `TrnTestImage` type (`docs/dataset-plan.md`): `sat_sim`
+fed by the real WAC crop's own reflectance (`isis_wac.run_cam2map_for_crop`) instead of the Lunaserv
+basemap, through the *same* synthetic camera as `hillshade` (byte-identical pose/FOV/intrinsics,
+so the two are directly comparable) -- per the user's own framing, "use `sat_sim` but for input data
+use the RDR of our WAC crop essentially." User flagged upfront that the synthetic FOV might not
+reliably stay inside the real WAC swath and asked to test on one real image first, rather than
+assume.
+
+That instinct was right. First live test (`M1327210646CE`) found a real, asymmetric `NODATA` gap:
+96.3% overall valid, but the outer edge ring only 79.4%, bottom two corners 53-58%, and (per direct
+user visual inspection of the render) the entire bottom row empty, "thicker" at the top. Root-caused
+to two coupled effects (both confirmed by decomposing real ground positions into cross-track/
+along-track components, not just eyeballing): (1) `build_camera()`'s `fv = fu` calibrates the
+along-track FOV to a flat, non-perspective target (`n_frames_for_square_crop * km_per_frame`) but
+renders it through the same real ray-traced perspective projection `fu`'s own cross-track target
+uses -- a real, confirmed ~4.2km/2.8% overshoot; (2) even after fixing that alone, the far corners
+stayed elongated *cross-track* too (~81-82km vs. the crop's own near-constant ~70km), because a
+corner ray combines both angular offsets at once and lands farther out in *both* components the more
+oblique it is -- a coupling a standard 4-parameter pinhole (`fu,fv,cu,cv`) can't fully separate,
+since `fu` can't depend on `py`. Two earlier, partial fix attempts (symmetric `fv` shrink; then an
+asymmetric `fv`/`cv` solve against the along-track edge *midpoint*) each helped some but plateaued
+around 75-82% at the worst corner -- diagnosed and moved past each, not just tuned further.
+
+**Fix that reached 100%**: shrink `fu` by a tuned `FU_SCALE` (0.93), then solve `fv`/`cv`
+independently by ray-tracing the actual *corner* (both offsets together, not just one axis) against
+the real crop's own measured near/far corner ground truth (`entry.crop_footprint`, real ISIS
+`campt`), with an additional `AT_MARGIN` (0.93) shrink -- both deliberately conservative per the
+user's own explicit call mid-investigation: "we can accept a bit of arbitrary shrinkage on the frame
+sensor FOV if that's what it takes to solve the problem reliably... there is some variation due to
+terrain and we would want to build in a bit of margin in any case." Result on the one tested image:
+valid pixels 96.3% -> 100.0%, worst corner 53.6% -> 100.0%.
+
+**Two other things found along the way**: (1) a real process bug -- the spike notebook's early cells
+called `dataset.populate(limit=1)` before grabbing `entry = dataset[0]`; since entry 0 already had
+`crop`+`hillshade` from a prior `image_generation.ipynb` run, `populate(limit=1)` silently advanced
+to the next *undone* entry instead and did real, unintended Lunaserv/Astropedia fetches + ISIS
+generation on 3 unrelated manifest rows (confirmed via `dataset.status()`) -- fixed by dropping the
+`populate()` call, since entry 0 never needed it. General trap worth remembering: `populate(limit=N)`
+on an already-populated entry advances the queue, it doesn't no-op. (2) A user-prompted architectural
+observation, not acted on: the *existing* boresight correction (`build_camera()`'s `look_at_rotation`
+re-aiming, `docs/data-sources.md`'s "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was
+modeled as a frame *rotation* -- the user's own words, "it was always going to be more correct to
+model it as a bias in `cv`, since that's what it is in the real WAC VIS," which this investigation's
+own `cv`-bias fix (for a different problem) ended up validating the shape of. Revisiting the original
+boresight correction that way is a separate, bigger change, not started.
+
+**Deliberately not merged to `main`** -- pushed to its own `feature/reproject` branch, same pattern
+as `feature/alignment`: unvalidated past one image, and not yet wired into a real
+`TrnTestReprojectImage` class (still ad hoc notebook code producing a second, `_fovfix`-suffixed
+`.tsai`/camera alongside the normal one). Session ended here for token-budget reasons -- full status,
+open questions (does a single `(FU_SCALE, AT_MARGIN)` generalize across images or does the solve need
+to run fresh per-image; where the corrected FOV should live without changing `hillshade`/`crop`'s own
+FOV; the boresight-bias-vs-rotation question above) captured in
+`docs/reproject-fov-investigation.md`, referenced from `docs/plan.md`'s open items, for whoever picks
+this up next.
+
+Verified: no test/lint changes this phase (notebook-only work); real, live Docker re-runs of
+`notebooks/reproject_spike.py` at every stage of the investigation (not just the final one), each
+inspected via its own printed coverage numbers and rendered output.
+
+## Phase 61 (2026-08-18, `feature/reproject` branch, still not merged) — Validated Phase 60's FOV
+fix generalizes across 4 real images
+
+Picked back up per Phase 60's own stated next step: does the tuned `(FU_SCALE=0.93, AT_MARGIN=0.93)`
+pair hold up on other real candidates, or does the solve need retuning per image? Added a reusable
+`evaluate_reproject_coverage()` to `notebooks/reproject_spike.py` (the same crop→reproject→render→
+coverage pipeline as Phase 60's investigation, refactored into a function so it could run repeatedly)
+and re-ran the *same*, unchanged constants against 3 more real candidates already available in the
+`trn_dataset` folder (crop+hillshade already generated from Phase 60's own accidental
+`populate(limit=1)` advance — reused rather than wasted, and avoided repeating that same mistake by
+never calling `populate()` again in this pass), deliberately spanning a wide latitude/off-nadir
+range: `M1327211014CE` (55.4°N), `M1327211334CE` (70.7°N), `M1327215525CE` (-67.5°S), against the
+original `M1327210646CE` (38.5°N).
+
+**Result: all four reach ~100% valid-pixel coverage with the unmodified constants** (worst case
+99.8%, negligible) — up from a 95.5-99.2% "solve-only" baseline (the corner-ray `fv`/`cv` solve alone,
+no `FU_SCALE`/`AT_MARGIN` shrink) whose own worst corner ranged 57.8-77.1%. This resolves Phase 60's
+open "per-image solve or fixed constant?" question: a single fixed constant pair holds up across this
+range, at least for candidates from the same manifest/EDR family this demo already uses — no evidence
+yet that per-image retuning is needed. Not proof it holds at every conceivable off-nadir angle/
+latitude (all 4 tested are still non-polar WAC-VIS with similar `n_frames_for_square_crop`), but a
+real, meaningful result: the original fix wasn't overfit to one image.
+
+Full first-run timing (before a lint-driven reformat, re-run to confirm results were unchanged, see
+below) showed the added validation pass costs ~155s of real Docker time (`cam2map` + `sat_sim` run
+per candidate per baseline/fixed pair, 8 renders total) — consistent with Phase 60's own per-run cost,
+not surprising or a new performance concern.
+
+Still not wired into a real `TrnTestReprojectImage` class — the open items from Phase 60 (where the
+corrected FOV should live; the boresight-bias-vs-rotation tangent) are unchanged and still the actual
+blockers, not this validation gap. See `docs/reproject-fov-investigation.md`'s "Validated: the fix
+generalizes across 4 real images" section for the full table and discussion.
+
+Verified: no test/lint changes needed to `src/trntest/` itself; `trntest-lint --all` flagged one
+`ruff format` issue in the new notebook code (a too-long line), fixed and the notebook re-run to
+confirm identical results post-format; full `trntest-lint --all` clean after.
+
+## Phase 62 (2026-08-18, `feature/reproject` branch, still not merged) — Wired the reproject FOV fix
+into `camera.build_camera()`, built the real `TrnTestReprojectImage` class, and caught two live
+regressions along the way
+
+Picked back up per Phase 61's own validated conclusion and a direct question to the user: where
+should the corrected FOV live? The investigation doc had flagged this as an open architectural
+question -- a `reproject`-specific camera variant (simpler, no risk to `hillshade`/`crop`) vs. inside
+`build_camera()` itself (would also shrink `hillshade`'s FOV). The user's answer resolved it: a
+future goal is SSIM/LPIPS/diff-style scoring between `hillshade` and `reproject`, which needs them
+pixel-grid-identical -- only possible if the correction lives inside `build_camera()`, applied once.
+The user also pointed out the earlier "would degrade `crop`'s alignment" worry didn't actually apply:
+`crop` naturally needs to stay a bit larger, since it's real source data providing margin, not
+something that needs FOV parity with the other two.
+
+**`camera.py` changes**: `solve_corrected_fov` (the spike notebook's `FU_SCALE`/`AT_MARGIN` solve,
+generalized into a reusable function) is now called from inside `build_camera()` itself, right after
+the existing boresight re-aim -- reuses the same real WAC crop (`tie_points.
+crop_footprint_corners_for_camera`) `build_camera()` already produces internally for that re-aim, so
+this costs no new ISIS work. `Camera` gained 4 new fields: `focal_length_u_px`/`focal_length_v_px`
+(replacing the old single `focal_length_px`, which implicitly assumed `fu=fv`) and
+`principal_point_u_px`/`principal_point_v_px` (replacing an implicit, project-wide `cu=cv=image_size/2`
+assumption). `footprint_lonlat`'s `"center"` entry changed from a hardcoded `(size/2, size/2)` to the
+real boresight ray `(cu, cv)` -- the two coincided everywhere before this fix (by construction), so
+this was a latent bug waiting for exactly this kind of change to expose it; every consumer of
+`footprint_lonlat_deg["center"]` (AOI centering, sun-angle lookups, display rotation) wants the real
+pose target, not literal image-center. Live-validated directly: on the demo's own default candidate,
+the fix reproduces last session's exact tuned numbers (`fu=235.25, fv=249.40, cu=128.00, cv=133.26`),
+`footprint_lonlat_deg["center"]` now matches the real crop's own `campt`-derived center to 0.000 deg,
+and both a hillshade-style and reproject-style render through the corrected camera hit 100% valid
+coverage (hillshade was never broken, just untested at the corrected FOV before now).
+
+**`trn_dataset.py` changes**: `TrnTestReprojectImage(TrnTestHillshadeImage)` -- subclasses
+`TrnTestHillshadeImage`, not `TrnTestImage` directly, since (confirmed by this session's own
+implementation, not just docs/dataset-plan.md's original guess) only 4 members need overriding
+(`raster_path`/`sidecar_json_path`/`render_label`/`_generate_impl`, the last just feeding a
+WAC-crop-textured `DemOrthoResult` into the same `render.run_sat_sim` call `hillshade` already uses)
+-- everything else, including `_mapprojected_path`, is inherited unchanged and picks up the right
+`raster_path`/`sidecar_json_path` via ordinary dynamic dispatch. Deliberately kept out of
+`PRODUCT_TYPES` (`populate()`'s default product-type set) -- opt-in only via an explicit
+`product_types=` argument, since it isn't wired into any notebook yet and has real dataset-scale
+validation still to do. Live-validated end to end against a private scratch dataset folder (not the
+shared demo one): populated `crop`+`hillshade`+`reproject` for the demo's default candidate,
+confirmed `hillshade.width_km`/`height_km` exactly equal `reproject`'s (byte-identical camera,
+confirmed not just asserted), both renders 100% valid, and both `plot_vs_basemap`/`plot_overlay`
+produce correct, well-aligned figures (visually inspected, not just "didn't crash").
+
+**Two real regressions found by re-running the flagship `image_generation.ipynb` end to end** (not
+by reasoning alone -- both were live, measured failures):
+
+1. `plotting.plot_isis_comparison` (the live Phase-comparison figure `image_generation.py` calls) and
+   `TrnTestHillshadeImage.width_km`/`height_km` both reused `Camera.cross_track_width_km`
+   (crop-window-derived) as a stand-in for the synthetic render's own real width/height, and assumed
+   the render was exactly square -- both true before this session (`fu=fv`, derived from the same
+   half-angle the crop window used), false after. Fixed by adding `Camera.render_cross_track_km`/
+   `render_along_track_km` (`camera.footprint_width_height_km`, a real ground-chord measurement of
+   the corrected footprint's own 4 corners) and switching both consumers to them;
+   `cross_track_width_km` itself is untouched, still correctly describing the real crop's own extent
+   (`TrnTestCropImage.width_km`, `pose_alignment.py`'s crop GSD calc) -- those were never affected by
+   a synthetic-camera-only fix and don't need to be.
+2. `tie_points.select_tie_points`'s 5 QA-overlay tie points dropped from 5-of-5 resolving (the demo's
+   own documented default-candidate result, from an earlier phase's investigation) to 1-of-5 once the
+   FOV fix was wired in -- caught directly in the re-run notebook's own printed warning, not
+   anticipated. Root cause: `tie_points.die5_points` anchored its 5 points on the shared bounding
+   box's own naive `(lon_min+lon_max)/2, (lat_min+lat_max)/2` midpoint, not the true shared boresight
+   center -- harmless while the synthetic footprint was symmetric around its own center (the naive
+   midpoint and the true center were the same point by construction), wrong once
+   `solve_corrected_fov` made the footprint asymmetric (near corners ~91k m from center, far corners
+   ~100k m) enough to shift the naive midpoint measurably away from the true center. Confirmed via
+   direct `campt` queries: even the "center" test point itself failed with "no surface intersection"
+   against the real crop's own pushframe camera model, despite being geometrically inside the
+   (axis-aligned-box-approximated) intersection of both footprints' inscribed boxes -- the real
+   containment guarantee that reasoning relies on assumes an accurately-centered box, which the naive
+   midpoint no longer provided. Fixed by giving `die5_points` an explicit `center` argument
+   (`select_tie_points` already computes `synthetic_center`, the real shared boresight point) and
+   anchoring all 5 points on it -- each of the 4 corner points now scaled by its own reach from
+   `center` to its own side of the bbox, not a single shared box half-width. Live-validated: 5 of 5
+   tie points resolve again on the default candidate, and the "center" tie point's real crop pixel
+   lands within ~2px of the crop's own true center pixel (previously exact by construction, now
+   exact again).
+
+The user's own framing for why re-running the real notebook mattered here, not just the isolated FOV
+validation: these two regressions were both real, silent behavior changes in code paths the FOV fix
+never touched directly (`plotting.py`, `tie_points.py`) -- neither would have been caught by
+`solve_corrected_fov`'s own direct tests, since both are about *downstream consumers'* implicit
+assumptions about `Camera`'s fields, not the FOV solve's own correctness.
+
+**A third regression, found only by the user's own direct visual inspection in Jupyter Lab** (not by
+anything automated in this session, including this session's own visual check of
+`TrnTestReprojectImage`'s overlay output): Phase 5B's `mapproject`-based blink overlay, previously
+"always very accurately aligned" per the user, came out visibly misaligned. Root cause: `cam_gen`'s
+conversion of our `.tsai` to a CSM Frame model-state JSON has only one, isotropic `m_focalLength`
+field -- confirmed live it silently averages an asymmetric `fu`/`fv` into one value
+(`(235.25+249.40)/2 = 242.32`, matching the JSON exactly), harmless while `fu=fv` always held, a real
+~5% one-axis distortion once it no longer did. Quantified directly: the CSM-reprojected footprint's
+own bounding box came out nearly square (143.1x142.6 km) instead of the correct,
+`render_cross_track_km`/`render_along_track_km`-matching non-square shape (146.0x139.1 km).
+
+First fix attempt bypassed the CSM sidecar entirely (`mapproject -t pinhole` against the `.tsai`
+directly) -- worked, but the user asked whether this was really a CSM model limitation or just
+`cam_gen`'s own conversion being lossy, hoping to keep a correct CSM sidecar available too (relevant
+to `docs/plan.md`'s still-open question about the CSM JSON standing in for a literal ISD file later).
+Investigated rather than assumed: `ale`'s own real-instrument CSM formatters (`ale/drivers/
+lro_drivers.py`, installed in this image) populate the model's `m_iTransL`/`m_iTransS`/`m_transX`/
+`m_transY` fields directly from NAIF's real, genuinely anisotropic instrument-kernel keywords for
+actual flight cameras -- proving the CSM Frame model itself fully supports per-axis anisotropy, `cam_gen`
+just doesn't populate it for a synthetic Pinhole conversion. Confirmed by hand-patching a `cam_gen`
+sidecar (pivoting `m_focalLength` to `fu`, rescaling `m_iTransL`/`m_transY` by `fv/fu`/`fu/fv`) and
+re-running `mapproject -t csm`: reprojected footprint came out 146.3x139.2 km, matching `-t pinhole`
+to ~0.2%.
+
+**Final fix**: `render._correct_csm_focal_length_anisotropy`, called right after `cam_gen` in
+`run_sat_sim`, restores the sidecar itself (pivots `m_focalLength` to `fu`, rescales whichever of
+`m_iTransL`'s two coefficients `cam_gen` set nonzero by `fv/fu`, `m_transY`'s matching coefficient by
+the reciprocal, preserving sign rather than assuming a fixed index) -- a more foundational fix than
+the first attempt, since the sidecar copied into the dataset folder (`hillshade/*.json`, `reproject/
+*.json`) is now genuinely correct for any future consumer, not just the one call site that happened
+to need it this session. `TrnTestHillshadeImage._mapprojected_path` (inherited by
+`TrnTestReprojectImage`) reverted back to the CSM sidecar (`camera_type="csm"`, the default) now that
+it's correct at the source; `render.run_mapproject_image` stayed generalized (`camera_path`/
+`camera_type`) as good hygiene even though its one live caller no longer needs `"pinhole"`.
+`TrnTestCropImage`'s own `_mapprojected_path` (ISIS `cam2map`, not ASP `mapproject`) was never
+affected by any of this. See docs/reproject-fov-investigation.md for the full trail.
+
+Live-validated across all 4 candidates used throughout this investigation (not just the one
+hand-patched case): each candidate's freshly-rendered, auto-corrected CSM sidecar's own
+`mapproject -t csm` footprint matches its `-t pinhole` ground truth to within 0.00-0.27% (vs. the
+original bug's ~2-4%), confirming the fix generalizes across different `fu`/`fv` ratios and sensor
+rotations (`boresight_rotation_k`), not just the one candidate it was derived on.
+
+Verified: full `pytest` suite (213 tests -- +1 `die5_points` center-anchoring test, +3 new
+`test_render.py` tests for `_correct_csm_focal_length_anisotropy`: restores per-axis scale,
+preserves sign on a flipped-axis convention, no-ops when `fu==fv`) and `trntest-lint --all`
+(format/check/mypy/notebook sync/notebook warnings) clean; `image_generation.ipynb` regenerated
+end-to-end via `scripts/run_notebook.sh` against the corrected camera (forced via
+`TrnTestDataSet.truncate()` on the demo's own default candidate's `hillshade`, since it was already
+cached from a prior run and wouldn't otherwise regenerate), three times across this phase -- Phase
+5A's tie-point overlay and Phase 5B's blink overlay both visually confirmed correct in the final run,
+now via the restored CSM path. Held for the user's own review in Jupyter Lab before committing, per
+this repo's standing practice for notebook-output changes.
+
+**Session ended here, mid-investigation, for token-budget reasons -- one more real finding, not yet
+resolved.** The user pushed back on the "~0.27%" CSM-vs-pinhole agreement number above ("that sounds
+high"), rightly: a deterministic-control test (re-running `-t pinhole` against itself: bit-identical,
+zero noise floor) proved any CSM-vs-pinhole disagreement is real; a precise ground-point-placement
+check (not texture correlation, which gave noisy/inconsistent results) found a small but genuine
+**constant** positional offset (~1-8px, not growing with distance -- ruling out a residual
+scale/anisotropy error) between the corrected-CSM and pinhole reprojections; a symmetric-camera
+(`fu=fv`) control confirmed this offset is specific to the asymmetric-FOV correction, not a
+pre-existing CSM-vs-Pinhole quirk. The exact mechanism remains unexplained -- the derived correction
+model predicts zero residual on the untouched sample/column axis, but empirically there's still ~8px
+there. Root-causing further would need `usgscsm`'s own source (only the compiled `.so` is present in
+this Docker image). Left the code in its current state (CSM path, `_correct_csm_focal_length_anisotropy`
+live in `render.run_sat_sim`) rather than reverting to the proven-exact `-t pinhole` workaround,
+since it's a real, substantial, live-validated improvement over the original bug regardless, and
+reverting without being asked would have been a unilateral call on a question the user was actively
+weighing. See `docs/reproject-fov-investigation.md`'s "OPEN: an unexplained small residual" section
+(added this session) for exact repro numbers and the full diagnostic trail, so whoever picks this up
+doesn't have to re-derive any of it.

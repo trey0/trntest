@@ -89,34 +89,43 @@ def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: Trntes
             str(csm_json),
         ]
     )
-
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)
 
 
 def run_mapproject_image(
     image_path: Path,
-    csm_json_path: Path,
+    camera_path: Path,
     output_path: Path,
     dem_ortho_result: DemOrthoResult,
     config: TrntestConfig | None = None,
+    camera_type: str = "csm",
 ) -> Path:
-    """Reproject any image back onto the map via its own CSM/ISD sidecar and ASP `mapproject`'s
+    """Reproject any image back onto the map via its own camera model and ASP `mapproject`'s
     `--ref-map` -- see `run_mapproject`'s docstring for the full rationale. The shared low-level
-    worker both `run_mapproject` (the synthetic render's own `cam_gen` sidecar) and
-    `isis_wac.run_mapproject` (the real, ISIS-processed WAC cube's ALE-derived ISD) use, so both
-    land on the exact same DEM grid with no separate alignment step."""
+    worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM sidecar, dead code -- no
+    live caller, see below) and `isis_wac.run_mapproject` (the real, ISIS-processed WAC cube's
+    ALE-derived ISD, also dead code) use, so both land on the exact same DEM grid with no separate
+    alignment step. Kept generic (`camera_type`) rather than hardcoded, as good hygiene, even though
+    its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`) always uses the default
+    `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV (`camera.solve_corrected_fov`)
+    once made `cam_gen`'s CSM Frame conversion measurably wrong here (silently averaging `fu`/`fv`
+    into one isotropic `m_focalLength`, a real ~5% reprojected-footprint error), which this parameter
+    let the caller work around (`camera_type="pinhole"`, reading `camera.tsai_path` directly). Now
+    that `solve_corrected_fov` is isotropic again (`fu == fv` always), CSM and Pinhole reprojections
+    of the same camera agree by construction, so the parameter is no longer load-bearing for
+    correctness -- just kept generic. See docs/reproject-fov-investigation.md for the full history."""
     config = config or load_config()
     run_quiet(
         [
             "mapproject",
             str(dem_ortho_result.dem),
             str(image_path),
-            str(csm_json_path),
+            str(camera_path),
             str(output_path),
             "--ref-map",
             str(dem_ortho_result.dem),
             "-t",
-            "csm",
+            camera_type,
         ]
     )
     return output_path

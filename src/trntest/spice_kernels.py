@@ -82,7 +82,7 @@ _loaded_date_ranged_kernels: set[KernelRef] = set()
 # pool: empirically, spice.furnsh() does not dedupe repeat loads of the same file across separate
 # calls -- each call consumes a fresh slot in SPICE's fixed-size KEEPER table (SPICE(NOMOREROOM) once
 # ~5300 accumulate), so a long-running process re-furnishing ALWAYS_KERNELS on every call (e.g. once
-# per sampled epoch in illumination.find_ascending_node_crossings) exhausts it. Tracking loaded state
+# per sampled epoch in illumination.find_node_crossings) exhausts it. Tracking loaded state
 # ourselves and only calling furnsh() for genuinely-new paths avoids that.
 _loaded_kernels: set[str] = set()
 
@@ -200,7 +200,7 @@ def select_isis_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> li
     EDR product, not an arbitrary requested epoch) -- filters the resolved kernel(s) to just the ones
     whose filename-encoded date range actually covers `target_dt`, returning `[]` if none do (e.g.
     `target_dt` falls well outside that one product's own narrow coverage window, as happens for
-    `dataset.select_dataset()`'s wide date-range searches) -- `select_kernels_for` falls back to the
+    `dataset.images_for_window()`'s multi-candidate sweeps) -- `select_kernels_for` falls back to the
     deprecated NAIF path for that case, safe per the equivalence just confirmed."""
     from trntest import isis_wac  # noqa: PLC0415 -- see docstring, avoids a circular import
 
@@ -261,14 +261,14 @@ def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) 
     Unloads any previously-furnished date-ranged (CK/SPK) kernels not needed for `target_dt` before
     furnishing the new set -- SPICE's kernel pool has a fixed-size character-value buffer that can
     fill up (SPICE(KERNELPOOLFULL)) if many distinct kernels accumulate across a long-running
-    process without ever being unloaded, e.g. `dataset.select_dataset()` evaluating hundreds of
+    process without ever being unloaded, e.g. `dataset.images_for_window()` evaluating hundreds of
     candidate images spanning several kernel date-ranges in one process. ALWAYS_KERNELS are
     unaffected -- they're the same fixed set regardless of date, so they're only furnished once:
     only paths not already in `_loaded_kernels` are actually passed to spice.furnsh(), since
     spice.furnsh() itself does NOT dedupe repeat loads of the same file across separate calls (each
     call consumes a fresh, limited KEEPER slot -- SPICE(NOMOREROOM) once ~5300 accumulate), which a
     long-running process calling this once per sampled epoch (e.g.
-    illumination.find_ascending_node_crossings) would otherwise hit quickly."""
+    illumination.find_node_crossings) would otherwise hit quickly."""
     config = config or load_config()
     kernel_refs = select_kernels_for(target_dt, config)
     always_refs = {KernelRef("naif", p) for p in ALWAYS_KERNELS}
@@ -298,7 +298,7 @@ def fetch_and_furnish(target_dt: datetime, config: TrntestConfig | None = None) 
 def furnish_spk_range(start_dt: datetime, end_dt: datetime, config: TrntestConfig | None = None) -> list[str]:
     """Furnish the union of `lrorg` trajectory SPK segments covering [start_dt, end_dt] all at once,
     left loaded (not tracked for later unloading, unlike fetch_and_furnish's per-epoch date-ranged
-    kernels). For SPICE geometry-finder searches (e.g. illumination.find_ascending_node_crossings's
+    kernels). For SPICE geometry-finder searches (e.g. illumination.find_node_crossings's
     gfposc call) that need coverage across a whole window in one call, rather than one epoch at a
     time. SPK-only (no CK) -- deliberately not using fetch_and_furnish's just-in-time
     furnish/unload pattern, since that pattern exists to bound *CK* attitude-kernel accumulation

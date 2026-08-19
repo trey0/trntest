@@ -33,6 +33,40 @@ def test_throttle_by_time_sorts_before_throttling():
     assert list(throttled["product_id"]) == ["early", "late"]
 
 
+def test_prefilter_by_catalog_metadata_keeps_only_plausible_sun_elevation():
+    # incidence 80 -> sun_elev 10 (below 15 by more than the 5deg margin -- dropped);
+    # incidence 70 -> sun_elev 20 (comfortably above -- kept); incidence 78 -> sun_elev 12 (below
+    # 15 but within the 5deg margin -- kept, a deliberate false-positive-over-false-negative choice).
+    candidates = pd.DataFrame(
+        {"product_id": ["dark", "bright", "borderline"], "incidence_angle_deg": [80.0, 70.0, 78.0]}
+    )
+    result = dataset._prefilter_by_catalog_metadata(
+        candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=None, margin_deg=5.0
+    )
+    assert list(result["product_id"]) == ["bright", "borderline"]
+
+
+def test_prefilter_by_catalog_metadata_emission_angle_is_opt_in():
+    candidates = pd.DataFrame(
+        {
+            "product_id": ["nadir", "off_nadir"],
+            "incidence_angle_deg": [70.0, 70.0],  # both pass sun elevation
+            "emission_angle_deg": [1.0, 30.0],
+        }
+    )
+    # None (default) -- emission angle not enforced, both kept.
+    no_filter = dataset._prefilter_by_catalog_metadata(
+        candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=None, margin_deg=5.0
+    )
+    assert list(no_filter["product_id"]) == ["nadir", "off_nadir"]
+
+    # Given a real cutoff, the clearly-off-nadir one (30deg, well past 15+5 margin) is dropped.
+    with_filter = dataset._prefilter_by_catalog_metadata(
+        candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=15.0, margin_deg=5.0
+    )
+    assert list(with_filter["product_id"]) == ["nadir"]
+
+
 def test_write_read_manifest_round_trip(tmp_path):
     base = datetime(2020, 1, 1, tzinfo=UTC)
     images = pd.DataFrame(

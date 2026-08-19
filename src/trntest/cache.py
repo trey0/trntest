@@ -17,13 +17,20 @@ from pathlib import Path
 
 import requests
 
-# A from-cold `dataset.select_dataset()` sweep calls `cached_get` up to ~1600 times in a plain
+# A from-cold `dataset.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
 # sequential loop with no pacing at all between requests -- confirmed (docs/history.md's Phase 36
 # follow-up) to be enough on its own, no concurrent caller needed, to trip a real server-side
 # rate limiter (~3.5 req/s sustained for ~8 minutes). This fixed floor between real requests (never
 # applied on a cache hit -- see the early return below) costs nothing in the normal, mostly-cached
 # case and only meaningfully slows down exactly the bulk-fresh-fetch case that needs slowing down.
-_REQUEST_PACING_SECONDS = 0.2
+# Raised from 0.2 to 0.5 after a real 429 (1hr ban) on the LROC EDR host, resolving one real
+# ~200-candidate orbit-sequence window (docs/history.md's dated entry) -- root cause wasn't fully
+# pinned down (the failure hit on the very first request of that run, suggesting the host may
+# already have been degraded rather than this session's own pacing being the sole cause), but a more
+# conservative floor is cheap insurance: deliberately a single, general constant (not host-specific)
+# per the same reasoning as the original 0.2 -- real usage is either warm-cache (free either way) or
+# a genuinely large batch, where the difference is an insignificant fraction of total time.
+_REQUEST_PACING_SECONDS = 0.5
 _MAX_FETCH_ATTEMPTS = 3
 # A `Retry-After` longer than this isn't worth retrying inline -- e.g. the 3600s (1hr) CloudFront
 # sent LROC's own EDR host during the same Phase 36 incident. Failing fast lets the caller decide

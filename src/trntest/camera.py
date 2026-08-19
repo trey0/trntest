@@ -4,7 +4,7 @@ approximates the FOV of that part of the real swath.
 
 `config.target_frame_index` is the START of the along-track crop; the actual pose epoch is that
 crop's own temporal midpoint (see `build_camera`). Its default (440) is only meaningful for this
-repo's original single-demo product -- the live default path, `trntest.dataset.select_dataset`/
+repo's original single-demo product -- the live default path, `trntest.dataset.images_for_window`/
 `generate_dataset`, sets it per-product instead, anchored at each product's own temporal midpoint
 and filtered by illumination there. See docs/history.md (Phase 2) for how 440 was originally chosen.
 """
@@ -87,8 +87,13 @@ class Camera:
     boresight_rotation_k: int
     slant_range_km: float
     off_nadir_deg: float
-    focal_length_px: float
+    focal_length_u_px: float
+    focal_length_v_px: float  # != focal_length_u_px -- see `solve_corrected_fov`'s docstring
+    principal_point_u_px: float
+    principal_point_v_px: float  # != image_size / 2.0 -- see `solve_corrected_fov`'s docstring
     footprint_lonlat_deg: dict[str, tuple[float, float] | None]
+    render_cross_track_km: float  # the render's own actual footprint width -- != cross_track_width_km
+    render_along_track_km: float  # once solve_corrected_fov shrinks the FOV; see that function's docstring
     cross_track_width_km: float
     km_per_frame: float
     n_frames_for_square_crop: int
@@ -217,6 +222,25 @@ def ground_chord_km(p1_km: np.ndarray, p2_km: np.ndarray) -> float:
     return float(np.linalg.norm(p1_km - p2_km))
 
 
+def footprint_width_height_km(footprint_lonlat_deg: dict, moon_radius_km: float) -> tuple[float, float]:
+    """Real ground (cross-track width, along-track height) of a 4-corner footprint
+    (`footprint_lonlat_deg`, e.g. `Camera.footprint_lonlat_deg`), each averaged over its two edges
+    -- a real ground-chord measurement of the *actual* footprint, unlike `cross_track_width_km`
+    (crop-window-derived, describes the real WAC crop's own extent, not necessarily the synthetic
+    render's -- see `solve_corrected_fov`'s docstring for why those two now genuinely differ)."""
+
+    def ground_km(name: str) -> np.ndarray:
+        lon, lat = footprint_lonlat_deg[name]
+        return np.array(spice.latrec(moon_radius_km, np.radians(lon), np.radians(lat)))
+
+    top_left, top_right, bottom_left, bottom_right = (
+        ground_km(name) for name in ("top_left", "top_right", "bottom_left", "bottom_right")
+    )
+    width_km = (ground_chord_km(top_left, top_right) + ground_chord_km(bottom_left, bottom_right)) / 2.0
+    height_km = (ground_chord_km(top_left, bottom_left) + ground_chord_km(top_right, bottom_right)) / 2.0
+    return width_km, height_km
+
+
 def boresight_ground_point_km(c_km: np.ndarray, r_cam_to_me: np.ndarray) -> np.ndarray:
     boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
     t = ray_sphere_intersect_range(c_km, boresight_me)
@@ -291,9 +315,15 @@ def pixel_ray_cam(px: float, py: float, fu: float, fv: float, cu: float, cv: flo
 def footprint_lonlat(
     c_km: np.ndarray, r_cam_to_me: np.ndarray, fu, fv, cu, cv, size: int
 ) -> dict[str, tuple[float, float] | None]:
-    """Ground lon/lat (deg) of the image's 4 corners + center, via sphere intersection."""
+    """Ground lon/lat (deg) of the image's 4 corners + center, via sphere intersection. "center" is
+    the boresight ray `(cu, cv)`, not necessarily the geometric image-center pixel `(size/2, size/2)`
+    -- the two coincide whenever `cu=cv=size/2` (true everywhere in this codebase before
+    `solve_corrected_fov`), but diverge once the principal point is offset from center; every
+    consumer of `footprint_lonlat_deg["center"]` (AOI centering, sun-angle lookups, display
+    rotation) wants the real pose target, not literal image-center pixel, so this must track `(cu,
+    cv)`, not a hardcoded `(size/2, size/2)`."""
     pts = {
-        "center": (size / 2, size / 2),
+        "center": (cu, cv),
         "top_left": (0, 0),
         "top_right": (size, 0),
         "bottom_left": (0, size),
@@ -311,6 +341,119 @@ def footprint_lonlat(
         radius, lon, lat = spice.reclat(ground)
         out[name] = (np.degrees(lon), np.degrees(lat))
     return out
+
+
+# Empirically tuned shrink factors for `solve_corrected_fov` below -- tuned on one real image
+# (M1327210646CE), then cross-validated unchanged against 3 more spanning 38.5N to -67.5S, all
+# reaching ~100% valid-pixel coverage. Deliberately conservative past an exact geometric fit, per
+# the project owner's own call: real terrain (vs. this ray-trace's idealized sphere) varies actual
+# coverage some, so a little arbitrary margin traded for reliability is fine, not something to solve
+# away with a more exact model. See docs/reproject-fov-investigation.md for the full derivation.
+FOV_CROSS_TRACK_SCALE = 0.93  # shrinks the cross-track half-angle -- closes a real corner-coupling overshoot
+FOV_ALONG_TRACK_MARGIN = 0.93  # extra shrink on the along-track solve targets -- terrain-variation safety margin
+
+
+def _corner_ground_km(
+    c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_u: float, half_angle_v: float, sign_u: float, sign_v: float
+) -> np.ndarray:
+    """Real ground point of an image corner ray -- cross-track and along-track angular offsets
+    applied together (matching `pixel_ray_cam`'s own ray formula), not solved independently per
+    axis -- see `solve_corrected_fov`'s docstring for why that distinction is the actual root cause
+    this function's caller works around."""
+    direction_cam = np.array([sign_u * np.tan(half_angle_u), sign_v * np.tan(half_angle_v), 1.0])
+    direction_cam = direction_cam / np.linalg.norm(direction_cam)
+    direction_me = r_cam_to_me @ direction_cam
+    t = ray_sphere_intersect_range(c_km, direction_me)
+    assert t is not None, "corner FOV ray does not intersect the Moon"
+    return c_km + t * direction_me
+
+
+def solve_corrected_fov(
+    c_km: np.ndarray,
+    r_cam_to_me: np.ndarray,
+    along_track_axis_me: np.ndarray,
+    cross_track_axis_me: np.ndarray,
+    crop_footprint_lonlat: dict,
+    config: TrntestConfig,
+) -> tuple[float, float, float, float]:
+    """Solve a corrected, isotropic `(f, f, cu, cv)` whose rendered FOV stays inside the real WAC
+    crop's own footprint (`crop_footprint_lonlat`, `tie_points.crop_footprint_corners_for_camera` --
+    real ISIS `campt` ground truth, not a SPICE approximation), fixing a real bug where the naive
+    symmetric `fu=fv` FOV overshoots the real crop -- confirmed two coupled causes: (1) the
+    along-track FOV was calibrated to a flat, non-perspective target
+    (`n_frames_for_square_crop * km_per_frame`) but rendered through a real perspective
+    (ray-sphere-intersection) projection; (2) even after fixing that alone, the far corners stayed
+    elongated *cross-track* too, because a corner ray combines both angular offsets at once, and the
+    more oblique that combined angle is, the farther out *both* ground components land.
+
+    The cross-track and along-track half-angles are still solved independently (`FOV_CROSS_TRACK_SCALE`
+    shrinks the cross-track one; the along-track pair is solved by ray-tracing the actual corner,
+    `_corner_ground_km`, not a per-axis approximation), each producing its own candidate focal
+    length -- but **the two are then collapsed to a single shared, isotropic `f = max(...)` of the
+    two**, applied to both axes, rather than kept as separate `fu`/`fv` (an earlier version of this
+    function did exactly that). Using the larger (narrower-FOV, more conservative) of the two only
+    tightens whichever axis wasn't already the binding constraint -- it can't reopen the coverage
+    gap on either axis, since each was already independently solved to just fit. `cv` is re-derived
+    against this shared `f` (not the original along-track-only value) to keep the near edge exactly
+    on its target. `cu` is left untouched (`image_size / 2.0`).
+
+    **Why isotropic, given a real anisotropic (`fu`!=`fv`) fix once existed and worked**: an
+    anisotropic pinhole solved the FOV-fit problem with a slightly larger footprint (the two
+    independently-solved values are both used, not just the larger one), but converting it to a CSM
+    Frame model-state JSON (`cam_gen`, `render.py`) turned out to cost three real bugs along the way
+    (`cam_gen` silently averaging `fu`/`fv` into one isotropic `m_focalLength`; `tie_points.
+    die5_points`'s bbox-midpoint anchoring breaking once the footprint became asymmetric; and a
+    small, never-fully-explained ~1-8px constant residual between `mapproject -t csm` and
+    `-t pinhole` that persisted even after the `m_focalLength` bug was fixed, confirmed live to be
+    invariant to how the anisotropy is encoded across the CSM state's fields -- i.e. not our
+    encoding choice, some deeper `usgscsm` quirk with anisotropic Frame models with no available
+    source to chase further). Given the anisotropy was only ever a nice-to-have (more of the crop's
+    real margin used), not a requirement, and every downstream CSM/ISIS consumer of this data
+    defaults to expecting an isotropic pinhole, reverting to isotropic trades a few percent of
+    cross-track footprint (confirmed live: ~4-6% smaller cross-track extent, ~100% coverage
+    unaffected -- along-track was already the binding constraint on every real candidate tested) for
+    dropping all three bug classes at the source. See docs/reproject-fov-investigation.md for the
+    full history, including the anisotropic fix's own derivation and the residual investigation."""
+    cu = config.image_size / 2.0
+    boresight_ground_km = boresight_ground_point_km(c_km, r_cam_to_me)
+
+    def decompose_km(ground_km: np.ndarray) -> tuple[float, float]:
+        rel = ground_km - boresight_ground_km
+        return float(np.dot(rel, cross_track_axis_me)), float(np.dot(rel, along_track_axis_me))
+
+    along_track_km = {}
+    for name, lonlat in crop_footprint_lonlat.items():
+        if name == "center" or lonlat is None:
+            continue
+        lon, lat = lonlat
+        ground_km = np.array(spice.latrec(config.moon_radius_km, np.radians(lon), np.radians(lat)))
+        _, along_track_km[name] = decompose_km(ground_km)
+    target_near_km = -np.mean([v for v in along_track_km.values() if v < 0])
+    target_far_km = np.mean([v for v in along_track_km.values() if v >= 0])
+
+    def solve_half_angle_v(half_angle_u: float, target_km: float, sign_v: float, hi: float = np.radians(45.0)) -> float:
+        """Bisect for the along-track half-angle (radians) whose corner ray (at the given, fixed
+        cross-track half-angle) lands its along-track component at `target_km` (a positive
+        magnitude; `sign_v` picks near/far) -- monotonic over this range."""
+        lo = 1e-4
+        for _ in range(60):
+            mid = (lo + hi) / 2.0
+            _, at = decompose_km(_corner_ground_km(c_km, r_cam_to_me, half_angle_u, mid, 1.0, sign_v))
+            magnitude = sign_v * at
+            lo, hi = (mid, hi) if magnitude < target_km else (lo, mid)
+        return (lo + hi) / 2.0
+
+    original_half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
+    half_angle_u = original_half_angle_rad * FOV_CROSS_TRACK_SCALE
+    cross_track_f = cu / np.tan(half_angle_u)
+
+    near_half_angle_rad = solve_half_angle_v(half_angle_u, target_near_km * FOV_ALONG_TRACK_MARGIN, sign_v=-1.0)
+    far_half_angle_rad = solve_half_angle_v(half_angle_u, target_far_km * FOV_ALONG_TRACK_MARGIN, sign_v=1.0)
+    along_track_f = config.image_size / (np.tan(near_half_angle_rad) + np.tan(far_half_angle_rad))
+
+    f = max(cross_track_f, along_track_f)
+    cv = f * np.tan(near_half_angle_rad)
+    return f, f, cu, cv
 
 
 def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
@@ -356,7 +499,16 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     re-aims the boresight at that real target via `look_at_rotation`. A real, meaningful cost
     (~10-20s, the `lrowaccal`+`framestitch` steps `spice_kernels.fetch_and_furnish`'s default kernel
     resolution doesn't already pay for) traded for actual accuracy -- see the dated entry for the
-    full investigation and why a hand-tuned constant-tilt "fix" doesn't work."""
+    full investigation and why a hand-tuned constant-tilt "fix" doesn't work.
+
+    **FOV correction**: `solve_corrected_fov` (see its own docstring) then shrinks the naive
+    symmetric `fu=fv` FOV so the render stays inside the real WAC crop's own footprint -- reuses the
+    same stitched cube's real crop (`tie_points.crop_footprint_corners_for_camera`, one more cheap,
+    idempotent ISIS `crop` call) as its ground truth. Applied here, not only for the not-yet-built
+    `reproject` product type, so `hillshade` and a future `reproject` share byte-identical
+    `(fu, fv, cu, cv)` -- deliberate, for pixel-grid-identical SSIM/diff-style comparison between
+    them later; `crop` (the real image) is unaffected, naturally larger, and doesn't need FOV
+    parity with the other two. See docs/reproject-fov-investigation.md."""
     config = config or load_config()
     frame_timing = fetch_frame_timing(config)
     spice_kernels.fetch_and_furnish(frame_timing.start_time, config)
@@ -397,19 +549,20 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     along_track_direction_me = r_cam_to_me_pretwist[:, 0]
     r_cam_to_me = r_cam_to_me_pretwist @ rotation_about_boresight(k)
 
-    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
-    fu = fv = (config.image_size / 2.0) / np.tan(half_angle_rad)
-    cu = cv = config.image_size / 2.0
-
     if output_tsai_path is None:
         output_tsai_path = config.output_dir / f"camera_frame{config.target_frame_index}.tsai"
     output_tsai_path = Path(output_tsai_path)
     output_tsai_path.parent.mkdir(parents=True, exist_ok=True)
-    write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
 
-    footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, config.image_size)
-
-    return Camera(
+    # Provisional camera, naive symmetric FOV -- only its crop-window fields
+    # (reverse_crop_along_track/center_frame_index/n_frames_for_square_crop) are used below, all
+    # already known at this point; its own fu/fv/cu/cv are provisional, replaced by
+    # solve_corrected_fov's result right after -- see that function's docstring for why the naive
+    # symmetric FOV overshoots the real crop.
+    half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
+    provisional_fu = (config.image_size / 2.0) / np.tan(half_angle_rad)
+    provisional_cu = config.image_size / 2.0
+    provisional_camera = Camera(
         et=et,
         center_frame_index=center_frame_index,
         camera_center_moon_me_m=c_meters.tolist(),
@@ -418,10 +571,38 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
         boresight_rotation_k=k,
         slant_range_km=slant_range_km,
         off_nadir_deg=off_nadir_deg,
-        focal_length_px=fu,
-        footprint_lonlat_deg=footprint,
+        focal_length_u_px=provisional_fu,
+        focal_length_v_px=provisional_fu,
+        principal_point_u_px=provisional_cu,
+        principal_point_v_px=provisional_cu,
+        footprint_lonlat_deg={},
+        render_cross_track_km=crop_info["cross_track_width_km"],  # provisional, replaced below
+        render_along_track_km=crop_info["cross_track_width_km"],
         cross_track_width_km=crop_info["cross_track_width_km"],
         km_per_frame=crop_info["km_per_frame"],
         n_frames_for_square_crop=crop_info["n_frames_for_square_crop"],
         tsai_path=output_tsai_path,
+    )
+
+    from trntest import tie_points  # noqa: PLC0415 -- circular otherwise (tie_points imports Camera)
+
+    crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, provisional_camera, config)
+    cross_track_axis_me = r_cam_to_me[:, 0]
+    fu, fv, cu, cv = solve_corrected_fov(
+        c_meters / 1000.0, r_cam_to_me, along_track_direction_me, cross_track_axis_me, crop_footprint, config
+    )
+
+    write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
+    footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, config.image_size)
+    render_cross_track_km, render_along_track_km = footprint_width_height_km(footprint, config.moon_radius_km)
+
+    return dataclasses.replace(
+        provisional_camera,
+        focal_length_u_px=fu,
+        focal_length_v_px=fv,
+        principal_point_u_px=cu,
+        principal_point_v_px=cv,
+        footprint_lonlat_deg=footprint,
+        render_cross_track_km=render_cross_track_km,
+        render_along_track_km=render_along_track_km,
     )

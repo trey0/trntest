@@ -76,6 +76,41 @@ def _wrap_deg(angle_deg: float) -> float:
     return ((angle_deg + 180.0) % 360.0) - 180.0
 
 
+def circular_distance_deg(a_deg: float, b_deg: float) -> float:
+    """Shortest angular distance (degrees, always >= 0) between two longitudes/angles, accounting
+    for wraparound -- e.g. -179 and +179 are 2 degrees apart, not 358."""
+    return abs(_wrap_deg(a_deg - b_deg))
+
+
+def unwrap_relative_deg(reference_deg: float, angle_deg: float) -> float:
+    """`angle_deg`, shifted by a multiple of 360 so it's within 180 degrees of `reference_deg` --
+    unlike `circular_mean_deg`/`circular_distance_deg`, the result is NOT wrapped back into
+    (-180, 180]. For drawing a 2-point line between two longitudes without it spuriously crossing
+    the whole plot at a +/-180 wraparound: draw from (reference_deg, ...) to
+    (unwrap_relative_deg(reference_deg, angle_deg), ...) in this unwrapped coordinate, then clip/
+    split that segment wherever it crosses +/-180."""
+    return reference_deg + _wrap_deg(angle_deg - reference_deg)
+
+
+def circular_mean_deg(a_deg: float, b_deg: float) -> float:
+    """Circular mean of two angles (degrees), wrapped to (-180, 180] -- e.g. -170 and +160 average
+    to +175, not the -5 a plain arithmetic mean would give. Picks the wraparound branch where the
+    two inputs are within 180 degrees of each other (`_wrap_deg(b_deg - a_deg)`) before averaging,
+    rather than averaging their raw values directly."""
+    return _wrap_deg(a_deg + _wrap_deg(b_deg - a_deg) / 2.0)
+
+
+def hour_angle_deg(longitude_deg: float, sub_solar_longitude_deg: float) -> float:
+    """Solar hour angle (degrees) at a MOON_ME `longitude_deg`, wrapped to (-180, 180]: 0 = local
+    solar noon (longitude_deg == sub_solar_longitude_deg), negative = morning (sun still to the
+    east, hasn't reached this meridian yet), positive = afternoon (sun already swept past, to the
+    west) -- +/-90 is the "sunrise"/"sunset" convention this project uses (exact only at the
+    sub-solar latitude on an equinox; a convenient approximation elsewhere, same spirit as
+    `terminator_offset_deg` below). Sign confirmed against real SPICE data, not just derived: a
+    point just past the visible morning terminator reports an hour angle just past -90."""
+    return _wrap_deg(longitude_deg - sub_solar_longitude_deg)
+
+
 def terminator_offset_deg(longitude_deg: float, sub_solar_longitude_deg: float) -> float:
     """Angular distance (degrees) from `longitude_deg` to the NEARER of the two terminator
     meridians (`sub_solar_longitude_deg` +/- 90) -- this is the "d" in the ">=30 deg off the
@@ -84,8 +119,7 @@ def terminator_offset_deg(longitude_deg: float, sub_solar_longitude_deg: float) 
     antipodal meridian, 180 deg away, is well lit instead) -- matching "either pass will have
     favorable illumination" for an ascending/descending node pair.
     """
-    offset_from_subsolar = _wrap_deg(longitude_deg - sub_solar_longitude_deg)
-    return abs(abs(offset_from_subsolar) - 90.0)
+    return abs(abs(hour_angle_deg(longitude_deg, sub_solar_longitude_deg)) - 90.0)
 
 
 def et_to_datetime(et: float) -> datetime:
@@ -105,17 +139,32 @@ _LRO_ORBITAL_PERIOD_S = 113.0 * 60.0  # approximate -- used only to size gfposc'
 # workspace with margin, not for any precision-sensitive computation.
 
 
-def find_ascending_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -> list[float]:
-    """Ascending-node (latitude crossing from south to north) epochs in [start_et, end_et], found via
-    SPICE's gfposc geometry-finder (LRO's MOON_ME-frame latitude crossing zero) -- SPICE's own
-    compiled adaptive root-finder over the whole window in one call, rather than a hand-rolled
-    sample-and-bisect loop making thousands of Python<->SPICE round trips. Cross-checked against the
-    prior hand-rolled implementation: identical crossing counts, epochs agreeing to within ~0.5s
-    (well under the old implementation's own 1s bisection tolerance).
+def find_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -> list[tuple[float, bool]]:
+    """All latitude=0 (node) crossing epochs in [start_et, end_et], as (et, is_ascending) pairs
+    sorted by et -- found via SPICE's gfposc geometry-finder (LRO's MOON_ME-frame latitude crossing
+    zero), SPICE's own compiled adaptive root-finder over the whole window in one call, rather than
+    a hand-rolled sample-and-bisect loop making thousands of Python<->SPICE round trips. Cross-
+    checked against a prior hand-rolled implementation: identical crossing counts, epochs agreeing
+    to within ~0.5s (well under that implementation's own 1s bisection tolerance).
 
     Needs SPK coverage for the whole window furnished at once (gfposc searches the whole confinement
-    window in a single call) -- spice_kernels.furnish_spk_range handles that; see its docstring for
-    why this differs from fetch_and_furnish's per-epoch just-in-time pattern used elsewhere."""
+    window in a single call) -- spice_kernels.furnish_spk_range does this; see its docstring for why
+    this differs from fetch_and_furnish's per-epoch just-in-time pattern used elsewhere. LSK/PCK/frame
+    kernels (spice_kernels.ALWAYS_KERNELS) are assumed already furnished by the caller, same
+    convention `utc_to_et` documents -- deliberately does NOT call `fetch_and_furnish` per crossing:
+    the classification below (`spacecraft_lonlat_deg`) is pure position (`spkezr`), no pointing/CK
+    needed at all, so doing that per-crossing would (and, before this was found, actually did) both
+    cost real overhead for nothing (profiled: ~70% of this function's own runtime) AND risk a real
+    crash across a wide multi-month sweep -- `fetch_and_furnish`'s default `wac_ck_source=
+    "isis_resolved"` CK selection is cached per a single, fixed `config.edr_product`, and for a date
+    far from that product's own narrow window its filename-encoded date range can nominally overlap
+    the query epoch while the file's *actual* `ckcov` coverage doesn't, tripping `fetch_and_furnish`'s
+    own trust-but-verify check. `dataset.py`'s per-candidate sweep already avoids this the other way
+    (forcing `wac_ck_source="naif_metakernel"`) precisely because `isis_resolved` isn't meant for
+    sweeping many distinct dates -- not needing CK at all here sidesteps the question entirely.
+    Exposes both node types (not just ascending) so callers can pair each orbit's two nodes together
+    -- e.g. notebooks/select_datasets.py's per-orbit "illuminated node" statistics, which need the
+    descending node too to pick whichever of the pair has the higher sun elevation."""
     spice_kernels.furnish_spk_range(et_to_datetime(start_et), et_to_datetime(end_et), config)
 
     cnfine = spice.cell_double(2)
@@ -141,18 +190,7 @@ def find_ascending_node_crossings(start_et: float, end_et: float, config: Trntes
     all_crossings = [spice.wnfetd(result, i)[0] for i in range(spice.wncard(result))]
 
     def latitude_at(et: float) -> float:
-        spice_kernels.fetch_and_furnish(et_to_datetime(et), config)
         return spacecraft_lonlat_deg(et)[1]
 
-    ascending = []
     eps_s = 5.0
-    for et in all_crossings:
-        if latitude_at(et - eps_s) < 0 < latitude_at(et + eps_s):
-            ascending.append(et)
-    return ascending
-
-
-def node_terminator_offset_deg(et: float) -> float:
-    node_lon, _ = spacecraft_lonlat_deg(et)
-    sub_solar_lon, _ = sub_solar_lonlat_deg(et)
-    return terminator_offset_deg(node_lon, sub_solar_lon)
+    return [(et, latitude_at(et - eps_s) < 0 < latitude_at(et + eps_s)) for et in all_crossings]

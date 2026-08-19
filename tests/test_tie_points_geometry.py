@@ -23,12 +23,24 @@ def test_intersect_bbox_empty_raises():
 
 def test_die5_points_layout_and_margin():
     bbox = (0.0, 10.0, 0.0, 10.0)
-    points = tie_points.die5_points(bbox, margin_frac=0.1)
+    points = tie_points.die5_points(bbox, center=(5.0, 5.0), margin_frac=0.1)
 
     assert set(points) == {"top_left", "top_right", "center", "bottom_left", "bottom_right"}
     assert points["center"] == (5.0, 5.0)
-    assert points["top_left"] == (1.0, 9.0)
-    assert points["bottom_right"] == (9.0, 1.0)
+    assert points["top_left"] == (0.5, 9.5)
+    assert points["bottom_right"] == (9.5, 0.5)
+
+
+def test_die5_points_anchors_on_center_not_bbox_midpoint():
+    """A bbox whose own naive midpoint would differ from the true `center` -- every point should
+    still be placed relative to `center`, not `(lon_min+lon_max)/2, (lat_min+lat_max)/2` -- the real
+    bug this anchoring fixed (see `die5_points`'s own docstring)."""
+    bbox = (0.0, 10.0, 0.0, 20.0)  # naive midpoint would be (5.0, 10.0)
+    points = tie_points.die5_points(bbox, center=(2.0, 4.0), margin_frac=0.0)
+
+    assert points["center"] == (2.0, 4.0)
+    assert points["top_left"] == (0.0, 20.0)
+    assert points["bottom_right"] == (10.0, 0.0)
 
 
 def test_inscribed_bbox_within_square_returns_same_square():
@@ -109,8 +121,13 @@ def _fake_camera(n_frames_for_square_crop: int, reverse: bool) -> Camera:
         boresight_rotation_k=3 if reverse else 1,
         slant_range_km=100.0,
         off_nadir_deg=5.0,
-        focal_length_px=700.0,
+        focal_length_u_px=700.0,
+        focal_length_v_px=700.0,
+        principal_point_u_px=512.0,
+        principal_point_v_px=512.0,
         footprint_lonlat_deg={},
+        render_cross_track_km=140.0,
+        render_along_track_km=140.0,
         cross_track_width_km=140.0,
         km_per_frame=0.2,
         n_frames_for_square_crop=n_frames_for_square_crop,

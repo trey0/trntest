@@ -304,15 +304,31 @@ def intersect_bbox(a: tuple, b: tuple) -> tuple:
     return lon_min, lon_max, lat_min, lat_max
 
 
-def die5_points(bbox: tuple, margin_frac: float = 0.1) -> dict:
+def die5_points(bbox: tuple, center: tuple, margin_frac: float = 0.1) -> dict:
+    """5 real ground points (die's-5 pattern), each placed as a `margin_frac`-shrunk offset from
+    `center` towards its own corner of `bbox` (`lon_min, lon_max, lat_min, lat_max`) -- not `bbox`'s
+    own naive `(lon_min+lon_max)/2` midpoint, which can drift measurably away from `center` once the
+    footprint `bbox` was inscribed within is asymmetric around it. Confirmed live: a bbox-midpoint
+    "center" point fell entirely outside the real WAC crop's own pushframe FOV ("no surface
+    intersection") once `camera.solve_corrected_fov`'s corrected FOV made the synthetic footprint's
+    own inscribed box meaningfully off-center from its true shared boresight -- the 4 corner points,
+    similarly unanchored to the true center, also failed (5 of 5 tie points resolving on the demo's
+    own default candidate dropped to 1 of 5). `center` must already be inside `bbox` -- true for
+    `select_tie_points`'s own call (`synthetic_center`/`crop_corners["center"]` are the same real,
+    shared point `inscribed_bbox` was centered on when building `bbox` in the first place), each of
+    the 4 corner offsets scales that corner's own reach from `center` to `bbox`'s edge, not a single
+    shared box half-width, so a footprint that's asymmetric relative to `center` (near/far corners at
+    different distances, see `solve_corrected_fov`'s docstring) still keeps every point safely inside
+    `bbox` on its own side."""
     lon_min, lon_max, lat_min, lat_max = bbox
-    w, h = lon_max - lon_min, lat_max - lat_min
-    lon_lo, lon_hi = lon_min + margin_frac * w, lon_max - margin_frac * w
-    lat_lo, lat_hi = lat_min + margin_frac * h, lat_max - margin_frac * h
+    cx, cy = center
+    keep = 1.0 - margin_frac
+    lon_lo, lon_hi = cx - keep * (cx - lon_min), cx + keep * (lon_max - cx)
+    lat_lo, lat_hi = cy - keep * (cy - lat_min), cy + keep * (lat_max - cy)
     return {
         "top_left": (lon_lo, lat_hi),
         "top_right": (lon_hi, lat_hi),
-        "center": ((lon_min + lon_max) / 2.0, (lat_min + lat_max) / 2.0),
+        "center": (cx, cy),
         "bottom_left": (lon_lo, lat_lo),
         "bottom_right": (lon_hi, lat_lo),
     }
@@ -335,8 +351,8 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
     # build_camera() wrote into the .tsai -- not a fresh, unrotated camera_pose_moon_me() call.
     c_km = np.array(camera.camera_center_moon_me_m) / 1000.0
     r_cam_to_me = np.array(camera.r_cam_to_me)
-    fu = fv = camera.focal_length_px
-    cu = cv = config.image_size / 2.0
+    fu, fv = camera.focal_length_u_px, camera.focal_length_v_px
+    cu, cv = camera.principal_point_u_px, camera.principal_point_v_px
 
     synthetic_corners = camera.footprint_lonlat_deg
     crop_corners = crop_footprint_corners_for_camera(frame_timing, camera, config)
@@ -347,7 +363,7 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
     inscribed_crop = inscribed_bbox(crop_corners, crop_corners["center"])
     shared_bbox = intersect_bbox(inscribed_synthetic, inscribed_crop)
 
-    points = die5_points(shared_bbox)
+    points = die5_points(shared_bbox, synthetic_center)
 
     results = {}
     for name, (lon, lat) in points.items():

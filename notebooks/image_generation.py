@@ -17,8 +17,8 @@
 # # SPICE-posed synthetic lunar satellite imagery
 #
 # Generate two candidate images that could stand in for real spacecraft imagery in
-# terrain-relative navigation (TRN) testing, for a real LROC WAC image selected ahead of time by
-# `data_set_selection.ipynb`: a synthetic 256x256 render from real Lunaserv WMS DEM/imagery via
+# terrain-relative navigation (TRN) testing, for a real LROC WAC image selected ahead of time (see
+# `dataset_manifest.csv` below): a synthetic 256x256 render from real Lunaserv WMS DEM/imagery via
 # NASA's Ames Stereo Pipeline `sat_sim` (Phase 5), and the same real footprint's actual WAC image
 # processed through ISIS3's own EDR-to-calibrated-cube pipeline (`isis_wac.py`, Phase 6). Both are
 # posed using the **real LRO spacecraft trajectory** (NAIF SPICE kernels) at the timestamp of that
@@ -37,10 +37,11 @@
 # duplicating its logic -- each cell is close to a one-line call into the package.
 #
 # **Which image**: this notebook reads `dataset_manifest.csv`, a small file checked into this
-# repo alongside this notebook, produced by `data_set_selection.ipynb`'s last cell (that notebook
-# also picked/prints the same `edr_product` id below -- see it for the catalog search parameters
-# used). This notebook has no runtime dependency on `data_set_selection.ipynb` itself -- to render
-# a different real image, rerun that notebook and commit its updated `dataset_manifest.csv`.
+# repo alongside this notebook -- a frozen, real catalog-driven selection result (the notebook that
+# used to regenerate it, `data_set_selection.ipynb`, was later removed once nothing else depended
+# on re-running it; see `../docs/history.md`'s dated entry). To render a different real image,
+# either hand-edit this CSV or produce a new one via `dataset.images_for_window`/`dataset_selection.
+# resolve_orbit_sequence` and `trntest.write_manifest`.
 
 # %%
 import dataclasses
@@ -50,9 +51,7 @@ import trntest
 from trntest import craters, isis_wac, plotting, tie_points
 
 images = trntest.read_manifest("dataset_manifest.csv")
-print(
-    f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv, see data_set_selection.ipynb)"
-)
+print(f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv)")
 
 session = trntest.Session()
 
@@ -248,7 +247,7 @@ _ = plotting.plot_isis_comparison(
 # %% [markdown]
 # ## Summary
 #
-# - Rendered a real, illuminated LROC WAC EDR picked by `data_set_selection.ipynb`'s catalog-driven, multi-orbit dataset search (`trntest.dataset.select_dataset`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
+# - Rendered a real, illuminated LROC WAC EDR picked ahead of time by a catalog-driven, multi-orbit dataset search (`trntest.dataset.images_for_window`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
 # - Built a `.tsai` Pinhole camera from that pose and rendered a synthetic 256x256 image with ASP's `sat_sim`, fed by real DEM/imagery pulled live from Lunaserv WMS for the camera's own computed ground footprint (`trntest.TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` -- see `docs/dataset-plan.md`). Produced a CSM/"ISD" JSON sidecar for it (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
 # - Validated the synthetic render's geometry against the hillshade-based basemap two ways (Phase 5): a raw, north-up-rotated quality check (5A), and a true pixel-for-pixel geo-registered overlay via `mapproject` through the render's own CSM sidecar (5B).
 # - Processed the same real footprint's WAC EDR through ISIS3's own pipeline (`isis_wac.run_pipeline`) -- a genuine camera-model-based real-WAC product (EDR fetch through calibration and framelet interleaving) -- cropped it to the real footprint being compared (`isis_wac.crop_for_camera`), and validated that single crop's geometry against the same basemap the same two ways (Phase 6): a raw quality check (6A), and a `cam2map` overlay through ISIS's own native Pushframe camera model (6B) -- not ASP's `mapproject`/CSM, after finding a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors.

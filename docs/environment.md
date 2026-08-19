@@ -110,11 +110,11 @@ automatically.
   these additive/localized (a new dated `history.md` entry, a small targeted edit elsewhere) rather
   than restructuring, so conflicts stay small and mergeable — resolving them is expected, not a sign
   something went wrong.
-- **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Re-running
-  `data_set_selection.py` and committing its output changes which real image *every* subsequent
-  `image_generation.py` run renders, for every agent and the user, not just yours. Fine to run
-  read-only (e.g. while warming cache) without committing; don't commit a changed manifest unless
-  you specifically mean to change the demo's target image.
+- **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Frozen since
+  the notebook that used to regenerate it was removed (see `docs/history.md`'s dated entry) — it
+  determines which real image *every* `image_generation.py` run renders, for every agent and the
+  user, not just yours. Don't commit a changed manifest unless you specifically mean to change the
+  demo's target image.
 - **If a merge conflict lands in a `.ipynb`, don't try to resolve it in the `.ipynb` itself** —
   its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the real source of
   truth), then regenerate the `.ipynb` from scratch with `scripts/run_notebook.sh
@@ -141,6 +141,15 @@ automatically.
   ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
+- **`isis_wac.run_isd_generate`'s own `-o` write into `scratch/isis_wac/<product>/` is also not
+  concurrency-safe** — same class of issue as the GLD100 race above (a plain overwrite, no
+  uniquely-named-temp-file-then-atomic-rename), confirmed live: two agents both calling
+  `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
+  (`M1327210646CE`) around the same time raced on that file. In the observed case both runs still
+  came out correct (isd_generate's write happened to complete cleanly either way, so it cost one
+  agent a wasted ~4min recompute, not corruption), but a torn/partial read on the losing side is
+  plausible if two agents' calls actually overlap mid-write rather than land sequentially. Worth
+  checking with other active agents before deliberately re-triggering this on a shared product.
 - **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
   when the user asks for it in that turn, and only your own branch.** This is a small team of
   agents working closely with the user, not a large/anonymous one, so the informal "just merge it
@@ -169,6 +178,15 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 - **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
   shows: that you merged, a one-line summary of what changed, and that they should `git pull
   origin main` next time they hit a good stopping point (not mid-edit).
+- **Before kicking off anything that will fire a lot of real requests at an external host** (a
+  bulk cold-cache sweep across a wide date range, a full-year catalog query, anything else that'll
+  touch many distinct not-yet-cached files/pages), message the other running agents *first*, not
+  just after. `cache.py`'s request pacing (`_REQUEST_PACING_SECONDS`) is calibrated per-process —
+  it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
+  independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
+  API, Lunaserv) at the same time; the combined rate can still trip a real server-side limiter (see
+  the Phase 36 incident `cache.py` itself documents). Messaging first gives everyone a chance to
+  stagger or postpone, which a message sent only after starting can't do.
 - **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
   two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
   about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),

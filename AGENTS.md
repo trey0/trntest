@@ -79,14 +79,12 @@ this file). Then, as needed:
   Don't bother building/publishing an Artifact for this kind of
   internal validation check — it's slower and not worth the token cost when the user can just view
   the live notebook themselves.
-- **Notebooks are jupytext-paired and both halves are committed.** There are three:
-  `notebooks/data_set_selection.py`/`.ipynb` (catalog-driven EDR selection; its last cell writes
-  the selected candidate table to the checked-in `notebooks/dataset_manifest.csv`),
-  `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads `dataset_manifest.csv` and
-  renders/validates the selected image; no runtime dependency on `data_set_selection.ipynb`
-  itself, so rerun that notebook and commit its updated manifest to change which real image gets
-  rendered), and `notebooks/wac_isis.py`/`.ipynb` (the narrower ISIS/CSM `framestitch`
-  investigation — see `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
+- **Notebooks are jupytext-paired and both halves are committed.** Notably:
+  `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads the checked-in, now-frozen
+  `notebooks/dataset_manifest.csv` and renders/validates the selected image; see `docs/history.md`'s
+  dated entry for why the notebook that used to regenerate that CSV was removed), and
+  `notebooks/wac_isis.py`/`.ipynb` (the narrower ISIS/CSM `framestitch` investigation — see
+  `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
   review/diffing/lint/IDE work; the `.ipynb` carries real, fully-executed outputs and is committed
   too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,
   including images), so no separate HTML/Pages publishing step exists anymore. The two halves of a

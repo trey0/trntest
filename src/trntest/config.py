@@ -51,8 +51,9 @@ DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
 DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
 DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 
-# Reference/regression-test WAC EDR/CDR product -- not the live default image (that's
-# dataset.select_dataset(), catalog-driven); this is a known-good fallback/test fixture for
+# Reference/regression-test WAC EDR/CDR product -- not the live default image (that's the
+# checked-in dataset_manifest.csv, frozen output of the now-removed catalog-driven selection
+# notebook, see docs/history.md); this is a known-good fallback/test fixture for
 # TrntestConfig()'s built-in defaults. See docs/data-sources.md, "Reference/regression-test EDR
 # products".
 DEFAULT_EDR_VOLUME = "LROLRC_0041C"
