@@ -391,3 +391,23 @@ print(
 )
 if not resolved.all():
     print(f"WARNING: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
+
+# %% [markdown]
+# ## A direct visual before/after: the fitted correction, baked into a real corrected overlay
+#
+# `isis_wac.apply_pose_correction_to_crop` bakes `fit.correction` into a *copy* of the crop cube's
+# cached `InstrumentPointing` (patching only its single, time-independent `ConstantRotation` matrix
+# -- see that function's own docstring and `docs/corrected-overlay-cam2map-plan.md` for the full
+# mechanism), so ISIS's own already-validated `cam2map` (`run_cam2map_for_crop`, completely
+# unmodified) picks up the corrected pose automatically. This is the first real visual evidence of
+# the fit above -- everything before this cell only checked pixel residuals numerically.
+
+# %%
+corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit.correction, entry.per_image_config)
+corrected_cam2map_path = isis_wac.run_cam2map_for_crop(corrected_crop, entry.dem_ortho_result, entry.per_image_config)
+
+# %%
+plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap (real-fit comparison)")
+
+# %%
+plotting.plot_overlay_toggle(basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap")
