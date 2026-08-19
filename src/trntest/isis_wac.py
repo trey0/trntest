@@ -87,6 +87,39 @@ def ensure_isisdata(config: TrntestConfig | None = None) -> None:
     run_quiet(["downloadIsisData", "lro", str(isisdata), "--no-kernels"])
 
 
+_LUNAR_SHAPE_MODEL_REL_PATH = "base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub"
+
+
+def ensure_lunar_shape_model(config: TrntestConfig | None = None) -> Path:
+    """Lazily fetch ISIS's own global lunar shape model -- real LOLA-derived radii (`LRO_LOLA_LDEM`,
+    confirmed live via its own label: `SimpleCylindrical`, 128 px/degree, ~237m/px, pixel values are
+    real body-fixed radius in meters via the cube's own `Base=1737400.0`/`Multiplier=0.5`) -- lets
+    `attach_dem_shape_model`/`sample_lunar_dem_radii_batch` swap this pipeline's usual
+    `shape=ellipsoid` (see `run_spiceinit`'s own docstring) for real terrain, without building a
+    custom ISIS shape cube from this project's own Astropedia GLD100 DEM -- a real map-projection/
+    radius-conversion/labeling task this project hasn't validated, whereas this file is ISIS's own
+    ready-made product in exactly the format `spiceinit shape=user`/`mappt` expect.
+
+    ~2GB, one-time (confirmed live -- not the ~20GB `ensure_isisdata`'s own docstring warns `dems/`
+    as a whole costs; that figure is for every body ISIS supports, not just Moon). Also fetches two
+    tiny (a few KB total) index-file dependencies discovered live: `spiceinit shape=user` fails
+    ("No existing files found with a numerical version matching...") without `base/dems/kernels.*.db`
+    and `base/kernels/spk/*.db` present, even though the shape model itself needs no actual SPK
+    kernel *data*, only these small index files."""
+    config = config or load_config()
+    isisdata = config.cache_root / "isisdata"
+    shape_model_path = isisdata / _LUNAR_SHAPE_MODEL_REL_PATH
+    if shape_model_path.exists():
+        return shape_model_path
+    ensure_isisdata(config)
+    run_quiet(
+        ["downloadIsisData", "base", str(isisdata), "--include", "dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub"]
+    )
+    run_quiet(["downloadIsisData", "base", str(isisdata), "--include", "dems/kernels.*.db"])
+    run_quiet(["downloadIsisData", "base", str(isisdata), "--include", "kernels/spk/*.db"])
+    return shape_model_path
+
+
 @dataclasses.dataclass(frozen=True)
 class EdrFetchResult:
     img_path: Path
@@ -920,3 +953,95 @@ def apply_pose_correction_to_crop(
         ]
     )
     return CropResult(cub_path=out_path)
+
+
+def attach_dem_shape_model(crop: CropResult, config: TrntestConfig | None = None) -> CropResult:
+    """Copies `crop`'s cube and re-runs `spiceinit shape=user model=<ldem>` on the copy -- swaps its
+    camera model's shape from this pipeline's usual `shape=ellipsoid` to ISIS's own real global
+    lunar terrain (`ensure_lunar_shape_model`), for `control_network.resolve_control_points`'s
+    ground-to-image queries. Deliberately narrow/opt-in, not a change to the shared pipeline default
+    -- `run_spiceinit`'s own `shape=ellipsoid` and everything built on it elsewhere (`
+    run_cam2map_for_crop`'s output, `wac_camera_model.py`'s hand-rolled projector's own validation)
+    stays untouched; only this DEM-aware copy is affected.
+
+    `spiceinit` is confirmed idempotent/safe to re-run on an already-spiceinit'd, already-cropped
+    cube (`run_pipeline`'s own docstring) -- re-derives pointing/position from the same real
+    kernels, only the shape changes. `web=yes` (matching `run_spiceinit`'s own call) is required
+    here too -- confirmed live: without it, `spiceinit` attempts local kernel-database resolution
+    instead of the web service and fails outright on paths this pipeline's minimal `ensure_isisdata`
+    fetch never populates.
+
+    Live-validated: real, substantial, non-constant local elevation on this project's own current
+    default candidate (+600m to +3000m across 5 test pixels vs. the ellipsoid's constant
+    1737400.0m), and the resulting real ground-point shift (up to ~1.7km) is the right order of
+    magnitude to matter for the pose-correction fit's own ~600-900m residual gap (see
+    `docs/plan.md`'s status line)."""
+    config = config or load_config()
+    shape_model_path = ensure_lunar_shape_model(config)
+    out_path = crop.cub_path.with_name(crop.cub_path.stem + ".dem.cub")
+    if not out_path.exists():
+        shutil.copy(crop.cub_path, out_path)
+        run_quiet(["spiceinit", f"from={out_path}", "web=yes", "shape=user", f"model={shape_model_path}"])
+    return CropResult(cub_path=out_path)
+
+
+def sample_lunar_dem_radii_batch(lonlat_deg: np.ndarray, config: TrntestConfig | None = None) -> np.ndarray:
+    """Real local lunar radius (meters, body-fixed) at many arbitrary `(lon_deg, lat_deg)` points at
+    once, via a single `mappt usecoordlist=true` call against ISIS's own global lunar shape model
+    cube directly (`ensure_lunar_shape_model`) -- deliberately camera/image-independent, unlike
+    `campt` against a specific crop cube: confirmed live that `campt` reports `NULL` for every
+    geometric field (not just the pixel) for a point outside *that specific camera's* field of view,
+    even though the point's real elevation is well-defined regardless of which camera (if any) can
+    see it. This matters for `resolve_control_points`'s basemap-side trusted ground truth
+    specifically, which has no reason to be visible to this one crop's own camera at all for its own
+    real elevation to be meaningful.
+
+    `mappt`'s own FLAT output `PixelValue` is already the calibrated real radius in meters (the
+    cube's `Base`/`Multiplier` label values already applied by `mappt` itself, confirmed live --
+    re-applying them again on top produces a wildly wrong, ~867km-off result), not a raw DN needing
+    manual conversion. Live cross-validated against `campt`'s own `LocalRadius` (via a DEM-attached
+    crop cube, `attach_dem_shape_model`) at 5 real points: agreement to <=50m, a small fraction of
+    the real elevation signal (hundreds to thousands of meters) being sampled here.
+
+    Same `(latitude, longitude)` COORDLIST column order as `ground_to_image_pixels_batch` (confirmed
+    live in `mappt.xml` too, matching `campt`'s own convention) -- opposite of this function's own
+    `(lon_deg, lat_deg)` argument order, kept consistent with the rest of this module.
+
+    Unlike `ground_to_image_pixels_batch`, does **not** tolerate a per-point failure -- `mappt` has
+    no `ALLOWERROR`-equivalent parameter at all (confirmed live: a single invalid coordinate, e.g. a
+    latitude outside [-90,90], aborts the *entire* batch with a `USER ERROR` and no output file,
+    unlike `campt`'s own graceful per-row `Error` field). Not expected to matter in practice here --
+    every real matched tie point's own `(lon, lat)` is by construction a valid point on the Moon, so
+    a genuine failure would mean something upstream is already wrong and should surface loudly, not
+    be silently dropped."""
+    config = config or load_config()
+    shape_model_path = ensure_lunar_shape_model(config)
+    lonlat_deg = np.asarray(lonlat_deg)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        coordlist_path = Path(tmp_dir) / "coordlist.csv"
+        out_path = Path(tmp_dir) / "mappt_out.flat"
+        with open(coordlist_path, "w") as f:
+            for lon_deg, lat_deg in lonlat_deg:
+                f.write(f"{lat_deg},{lon_deg}\n")
+
+        run_quiet(
+            [
+                "mappt",
+                f"from={shape_model_path}",
+                "usecoordlist=true",
+                f"coordlist={coordlist_path}",
+                "type=ground",
+                f"to={out_path}",
+                "format=flat",
+                "append=false",
+            ]
+        )
+        with open(out_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+
+    if len(rows) != len(lonlat_deg):
+        raise RuntimeError(
+            f"mappt usecoordlist returned {len(rows)} rows for {len(lonlat_deg)} input points -- "
+            "expected exactly one row per point"
+        )
+    return np.array([float(row["PixelValue"]) for row in rows])
