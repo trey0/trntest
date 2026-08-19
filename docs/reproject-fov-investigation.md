@@ -295,10 +295,27 @@ result: this isn't one image's overfit tuning.
   `fu == fv` always -- it was already a no-op in that case), and re-running the flagship
   `image_generation.ipynb` end to end confirms `mapproject -t csm` and `-t pinhole` now agree exactly
   (0px at all 5 points, re-verified live) and the real WAC-crop reproject coverage check still hits
-  100%. One real, expected side effect: `M1327210646CE`'s smaller footprint now drops 1 of 5 QA tie
-  points (`top_right`) that resolved under the anisotropic fix's larger footprint -- accepted, per the
-  existing tie-point-dropping tolerance already established elsewhere in this doc (a debug/QA overlay,
-  not a correctness-critical output). All 210 tests pass, lint clean.
+  100%. One real, initially-accepted side effect, since fixed (see below): `M1327210646CE`'s smaller
+  footprint dropped 1 of 5 QA tie points (`top_right`) that resolved under the anisotropic fix's
+  larger footprint. All 210 tests pass, lint clean.
+
+  **The `top_right` drop above turned out to be a different, pre-existing bug, not a footprint-size
+  regression -- now fixed.** Investigated live rather than assumed: the actual ISIS error for that
+  point was "no surface intersection" (via `campt`, called by `isis_wac.ground_to_image_pixel`), not
+  "not inside cube" -- ruling out the crop-edge numerical instability this doc's `_CROP_EDGE_MARGIN_PX`
+  section describes (that mechanism gives the latter error, not the former). Traced to a1's
+  `docs/wac-jigsaw-investigation.md` finding on `feature/alignment`: `campt`'s own ground-to-image
+  solve for WAC's Pushframe sensor has a real, *scattered* (~38% on this same default candidate, no
+  edge concentration -- a1 measured resolved-vs-dropped edge-distance directly and found no
+  significant difference) failure rate, a known upstream ISIS bug
+  (`PushFrameCameraGroundMap::GetLocalNormal`, DOI-USGS/ISIS3#4256) unrelated to the isotropic FOV
+  change entirely -- the revert just moved `top_right`'s die5 position enough to land in that
+  pre-existing scattered failure mode where no point had before. Fixed once a1's
+  `wac_camera_model.find_framelet_and_project` (a from-scratch WAC-VIS camera model reimplementation,
+  validated to exact agreement with real `campt`, whose own containment check sidesteps the bug
+  entirely) landed on `main` -- `tie_points.resolve_crop_pixels` now calls it instead of
+  `isis_wac.ground_to_image_pixel`. Live-validated: all 5 die5 points resolve again on
+  `M1327210646CE`. See `docs/wac-jigsaw-investigation.md` for the full bug investigation.
 - **A related but separate architectural point from the user, not acted on**: the existing boresight
   correction (`camera.build_camera()`'s `look_at_rotation` re-aiming, `docs/data-sources.md`'s
   "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was modeled as a *rotation* of the
