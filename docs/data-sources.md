@@ -1238,3 +1238,33 @@ this failure mode could plausibly get *worse* specifically at high-relief featur
 exactly the terrain the user's own visual parallax observation (motivating the whole 3D-alignment
 investigation) depends on. Re-run this same edge-distance/failure-kind check against real terrain
 once that lands, rather than assuming the ellipsoid-only finding still holds.
+
+## `campt`'s `USECOORDLIST` batch mode: real gotchas, and why it matters here
+
+`isis_wac.ground_to_image_pixels_batch` (used by `control_network.resolve_control_points`, see
+above) runs one real `campt usecoordlist=true` call for many points at once instead of one
+`ground_to_image_pixel` subprocess per point — confirmed live to matter a great deal: each
+individual `campt` call pays real process-spawn/SPICE-load overhead (~300ms observed), which
+dominated `resolve_control_points`' wall-clock for a multi-hundred-point control network (767 points
+→ ~230s of pure subprocess overhead, collapsed to ~3s). Two real gotchas found live, not documented
+anywhere obvious in `campt -help`'s short parameter list (confirmed via `campt.xml`, ISIS's own
+per-app doc source, and direct experimentation):
+
+- **`COORDLIST`'s ground-coordinate column order is `latitude, longitude`**, not `longitude,
+  latitude` (`campt.xml`: "Expected order for ground coordinates: latitude, longitude") — the
+  opposite of this project's own `(lon_deg, lat_deg)` convention everywhere else
+  (`ground_to_image_pixel`'s own argument order, `GroundPoint`'s `PositiveEast360Longitude` field,
+  etc.). Getting this backwards doesn't error — it silently returns a wrong-but-plausible-looking
+  result (every row projecting to the same stale sample/line, no `Error`), which would be very easy
+  to miss without an independent per-point cross-check.
+- **A failed row's `Sample`/`Line` fields come back as a stale carryover from the last *successful*
+  row in the batch**, not `NULL`/absent — confirmed live (`allowerror=true`, needed so one bad point
+  doesn't abort the whole batch). The only reliable success signal is the row's own `Error` field:
+  the literal string `"NULL"` on success, a real message (e.g. "Requested position does not project
+  in camera model; no surface intersection") otherwise.
+- `APPEND` defaults to `TRUE` (silently prepends onto whatever's already at the `TO=` path) —
+  `append=false` is required for a fresh, correct result on a reused/shared output path.
+
+Live-validated for correctness, not just speed: 100 real crop pixels' own real ground points
+(round-tripped through `campt`), batched vs. the old per-point loop — 0 mismatches, 46x faster on
+that sample size.
