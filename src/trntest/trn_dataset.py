@@ -467,11 +467,10 @@ class TrnTestHillshadeImage(TrnTestImage):
     def _mapprojected_path(self) -> Path:
         # _work/, not hillshade/ -- same "don't spill mapproject's own intermediates into the
         # canonical named pair's folder" reasoning as TrnTestCropImage's own override.
-        # camera_type="csm" (the default) against self.sidecar_json_path is safe again now that
-        # render._correct_csm_focal_length_anisotropy fixes up cam_gen's sidecar in place (see its
-        # own docstring) -- an earlier version of this call used camera_type="pinhole" against
-        # entry.camera.tsai_path directly as a workaround, before the sidecar itself was corrected
-        # at the source.
+        # camera_type="csm" (the default) against self.sidecar_json_path is safe: camera.
+        # solve_corrected_fov is isotropic (fu == fv), so cam_gen's CSM Frame conversion of our own
+        # .tsai has no anisotropy to lose -- see docs/reproject-fov-investigation.md for the
+        # anisotropic version this once was and why it was reverted.
         out_path = self.entry.per_image_config.output_dir / (self.raster_path.stem + "-mapproj.tif")
         return render.run_mapproject_image(
             self.raster_path, self.sidecar_json_path, out_path, self.entry.dem_ortho_result, self.entry.per_image_config

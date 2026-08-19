@@ -37,55 +37,6 @@ class RenderResult:
 DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 
-def _correct_csm_focal_length_anisotropy(csm_json_path: Path, fu: float, fv: float) -> None:
-    """`cam_gen`'s Pinhole -> CSM Frame conversion collapses an asymmetric `fu`/`fv`
-    (`camera.solve_corrected_fov`) into a single, averaged, isotropic `m_focalLength` -- confirmed
-    live: for a real candidate, `cam_gen` wrote `m_focalLength = (fu+fv)/2` exactly, leaving
-    `m_iTransL`/`m_iTransS`/`m_transX`/`m_transY` at trivial isotropic (`+-1`) coefficients, silently
-    losing the real per-axis difference (harmless while `fu=fv` always held, a real ~5% one-axis
-    reprojection error once it didn't -- see docs/reproject-fov-investigation.md for the live
-    Phase 5B blink-overlay regression this caused).
-
-    **The CSM Frame model itself has no such limitation** -- confirmed via `ale`'s own
-    real-instrument formatters (`ale/drivers/lro_drivers.py`, installed in this image), which
-    populate these same fields from NAIF's real, genuinely anisotropic `INS<id>_ITRANSL`/`ITRANSS`/
-    `TRANSX`/`TRANSY` instrument-kernel keywords for actual flight cameras -- `cam_gen` just doesn't
-    do this for a synthetic Pinhole input. This function restores it in place, after the fact:
-    pivots `m_focalLength` to `fu` (the cross-track/sample-axis value), which leaves the sample-axis
-    transforms (`m_iTransS`/`m_transX`) correct as `cam_gen` already wrote them (coefficient `+-1`
-    against a pivot of `fu` is exactly what they already were), and rescales the along-track/line-
-    axis transforms (`m_iTransL`/`m_transY`) so their effective scale becomes `fv` instead of `fu`.
-    Reads back the *sign* of whichever slot `cam_gen` set nonzero rather than assuming a fixed index
-    or sign, so this holds regardless of `cam_gen`'s own axis-order/flip convention -- but does
-    assume that slot's original *magnitude* is exactly 1 (true for every `.tsai` this project writes,
-    all with `pitch = 1`, i.e. already in pixel units -- `cam_gen`'s own doc: "If set to 1, the focal
-    length and optical center are in units of pixel"). A no-op when `fu == fv`.
-
-    Live-validated: a hand-patched sidecar's `mapproject -t csm` reprojected footprint matched the
-    geometrically-correct `-t pinhole` result (146.0x139.1 km) to within ~0.2% (146.3x139.2 km) --
-    vs. ~2-4% off (143.1x142.6 km, visibly too square) before this correction."""
-    if fu == fv:
-        return
-    with open(csm_json_path) as f:
-        header = f.readline()
-        state = json.load(f)
-    assert state["m_modelName"] == "USGS_ASTRO_FRAME_SENSOR_MODEL", (
-        f"unexpected CSM model {state['m_modelName']!r} -- this correction assumes cam_gen's Frame sensor model layout"
-    )
-
-    def rescaled(transform: list[float], magnitude: float) -> list[float]:
-        return [magnitude if v > 0 else -magnitude if v < 0 else v for v in transform]
-
-    ratio = fv / fu
-    state["m_focalLength"] = fu
-    state["m_iTransL"] = rescaled(state["m_iTransL"], ratio)
-    state["m_transY"] = rescaled(state["m_transY"], 1.0 / ratio)
-
-    with open(csm_json_path, "w") as f:
-        f.write(header)
-        json.dump(state, f, indent=2)
-
-
 def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None) -> RenderResult:
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,8 +89,6 @@ def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: Trntes
             str(csm_json),
         ]
     )
-    _correct_csm_focal_length_anisotropy(csm_json, camera.focal_length_u_px, camera.focal_length_v_px)
-
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)
 
 
@@ -156,17 +105,15 @@ def run_mapproject_image(
     worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM sidecar, dead code -- no
     live caller, see below) and `isis_wac.run_mapproject` (the real, ISIS-processed WAC cube's
     ALE-derived ISD, also dead code) use, so both land on the exact same DEM grid with no separate
-    alignment step -- kept generic (`camera_type`) rather than hardcoded `-t csm` since its one live
-    caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`) must NOT use CSM: `cam_gen`'s
-    CSM Frame conversion of our own `.tsai` only has a single, isotropic `m_focalLength` field --
-    confirmed live it silently *averages* an asymmetric `fu`/`fv` (`camera.solve_corrected_fov`) into
-    one value, giving `mapproject` a measurably wrong (near-square, ~5% off) reprojected footprint
-    and a real, user-visible Phase 5B/6B blink-overlay misalignment that didn't exist before `fu`
-    could differ from `fv`. Passing `camera_path=camera.tsai_path, camera_type="pinhole"` instead --
-    ASP's own Pinhole model, read directly, has no such isotropy limitation -- fixed it: confirmed
-    live the reprojected footprint's own aspect ratio (145989x139090, non-square) then matches
-    `Camera.render_cross_track_km`/`render_along_track_km`'s real ~1.05 ratio, instead of CSM's
-    142589-ish near-1:1 square. See docs/reproject-fov-investigation.md."""
+    alignment step. Kept generic (`camera_type`) rather than hardcoded, as good hygiene, even though
+    its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`) always uses the default
+    `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV (`camera.solve_corrected_fov`)
+    once made `cam_gen`'s CSM Frame conversion measurably wrong here (silently averaging `fu`/`fv`
+    into one isotropic `m_focalLength`, a real ~5% reprojected-footprint error), which this parameter
+    let the caller work around (`camera_type="pinhole"`, reading `camera.tsai_path` directly). Now
+    that `solve_corrected_fov` is isotropic again (`fu == fv` always), CSM and Pinhole reprojections
+    of the same camera agree by construction, so the parameter is no longer load-bearing for
+    correctness -- just kept generic. See docs/reproject-fov-investigation.md for the full history."""
     config = config or load_config()
     run_quiet(
         [

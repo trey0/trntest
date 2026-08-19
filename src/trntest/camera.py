@@ -376,20 +376,44 @@ def solve_corrected_fov(
     crop_footprint_lonlat: dict,
     config: TrntestConfig,
 ) -> tuple[float, float, float, float]:
-    """Solve a corrected `(fu, fv, cu, cv)` whose rendered FOV stays inside the real WAC crop's own
-    footprint (`crop_footprint_lonlat`, `tie_points.crop_footprint_corners_for_camera` -- real ISIS
-    `campt` ground truth, not a SPICE approximation), fixing a real bug where the naive symmetric
-    `fu=fv` FOV overshoots the real crop -- confirmed two coupled causes: (1) the along-track FOV
-    was calibrated to a flat, non-perspective target (`n_frames_for_square_crop * km_per_frame`) but
-    rendered through a real perspective (ray-sphere-intersection) projection; (2) even after fixing
-    that alone, the far corners stayed elongated *cross-track* too, because a corner ray combines
-    both angular offsets at once, and the more oblique that combined angle is, the farther out
-    *both* ground components land -- a coupling a standard 4-parameter pinhole can't fully separate
-    (`fu` can't depend on `py`). So `fu` shrinks a bit too (`FOV_CROSS_TRACK_SCALE`), not just
-    `fv`/`cv`, and both are solved by ray-tracing the actual corner (`_corner_ground_km`), not a
-    per-axis approximation. `cu` is left untouched (`image_size / 2.0`) -- the coverage gap this
-    fixes is along-track/cross-track-coupled, not asymmetric left-right, on every real image tested
-    so far. See docs/reproject-fov-investigation.md for the full derivation and cross-validation."""
+    """Solve a corrected, isotropic `(f, f, cu, cv)` whose rendered FOV stays inside the real WAC
+    crop's own footprint (`crop_footprint_lonlat`, `tie_points.crop_footprint_corners_for_camera` --
+    real ISIS `campt` ground truth, not a SPICE approximation), fixing a real bug where the naive
+    symmetric `fu=fv` FOV overshoots the real crop -- confirmed two coupled causes: (1) the
+    along-track FOV was calibrated to a flat, non-perspective target
+    (`n_frames_for_square_crop * km_per_frame`) but rendered through a real perspective
+    (ray-sphere-intersection) projection; (2) even after fixing that alone, the far corners stayed
+    elongated *cross-track* too, because a corner ray combines both angular offsets at once, and the
+    more oblique that combined angle is, the farther out *both* ground components land.
+
+    The cross-track and along-track half-angles are still solved independently (`FOV_CROSS_TRACK_SCALE`
+    shrinks the cross-track one; the along-track pair is solved by ray-tracing the actual corner,
+    `_corner_ground_km`, not a per-axis approximation), each producing its own candidate focal
+    length -- but **the two are then collapsed to a single shared, isotropic `f = max(...)` of the
+    two**, applied to both axes, rather than kept as separate `fu`/`fv` (an earlier version of this
+    function did exactly that). Using the larger (narrower-FOV, more conservative) of the two only
+    tightens whichever axis wasn't already the binding constraint -- it can't reopen the coverage
+    gap on either axis, since each was already independently solved to just fit. `cv` is re-derived
+    against this shared `f` (not the original along-track-only value) to keep the near edge exactly
+    on its target. `cu` is left untouched (`image_size / 2.0`).
+
+    **Why isotropic, given a real anisotropic (`fu`!=`fv`) fix once existed and worked**: an
+    anisotropic pinhole solved the FOV-fit problem with a slightly larger footprint (the two
+    independently-solved values are both used, not just the larger one), but converting it to a CSM
+    Frame model-state JSON (`cam_gen`, `render.py`) turned out to cost three real bugs along the way
+    (`cam_gen` silently averaging `fu`/`fv` into one isotropic `m_focalLength`; `tie_points.
+    die5_points`'s bbox-midpoint anchoring breaking once the footprint became asymmetric; and a
+    small, never-fully-explained ~1-8px constant residual between `mapproject -t csm` and
+    `-t pinhole` that persisted even after the `m_focalLength` bug was fixed, confirmed live to be
+    invariant to how the anisotropy is encoded across the CSM state's fields -- i.e. not our
+    encoding choice, some deeper `usgscsm` quirk with anisotropic Frame models with no available
+    source to chase further). Given the anisotropy was only ever a nice-to-have (more of the crop's
+    real margin used), not a requirement, and every downstream CSM/ISIS consumer of this data
+    defaults to expecting an isotropic pinhole, reverting to isotropic trades a few percent of
+    cross-track footprint (confirmed live: ~4-6% smaller cross-track extent, ~100% coverage
+    unaffected -- along-track was already the binding constraint on every real candidate tested) for
+    dropping all three bug classes at the source. See docs/reproject-fov-investigation.md for the
+    full history, including the anisotropic fix's own derivation and the residual investigation."""
     cu = config.image_size / 2.0
     boresight_ground_km = boresight_ground_point_km(c_km, r_cam_to_me)
 
@@ -421,13 +445,15 @@ def solve_corrected_fov(
 
     original_half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     half_angle_u = original_half_angle_rad * FOV_CROSS_TRACK_SCALE
-    fu = cu / np.tan(half_angle_u)
+    cross_track_f = cu / np.tan(half_angle_u)
 
     near_half_angle_rad = solve_half_angle_v(half_angle_u, target_near_km * FOV_ALONG_TRACK_MARGIN, sign_v=-1.0)
     far_half_angle_rad = solve_half_angle_v(half_angle_u, target_far_km * FOV_ALONG_TRACK_MARGIN, sign_v=1.0)
-    fv = config.image_size / (np.tan(near_half_angle_rad) + np.tan(far_half_angle_rad))
-    cv = fv * np.tan(near_half_angle_rad)
-    return fu, fv, cu, cv
+    along_track_f = config.image_size / (np.tan(near_half_angle_rad) + np.tan(far_half_angle_rad))
+
+    f = max(cross_track_f, along_track_f)
+    cv = f * np.tan(near_half_angle_rad)
+    return f, f, cu, cv
 
 
 def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):

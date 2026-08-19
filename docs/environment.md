@@ -141,6 +141,15 @@ automatically.
   ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
+- **`isis_wac.run_isd_generate`'s own `-o` write into `scratch/isis_wac/<product>/` is also not
+  concurrency-safe** — same class of issue as the GLD100 race above (a plain overwrite, no
+  uniquely-named-temp-file-then-atomic-rename), confirmed live: two agents both calling
+  `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
+  (`M1327210646CE`) around the same time raced on that file. In the observed case both runs still
+  came out correct (isd_generate's write happened to complete cleanly either way, so it cost one
+  agent a wasted ~4min recompute, not corruption), but a torn/partial read on the losing side is
+  plausible if two agents' calls actually overlap mid-write rather than land sequentially. Worth
+  checking with other active agents before deliberately re-triggering this on a shared product.
 - **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
   when the user asks for it in that turn, and only your own branch.** This is a small team of
   agents working closely with the user, not a large/anonymous one, so the informal "just merge it

@@ -1,21 +1,24 @@
 # Investigation: the `reproject` `TrnTestImage` type, and a real synthetic-camera FOV bug found along the way
 
-**Status: implemented and live-validated, still on `feature/reproject`, not yet merged to `main`.
-Session ended here for token-budget reasons, mid-way through chasing one unresolved residual --
-picking this up should start with "OPEN: an unexplained small residual in the CSM mapproject path"
-below, not with a fresh read of everything above it.**
+**Status: implemented and live-validated, still on `feature/reproject`, not yet merged to `main`.**
+**The FOV fix is now isotropic (`fu == fv` again) -- see "RESOLVED: reverted to an isotropic FOV,
+closing the CSM residual investigation" near the end of this doc for why and how, before reading the
+anisotropic derivation below, which is now historical (kept for the rationale, not the current
+behavior).**
 
 The FOV fix is folded into `camera.build_camera()` itself (`solve_corrected_fov`) and
 `TrnTestReprojectImage(TrnTestHillshadeImage)` is a real class in `src/trntest/trn_dataset.py` --
 `notebooks/reproject_spike.py`/`.ipynb` (still on this branch, uncommitted-to-`main` by design, same
 pattern as `feature/alignment`'s `pose_alignment_spike.py`) is now superseded exploratory history,
-not the current implementation; it computes its own separate `_fovfix` camera/tsai rather than using
-`build_camera()`'s built-in correction and will not run against current code without updating (not
+not the current implementation; it computes its own separate `_fovfix` camera/tsai (and the now-
+superseded anisotropic derivation, not the isotropic `f = max(fu, fv)` version) rather than using
+`build_camera()`'s built-in correction, and will not run against current code without updating (not
 worth doing -- see "What's NOT done yet"). What's left before merging to `main`: notebook wiring
 (nothing currently generates `reproject` by default -- see `trn_dataset.PRODUCT_TYPES`), validation
 at full dataset scale (so far: 4 images for the FOV fix itself, 1 image through the real class
-end-to-end), the boresight-bias tangent (still open, separate, not started), and the CSM residual
-below.
+end-to-end), and the boresight-bias tangent (still open, separate, not started). The CSM residual is
+resolved -- not by fixing it, but by reverting to an isotropic FOV that makes it moot; see "RESOLVED:
+reverted to an isotropic FOV" below.
 
 ## What `reproject` is
 
@@ -260,6 +263,42 @@ result: this isn't one image's overfit tuning.
   substantial, live-validated improvement over the original bug either way; reverting without being
   asked would have been a unilateral call on an open question. Whoever picks this up should re-read
   this section, decide, and either accept/document or continue the debugging trail above.
+
+  **RESOLVED: reverted to an isotropic FOV, closing this investigation instead of continuing to chase
+  the residual.** Picked back up in a later session, docker rebuilt, and the residual reproduced
+  exactly as documented above (constant `(row -1, col +8)` at all 5 points on `M1327210646CE`). Before
+  deciding accept-vs-revert, ran one more diagnostic round: three ways of encoding the *same* `fu`/`fv`
+  anisotropy into the CSM state (pivot `m_focalLength` to `fu` -- the shipped correction; pivot to `fv`
+  instead, rescaling the sample axis; leave `m_focalLength` at `cam_gen`'s original average and scale
+  *both* `iTrans` fields relative to it) -- reconstructing `cam_gen`'s pristine pre-correction output
+  each time rather than chaining corrections on top of an already-corrected sidecar (an early version
+  of this check had that bug, giving misleading "it changes by encoding" results that didn't survive a
+  clean re-run). All three gave the **identical** residual, `(row -1, col +8)`, at every point --
+  ruling out "we're encoding the correction wrong" definitively (a mathematically-equivalent
+  restatement of the same `fu`/`fv` can't itself be a bug), and confirming this is a genuine quirk in
+  compiled `usgscsm`'s handling of an anisotropic Frame model, not fixable from our side without its
+  source.
+
+  That, combined with the user's own reassessment of the anisotropy's value -- it was only ever a
+  nice-to-have (more of the real crop's margin used, not a correctness requirement), and the pain of
+  chasing three real bugs from it (this residual, the `m_focalLength` collapse, and the `die5_points`
+  anchoring regression) raised the concern that other downstream CSM/ISIS consumers might hit the same
+  kind of friction -- led to reverting `camera.solve_corrected_fov` to isotropic instead: solve `fu`
+  (cross-track) and `fv`/`cv` (along-track) exactly as before, but collapse them to one shared
+  `f = max(fu, fv)` applied to both axes (re-deriving `cv` against this shared `f`), rather than
+  keeping them separate. Checked empirically before committing to it (see `docs/plan.md`'s "reproject"
+  entry): across the same 4 real candidates the anisotropic fix was validated on, the isotropic version
+  reaches **100.0% coverage on every one** (actually improving `M1327211014CE`'s 99.83% worst-corner
+  under the anisotropic fix to 100%), at the cost of a ~4-6% smaller cross-track footprint (along-track
+  was already the binding constraint -- `fv > fu` -- on all 4, so along-track extent is essentially
+  untouched). `render._correct_csm_focal_length_anisotropy` is deleted outright (dead code once
+  `fu == fv` always -- it was already a no-op in that case), and re-running the flagship
+  `image_generation.ipynb` end to end confirms `mapproject -t csm` and `-t pinhole` now agree exactly
+  (0px at all 5 points, re-verified live) and the real WAC-crop reproject coverage check still hits
+  100%. One real, expected side effect: `M1327210646CE`'s smaller footprint now drops 1 of 5 QA tie
+  points (`top_right`) that resolved under the anisotropic fix's larger footprint -- accepted, per the
+  existing tie-point-dropping tolerance already established elsewhere in this doc (a debug/QA overlay,
+  not a correctness-critical output). All 210 tests pass, lint clean.
 - **A related but separate architectural point from the user, not acted on**: the existing boresight
   correction (`camera.build_camera()`'s `look_at_rotation` re-aiming, `docs/data-sources.md`'s
   "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was modeled as a *rotation* of the
