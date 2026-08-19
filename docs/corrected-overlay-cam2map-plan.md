@@ -66,6 +66,22 @@ automatically, then feed the result into the existing `plotting.plot_overlay_tog
   `a1_constantrotation_test.py`. Contain the exact working commands if anything above needs
   re-confirming.
 
+## Status update (2026-08-19, fresh session resuming this plan)
+
+Chunks 1-2 done and committed (`eb3b670`, `feature/alignment`): `isis_wac.apply_pose_correction_to_crop`
++ `_table_extra_label`, with unit tests (`tests/test_isis_wac_ground_to_image.py`,
+`tests/test_isis_wac_parsing.py`) and a live cross-check against the *real* fitted correction from
+`fit_pose_correction` (not just the synthetic test rotation validated last night): patched-cube
+`campt` output agrees with `wac_camera_model`'s own forward projector to <=0.015px across 3 real
+points (scratch script: `src/scratch/a1_real_fit_cross_check.py`, outside git per
+`docs/environment.md`).
+
+Chunk 3 (notebook wiring) is done in the working tree (`notebooks/pose_alignment_spike.py`/`.ipynb`,
+uncommitted) and has been run end-to-end via `scripts/run_notebook.sh` with no errors -- both the
+new `plot_overlay_toggle` cells (uncorrected vs. pose-corrected) rendered real output. **Holding for
+the user's own Jupyter Lab review before committing**, per this project's established convention.
+Chunk 4 (docs cleanup) not yet started.
+
 ## Remaining work, in commit-sized chunks
 
 1. **Real module function.** Add to `src/trntest/isis_wac.py` (the right home -- this is an
