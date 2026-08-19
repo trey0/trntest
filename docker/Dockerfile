@@ -79,6 +79,10 @@ RUN uv pip install --no-cache -e '.[dev]'
 RUN uv pip install --no-cache --no-deps \
         'lightglue @ git+https://github.com/cvg/LightGlue.git@eb42fee2d71449efb0aa5c10549752b5d75384d8'
 
+# Suppresses JupyterLab's own "what's new" announcements popup/dialog -- purely a UI annoyance in
+# this always-latest, single-user container, not something worth seeing on every fresh build.
+RUN jupyter labextension disable "@jupyterlab/apputils-extension:announcements"
+
 # Redirects torch.hub's pretrained-weight cache (LightGlue's matcher weights, DISK's extractor
 # weights via kornia.feature.DISK.from_pretrained -- both real network fetches on first use, tens of
 # MB total) under this project's own shared cache/ convention (see docs/caching.md) instead of
