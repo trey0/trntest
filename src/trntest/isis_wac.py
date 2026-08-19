@@ -46,11 +46,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pvl
 import rasterio
 import rasterio.windows
 
-from trntest import cache, render
+from trntest import cache, render, wac_camera_model
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
@@ -769,3 +770,82 @@ def run_cam2map_for_crop(
     mapproj_tif = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.tif")
     run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(mapproj_tif)])
     return mapproj_tif
+
+
+_INSTRUMENT_POINTING_LABEL_EXCLUDE = {"Name", "StartByte", "Bytes", "Records", "ByteOrder", "Field"}
+_INSTRUMENT_POINTING_COLTYPES = "(Double,Double,Double,Double,Double,Double,Double,Double)"  # J2000Q0-3,AV1-3,ET
+
+
+def _table_extra_label(label_text: str, table_name: str) -> pvl.PVLModule:
+    """Extract `table_name`'s label metadata beyond its raw field records (e.g., for
+    `InstrumentPointing`: `TimeDependentFrames`, `ConstantFrames`, `ConstantRotation`,
+    `CkTableStartTime`/`EndTime`/`OriginalSize`, `FrameTypeCode`, `Description`, `Kernels`) from a
+    cube's full `catlab` PVL text, in the shape `csv2table`'s own `label=` parameter expects.
+    Round-tripping a Table via `tabledump`/`csv2table` *without* this metadata silently drops it --
+    confirmed live to produce a real, systematic ~0.08deg pointing error, not just precision loss
+    (see docs/corrected-overlay-cam2map-plan.md)."""
+    label = pvl.loads(label_text)
+    tables = [obj for obj in label.getlist("Table") if obj.get("Name") == table_name]
+    if len(tables) != 1:
+        raise ValueError(f"expected exactly one Table named {table_name!r} in the label, found {len(tables)}")
+    tbl = tables[0]
+    return pvl.PVLModule({k: v for k, v in tbl.items() if k not in _INSTRUMENT_POINTING_LABEL_EXCLUDE})
+
+
+def apply_pose_correction_to_crop(
+    crop: CropResult, correction: wac_camera_model.PoseCorrection, config: TrntestConfig | None = None
+) -> CropResult:
+    """Bakes a fitted `wac_camera_model.PoseCorrection` into a *copy* of `crop`'s cube, by patching
+    its cached `InstrumentPointing` Table's single `ConstantRotation` matrix (the -85621->-85620,
+    camera-to-spacecraft-bus, time-*independent* rotation) -- so ISIS's own `cam2map`
+    (`run_cam2map_for_crop`, unmodified) picks up the corrected pose automatically, with no new
+    hand-rolled warp/resampling code. See `docs/corrected-overlay-cam2map-plan.md` for the full
+    background this implements.
+
+    Only the rotation is injected here -- `correction.delta_position_m` is deliberately not applied
+    (see that plan doc's "Position correction: deliberately not implemented via this mechanism" for
+    why: `InstrumentPosition`'s cache is a coarser Hermite spline in a different frame, and the real
+    fit found position's effect negligible, ~9m -> ~0.06px, so rotation alone accounts for
+    essentially all of it).
+
+    `ConstantRotation_new = correction.delta_rotation.T @ ConstantRotation_original` -- empirically
+    cross-validated (not derived from ISIS source) against `wac_camera_model`'s own already-validated
+    forward projector using a known synthetic test rotation: matched the projector's predicted pixel
+    to ~1e-6, while the naively-expected `ConstantRotation_original @ delta_rotation` placed the
+    point outside the crop's coverage entirely. Likely explanation: ISIS's stored matrix is the
+    transpose of this project's own `R_A_to_B` convention (`v_B = R_A_to_B @ v_A`) --
+    `correction.delta_rotation` itself is defined in that convention (`camera.py`/
+    `wac_camera_model.py`), so transposing it before composing with ISIS's own (already-transposed)
+    stored matrix reconciles the two conventions.
+
+    The cube's 259-row `InstrumentPointing` quaternion/AV/ET table itself is untouched -- `tabledump`
+    round-trips it byte-for-byte via `csv2table`, only the label's `ConstantRotation` keyword changes.
+    `coltypes` is hardcoded to WAC-VIS's own real, fixed `InstrumentPointing` column layout
+    (`J2000Q0..3`, `AV1..3`, `ET` -- 8 doubles), confirmed live via a real `tabledump`; not derived
+    generically since this project only ever touches this one table shape."""
+    config = config or load_config()
+    out_path = crop.cub_path.with_name(crop.cub_path.stem + ".corrected.cub")
+    shutil.copy(crop.cub_path, out_path)
+
+    csv_path = out_path.with_suffix(".pointing.csv")
+    run_quiet(["tabledump", f"from={crop.cub_path}", f"to={csv_path}", "name=InstrumentPointing"])
+
+    extra_label = _table_extra_label(_catlab(crop.cub_path), "InstrumentPointing")
+    c_orig = np.array(extra_label["ConstantRotation"]).reshape(3, 3)
+    c_new = correction.delta_rotation.T @ c_orig
+    extra_label["ConstantRotation"] = list(c_new.flatten())
+
+    label_path = out_path.with_suffix(".pointing_label.pvl")
+    label_path.write_text(pvl.dumps(extra_label))
+
+    run_quiet(
+        [
+            "csv2table",
+            f"csv={csv_path}",
+            f"label={label_path}",
+            f"to={out_path}",
+            "tablename=InstrumentPointing",
+            f"coltypes={_INSTRUMENT_POINTING_COLTYPES}",
+        ]
+    )
+    return CropResult(cub_path=out_path)

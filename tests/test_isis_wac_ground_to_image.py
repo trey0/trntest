@@ -3,10 +3,47 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+import pvl
 import pytest
+from scipy.spatial.transform import Rotation
 
-from trntest import isis_wac
+from trntest import isis_wac, wac_camera_model
 from trntest.config import TrntestConfig
+
+# Trimmed real InstrumentPointing Table label (same fixture as test_isis_wac_parsing.py's
+# _TABLES_LABEL_TEXT, captured live against product M1327210646CE's cropped cube) -- what
+# apply_pose_correction_to_crop's own `_catlab` call sees.
+_POINTING_LABEL_TEXT = """
+Object = Table
+  Name                = InstrumentPointing
+  StartByte           = 13863937
+  Bytes               = 16576
+  Records             = 259
+  ByteOrder           = Lsb
+  TimeDependentFrames = (-85620, -85000, 1)
+  ConstantFrames      = (-85621, -85620)
+  ConstantRotation    = (0.99982051808596, 0.0014619008152411,
+                         -0.018889003688109, -0.0013858576920097,
+                         0.99999088592261, 0.0040382508789192,
+                         0.01889473505452, -0.0040113486148665,
+                         0.99981343163088)
+  CkTableStartTime    = 625843448.25011
+  CkTableEndTime      = 625843811.06261
+  CkTableOriginalSize = 259
+  FrameTypeCode       = 3
+  Description         = "Created by spiceinit"
+  Kernels             = ($lro/kernels/ck/lrolc_2019304_2019335_v01.bc,
+                         $lro/kernels/ck/moc42r_2019304_2019335_v01.bc,
+                         $lro/kernels/fk/lro_frames_2014049_v01.tf)
+
+  Group = Field
+    Name = J2000Q0
+    Type = Double
+    Size = 1
+  End_Group
+End_Object
+"""
 
 _GROUND_POINT_PVL = """
 Group = GroundPoint
@@ -106,3 +143,68 @@ def test_resolve_ground_to_image_model_attaches_csm_for_non_pushframe(tmp_path):
     mock_run_quiet.assert_called_once()
     csminit_cmd = mock_run_quiet.call_args[0][0]
     assert csminit_cmd[0] == "csminit"
+
+
+def test_apply_pose_correction_to_crop_copies_and_runs_tabledump_then_csv2table(tmp_path):
+    crop_cub = tmp_path / "crop.cub"
+    crop_cub.write_text("fake cube contents")
+    crop = isis_wac.CropResult(cub_path=crop_cub)
+    correction = wac_camera_model.PoseCorrection.identity()
+
+    with patch("subprocess.run", return_value=_completed_process(0, stdout=_POINTING_LABEL_TEXT)):
+        with patch.object(isis_wac, "run_quiet") as mock_run_quiet:
+            result = isis_wac.apply_pose_correction_to_crop(crop, correction, config=TrntestConfig())
+
+    assert result.cub_path == tmp_path / "crop.corrected.cub"
+    assert result.cub_path.exists()  # shutil.copy actually ran
+    assert result.cub_path.read_text() == "fake cube contents"
+
+    assert mock_run_quiet.call_count == 2
+    tabledump_cmd, csv2table_cmd = (call.args[0] for call in mock_run_quiet.call_args_list)
+    assert tabledump_cmd[0] == "tabledump"
+    assert f"from={crop_cub}" in tabledump_cmd
+    assert "name=InstrumentPointing" in tabledump_cmd
+    assert csv2table_cmd[0] == "csv2table"
+    assert f"to={result.cub_path}" in csv2table_cmd
+    assert "tablename=InstrumentPointing" in csv2table_cmd
+
+
+def test_apply_pose_correction_to_crop_leaves_constant_rotation_unchanged_for_identity_correction(tmp_path):
+    crop_cub = tmp_path / "crop.cub"
+    crop_cub.write_text("fake cube contents")
+    crop = isis_wac.CropResult(cub_path=crop_cub)
+    correction = wac_camera_model.PoseCorrection.identity()
+
+    with patch("subprocess.run", return_value=_completed_process(0, stdout=_POINTING_LABEL_TEXT)):
+        with patch.object(isis_wac, "run_quiet") as mock_run_quiet:
+            isis_wac.apply_pose_correction_to_crop(crop, correction, config=TrntestConfig())
+
+    _, csv2table_cmd = mock_run_quiet.call_args_list
+    label_arg = next(arg for arg in csv2table_cmd.args[0] if arg.startswith("label="))
+    written_label = pvl.loads(Path(label_arg.removeprefix("label=")).read_text())
+    c_orig = np.array(pvl.loads(_POINTING_LABEL_TEXT).getlist("Table")[0]["ConstantRotation"]).reshape(3, 3)
+    # pvl.dumps uppercases keywords by default (ISIS's own PVL convention -- confirmed live, matches
+    # the real csv2table label= file this session's scratch validation produced).
+    c_written = np.array(written_label["CONSTANTROTATION"]).reshape(3, 3)
+    assert c_written == pytest.approx(c_orig)
+
+
+def test_apply_pose_correction_to_crop_applies_delta_rotation_transpose(tmp_path):
+    crop_cub = tmp_path / "crop.cub"
+    crop_cub.write_text("fake cube contents")
+    crop = isis_wac.CropResult(cub_path=crop_cub)
+    delta_rotation = Rotation.from_rotvec(np.radians([1.0, -0.6, 0.3])).as_matrix()
+    correction = wac_camera_model.PoseCorrection(delta_position_m=np.zeros(3), delta_rotation=delta_rotation)
+
+    with patch("subprocess.run", return_value=_completed_process(0, stdout=_POINTING_LABEL_TEXT)):
+        with patch.object(isis_wac, "run_quiet") as mock_run_quiet:
+            isis_wac.apply_pose_correction_to_crop(crop, correction, config=TrntestConfig())
+
+    _, csv2table_cmd = mock_run_quiet.call_args_list
+    label_arg = next(arg for arg in csv2table_cmd.args[0] if arg.startswith("label="))
+    written_label = pvl.loads(Path(label_arg.removeprefix("label=")).read_text())
+    c_orig = np.array(pvl.loads(_POINTING_LABEL_TEXT).getlist("Table")[0]["ConstantRotation"]).reshape(3, 3)
+    # pvl.dumps uppercases keywords by default (ISIS's own PVL convention -- confirmed live, matches
+    # the real csv2table label= file this session's scratch validation produced).
+    c_written = np.array(written_label["CONSTANTROTATION"]).reshape(3, 3)
+    assert c_written == pytest.approx(delta_rotation.T @ c_orig)

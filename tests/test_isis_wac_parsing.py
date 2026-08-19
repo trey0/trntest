@@ -1,6 +1,8 @@
 import dataclasses
 import json
 
+import pytest
+
 from trntest import isis_wac
 from trntest.config import TrntestConfig
 
@@ -16,6 +18,61 @@ Object = IsisCube
   End_Group
 End_Object
 End
+"""
+
+# Trimmed fixture modeled on a real `catlab` dump's `InstrumentPointing`/`InstrumentPosition` Table
+# objects (captured live this session against product M1327210646CE's cropped cube) -- the real
+# on-disk shape `apply_pose_correction_to_crop`'s `_table_extra_label` parses, including a second,
+# same-shaped Table object to confirm name-filtering actually discriminates between them.
+_TABLES_LABEL_TEXT = """
+Object = Table
+  Name                = InstrumentPointing
+  StartByte           = 13863937
+  Bytes               = 16576
+  Records             = 259
+  ByteOrder           = Lsb
+  TimeDependentFrames = (-85620, -85000, 1)
+  ConstantFrames      = (-85621, -85620)
+  ConstantRotation    = (0.99982051808596, 0.0014619008152411,
+                         -0.018889003688109, -0.0013858576920097,
+                         0.99999088592261, 0.0040382508789192,
+                         0.01889473505452, -0.0040113486148665,
+                         0.99981343163088)
+  CkTableStartTime    = 625843448.25011
+  CkTableEndTime      = 625843811.06261
+  CkTableOriginalSize = 259
+  FrameTypeCode       = 3
+  Description         = "Created by spiceinit"
+  Kernels             = ($lro/kernels/ck/lrolc_2019304_2019335_v01.bc,
+                         $lro/kernels/ck/moc42r_2019304_2019335_v01.bc,
+                         $lro/kernels/fk/lro_frames_2014049_v01.tf)
+
+  Group = Field
+    Name = J2000Q0
+    Type = Double
+    Size = 1
+  End_Group
+End_Object
+
+Object = Table
+  Name                 = InstrumentPosition
+  StartByte            = 13880513
+  Bytes                = 504
+  Records              = 9
+  ByteOrder            = Lsb
+  CacheType            = HermiteSpline
+  SpkTableStartTime    = 625843448.25011
+  SpkTableEndTime      = 625843811.06261
+  SpkTableOriginalSize = 259.0
+  Description          = "Created by spiceinit"
+  Kernels              = $lro/kernels/spk/fdf29r_2019305_2019335_v01.bsp
+
+  Group = Field
+    Name = J2000X
+    Type = Double
+    Size = 1
+  End_Group
+End_Object
 """
 
 
@@ -49,3 +106,27 @@ def test_resolve_wac_ck_kernels_reads_persisted_cache_without_running_the_pipeli
     result = isis_wac.resolve_wac_ck_kernels(config)
 
     assert result == ["kernels/ck/fake_x.bc"]
+
+
+def test_table_extra_label_keeps_only_the_named_tables_extra_keywords():
+    extra = isis_wac._table_extra_label(_TABLES_LABEL_TEXT, "InstrumentPointing")
+
+    for excluded in ("Name", "StartByte", "Bytes", "Records", "ByteOrder", "Field"):
+        assert excluded not in extra
+    assert extra["TimeDependentFrames"] == [-85620, -85000, 1]
+    assert extra["ConstantFrames"] == [-85621, -85620]
+    assert len(extra["ConstantRotation"]) == 9
+    assert extra["ConstantRotation"][0] == pytest.approx(0.99982051808596)
+    assert extra["FrameTypeCode"] == 3
+
+
+def test_table_extra_label_discriminates_between_same_shaped_tables():
+    extra = isis_wac._table_extra_label(_TABLES_LABEL_TEXT, "InstrumentPosition")
+
+    assert "ConstantRotation" not in extra  # only InstrumentPointing has this keyword
+    assert extra["CacheType"] == "HermiteSpline"
+
+
+def test_table_extra_label_raises_for_a_table_name_not_present():
+    with pytest.raises(ValueError, match="NotPresent"):
+        isis_wac._table_extra_label(_TABLES_LABEL_TEXT, "NotPresent")
