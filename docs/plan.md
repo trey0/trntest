@@ -491,6 +491,14 @@ short of `populate()` -- no rendering from this notebook yet.
   product's initial SPICE-derived registration will be as accurate as this one turned out to be once
   the shape model was fixed, and this tooling is exactly what would catch that.
 
+- **Open**: the user's requested "error-handling/fallback-consistency" quality audit (deliberately
+  split into chunks so a single session wouldn't run out of context) only got through **Chunk A**
+  (`tie_points.py` + `isis_wac.py`) before spiraling into a real fix (this file's die5/local-meters
+  entry above and `docs/history.md`'s Phase 64) rather than staying a survey. Chunks B-E were never
+  started, and there's no record elsewhere of which files/modules they were meant to cover -- next
+  session should ask the user to re-scope chunks B-E from scratch (or just re-run the audit idea
+  fresh) rather than assume a prior chunking plan still applies.
+
 ## Development history
 
 See `docs/history.md` for the phase-by-phase narrative — what was tried, what broke, and how each
