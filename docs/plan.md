@@ -463,6 +463,29 @@ short of `populate()` -- no rendering from this notebook yet.
   ISIS source citations, every constant's provenance, the serial-number bug and its fix) and
   `docs/data-sources.md`'s `campt`/`tabledump`/`csv2table` entries for the reusable mechanism facts.
 
+  **The leading suspect was it (2026-08-20): the ellipsoid was the real bug, not the camera pose.**
+  `isis_wac.run_spiceinit` hardcoded `shape=ellipsoid` for every real-WAC cube in the pipeline --
+  confirmed to be the actual root cause of the parallax-like crater-rim misalignment that motivated
+  this whole investigation in the first place, not a simplification safe to defer. Switched to
+  `shape=user model=<ldem>` against ISIS's own real global lunar shape model
+  (`isis_wac.ensure_lunar_shape_model`/`attach_dem_shape_model` -- `sample_lunar_dem_radii_batch` for
+  camera-independent elevation sampling), one function changed, everything downstream (the 6B
+  `cam2map` panel, `run_isd_generate*`, `control_network.resolve_control_points`'s jigsaw ground
+  truth) inherits it with no further code changes. Live result on the flagship demo candidate,
+  measured with `pose_alignment.py`'s own feature-matching machinery, **zero camera-pose correction
+  applied**: mean raw offset 849m (ellipsoid) -> 124m (DEM), an 85% reduction, down near the
+  matcher's own noise floor at this basemap's ~100m/px resolution. Everything on the synthetic/
+  basemap side (`render.run_sat_sim`'s raytrace, Lunaserv's own orthorectified imagery) was already
+  DEM-correct -- the asymmetry was entirely on the real-WAC side.
+
+  **Camera-pose alignment (`pose_alignment.py`/`wac_camera_model.py`/`control_network.py`) is on the
+  back burner, not superseded** -- explicitly the user's own framing, not a downgrade to "no longer
+  needed." The DEM fix closes the specific gap that was visible on this candidate, but the capability
+  to measure real alignment statistics (feature-matched offset, residual pixel error) independent of
+  whether a correction gets applied is worth keeping regardless: there's no guarantee a future WAC
+  product's initial SPICE-derived registration will be as accurate as this one turned out to be once
+  the shape model was fixed, and this tooling is exactly what would catch that.
+
 ## Development history
 
 See `docs/history.md` for the phase-by-phase narrative — what was tried, what broke, and how each

@@ -93,12 +93,12 @@ _LUNAR_SHAPE_MODEL_REL_PATH = "base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.
 def ensure_lunar_shape_model(config: TrntestConfig | None = None) -> Path:
     """Lazily fetch ISIS's own global lunar shape model -- real LOLA-derived radii (`LRO_LOLA_LDEM`,
     confirmed live via its own label: `SimpleCylindrical`, 128 px/degree, ~237m/px, pixel values are
-    real body-fixed radius in meters via the cube's own `Base=1737400.0`/`Multiplier=0.5`) -- lets
-    `attach_dem_shape_model`/`sample_lunar_dem_radii_batch` swap this pipeline's usual
-    `shape=ellipsoid` (see `run_spiceinit`'s own docstring) for real terrain, without building a
-    custom ISIS shape cube from this project's own Astropedia GLD100 DEM -- a real map-projection/
-    radius-conversion/labeling task this project hasn't validated, whereas this file is ISIS's own
-    ready-made product in exactly the format `spiceinit shape=user`/`mappt` expect.
+    real body-fixed radius in meters via the cube's own `Base=1737400.0`/`Multiplier=0.5`) -- what
+    `run_spiceinit` attaches to every real-WAC cube by default, and what `sample_lunar_dem_radii_batch`
+    samples camera-independently, without building a custom ISIS shape cube from this project's own
+    Astropedia GLD100 DEM -- a real map-projection/radius-conversion/labeling task this project
+    hasn't validated, whereas this file is ISIS's own ready-made product in exactly the format
+    `spiceinit shape=user`/`mappt` expect.
 
     ~2GB, one-time (confirmed live -- not the ~20GB `ensure_isisdata`'s own docstring warns `dems/`
     as a whole costs; that figure is for every body ISIS supports, not just Moon). Also fetches two
@@ -175,15 +175,21 @@ class SpiceinitResult:
 
 
 def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> SpiceinitResult:
-    """`shape=ellipsoid` overrides ISIS's default (`SHAPE=*SYSTEM`), which resolves to a real lunar
-    DSK/DEM cube (e.g. `$base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub`) -- confirmed via a
-    real failure ("USER ERROR NAIF DSK file [...] does not exist") against `ensure_isisdata()`'s
-    deliberately dems/-free minimal fetch (see its docstring: `base`'s ~20GB is dominated by
-    `dems/`, skipped on purpose). This module's scope stops at `framestitch` (no `isd_generate`/
-    `mapproject` precision-terrain step yet -- see the module docstring), so the simple reference
-    ellipsoid is sufficient here; revisit this if/when real terrain intersection is added."""
+    """`shape=user model=<ldem>` attaches ISIS's own real global lunar shape model
+    (`ensure_lunar_shape_model`) -- real per-pixel LOLA-derived terrain, not the flat reference
+    ellipsoid this used to hardcode (`shape=ellipsoid`). That ellipsoid choice was a real, live bug,
+    not a harmless simplification: every real-WAC ground<->image computation downstream of this one
+    call (the crop's own `cam2map` reprojection shown in every 6B blink overlay, `run_isd_generate`'s
+    CSM sidecar, `control_network.resolve_control_points`'s jigsaw ground truth) inherited a
+    systematic terrain-vs-ellipsoid gap that looked exactly like a parallax/scale error at crater
+    rims and a swath-wide "altitude offset" stretch -- because it *was* one, just not a camera-pose
+    one. See `docs/plan.md`'s camera-pose-alignment item and `control_network.py`'s own former
+    "ellipsoid-only, deliberately, for now" docstring for the investigation that found this. Costs a
+    one-time ~2GB fetch (`ensure_lunar_shape_model`, idempotent, shared cache) the first time any
+    pipeline run reaches this call."""
     config = config or load_config()
-    run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=ellipsoid"])
+    shape_model_path = ensure_lunar_shape_model(config)
+    run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=user", f"model={shape_model_path}"])
     return SpiceinitResult(cub_path=cub_path)
 
 
