@@ -17,41 +17,44 @@
 # # Camera-pose alignment spike: tie-point correction for the real-WAC overlay
 #
 # `image_generation.ipynb`'s Phase 6B overlay (the real, ISIS-processed WAC crop mapprojected onto
-# the basemap) is visibly not perfectly aligned with it -- small, "not huge" per direct user
-# observation, but real. This notebook is the checked-in, reproducible form of the investigation
-# into that (see `docs/plan.md`'s open items, "camera-pose alignment", for the full research trail:
-# why ASP's `bundle_adjust`/`pc_align`/`image_align` and ISIS's own `jigsaw`+`findfeatures` routes
-# both hit real blockers, and `docs/history.md`'s dated entries for how this notebook's own approach
-# was arrived at). **Validated, but not wired into the main pipeline** -- direct user visual
-# inspection of the homography-corrected blink overlay below confirmed the correspondences this
-# notebook finds are real, not RANSAC accepting noise (see `docs/history.md`'s dated entries),
-# concluded as the deliberate stopping point for this 2D approach; the next real step is a proper
-# projection-informed (camera-model) alignment, not further refinement here, so this stays a
-# standalone tool, not wired into `image_generation.py`'s main pipeline.
+# the basemap) used to be visibly not perfectly aligned with it. That turned out to be mostly a
+# ground-truth bug, not a camera-pose one: `isis_wac.run_spiceinit` hardcoded `shape=ellipsoid` for
+# every real-WAC cube, when the real fix was attaching ISIS's own real global lunar DEM
+# (`shape=user`) instead -- see `docs/plan.md`'s dated entry. That fix now lives in the main
+# pipeline (every real-WAC cube gets the real DEM by default), so this notebook no longer compares
+# DEM against ellipsoid -- there's nothing left running through the ellipsoid.
 #
-# The approach, implemented in `src/trntest/pose_alignment.py`: feature-match the already
-# map-projected WAC crop directly against the basemap (both already in the same map projection, no
-# camera model needed for the matching step itself; downsampled first to the WAC crop's own real
-# native resolution -- see the "Crop the basemap" section below, and `docs/history.md`'s Phase 53
-# entry for why), fit a 2D correction from the matches via RANSAC, apply it to the WAC raster's own
-# georeferencing, and compare the result against the basemap via the *existing*, unmodified
-# `plotting.plot_overlay_toggle` blink comparator.
+# **On the back burner, not superseded** (the user's own framing, see `docs/plan.md`): the DEM fix
+# closed the specific gap visible on this candidate, but the capability this notebook exercises --
+# measuring real alignment statistics, independent of whether a correction actually gets applied --
+# stays valuable. There's no guarantee a future WAC product's initial SPICE-derived registration will
+# be this clean; this is exactly the tooling that would catch it if not.
 #
-# Three correction models are fit from the same match set and compared directly: `fit_similarity_correction`
-# (translation + rotation + uniform scale, 4 DOF), `fit_affine_correction` (adds independent x/y
-# scale and shear, 6 DOF), and `fit_homography_correction` (full projective, 8 DOF). None is
-# asserted as physically "correct" -- a real camera pose error has 6 degrees of freedom before even
-# accounting for this being a pushframe sensor's extended-exposure capture, and the mapping from
-# those onto a 2D map-space distortion isn't simple or one-to-one, so there's no first-principles
-# case that any fixed DOF count is exactly right; richer models were left for later specifically
-# until there were enough well-distributed inliers to support them without overfitting (Phase 53's
-# downsampling fix raised that count from 53 to 91). See `fit_similarity_correction`'s own docstring
-# for the full rationale.
+# **The options being compared, systematically**: every correction below varies along three axes --
+#
+# - **projection**: `2D->2D` fits a correction directly between two already map-projected rasters
+#   (`src/trntest/pose_alignment.py`, no camera model involved at all) vs. `3D->2D` fits a correction
+#   to the actual camera pose, projecting a real 3D ground point through it to a 2D image pixel
+#   (`src/trntest/wac_camera_model.py` + `control_network.py`, real ISIS control points).
+# - **matcher**: `SIFT` (classical, Sobel-filtered) vs. `LightGlue` (learned DISK features + learned
+#   matcher -- more matches, real headroom for future low-texture EDRs SIFT might struggle on).
+# - **correction**: `uncorrected` (the raw match-implied offset, no fit at all) through increasingly
+#   flexible 2D models (`similarity` 4 DOF, `affine` 6 DOF, `homography` 8 DOF) to the one physically
+#   real correction, `6-DOF pose` (an actual camera exterior-orientation correction, fit against real
+#   ISIS control points, then baked back into the crop cube so ISIS's own unmodified `cam2map`
+#   reprojects it).
+#
+# This notebook evaluates the same combinations of these three axes the original investigation did --
+# no new combinations added -- reported as one table (`results_df` below) instead of scattered
+# prints, with each blink overlay labeled by which table row it corresponds to. **Expect the overlays
+# to look similarly well-aligned and a bit boring now** -- that's the DEM fix working, not a wasted
+# notebook; a clean before/after here is itself useful confirmation, not just a null result.
 
 # %%
 import warnings
 
 import numpy as np
+import pandas as pd
 import rasterio
 from scipy.spatial.transform import Rotation
 
@@ -64,12 +67,14 @@ dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset
 dataset.populate(limit=1)
 entry = dataset[0]
 
-# The real public function TrnTestCropImage._mapprojected_path() itself calls -- used directly here
-# rather than that private method, which isn't meant for callers outside the class.
+# `entry.crop_result` carries ISIS's real global lunar DEM by default now (isis_wac.run_spiceinit) --
+# no separate DEM-attachment step needed here anymore, unlike this notebook's earlier form.
 wac_path = isis_wac.run_cam2map_for_crop(entry.crop_result, entry.dem_ortho_result, entry.per_image_config)
 basemap_path = entry.dem_ortho_result.ortho
-print("WAC mapprojected crop:", wac_path)
+print("WAC mapprojected crop (DEM shape model):", wac_path)
 print("Basemap ortho:", basemap_path)
+
+results = []  # one dict per table row, appended right after each metric is computed below
 
 # %% [markdown]
 # ## Crop the basemap to the WAC's own footprint, and prepare both for matching
@@ -85,13 +90,10 @@ print("Basemap ortho:", basemap_path)
 # the camera's own real resolution at this pose, which a direct `cam2map PIXRES=camera` probe found
 # to be ~184 m/px for this candidate (~1.8x coarser -- see `docs/history.md`'s dated entry). Matching
 # SIFT keypoints on the interpolated-not-actually-resolved 100 m/px grid risks treating resampling
-# texture (and the `PATCHSIZE=1` warp-patch seam artifact still faintly visible there, per
-# `docs/plan.md`'s open items) as real structure. `pose_alignment.native_wac_gsd_m` estimates the
-# WAC crop's real native GSD from the camera's own already-computed ground geometry (no extra ISIS
-# call), and `downsample_to_gsd` (area-averaging, the correct decimation filter -- see its own
-# docstring for why nearest/bilinear would be wrong here) brings both rasters down to that scale
-# before matching. `to_uint8_for_matching` then converts each to 8-bit (OpenCV's feature detectors
-# can't even load a raw float32 GeoTIFF), stretching over valid pixels only.
+# texture as real structure. `pose_alignment.native_wac_gsd_m` estimates the WAC crop's real native
+# GSD from the camera's own already-computed ground geometry (no extra ISIS call), and
+# `downsample_to_gsd` (area-averaging) brings both rasters down to that scale before matching.
+# `to_uint8_for_matching` then converts each to 8-bit, stretching over valid pixels only.
 
 # %%
 basemap_cropped_path = pose_alignment.crop_to_footprint(
@@ -113,26 +115,17 @@ print(f"WAC: {wac_image.shape}, valid {wac_valid.mean():.1%}")
 print(f"Basemap: {basemap_image.shape}, valid {basemap_valid.mean():.1%}")
 
 # %% [markdown]
-# ## Feature matching
+# ## Feature matching: SIFT
 #
 # SIFT on Sobel-filtered versions of each image (see `pose_alignment.match_features`'s docstring for
-# why: raw-intensity matching across two different sensors/processing pipelines -- real calibrated
-# WAC I/F vs. a synthetic basemap render -- is far less reliable than matching on edge/gradient
-# content, which is more consistent across that gap), with a mutual ratio test and two RANSAC
-# geometric-consistency passes (homography, then epipolar).
+# why: raw-intensity matching across two different sensors/processing pipelines is far less reliable
+# than matching on edge/gradient content), with a mutual ratio test and two RANSAC geometric-
+# consistency passes (homography, then epipolar).
 
 # %%
 basemap_points_px, wac_points_px = pose_alignment.match_features(basemap_image, basemap_valid, wac_image, wac_valid)
 print(f"{len(basemap_points_px)} matched points survived ratio/symmetry/RANSAC verification")
 
-# %% [markdown]
-# Converting both point sets to real map coordinates (`pose_alignment.pixel_points_to_map`) --
-# necessary since the WAC crop and the cropped basemap are different windows with different pixel
-# origins, even though they share a CRS/scale -- lets us look at the real-world offset each match
-# implies. High scatter here (relative to the mean) is a sign the match set is a mix of real
-# correspondences and false positives, not a single clean, trustworthy correction on its own.
-
-# %%
 with rasterio.open(basemap_matching_path) as src:
     basemap_transform = src.transform
 with rasterio.open(wac_matching_path) as src:
@@ -141,26 +134,40 @@ with rasterio.open(wac_matching_path) as src:
 basemap_points_map = pose_alignment.pixel_points_to_map(basemap_points_px, basemap_transform)
 wac_points_map = pose_alignment.pixel_points_to_map(wac_points_px, wac_transform)
 
+# %% [markdown]
+# **Table row 1: 2D->2D, SIFT, uncorrected.** The raw match-implied offset -- no fit at all -- lets
+# us see how bad an uncorrected match set looks before any correction is applied.
+
+# %%
 raw_offsets_m = wac_points_map - basemap_points_map
 raw_distances_m = np.linalg.norm(raw_offsets_m, axis=1)
 print(f"Raw offset distance: mean {raw_distances_m.mean():.0f}m, std {raw_distances_m.std():.0f}m")
 print(f"Range: {raw_distances_m.min():.0f}m - {raw_distances_m.max():.0f}m")
 
+results.append(
+    {
+        "row": 1,
+        "projection": "2D->2D",
+        "matcher": "SIFT",
+        "correction": "uncorrected",
+        "dof": 0,
+        "n_points": len(raw_distances_m),
+        "n_kept": len(raw_distances_m),
+        "residual_mean_m": raw_distances_m.mean(),
+        "residual_max_m": raw_distances_m.max(),
+        "residual_mean_px": raw_distances_m.mean() / target_gsd_m,
+    }
+)
+
 # %% [markdown]
-# ## Fit the pose correction: similarity, full affine, and homography
+# ## Fit the 2D correction: similarity, full affine, and homography (SIFT matches)
 #
-# `fit_similarity_correction` maps the WAC's own (possibly-wrong) claimed positions onto the
-# basemap's trusted ones, with its own internal RANSAC separating real, consistent correspondences
-# from outliers -- report both, not just the inliers, since how bad the rejected points really are
-# is itself useful information about match-set quality.
-#
-# Phase 53's native-resolution downsampling raised the default candidate's inlier count from 53 to
-# 91 -- enough to make a first real attempt at the richer models `fit_similarity_correction`'s own
-# docstring always left open: `fit_affine_correction` (6 DOF: independent x/y scale and shear, not
-# just uniform scale) and `fit_homography_correction` (8 DOF: full projective). All three are fit
-# from the *same* match set below for a direct, apples-to-apples comparison -- residuals are also
-# reported in native WAC pixels (dividing by `target_gsd_m`), not just meters, since that's the unit
-# that actually says whether a correction is doing better than pixel-level noise.
+# `fit_similarity_correction` (translation + rotation + uniform scale, 4 DOF), `fit_affine_correction`
+# (adds independent x/y scale and shear, 6 DOF), and `fit_homography_correction` (full projective,
+# 8 DOF) -- none asserted as physically "correct" (a real camera pose error has 6 DOF before even
+# accounting for this being a pushframe sensor's extended-exposure capture, and the mapping from that
+# onto a 2D map-space distortion isn't one-to-one), fit from the *same* match set for a direct,
+# apples-to-apples comparison. **Table rows 2-4.**
 
 # %%
 correction_similarity, inliers_similarity, residuals_similarity_m = pose_alignment.fit_similarity_correction(
@@ -173,16 +180,30 @@ homography, inliers_homography, residuals_homography_m = pose_alignment.fit_homo
     wac_points_map, basemap_points_map
 )
 
-for name, inliers, residuals_m in [
-    ("similarity (4 DOF)", inliers_similarity, residuals_similarity_m),
-    ("affine (6 DOF)", inliers_affine, residuals_affine_m),
-    ("homography (8 DOF)", inliers_homography, residuals_homography_m),
+for row, name, dof, inliers, residuals_m in [
+    (2, "similarity", 4, inliers_similarity, residuals_similarity_m),
+    (3, "affine", 6, inliers_affine, residuals_affine_m),
+    (4, "homography", 8, inliers_homography, residuals_homography_m),
 ]:
     inlier_residuals_m = residuals_m[inliers]
     print(
-        f"{name:20s}  inliers {inliers.sum():3d}/{len(inliers)}   "
+        f"{name:12s} ({dof} DOF)  inliers {inliers.sum():3d}/{len(inliers)}   "
         f"residual mean {inlier_residuals_m.mean():5.0f}m ({inlier_residuals_m.mean() / target_gsd_m:.2f}px)   "
         f"max {inlier_residuals_m.max():5.0f}m ({inlier_residuals_m.max() / target_gsd_m:.2f}px)"
+    )
+    results.append(
+        {
+            "row": row,
+            "projection": "2D->2D",
+            "matcher": "SIFT",
+            "correction": name,
+            "dof": dof,
+            "n_points": len(inliers),
+            "n_kept": int(inliers.sum()),
+            "residual_mean_m": inlier_residuals_m.mean(),
+            "residual_max_m": inlier_residuals_m.max(),
+            "residual_mean_px": inlier_residuals_m.mean() / target_gsd_m,
+        }
     )
 
 scale = np.sqrt(correction_similarity.a**2 + correction_similarity.d**2)
@@ -193,15 +214,12 @@ print(
 )
 
 # %% [markdown]
-# ## Apply each correction and compare via the existing blink overlay
+# ## Apply each 2D correction and compare via the existing blink overlay
 #
-# `apply_correction` composes an `affine.Affine` fit (similarity or full affine -- both are affine,
-# so it handles either identically) with the WAC raster's own georeferencing and resamples back onto
-# its original grid; `apply_homography_correction` does the projective equivalent for the homography
-# fit (see its own docstring for why a homography needs a different code path). All three corrected
-# rasters drop straight into the *existing* `plotting.plot_overlay_toggle` blink comparator with no
-# further plumbing changes. A blink comparator is the right tool for judging a shift this small (a
-# few pixels): far more sensitive than a static side-by-side crop.
+# `apply_correction` composes an `affine.Affine` fit (similarity or full affine) with the WAC
+# raster's own georeferencing and resamples back onto its original grid; `apply_homography_correction`
+# does the projective equivalent. All three corrected rasters drop straight into the *existing*
+# `plotting.plot_overlay_toggle` blink comparator with no further plumbing changes.
 
 # %%
 alignment_dir = entry.per_image_config.output_dir / "alignment"
@@ -215,29 +233,37 @@ corrected_homography_path = pose_alignment.apply_homography_correction(
     wac_path, homography, alignment_dir / "wac_corrected_homography.tif"
 )
 
-# %%
-plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap")
+# %% [markdown]
+# **Table rows 1 and 6** (uncorrected, 2D->2D and 3D->2D respectively) both describe this same
+# uncorrected raster -- shown once here.
 
 # %%
-plotting.plot_overlay_toggle(basemap_path, corrected_similarity_path, title="Similarity-corrected WAC over basemap")
+plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap (table rows 1, 6)")
 
 # %%
-plotting.plot_overlay_toggle(basemap_path, corrected_affine_path, title="Affine-corrected WAC over basemap")
+plotting.plot_overlay_toggle(
+    basemap_path, corrected_similarity_path, title="Similarity-corrected WAC over basemap (table row 2)"
+)
 
 # %%
-plotting.plot_overlay_toggle(basemap_path, corrected_homography_path, title="Homography-corrected WAC over basemap")
+plotting.plot_overlay_toggle(
+    basemap_path, corrected_affine_path, title="Affine-corrected WAC over basemap (table row 3)"
+)
+
+# %%
+plotting.plot_overlay_toggle(
+    basemap_path, corrected_homography_path, title="Homography-corrected WAC over basemap (table row 4)"
+)
 
 # %% [markdown]
-# ## A second matcher: LightGlue, compared directly against SIFT
+# ## A second matcher: LightGlue
 #
 # `pose_alignment.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
-# extractor (DISK) + learned matcher (LightGlue) -- tried specifically to push match count/quality
-# higher for more challenging future EDRs (shadowed terrain, low texture) than SIFT can reliably
-# deliver. Same inputs (the native-GSD-downsampled `wac_image`/`basemap_image` from above), same
-# downstream pipeline (map coordinates -> `fit_homography_correction`, the model Phase 54's direct
-# user visual inspection validated as giving a real, non-noise improvement) -- only the matcher
-# itself differs, for a direct, apples-to-apples comparison against the SIFT-based homography result
-# already shown above.
+# extractor (DISK) + learned matcher -- real headroom for future shadowed/low-texture EDRs SIFT might
+# not find enough points on at all. Same inputs as SIFT above, same downstream homography fit (the
+# model already validated by direct user visual inspection as giving a real, non-noise improvement)
+# -- only the matcher differs, for a direct, apples-to-apples comparison against SIFT's own homography
+# result. **Table row 5.**
 
 # %%
 basemap_points_px_lg, wac_points_px_lg = pose_alignment.match_features_lightglue(
@@ -254,13 +280,23 @@ homography_lg, inliers_homography_lg, residuals_homography_lg_m = pose_alignment
 )
 inlier_residuals_lg_m = residuals_homography_lg_m[inliers_homography_lg]
 print(
-    f"\nSIFT homography:      inliers {inliers_homography.sum():3d}/{len(inliers_homography)}   "
-    f"residual mean {residuals_homography_m[inliers_homography].mean():5.0f}m "
-    f"({residuals_homography_m[inliers_homography].mean() / target_gsd_m:.2f}px)"
-)
-print(
     f"LightGlue homography: inliers {inliers_homography_lg.sum():3d}/{len(inliers_homography_lg)}   "
     f"residual mean {inlier_residuals_lg_m.mean():5.0f}m ({inlier_residuals_lg_m.mean() / target_gsd_m:.2f}px)"
+)
+
+results.append(
+    {
+        "row": 5,
+        "projection": "2D->2D",
+        "matcher": "LightGlue",
+        "correction": "homography",
+        "dof": 8,
+        "n_points": len(inliers_homography_lg),
+        "n_kept": int(inliers_homography_lg.sum()),
+        "residual_mean_m": inlier_residuals_lg_m.mean(),
+        "residual_max_m": inlier_residuals_lg_m.max(),
+        "residual_mean_px": inlier_residuals_lg_m.mean() / target_gsd_m,
+    }
 )
 
 # %%
@@ -268,31 +304,20 @@ corrected_homography_lg_path = pose_alignment.apply_homography_correction(
     wac_path, homography_lg, alignment_dir / "wac_corrected_homography_lightglue.tif"
 )
 plotting.plot_overlay_toggle(
-    basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap (LightGlue matches)"
+    basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap, LightGlue (table row 5)"
 )
 
 # %% [markdown]
-# ## Toward a proper projection-aware (3D) alignment: real ISIS control points
+# ## The 3D->2D approach: real ISIS control points, a real camera-pose correction
 #
-# Everything above corrects the WAC raster's own map-space georeferencing after the fact -- a 2D
-# fix, not a camera-pose one. The next step (see `docs/plan.md`'s open items) is a real `jigsaw`
-# bundle adjustment over the camera's actual exterior orientation (6 DOF: position + attitude,
-# degree-0/frozen for a first pass), using these same matched tie points as control points.
-#
-# `jigsaw` needs, per tie point, the real *image-space* pixel it was observed at (in the original,
-# pre-`cam2map` WAC crop cube -- the cube `jigsaw` will actually adjust) and a trusted 3D ground
-# location -- not the map-projected pixel positions `match_features`/`match_features_lightglue`
-# return. `control_network.resolve_control_points` converts between the two: see its own docstring
-# for exactly how (a deterministic un-warp of `cam2map`'s own resampling on the WAC side, direct
-# georeferencing on the basemap side) and why it's deliberately **ellipsoid-only for now, not real
-# DEM elevation** -- this pipeline's entire existing ground<->image geometry
-# (`isis_wac.run_spiceinit`'s `shape=ellipsoid`) already is, and feeding elevation-aware ground truth
-# into a camera model that's still ellipsoid-only would conflate real camera-pose error with the
-# ellipsoid-vs-real-terrain gap -- worst exactly at high-relief features like crater rims, which is
-# where the parallax-like effect motivating this whole investigation was actually seen. A DEM-aware
-# shape model is a deliberate, real follow-up, not attempted here.
-#
-# Using the LightGlue match set (more tie points to work with than SIFT's).
+# Everything above corrects the WAC raster's own map-space georeferencing after the fact -- a 2D fix,
+# not a camera-pose one. `control_network.resolve_control_points` converts the LightGlue match set
+# (more tie points than SIFT's) into real ISIS control points: for each match, the real image-space
+# pixel it was observed at in the *original*, pre-`cam2map` WAC crop cube, resolved through whatever
+# camera model `entry.crop_result` actually carries (ISIS's real DEM, by default, now) --
+# `isis_wac.resolve_ground_to_image_model` picks the right authority (native ISIS Pushframe model,
+# not CSM -- see its own docstring for why). The trusted ground truth (`ground_lonlat`) comes from
+# the basemap's own georeferencing at each match, `(lon, lat)` only, no elevation baked in yet.
 
 # %%
 ground_to_image_model = isis_wac.resolve_ground_to_image_model(
@@ -305,46 +330,36 @@ observed_pixels, ground_lonlat = control_network.resolve_control_points(
     wac_points_map_lg, basemap_points_map_lg, map_crs, ground_to_image_model, entry.per_image_config
 )
 print(f"{len(observed_pixels)} real ISIS control points resolved (from {len(wac_points_map_lg)} LightGlue matches)")
-print(
-    f"Observed pixel (sample, line) range: "
-    f"({observed_pixels[:, 0].min():.0f}-{observed_pixels[:, 0].max():.0f}, "
-    f"{observed_pixels[:, 1].min():.0f}-{observed_pixels[:, 1].max():.0f})"
-)
-print(
-    f"Ground point (lon, lat) range: "
-    f"({ground_lonlat[:, 0].min():.3f}-{ground_lonlat[:, 0].max():.3f}, "
-    f"{ground_lonlat[:, 1].min():.3f}-{ground_lonlat[:, 1].max():.3f})"
-)
 
 # %% [markdown]
-# ## The real fit: `jigsaw`'s hand-rolled fallback
-#
-# `jigsaw` itself hit a real, root-caused, unfixable bug in its PushFrame framelet search (see
-# `docs/wac-jigsaw-investigation.md` for the full trail: a tautological, mathematically
-# guaranteed-zero-error control network still produced ~350px `jigsaw` residuals). Pivoted to a
-# hand-rolled Python ground-to-image forward projection (`src/trntest/wac_camera_model.py`) instead
-# -- its optics chain is validated to exact (0.000px) agreement with real `campt` output, and its
-# framelet search (`find_framelet_and_project`) is validated to 0.00m ground error round-tripped
-# through `campt`'s trusted inverse.
-#
-# `fit_pose_correction` fits a single, frozen 6-DOF `PoseCorrection` (3 position, meters, MOON_ME;
-# 3 rotation, composed on the camera side -- matching this project's own precedent that WAC-VIS's
-# real boresight offset is frame-constant, not time-varying) against real control points, via
-# `scipy.optimize.least_squares`. `calibrate_et_per_crop_line` derives the crop's own line-to-ET
-# relationship from 2 real `campt` `EphemerisTime` queries, rather than hand-deriving
-# `crop_window_for_camera`'s row-offset/flip bookkeeping.
+# `ground_points_me_m`'s trusted 3D location must sample elevation from *the same* real DEM the
+# camera model above resolved through (`isis_wac.sample_lunar_dem_radii_batch` -- deliberately
+# camera-independent: a basemap point has no reason to be visible to *this* one camera's own view for
+# its elevation to be meaningful) -- see `control_network.py`'s own module docstring for why mixing
+# an elevation-aware ground truth with an elevation-unaware camera model (or vice versa) would
+# conflate real camera-pose error with a shape-model mismatch. Both sides are DEM-consistent here by
+# construction, since `entry.crop_result` already carries the DEM by default.
 
 # %%
+dem_radii_m = isis_wac.sample_lunar_dem_radii_batch(ground_lonlat, entry.per_image_config)
 ground_points_me_m = (
     np.array(
         [
-            tie_points.lonlat_to_ground_km(lon_deg, lat_deg, entry.per_image_config.moon_radius_km)
-            for lon_deg, lat_deg in ground_lonlat
+            tie_points.lonlat_to_ground_km(lon_deg, lat_deg, radius_m / 1000.0)
+            for (lon_deg, lat_deg), radius_m in zip(ground_lonlat, dem_radii_m, strict=True)
         ]
     )
     * 1000.0
 )
 
+# %% [markdown]
+# `wac_camera_model.py`'s hand-rolled forward projection stands in for `jigsaw`, which hit a real,
+# root-caused, unfixable bug in its PushFrame framelet search (see `docs/wac-jigsaw-investigation.md`
+# for the full trail). Its optics chain is validated to exact (0.000px) agreement with real `campt`
+# output, and its framelet search is validated to 0.00m ground error round-tripped through `campt`'s
+# trusted inverse.
+
+# %%
 with warnings.catch_warnings():
     # NotGeoreferencedWarning is expected for an ISIS .cub at this pipeline stage (no geotransform
     # yet, not a bug) -- see plotting.read_raster_band's own docstring for this same suppression.
@@ -356,8 +371,9 @@ et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(entry.crop_result
 print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.6f}")
 
 # %% [markdown]
-# Baseline (uncorrected) residuals -- how far off the existing, uncorrected SPICE-derived pose
-# already is, at each real control point -- for a direct before/after comparison against the fit.
+# **Table row 6: 3D->2D, LightGlue, uncorrected.** How far off the existing, uncorrected
+# SPICE-derived pose already is, at each real control point, projected through the DEM-shaped camera
+# model -- a direct before/after baseline for the fit below.
 
 # %%
 baseline_residuals_px = []
@@ -371,6 +387,27 @@ print(
     f"Baseline (uncorrected): {len(baseline_residuals_px)}/{len(observed_pixels)} points resolved, "
     f"residual mean {baseline_norms.mean():.2f}px, max {baseline_norms.max():.2f}px"
 )
+
+results.append(
+    {
+        "row": 6,
+        "projection": "3D->2D",
+        "matcher": "LightGlue",
+        "correction": "uncorrected",
+        "dof": 0,
+        "n_points": len(observed_pixels),
+        "n_kept": len(baseline_residuals_px),
+        "residual_mean_m": baseline_norms.mean() * target_gsd_m,
+        "residual_max_m": baseline_norms.max() * target_gsd_m,
+        "residual_mean_px": baseline_norms.mean(),
+    }
+)
+
+# %% [markdown]
+# **Table row 7: 3D->2D, LightGlue, 6-DOF pose.** `fit_pose_correction` fits a single, frozen 6-DOF
+# `PoseCorrection` (3 position, meters, MOON_ME; 3 rotation, composed on the camera side -- matching
+# this project's own precedent that WAC-VIS's real boresight offset is frame-constant, not
+# time-varying) against the real control points, via `scipy.optimize.least_squares`.
 
 # %%
 fit = wac_camera_model.fit_pose_correction(ground_points_me_m, observed_pixels, n_framelets, et0, et_per_line)
@@ -392,22 +429,46 @@ print(
 if not resolved.all():
     print(f"WARNING: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
 
+results.append(
+    {
+        "row": 7,
+        "projection": "3D->2D",
+        "matcher": "LightGlue",
+        "correction": "6-DOF pose",
+        "dof": 6,
+        "n_points": len(observed_pixels),
+        "n_kept": int(resolved.sum()),
+        "residual_mean_m": fit_norms[resolved].mean() * target_gsd_m,
+        "residual_max_m": fit_norms[resolved].max() * target_gsd_m,
+        "residual_mean_px": fit_norms[resolved].mean(),
+    }
+)
+
 # %% [markdown]
-# ## A direct visual before/after: the fitted correction, baked into a real corrected overlay
+# ## Results table
+#
+# One row per (projection, matcher, correction) combination evaluated above -- same combinations as
+# the original investigation, just reported systematically instead of scattered prints. `n_points` is
+# the match/control-point set size feeding that row; `n_kept` is how many actually landed inside the
+# residual stats (RANSAC inliers for the 2D rows, successfully-projected/resolved points for the 3D
+# rows).
+
+# %%
+results_df = pd.DataFrame(results).set_index("row")
+results_df
+
+# %% [markdown]
+# ## A direct visual before/after: the fitted 6-DOF correction, baked into a real corrected overlay
 #
 # `isis_wac.apply_pose_correction_to_crop` bakes `fit.correction` into a *copy* of the crop cube's
 # cached `InstrumentPointing` (patching only its single, time-independent `ConstantRotation` matrix
 # -- see that function's own docstring and `docs/corrected-overlay-cam2map-plan.md` for the full
 # mechanism), so ISIS's own already-validated `cam2map` (`run_cam2map_for_crop`, completely
-# unmodified) picks up the corrected pose automatically. This is the first real visual evidence of
-# the fit above -- everything before this cell only checked pixel residuals numerically.
+# unmodified) picks up the corrected pose automatically. **Table row 7.**
 
 # %%
 corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit.correction, entry.per_image_config)
 corrected_cam2map_path = isis_wac.run_cam2map_for_crop(corrected_crop, entry.dem_ortho_result, entry.per_image_config)
-
-# %%
-plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap (real-fit comparison)")
-
-# %%
-plotting.plot_overlay_toggle(basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap")
+plotting.plot_overlay_toggle(
+    basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap (table row 7)"
+)

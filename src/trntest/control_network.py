@@ -10,18 +10,20 @@ point: the real image-space pixel it was actually observed at (in the *original*
 cube -- the one `jigsaw` will actually adjust), and a trusted 3D ground location. `resolve_control_points`
 does that conversion.
 
-**Ellipsoid-only, deliberately, for now**: this pipeline's entire existing ground<->image geometry
-(`isis_wac.run_spiceinit`'s `shape=ellipsoid`, and `run_cam2map_for_crop`'s warp, which inherits that
-same shape model) treats the Moon as a smooth reference ellipsoid, never real per-pixel DEM
-elevation -- confirmed by `isis_wac.ground_to_image_pixel`/`ground_point_at_pixel` only taking/
-returning `(lon, lat)`, no elevation. Control points built here follow that same convention
-(ellipsoid-only ground truth, no DEM sampling), for internal consistency with the camera model
-`jigsaw` will actually reproject through -- feeding it elevation-aware ground truth while the camera
-model itself stays ellipsoid-only would conflate real camera-pose error with the ellipsoid-vs-real-
-terrain gap (worst exactly at high-relief features like crater rims), which is a real, live concern
-here, not a hypothetical one (a real, user-observed parallax-like effect at crater edges in the blink
-overlay motivated moving to a 3D fit in the first place). A DEM-aware shape model (`spiceinit
-shape=user model=<dem>`) is a deliberate, real follow-up, not implemented here -- see `docs/plan.md`."""
+**Elevation-agnostic on purpose, caller must supply consistent ground truth**: `isis_wac.
+run_spiceinit` now attaches ISIS's own real global lunar DEM (`shape=user`) to every real-WAC cube by
+default (was `shape=ellipsoid` -- confirmed live to be the actual root cause of a real, user-observed
+parallax-like effect at crater edges in the blink overlay that originally motivated this 3D-fit
+investigation; see `docs/plan.md`'s dated entry). `resolve_control_points` itself still only ever
+returns `(lon, lat)` -- no elevation -- because `isis_wac.ground_to_image_pixel`/
+`ground_point_at_pixel` don't carry it either; that's a `campt` return-value fact, not a policy
+choice. What matters is that a caller building a 3D ground point from `ground_lonlat` samples
+elevation from the *same* shape model `ground_to_image_model` (i.e. `observed_pixels`) was resolved
+through -- `isis_wac.sample_lunar_dem_radii_batch` does that, camera-independently, for the now-default
+DEM case. Feeding elevation-aware ground truth against a camera model that's still ellipsoid-only (or
+vice versa) conflates real camera-pose error with the ellipsoid-vs-real-terrain gap -- worst exactly
+at high-relief features like crater rims -- which is exactly the failure mode this note exists to
+flag."""
 
 import csv
 import os
@@ -85,9 +87,9 @@ def resolve_control_points(
       it's a pure function of the WAC map-pixel and *whatever* camera model produced it, right or
       wrong, and would give the same answer either way.
     - `ground_lonlat` is the trusted ground truth for the same matched feature, taken directly from
-      the matched *basemap* map-pixel's own georeferencing (ellipsoid-only, no DEM elevation -- see
-      this module's own docstring for why that has to match `observed_pixels`'s own ellipsoid-only
-      camera model).
+      the matched *basemap* map-pixel's own georeferencing -- `(lon, lat)` only, no elevation (see
+      this module's own docstring: a caller building a 3D ground point from this must sample
+      elevation consistently with whatever shape model `ground_to_image_model` resolved through).
 
     Tie points whose implied ground point doesn't actually project into the original crop (can
     happen right at the crop's own edge, e.g. if `PIXRES=map` resampling extended slightly past the
