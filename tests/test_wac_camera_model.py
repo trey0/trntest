@@ -1,10 +1,15 @@
+import subprocess
+import warnings
 from unittest.mock import patch
 
 import numpy as np
+import pvl
 import pytest
+import rasterio
 from scipy.spatial.transform import Rotation
 
-from trntest import wac_camera_model
+import trntest
+from trntest import tie_points, wac_camera_model
 
 
 def test_distort_is_a_small_near_identity_perturbation_for_small_inputs():
@@ -213,3 +218,91 @@ def test_project_in_known_framelet_returns_finite_reasonable_pixel():
 
     assert np.isfinite(sample) and np.isfinite(within_line)
     assert 0 < sample < 704
+
+
+def _campt_image_to_ground(cub_path, sample, line):
+    """Real campt image->ground query, returning (lon_deg, lat_deg, radius_m) -- the real 3D point
+    wherever the shape model currently attached to `cub_path` puts it (the crop's real DEM by
+    default -- see isis_wac.run_spiceinit). Not isis_wac.ground_point_at_pixel: this test needs the
+    real LocalRadius too, to round-trip the *actual* 3D ground point (real elevation included), not
+    a point at some assumed constant radius."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={cub_path}",
+            "type=image",
+            f"sample={sample}",
+            f"line={line}",
+            "format=pvl",
+            "allowoutside=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ground_point = pvl.loads(result.stdout)["GroundPoint"]
+    return (
+        float(ground_point["PositiveEast360Longitude"]),
+        float(ground_point["PlanetocentricLatitude"]),
+        float(ground_point["LocalRadius"]),
+    )
+
+
+@pytest.mark.heavy
+def test_find_framelet_and_project_round_trips_real_ground_points_through_real_campt():
+    """The one legitimate correctness check for wac_camera_model's forward projection against real
+    ISIS output: ground coords -> image coords -> ground coords, not the reverse. Image -> ground ->
+    image is *not* a legitimate check here -- adjacent framelets legitimately overlap (~29% of their
+    height, confirmed live -- see this module's own docstring), so a ground point in an overlap band
+    has more than one equally-correct image-space solution, and there's no principled way to litigate
+    which one campt or wac_camera_model "should" pick. Ground -> image -> ground has no such
+    ambiguity: whichever framelet gets picked, projecting its own answer back to ground through
+    campt's trusted inverse must reproduce the same ground point, or something is wrong.
+
+    Systematizes a live, one-off Docker run from the original wac-jigsaw investigation
+    (docs/wac-jigsaw-investigation.md, "0.00m ground error... spanning the crop's full sample/line
+    range") that was never captured as re-runnable code. Also, unlike that original run, this
+    exercises the crop's *current* shape model (ISIS's real global lunar DEM,
+    isis_wac.run_spiceinit's default since the DEM-shape fix) rather than whatever was attached at
+    the time that investigation ran (the ellipsoid -- that fix didn't exist yet). campt's own
+    LocalRadius, not an assumed constant radius, supplies each grid point's real 3D position, so
+    this exercises real elevation end to end, not just ray direction."""
+    images = trntest.read_manifest("notebooks/dataset_manifest.csv")
+    session = trntest.Session()
+    dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
+    dataset.populate(limit=1)
+    entry = dataset[0]
+    cub_path = entry.crop_result.cub_path
+
+    with warnings.catch_warnings():
+        # NotGeoreferencedWarning is expected for an ISIS .cub at this pipeline stage (no
+        # geotransform yet, not a bug) -- see plotting.read_raster_band's own docstring.
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        with rasterio.open(cub_path) as src:
+            n_lines = src.height
+    n_framelets = n_lines // wac_camera_model.FRAMELET_HEIGHT
+    et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(cub_path, n_lines)
+
+    # 3x3 grid spanning the crop's real extent, inset 10% from each edge to stay well clear of
+    # any single-framelet-edge ambiguity (matching the original investigation's own grid).
+    n_samples = 704  # trntest.wac.SAMPLES, matching wac_camera_model's own import
+    sample_grid = [n_samples * f for f in (0.1, 0.5, 0.9)]
+    line_grid = [n_lines * f for f in (0.1, 0.5, 0.9)]
+
+    ground_errors_m = []
+    for sample in sample_grid:
+        for line in line_grid:
+            lon_deg, lat_deg, radius_m = _campt_image_to_ground(cub_path, sample, line)
+            ground_me_m = np.array(tie_points.lonlat_to_ground_km(lon_deg, lat_deg, radius_m / 1000.0)) * 1000.0
+
+            predicted = wac_camera_model.find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line)
+            assert predicted is not None, f"({sample},{line}) -> no framelet found round-tripping its own point"
+
+            lon2_deg, lat2_deg, radius2_m = _campt_image_to_ground(cub_path, predicted[0], predicted[1])
+            ground2_me_m = np.array(tie_points.lonlat_to_ground_km(lon2_deg, lat2_deg, radius2_m / 1000.0)) * 1000.0
+
+            ground_errors_m.append(np.linalg.norm(ground2_me_m - ground_me_m))
+
+    ground_errors_m = np.array(ground_errors_m)
+    print(f"ground round-trip errors (m): {ground_errors_m}")
+    assert ground_errors_m.max() < 1.0  # matching the original investigation's own "0.00m" finding
