@@ -128,7 +128,7 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
         dem = src.read(1)
         dem_bounds = src.bounds
 
-    moon_geographic_crs = "+proj=longlat +R=1737400 +no_defs"
+    moon_geographic_crs = lunaserv.geographic_crs()
     min_polygon_points = 3
     corners = [camera.footprint_lonlat_deg[name] for name in ("top_left", "top_right", "bottom_right", "bottom_left")]
     corners = [c for c in corners if c is not None]

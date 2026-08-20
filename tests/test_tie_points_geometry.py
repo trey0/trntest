@@ -1,9 +1,12 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pytest
+import rasterio
+from matplotlib.path import Path as MplPath
 
-from trntest import isis_wac, tie_points
+from trntest import isis_wac, tie_points, wac_camera_model
 from trntest.camera import Camera
 from trntest.config import TrntestConfig
 
@@ -73,42 +76,113 @@ def test_inscribed_bbox_shrinks_for_skewed_quadrilateral():
     assert lat_max - lat_min < 10.0
 
 
-_FAKE_MODEL = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+def test_footprint_to_local_m_round_trip():
+    corners = {
+        "top_left": (10.0, 40.0),
+        "top_right": (10.5, 40.0),
+        "bottom_right": (10.5, 39.5),
+        "bottom_left": (10.0, 39.5),
+        "center": (10.25, 39.75),
+    }
+    center_lon_deg, center_lat_deg = corners["center"]
+
+    points_m = tie_points._footprint_to_local_m(corners, center_lon_deg, center_lat_deg)
+    round_tripped = tie_points._local_m_to_lonlat(points_m, center_lon_deg, center_lat_deg)
+
+    for name, (lon, lat) in corners.items():
+        rt_lon, rt_lat = round_tripped[name]
+        assert rt_lon == pytest.approx(lon % 360.0, abs=1e-6)
+        assert rt_lat == pytest.approx(lat, abs=1e-6)
 
 
-def test_resolve_crop_pixels_merges_successful_points_with_isis_convention_offset(monkeypatch):
+def test_die5_selection_near_pole_raw_degrees_distort_a_real_square_into_a_trapezoid():
+    """Regression for the near-polar die5 limitation (docs/history.md's Phase 30, fixed in Phase 64):
+    a real (isotropic-meters) square ground patch near the pole, run through `inscribed_bbox`
+    directly in raw lon/lat degrees, comes back as a real trapezoid -- its south and north edges have
+    genuinely different real (meters) widths -- once converted back to the ground, even though it's
+    a "rectangle" in degree space. Routing the same corners through `_footprint_to_local_m` first
+    (what `select_tie_points` now does) recovers the true square almost exactly, since the corners
+    are already the exact square in that frame."""
+    center_lon_deg, center_lat_deg = 90.0, 89.0  # near-polar, away from the 0/360 antimeridian seam
+    half_m = 15_000.0  # a ~30km-wide real square, comparable to a real camera footprint
+    corners_m = {
+        "top_left": (-half_m, half_m),
+        "top_right": (half_m, half_m),
+        "bottom_right": (half_m, -half_m),
+        "bottom_left": (-half_m, -half_m),
+        "center": (0.0, 0.0),
+    }
+    corners_lonlat = tie_points._local_m_to_lonlat(corners_m, center_lon_deg, center_lat_deg)
+
+    # Local-meters path (the fix): inscribed_bbox in its own native frame recovers the true square.
+    inscribed_m = tie_points.inscribed_bbox(corners_m, corners_m["center"])
+    assert inscribed_m == pytest.approx((-half_m, half_m, -half_m, half_m), rel=1e-6)
+
+    poly = MplPath([corners_lonlat[name] for name in tie_points.CORNER_NAMES])
+    points_m = tie_points.die5_points(inscribed_m, corners_m["center"])
+    points_fixed = tie_points._local_m_to_lonlat(points_m, center_lon_deg, center_lat_deg)
+    assert all(poly.contains_point(p) for p in points_fixed.values())
+
+    # Raw-degree path (the old behavior): the same true square's inscribed box, computed directly in
+    # lon/lat degrees, is a real trapezoid once converted back to meters -- not floating-point noise,
+    # a >30% real difference in south vs. north edge width.
+    inscribed_deg = tie_points.inscribed_bbox(corners_lonlat, corners_lonlat["center"])
+    lon_min, lon_max, lat_min, lat_max = inscribed_deg
+    box_lonlat = {
+        "sw": (lon_min, lat_min),
+        "se": (lon_max, lat_min),
+        "nw": (lon_min, lat_max),
+        "ne": (lon_max, lat_max),
+    }
+    box_m = tie_points._footprint_to_local_m(box_lonlat, center_lon_deg, center_lat_deg)
+    south_width_m = box_m["se"][0] - box_m["sw"][0]
+    north_width_m = box_m["ne"][0] - box_m["nw"][0]
+    assert south_width_m / north_width_m > 1.3
+
+
+def _write_fake_crop_cube(path: Path, n_framelets: int = 5) -> None:
+    """A minimal real (not mocked) single-band raster, just so `resolve_crop_pixels` can read a
+    real `n_lines` off it via `rasterio` -- matches this project's existing test convention of real
+    small fixture files over mocking rasterio's own internals (see e.g. test_craters.py)."""
+    n_lines = n_framelets * wac_camera_model.FRAMELET_HEIGHT
+    with rasterio.open(path, "w", driver="GTiff", height=n_lines, width=10, count=1, dtype="uint8") as dst:
+        dst.write(np.zeros((n_lines, 10), dtype="uint8"), 1)
+
+
+def _fake_crop_result(tmp_path: Path) -> "isis_wac.CropResult":
+    cub_path = tmp_path / "crop.cub"
+    _write_fake_crop_cube(cub_path)
+    return isis_wac.CropResult(cub_path=cub_path)
+
+
+def test_resolve_crop_pixels_merges_successful_points_with_isis_convention_offset(tmp_path, monkeypatch):
     points = {"center": {"lonlat": (10.0, 20.0), "synthetic_px": (5.0, 6.0)}}
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: (100.0, 50.0))
+    monkeypatch.setattr(wac_camera_model, "calibrate_et_per_crop_line", lambda cub_path, n_lines: (0.0, 1.0))
+    monkeypatch.setattr(wac_camera_model, "find_framelet_and_project", lambda *args, **kwargs: (100.0, 50.0))
 
-    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+    resolved = tie_points.resolve_crop_pixels(points, _fake_crop_result(tmp_path), config=TrntestConfig())
 
     assert resolved["center"]["synthetic_px"] == (5.0, 6.0)  # other fields preserved
     assert resolved["center"]["crop_px"] == (99.5, 49.5)  # ISIS's 1-based Sample/Line -> 0-based corner
 
 
-def test_resolve_crop_pixels_drops_points_that_dont_project(monkeypatch, capsys):
+def test_resolve_crop_pixels_raises_on_unresolved_point(tmp_path, monkeypatch):
     points = {
         "top_left": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)},
         "center": {"lonlat": (2.0, 2.0), "synthetic_px": (1.0, 1.0)},
     }
 
-    def fake_ground_to_image_pixel(model, lon, lat):
-        return None if lon == 1.0 else (10.0, 10.0)
+    calls = []
 
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", fake_ground_to_image_pixel)
+    def fake_find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line, correction=None):
+        calls.append(ground_me_m)
+        return None if len(calls) == 1 else (10.0, 10.0)
 
-    resolved = tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+    monkeypatch.setattr(wac_camera_model, "calibrate_et_per_crop_line", lambda cub_path, n_lines: (0.0, 1.0))
+    monkeypatch.setattr(wac_camera_model, "find_framelet_and_project", fake_find_framelet_and_project)
 
-    assert set(resolved) == {"center"}
-    assert "top_left" in capsys.readouterr().out
-
-
-def test_resolve_crop_pixels_raises_if_none_resolve(monkeypatch):
-    points = {"center": {"lonlat": (1.0, 1.0), "synthetic_px": (0.0, 0.0)}}
-    monkeypatch.setattr(isis_wac, "ground_to_image_pixel", lambda model, lon, lat: None)
-
-    with pytest.raises(RuntimeError):
-        tie_points.resolve_crop_pixels(points, _FAKE_MODEL)
+    with pytest.raises(RuntimeError, match="top_left"):
+        tie_points.resolve_crop_pixels(points, _fake_crop_result(tmp_path), config=TrntestConfig())
 
 
 def _fake_camera(n_frames_for_square_crop: int, reverse: bool) -> Camera:

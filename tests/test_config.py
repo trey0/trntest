@@ -80,8 +80,3 @@ def test_unknown_key_raises(tmp_path):
 
     with pytest.raises(ValueError, match="not_a_real_field"):
         load_config(bad_file)
-
-
-def test_moon_radius_m_derived_from_km():
-    config = TrntestConfig(moon_radius_km=1000.0)
-    assert config.moon_radius_m == 1_000_000.0

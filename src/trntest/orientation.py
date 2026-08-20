@@ -84,17 +84,13 @@ def compute_display_rotations(
     synthetic_center = camera.footprint_lonlat_deg["center"]
     assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
     synthetic_center_lon, synthetic_center_lat = synthetic_center
-    north_synthetic = north_tangent_km(
-        tie_points.lonlat_to_ground_km(synthetic_center_lon, synthetic_center_lat, config.moon_radius_km)
-    )
+    north_synthetic = north_tangent_km(tie_points.lonlat_to_ground_km(synthetic_center_lon, synthetic_center_lat))
     k_synthetic, dev_synthetic = best_k_for_north_up(
         r_synthetic[:, 0], -r_synthetic[:, 1], north_synthetic, candidates=(0, 1, 2, 3)
     )
 
     crop_center_lon, crop_center_lat = crop_corners["center"]
-    north_crop = north_tangent_km(
-        tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat, config.moon_radius_km)
-    )
+    north_crop = north_tangent_km(tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat))
     # "Up" for k=0 (row 0 at the top) is backward in time when wac.fetch_vis_mosaic stacked frames
     # in their natural order, but *forward* in time when it stacked them in reverse
     # (`camera.reverse_crop_along_track`) -- must track whichever that module actually did for this

@@ -48,7 +48,7 @@ import dataclasses
 import json
 
 import trntest
-from trntest import craters, isis_wac, plotting, tie_points
+from trntest import craters, plotting, tie_points
 
 images = trntest.read_manifest("dataset_manifest.csv")
 print(f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv)")
@@ -212,13 +212,10 @@ entry.hillshade.plot_overlay(title="Phase 5B: synthetic render over basemap", la
 # Unlike 5B, 6B does *not* go through ASP's `mapproject` via a CSM/ISD sidecar. That path was tried extensively and abandoned: investigation traced its bad geometry to a real bug in `usgscsm`'s `UsgsAstroPushFrameSensorModel::groundToImage` (the function `mapproject` calls once per output pixel) -- an unbracketed secant search over framelet index that's unreliable for Pushframe images, badly so for a short crop. Confirmed independent of any ISD authoring choice (varying every plausible ISD field made no difference), confirmed via a chained-iteration round-trip test that never converges to a stable answer for the crop, and confirmed even the long-trusted *full-cube* reference used throughout this notebook's earlier validation is itself measurably affected (~0.2-0.4 correlation against ISIS's own native reprojection, despite the two using literally the same source pixels). `TrnTestCropImage.plot_overlay()` instead uses ISIS's own native camera model via `cam2map` (`isis_wac.run_cam2map_for_crop`) -- confirmed self-consistent regardless of crop size (crop vs. full cube agree to 0.9999986 correlation) and independently checked against `pyproj`'s own math to sub-micrometer precision. See `docs/history.md`'s dated entry for the full investigation.
 
 # %% [markdown]
-# `isis_wac.resolve_ground_to_image_model()` decides which camera-model authority the real crop's own tie points should be queried against: try a CSM ISD sidecar first (`isd_generate`, same tool 5B's `mapproject` uses), and only fall back to the crop's native, SPICE-embedded camera model if the ISD resolves to a Pushframe sensor model -- the class `mapproject`'s `groundToImage` is known unreliable for (see 6B's notes above). For WAC-VIS this always takes the fallback branch, but the decision itself is real (derived from the ISD's own `name_model`), not hardcoded. `tie_points.resolve_crop_pixels()` then queries each tie point's real pixel location in the real crop via ISIS's own `campt` -- a genuine ground-to-image lookup through a validated tool, replacing the deprecated SPICE-only approximation `select_tie_points` used to compute this same value with (see `tie_points.py`'s module docstring for the measured discrepancy this fixes). A die5 point the real camera doesn't actually see (the approximate footprint used to pick candidate points can be off enough for this to happen for real, e.g. near the poles) is dropped with a printed warning rather than breaking the run.
+# `tie_points.resolve_crop_pixels()` queries each tie point's real pixel location in the real crop via `wac_camera_model.find_framelet_and_project` -- a from-scratch reimplementation of ISIS's own WAC-VIS camera model, validated to exact (0.000px) agreement with real ISIS `campt` output, replacing the deprecated SPICE-only approximation `select_tie_points` used to compute this same value with (see `tie_points.py`'s module docstring for the measured discrepancy this fixes). Used instead of a direct `campt` ground-to-image query (`isis_wac.ground_to_image_pixel`) because `campt`'s own solve has a real, scattered (~38% on this project's own default candidate) failure rate for WAC's Pushframe sensor -- a known upstream ISIS bug, not an edge-of-crop artifact (see `docs/wac-jigsaw-investigation.md`) -- that `find_framelet_and_project`'s own containment check sidesteps entirely. A die5 point still not covered by any real framelet (the approximate footprint used to pick candidate points can be off enough for this to happen for real, e.g. near the poles) is dropped with a printed warning rather than breaking the run.
 
 # %%
-ground_to_image_model = isis_wac.resolve_ground_to_image_model(
-    entry.stitched, entry.crop_result, entry.per_image_config
-)
-tie_point_results = tie_points.resolve_crop_pixels(tie_point_results, ground_to_image_model)
+tie_point_results = tie_points.resolve_crop_pixels(tie_point_results, entry.crop_result)
 for name, r in tie_point_results.items():
     print(f"{name:12s} crop_px={r['crop_px']}")
 

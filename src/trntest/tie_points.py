@@ -9,23 +9,39 @@ rather than relying on the eye to judge alignment.
 
 Procedure (split into two stages -- see `select_tie_points`/`resolve_crop_pixels`):
 1. Get each image's own ground footprint (a quadrilateral in lon/lat).
-2. Find each image's own "inscribed" axis-aligned lon/lat bounding box (a box entirely inside that
-   quadrilateral) -- see `inscribed_bbox` for the (deliberately approximate) method.
-3. Intersect the two boxes -> the ground area both images actually cover.
-4. Pick 5 points in that shared box, well clear of its edges (10% margin), in the die's "5"/X
-   pattern (4 corners + center).
+2. Project each footprint into a shared local Orthographic frame (meters, centered on the synthetic
+   camera's own boresight ground point -- see `_footprint_to_local_m`), then find each image's own
+   "inscribed" axis-aligned bounding box in that frame (a box entirely inside the quadrilateral) --
+   see `inscribed_bbox` for the (deliberately approximate, but now planar-metric rather than
+   raw-degree) method. Doing this in local meters rather than raw lon/lat degrees matters: a
+   raw-degree axis-aligned box is a badly distorted shape on the actual sphere near the poles, where
+   a degree of longitude covers a rapidly shrinking real distance -- confirmed live to actually drop
+   die5 points there (see docs/history.md's Phase 30 and docs/plan.md's now-resolved "Accepted, not
+   a bug" item). `inscribed_bbox`/`intersect_bbox`/`die5_points` themselves are pure planar-geometry
+   functions with no lon/lat-specific logic, so this only changes what coordinates they're fed.
+3. Intersect the two boxes (still in local meters) -> the ground area both images actually cover.
+4. Pick 5 points in that shared box (still in local meters), well clear of its edges (10% margin),
+   in the die's "5"/X pattern (4 corners + center), then project back to lon/lat
+   (`_local_m_to_lonlat`).
 5. Project each point into both images' pixel coordinates:
    - synthetic image: a closed-form pinhole inverse (`project_ground_to_synthetic_pixel`), from the
      exact fixed pose that rendered it -- this is exact, not an approximation of some other "real"
      camera model, so it's untouched by the change below.
-   - real WAC crop: **a real ISIS `campt` ground-to-image query** (`isis_wac.ground_to_image_pixel`,
-     via `isis_wac.resolve_ground_to_image_model`) against the actual, already-produced crop cube --
-     not a hand-rolled SPICE approximation. `project_ground_to_crop_pixel`/`_crop_pixel_at_frame`
-     (below) are the **deprecated** predecessor: a frame-index bisection over `camera.py`'s SPICE
-     pose, kept for reference/comparison only. Switched because it measurably disagreed with the
+   - real WAC crop: **`wac_camera_model.find_framelet_and_project`**, a from-scratch reimplementation
+     of ISIS's own WAC-VIS camera model (validated to exact, 0.000px agreement with real ISIS `campt`
+     output) against the actual, already-produced crop cube -- not a hand-rolled SPICE approximation,
+     and not `campt` itself. `project_ground_to_crop_pixel`/`_crop_pixel_at_frame` (below) are the
+     **deprecated** original predecessor: a frame-index bisection over `camera.py`'s SPICE pose, kept
+     for reference/comparison only. First switched to a genuine ISIS `campt` ground-to-image query
+     (`isis_wac.ground_to_image_pixel`) because the SPICE bisection measurably disagreed with the
      real, cube-embedded camera model -- confirmed live on this project's actual default candidate: a
      ~92-96px (out of 994 total lines, ~10%) along-track discrepancy, and 2 of the 5 SPICE-chosen die5
-     points weren't even visible to the real camera at all under its own real geometry. Steps 1-4
+     points weren't even visible to the real camera at all under its own real geometry. Then switched
+     again, off `campt` itself, once a separate investigation (`docs/wac-jigsaw-investigation.md`)
+     found `campt`'s own ground-to-image solve has a real, scattered (~38% on this project's own
+     default candidate) failure rate for WAC's Pushframe sensor -- a known upstream ISIS bug
+     (`PushFrameCameraGroundMap::GetLocalNormal`, confirmed not an edge-of-crop artifact), which
+     `find_framelet_and_project`'s own from-scratch containment check sidesteps entirely. Steps 1-4
      above (point *selection*) are unaffected and still use the SPICE-approximate footprint -- that's
      only ever used to pick plausible candidate points, not to place them; step 5 is where accuracy
      actually matters, and that's what moved to a validated tool. Because step 5's real crop_px
@@ -42,11 +58,16 @@ was negligible, ~0.03%, given the small off-nadir angle); the synthetic image's 
 projection is axis-agnostic (it just uses the real `R` matrix directly).
 """
 
+import warnings
+
 import numpy as np
+import rasterio
+import rasterio.errors
+import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import isis_wac, wac
+from trntest import isis_wac, lunaserv, wac, wac_camera_model
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -54,7 +75,7 @@ from trntest.camera import (
     frame_et,
     ray_sphere_intersect_range,
 )
-from trntest.config import DEFAULT_MOON_RADIUS_KM, TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
 
 CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")  # polygon winding order
 
@@ -63,7 +84,7 @@ CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")  # polyg
 _BISECTION_MIN_INTERVAL = 1e-7
 
 
-def lonlat_to_ground_km(lon_deg: float, lat_deg: float, moon_radius_km: float = DEFAULT_MOON_RADIUS_KM) -> np.ndarray:
+def lonlat_to_ground_km(lon_deg: float, lat_deg: float, moon_radius_km: float = MOON_RADIUS_KM) -> np.ndarray:
     return np.array(spice.latrec(moon_radius_km, np.radians(lon_deg), np.radians(lat_deg)))
 
 
@@ -260,12 +281,15 @@ def project_ground_to_crop_pixel(
 
 
 def inscribed_bbox(corners: dict, interior_point: tuple, shrink_steps: int = 40) -> tuple:
-    """An approximate (not maximum-area) axis-aligned lon/lat rectangle inscribed in the polygon
-    defined by `corners`: binary-searches a single isotropic shrink factor from the corners' own
-    bounding box (centered at `interior_point`, which must be inside the polygon) until all 4
-    shrunk-rectangle corners test as inside. There's no simple closed form for the true
+    """An approximate (not maximum-area) axis-aligned rectangle inscribed in the polygon defined by
+    `corners`: binary-searches a single isotropic shrink factor from the corners' own bounding box
+    (centered at `interior_point`, which must be inside the polygon) until all 4 shrunk-rectangle
+    corners test as inside. There's no simple closed form for the true
     largest-inscribed-rectangle-in-a-quadrilateral; this is a deliberate, documented
-    simplification, adequate for placing visualization tie points."""
+    simplification, adequate for placing visualization tie points. Purely planar -- no lon/lat-
+    specific logic -- so `select_tie_points` feeds it local Orthographic meters, not raw lon/lat
+    degrees, to avoid the near-polar distortion raw degrees would introduce (see the module
+    docstring)."""
     poly = Path([corners[name] for name in CORNER_NAMES])
     lons = [corners[name][0] for name in CORNER_NAMES]
     lats = [corners[name][1] for name in CORNER_NAMES]
@@ -334,6 +358,34 @@ def die5_points(bbox: tuple, center: tuple, margin_frac: float = 0.1) -> dict:
     }
 
 
+def _footprint_to_local_m(corners: dict, center_lon_deg: float, center_lat_deg: float) -> dict:
+    """Projects a `{name: (lon_deg, lat_deg)}` footprint dict (e.g. `camera.footprint_lonlat_deg`,
+    `crop_footprint_corners_for_camera`'s return) into a local Orthographic frame (meters) centered
+    on `(center_lon_deg, center_lat_deg)`, via `rasterio.warp.transform` -- the same real PROJ-backed
+    tool `control_network.map_points_to_lonlat` already uses for the point-wise (not bbox) case,
+    rather than a hand-rolled projection formula."""
+    names = list(corners)
+    lons = [corners[n][0] for n in names]
+    lats = [corners[n][1] for n in names]
+    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    xs, ys = rasterio.warp.transform(lunaserv.geographic_crs(), ortho_crs, lons, lats)
+    return dict(zip(names, zip(xs, ys, strict=True), strict=True))
+
+
+def _local_m_to_lonlat(points_m: dict, center_lon_deg: float, center_lat_deg: float) -> dict:
+    """Inverse of `_footprint_to_local_m`: local Orthographic meters -> `(lon_deg, lat_deg)`, in this
+    project's own 0-360 Positive-East convention. `rasterio.warp.transform` always returns longitude
+    in the standard -180..180 convention regardless of the destination CRS's own definition
+    (confirmed elsewhere in this project, see `craters.py`'s own note) -- normalized here via
+    `% 360.0`, the same fix-up `control_network.map_points_to_lonlat` already applies."""
+    names = list(points_m)
+    xs = [points_m[n][0] for n in names]
+    ys = [points_m[n][1] for n in names]
+    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    lons, lats = rasterio.warp.transform(ortho_crs, lunaserv.geographic_crs(), xs, ys)
+    return {n: (lon % 360.0, lat) for n, lon, lat in zip(names, lons, lats, strict=True)}
+
+
 def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None) -> dict:
     """Pick 5 real ground points visible in both images (die's-5 pattern -- see this module's
     docstring) and project each into the synthetic image's exact pixel coordinates. Requires the
@@ -359,15 +411,26 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
 
     synthetic_center = synthetic_corners["center"]
     assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
-    inscribed_synthetic = inscribed_bbox(synthetic_corners, synthetic_center)
-    inscribed_crop = inscribed_bbox(crop_corners, crop_corners["center"])
-    shared_bbox = intersect_bbox(inscribed_synthetic, inscribed_crop)
+    center_lon_deg, center_lat_deg = synthetic_center
 
-    points = die5_points(shared_bbox, synthetic_center)
+    # Do the box-inscribing/intersection/placement geometry in local isotropic meters, not raw
+    # lon/lat degrees -- see the module docstring for why (near-polar longitude convergence badly
+    # distorts a raw-degree axis-aligned box). Both footprints share one local frame, centered on
+    # the synthetic camera's own boresight ground point, so `intersect_bbox` compares like with
+    # like; `synthetic_corners_m["center"]` is that frame's own origin, (0.0, 0.0).
+    synthetic_corners_m = _footprint_to_local_m(synthetic_corners, center_lon_deg, center_lat_deg)
+    crop_corners_m = _footprint_to_local_m(crop_corners, center_lon_deg, center_lat_deg)
+
+    inscribed_synthetic_m = inscribed_bbox(synthetic_corners_m, synthetic_corners_m["center"])
+    inscribed_crop_m = inscribed_bbox(crop_corners_m, crop_corners_m["center"])
+    shared_bbox_m = intersect_bbox(inscribed_synthetic_m, inscribed_crop_m)
+
+    points_m = die5_points(shared_bbox_m, synthetic_corners_m["center"])
+    points = _local_m_to_lonlat(points_m, center_lon_deg, center_lat_deg)
 
     results = {}
     for name, (lon, lat) in points.items():
-        ground_km = lonlat_to_ground_km(lon, lat, config.moon_radius_km)
+        ground_km = lonlat_to_ground_km(lon, lat)
         px, py = project_ground_to_synthetic_pixel(ground_km, c_km, r_cam_to_me, fu, fv, cu, cv)
 
         image_size = config.image_size
@@ -378,38 +441,51 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
     return results
 
 
-def resolve_crop_pixels(tie_points: dict, model: "isis_wac.GroundToImageModel") -> dict:
-    """Fill in each selected tie point's real `crop_px`, via a genuine ISIS `campt` ground-to-image
-    query against the actual WAC crop (`model`, from `isis_wac.resolve_ground_to_image_model`) -- see
-    this module's docstring for why this replaced the deprecated SPICE-only projection below.
-    Converts ISIS's 1-based, pixel-center `Sample`/`Line` convention to this project's existing
-    0-based, pixel-corner convention (`- 0.5`, matching `project_ground_to_synthetic_pixel`'s
-    `cu = image_size / 2.0`-style pinhole formulas) so both images' tie points plot consistently.
+def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: TrntestConfig | None = None) -> dict:
+    """Fill in each selected tie point's real `crop_px`, via `wac_camera_model.
+    find_framelet_and_project` -- a hand-rolled ground-to-image projection validated to exact
+    (0.000px) agreement with real ISIS `campt` output, used instead of `isis_wac.
+    ground_to_image_pixel`/`resolve_ground_to_image_model`'s `campt`-based query because `campt`'s
+    own ground-to-image solve has a real, confirmed, scattered (~38% on this project's own default
+    candidate) failure rate for WAC's Pushframe sensor -- a known upstream ISIS bug
+    (`PushFrameCameraGroundMap::GetLocalNormal`, DOI-USGS/ISIS3#4256), not an edge-of-crop artifact
+    (measured: no significant edge-distance difference between resolved and dropped points). See
+    `docs/wac-jigsaw-investigation.md` for the full investigation and validation trail.
+    `find_framelet_and_project` sidesteps the bug entirely -- a real 2D containment check on a
+    from-scratch reimplementation of ISIS's own optics chain, not ISIS's own buggy solve -- rather
+    than working around it. Converts its `(sample, line)` (ISIS's own 1-based, pixel-center
+    convention) to this project's existing 0-based, pixel-corner convention (`- 0.5`, matching
+    `project_ground_to_synthetic_pixel`'s `cu = image_size / 2.0`-style pinhole formulas) so both
+    images' tie points plot consistently. No `PoseCorrection` is applied here -- this project's own
+    existing SPICE-derived pose, not a1's fitted correction, which is a separate, opt-in refinement
+    for a different use case (`isis_wac.apply_pose_correction_to_crop`).
 
-    Points the real camera doesn't actually see are dropped (with a printed warning), not raised --
-    confirmed live this happens for real, plausible die5 points (`select_tie_points`'s footprint
-    estimate is only ever approximate, see the module docstring); only raises if *none* of the points
-    resolve, since that would mean something is fundamentally wrong, not just an edge case in the
-    approximate footprint."""
+    `select_tie_points` now places every candidate point inside the shared FOV's own local-meters
+    inscribed box (see the module docstring), not an approximate raw-degree footprint that could
+    legitimately overshoot -- so a point genuinely failing to resolve here means something is
+    fundamentally wrong (a real WAC pushframe geometry edge case, or a footprint miscalculation),
+    not an expected case to tolerate. Raises immediately, naming the failing point, rather than
+    dropping it with a printed warning."""
+    config = config or load_config()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        with rasterio.open(crop.cub_path) as src:
+            n_lines = src.height
+    n_framelets = n_lines // wac_camera_model.FRAMELET_HEIGHT
+    et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(crop.cub_path, n_lines)
+
     resolved = {}
-    dropped = []
     for name, info in tie_points.items():
         lon, lat = info["lonlat"]
-        pixel = isis_wac.ground_to_image_pixel(model, lon, lat)
+        ground_me_m = lonlat_to_ground_km(lon, lat) * 1000.0
+        pixel = wac_camera_model.find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line)
         if pixel is None:
-            dropped.append(name)
-            continue
+            raise RuntimeError(
+                f"tie point {name!r} at (lon={lon}, lat={lat}) doesn't project into the real WAC "
+                "crop under its actual camera model -- select_tie_points places every point inside "
+                "the shared FOV's own local-meters inscribed box, so this means something is "
+                "fundamentally wrong, not an expected edge case"
+            )
         sample, line = pixel
         resolved[name] = {**info, "crop_px": (sample - 0.5, line - 0.5)}
-
-    if not resolved:
-        raise RuntimeError(
-            "none of the selected tie points project into the real WAC crop -- "
-            "select_tie_points's approximate footprint may be badly wrong for this candidate"
-        )
-    if dropped:
-        print(
-            f"tie_points.resolve_crop_pixels: {len(dropped)} of {len(tie_points)} tie point(s) don't "
-            f"project into the real WAC crop under its actual camera model, dropped: {dropped}"
-        )
     return resolved

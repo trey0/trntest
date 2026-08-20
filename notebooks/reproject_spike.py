@@ -41,6 +41,7 @@ import spiceypy as spice
 import trntest
 from trntest import camera as camera_module
 from trntest import isis_wac, lunaserv, plotting, render
+from trntest.config import MOON_RADIUS_KM
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -242,7 +243,7 @@ fig.tight_layout()
 # %%
 c_km = np.array(entry.camera.camera_center_moon_me_m) / 1000.0
 r_cam_to_me = np.array(entry.camera.r_cam_to_me)
-fu_orig = entry.camera.focal_length_px
+fu_orig = entry.camera.focal_length_u_px
 cu = session.config.image_size / 2.0
 
 boresight_ground_km = camera_module.boresight_ground_point_km(c_km, r_cam_to_me)
@@ -260,7 +261,7 @@ for name, lonlat in entry.crop_footprint.items():
     if name == "center" or lonlat is None:
         continue
     lon, lat = lonlat
-    ground_km = np.array(spice.latrec(session.config.moon_radius_km, np.radians(lon), np.radians(lat)))
+    ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(lon), np.radians(lat)))
     crop_ct_km[name], crop_at_km[name] = decompose_km(ground_km)
 print("Crop corners (cross-track km, along-track km):")
 for name, cross_km in crop_ct_km.items():
@@ -413,7 +414,7 @@ def evaluate_reproject_coverage(entry, *, fu_scale: float, at_margin: float) -> 
         if name == "center" or lonlat is None:
             continue
         lon, lat = lonlat
-        ground_km = np.array(spice.latrec(session.config.moon_radius_km, np.radians(lon), np.radians(lat)))
+        ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(lon), np.radians(lat)))
         _, crop_at_km[name] = decompose(ground_km)
     target_near_km = -np.mean([v for v in crop_at_km.values() if v < 0])
     target_far_km = np.mean([v for v in crop_at_km.values() if v >= 0])

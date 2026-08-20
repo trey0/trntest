@@ -18,7 +18,7 @@ import numpy as np
 import spiceypy as spice
 
 from trntest import cache, spice_kernels
-from trntest.config import DEFAULT_MOON_RADIUS_KM, TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
 
 PDS_NS = {
     "pds": "http://pds.nasa.gov/pds4/pds/v1",
@@ -204,7 +204,7 @@ def rotation_about_boresight(k: int) -> np.ndarray:
 
 
 def ray_sphere_intersect_range(
-    origin_km: np.ndarray, direction_unit: np.ndarray, moon_radius_km: float = DEFAULT_MOON_RADIUS_KM
+    origin_km: np.ndarray, direction_unit: np.ndarray, moon_radius_km: float = MOON_RADIUS_KM
 ) -> float | None:
     """Distance along `direction_unit` from `origin_km` to the Moon's mean sphere; None if it misses."""
     b = 2 * np.dot(origin_km, direction_unit)
@@ -426,7 +426,7 @@ def solve_corrected_fov(
         if name == "center" or lonlat is None:
             continue
         lon, lat = lonlat
-        ground_km = np.array(spice.latrec(config.moon_radius_km, np.radians(lon), np.radians(lat)))
+        ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(lon), np.radians(lat)))
         _, along_track_km[name] = decompose_km(ground_km)
     target_near_km = -np.mean([v for v in along_track_km.values() if v < 0])
     target_far_km = np.mean([v for v in along_track_km.values() if v >= 0])
@@ -536,7 +536,7 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     stitched = isis_wac.run_pipeline(k == _REVERSED_TIME_K, frame_timing, config)
     center_line = center_frame_index * isis_wac.VIS_BLOCK_HEIGHT
     target_lon, target_lat = isis_wac.ground_point_at_pixel(stitched.cub_path, isis_wac.SAMPLES / 2.0, center_line)
-    target_ground_km = np.array(spice.latrec(config.moon_radius_km, np.radians(target_lon), np.radians(target_lat)))
+    target_ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(target_lon), np.radians(target_lat)))
     boresight_me = target_ground_km - c_meters / 1000.0
     boresight_me = boresight_me / np.linalg.norm(boresight_me)
     off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
@@ -594,7 +594,7 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
 
     write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
     footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, config.image_size)
-    render_cross_track_km, render_along_track_km = footprint_width_height_km(footprint, config.moon_radius_km)
+    render_cross_track_km, render_along_track_km = footprint_width_height_km(footprint, MOON_RADIUS_KM)
 
     return dataclasses.replace(
         provisional_camera,

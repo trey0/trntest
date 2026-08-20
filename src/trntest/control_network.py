@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import rasterio.warp
 
-from trntest import isis_wac
+from trntest import isis_wac, lunaserv
 from trntest.config import TrntestConfig, load_config
 from trntest.tie_points import lonlat_to_ground_km
 
@@ -44,15 +44,15 @@ def map_points_to_lonlat(
     """Converts `(x, y)` real map coordinates (e.g. `pose_alignment.pixel_points_to_map`'s output) in
     `crs` (this pipeline's shared local Orthographic CRS -- every camera's own is constructed the
     same way, see `lunaserv.DemOrthoResult`'s docstring) to `(lon_deg, lat_deg)` arrays in this
-    project's own 0-360 Positive-East, ellipsoid-radius convention -- the same geographic CRS
-    construction `lunaserv.py`/`craters.py` already use elsewhere (`+proj=longlat
-    +R=<moon_radius_m> +no_defs`), reused rather than reinvented. `rasterio.warp.transform` (the
+    project's own 0-360 Positive-East, ellipsoid-radius convention -- via `lunaserv.geographic_crs`,
+    the one shared source of truth for this CRS string (also used by `lunaserv.py`/`craters.py`/
+    `tie_points.py`), not an independently-built copy. `rasterio.warp.transform` (the
     point-wise sibling of `transform_bounds`, which only handles a bbox) returns longitude in the
     standard -180..180 convention regardless of the destination CRS's own definition (confirmed
     elsewhere in this project, see `craters.py`'s own note) -- normalized here via `% 360.0` to match
     `isis_wac.ground_to_image_pixel`'s own `PositiveEast360Longitude` convention."""
     config = config or load_config()
-    geo_crs = f"+proj=longlat +R={config.moon_radius_m} +no_defs"
+    geo_crs = lunaserv.geographic_crs()
     lons, lats = rasterio.warp.transform(crs, geo_crs, points_map[:, 0], points_map[:, 1])
     return np.asarray(lons) % 360.0, np.asarray(lats)
 
@@ -91,9 +91,12 @@ def resolve_control_points(
 
     Tie points whose implied ground point doesn't actually project into the original crop (can
     happen right at the crop's own edge, e.g. if `PIXRES=map` resampling extended slightly past the
-    camera's real coverage) are dropped with a printed warning, matching
-    `tie_points.resolve_crop_pixels`'s existing convention -- raises only if *none* resolve, since
-    that would mean something fundamental is wrong, not just an edge-of-crop case."""
+    camera's real coverage) are dropped with a printed warning -- unlike `tie_points.
+    resolve_crop_pixels`, which raises on any unresolved point now that its candidate points are
+    placed inside the shared FOV's own local-meters inscribed box (so a failure there means
+    something is fundamentally wrong). Here, an edge-of-crop resampling miss on a handful of a
+    many-point matched set is a real, expected case, not a sign anything is broken -- so this raises
+    only if *none* resolve."""
     wac_lons, wac_lats = map_points_to_lonlat(wac_points_map, map_crs, config)
     basemap_lons, basemap_lats = map_points_to_lonlat(basemap_points_map, map_crs, config)
 
@@ -175,7 +178,6 @@ def write_control_network(
     `(0.5, 0.5)` itself -- confirmed via direct source inspection, not assumed; feeding it
     already-1-based pixels would double-shift every measure by half a pixel)."""
     config = config or load_config()
-    moon_radius_km = config.moon_radius_km
 
     out_path = Path(out_path)
     csv_path = out_path.with_suffix(".csv")
@@ -187,7 +189,7 @@ def write_control_network(
         writer.writeheader()
         points = zip(observed_pixels, ground_lonlat, strict=True)
         for i, ((sample, line), (lon_deg, lat_deg)) in enumerate(points):
-            x_km, y_km, z_km = lonlat_to_ground_km(lon_deg, lat_deg, moon_radius_km)
+            x_km, y_km, z_km = lonlat_to_ground_km(lon_deg, lat_deg)
             writer.writerow(
                 {
                     "id": f"pt_{i:04d}",

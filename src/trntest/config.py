@@ -73,8 +73,8 @@ DEFAULT_IMAGE_SIZE = 256
 # LROC EDR/CDR SIS color-mode cross-track FOV (see camera.py for the full derivation/rationale).
 DEFAULT_WAC_VIS_COLOR_FOV_DEG = 61.4
 
-DEFAULT_MOON_RADIUS_KM = 1737.4
-DEFAULT_MOON_RADIUS_M = DEFAULT_MOON_RADIUS_KM * 1000.0
+MOON_RADIUS_KM = 1737.4
+MOON_RADIUS_M = MOON_RADIUS_KM * 1000.0
 
 # GRAIL-derived lunar GM (DE430/DE440), km^3/s^2 -- not available via spice.bodvrd from any kernel
 # this project furnishes (pck00010.tpc has body radii/orientation, not GM), so kept as a plain
@@ -182,14 +182,9 @@ class TrntestConfig:
     target_frame_index: int = DEFAULT_TARGET_FRAME_INDEX
     image_size: int = DEFAULT_IMAGE_SIZE
     wac_vis_color_fov_deg: float = DEFAULT_WAC_VIS_COLOR_FOV_DEG
-    moon_radius_km: float = DEFAULT_MOON_RADIUS_KM
     moon_gm_km3_s2: float = DEFAULT_MOON_GM_KM3_S2
     dem_target_gsd_m: float = DEFAULT_DEM_TARGET_GSD_M
     dem_padding_fraction: float = DEFAULT_DEM_PADDING_FRACTION
-
-    @property
-    def moon_radius_m(self) -> float:
-        return self.moon_radius_km * 1000.0
 
 
 _PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")
