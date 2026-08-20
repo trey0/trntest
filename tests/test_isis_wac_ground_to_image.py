@@ -291,3 +291,91 @@ def test_ground_to_image_pixels_batch_raises_on_row_count_mismatch():
     with patch.object(isis_wac, "run_quiet", side_effect=_fake_campt_batch_run_quiet(rows)):
         with pytest.raises(RuntimeError):
             isis_wac.ground_to_image_pixels_batch(model, np.array([[0.0, 0.0], [1.0, 1.0]]))
+
+
+def _fake_campt_image_batch_run_quiet(rows):
+    """A `run_quiet` stand-in for `image_to_ground_points_batch`: writes `rows` (dicts with
+    PositiveEast360Longitude/PlanetocentricLatitude/LocalRadius/Error keys) as a FLAT-format CSV to
+    whatever `to=` path the real call would have written."""
+
+    def _side_effect(cmd):
+        to_arg = next(a for a in cmd if a.startswith("to="))
+        out_path = Path(to_arg.removeprefix("to="))
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["PositiveEast360Longitude", "PlanetocentricLatitude", "LocalRadius", "Error"]
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+    return _side_effect
+
+
+def test_image_to_ground_points_batch_parses_rows_and_writes_coordlist_in_sample_line_order():
+    rows = [
+        {
+            "PositiveEast360Longitude": "169.5",
+            "PlanetocentricLatitude": "38.5",
+            "LocalRadius": "1738500.0",
+            "Error": "NULL",
+        },
+        {
+            "PositiveEast360Longitude": "999.9",  # stale carryover from the prior row -- must be ignored
+            "PlanetocentricLatitude": "999.9",
+            "LocalRadius": "999.9",
+            "Error": "Requested position does not project in camera model; no surface intersection",
+        },
+    ]
+    written_coordlist = {}
+
+    def fake_run_quiet(cmd):
+        coordlist_arg = next(a for a in cmd if a.startswith("coordlist="))
+        written_coordlist["text"] = Path(coordlist_arg.removeprefix("coordlist=")).read_text()
+        _fake_campt_image_batch_run_quiet(rows)(cmd)
+
+    with patch.object(isis_wac, "run_quiet", side_effect=fake_run_quiet):
+        ground_points = isis_wac.image_to_ground_points_batch(
+            Path("/fake/crop.cub"), np.array([[345.8, 548.5], [176.4, 866.3]])
+        )
+
+    assert ground_points == [(169.5, 38.5, 1738500.0), None]
+    # campt.xml documents image COORDLIST rows as (sample, line) -- the opposite convention from
+    # ground_to_image_pixels_batch's own (latitude, longitude) for coordtype=ground.
+    assert written_coordlist["text"] == "345.8,548.5\n176.4,866.3\n"
+
+
+def test_image_to_ground_points_batch_passes_the_right_campt_flags():
+    rows = [
+        {
+            "PositiveEast360Longitude": "0.0",
+            "PlanetocentricLatitude": "0.0",
+            "LocalRadius": "1737400.0",
+            "Error": "NULL",
+        }
+    ]
+
+    with patch.object(isis_wac, "run_quiet", side_effect=_fake_campt_image_batch_run_quiet(rows)) as mock_run_quiet:
+        isis_wac.image_to_ground_points_batch(Path("/fake/crop.cub"), np.array([[1.0, 2.0]]))
+
+    cmd = mock_run_quiet.call_args[0][0]
+    assert cmd[0] == "campt"
+    assert "usecoordlist=true" in cmd
+    assert "coordtype=image" in cmd
+    assert "format=flat" in cmd
+    assert "append=false" in cmd  # campt's own APPEND default (true) would corrupt a reused path
+    assert "allowerror=true" in cmd
+
+
+def test_image_to_ground_points_batch_raises_on_row_count_mismatch():
+    rows = [
+        {
+            "PositiveEast360Longitude": "0.0",
+            "PlanetocentricLatitude": "0.0",
+            "LocalRadius": "1737400.0",
+            "Error": "NULL",
+        }
+    ]  # only 1 row for 2 input pixels
+
+    with patch.object(isis_wac, "run_quiet", side_effect=_fake_campt_image_batch_run_quiet(rows)):
+        with pytest.raises(RuntimeError):
+            isis_wac.image_to_ground_points_batch(Path("/fake/crop.cub"), np.array([[0.0, 0.0], [1.0, 1.0]]))

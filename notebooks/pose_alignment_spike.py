@@ -301,10 +301,35 @@ et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(entry.crop_result
 print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.6f}")
 
 
+def ground_space_residual_m(cub_path, observed_pixels, ground_points_me_m):
+    """The one legitimate ground-space residual for a set of already-resolved `observed_pixels`:
+    queries `campt` (via `isis_wac.image_to_ground_points_batch`) for the real ground point each
+    pixel *actually* corresponds to under `cub_path`'s own real camera model, and compares that
+    directly (in meters, body-fixed) against the trusted `ground_points_me_m`. Deliberately avoids
+    `wac_camera_model`'s own forward-projection/framelet-search tie-break entirely -- comparing
+    predicted-vs-observed *pixels* re-litigates which of several equally-valid framelets is "right"
+    whenever a ground point sits in an overlap band (~29% of framelet height, confirmed live -- see
+    `wac_camera_model.py`'s own module docstring), which has no principled answer. This function
+    never searches for a framelet: `observed_pixels` are already fixed, real coordinates, and one
+    real pixel has exactly one real ground point -- nothing to litigate."""
+    ground_points = isis_wac.image_to_ground_points_batch(cub_path, observed_pixels)
+    errors_m = []
+    for ground_point, trusted_me_m in zip(ground_points, ground_points_me_m, strict=True):
+        if ground_point is None:
+            continue
+        lon_deg, lat_deg, radius_m = ground_point
+        observed_me_m = np.array(tie_points.lonlat_to_ground_km(lon_deg, lat_deg, radius_m / 1000.0)) * 1000.0
+        errors_m.append(np.linalg.norm(observed_me_m - trusted_me_m))
+    return np.array(errors_m)
+
+
 def resolve_3d_control_points(wac_points_map, basemap_points_map, matcher_label):
     """Shared by every matcher's 3D rows below: resolve_control_points, DEM-consistent ground truth,
-    and the baseline (uncorrected) forward-projection residual -- identical steps regardless of which
-    matcher's points come in."""
+    and the baseline (uncorrected) residual, both ways -- identical steps regardless of which
+    matcher's points come in. Reports both the pixel-space residual (via `wac_camera_model`'s own
+    forward projection -- kept for cross-checking the fit's own optimization target, but subject to
+    the framelet-overlap ambiguity `ground_space_residual_m`'s docstring explains) and the legitimate
+    ground-space one (the one actually used in `results_df` below)."""
     observed_pixels, ground_lonlat = control_network.resolve_control_points(
         wac_points_map, basemap_points_map, map_crs, ground_to_image_model, entry.per_image_config
     )
@@ -334,14 +359,25 @@ def resolve_3d_control_points(wac_points_map, basemap_points_map, matcher_label)
     baseline_residuals_px = np.array(baseline_residuals_px)
     baseline_norms = np.linalg.norm(baseline_residuals_px, axis=1)
     print(
-        f"Baseline (uncorrected): {len(baseline_residuals_px)}/{len(observed_pixels)} points resolved, "
+        f"Baseline (uncorrected), pixel-space (framelet-tiebreak-sensitive): "
+        f"{len(baseline_residuals_px)}/{len(observed_pixels)} points resolved, "
         f"residual mean {baseline_norms.mean():.2f}px, max {baseline_norms.max():.2f}px"
     )
-    return observed_pixels, ground_points_me_m, baseline_norms
+    baseline_ground_errors_m = ground_space_residual_m(entry.crop_result.cub_path, observed_pixels, ground_points_me_m)
+    print(
+        f"Baseline (uncorrected), ground-space (no ambiguity): "
+        f"{len(baseline_ground_errors_m)}/{len(observed_pixels)} points resolved, "
+        f"residual mean {baseline_ground_errors_m.mean():.1f}m, max {baseline_ground_errors_m.max():.1f}m"
+    )
+    return observed_pixels, ground_points_me_m, baseline_norms, baseline_ground_errors_m
 
 
 def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
-    """Shared by every matcher's 3D rows below: `fit_pose_correction` plus its own reporting."""
+    """Shared by every matcher's 3D rows below: `fit_pose_correction`, its own reporting, and the
+    legitimate ground-space residual for the *fitted* pose -- bakes the fit's correction into a real
+    corrected crop copy (`isis_wac.apply_pose_correction_to_crop`) and re-queries `observed_pixels`'
+    real ground points through *that* (real ISIS work, not `wac_camera_model`'s own prediction), for
+    the same ambiguity-free reason `ground_space_residual_m` exists."""
     fit = wac_camera_model.fit_pose_correction(ground_points_me_m, observed_pixels, n_framelets, et0, et_per_line)
     fit_norms = np.linalg.norm(fit.residuals_px, axis=1)
     # A control point that lands outside crop coverage under the fitted correction gets a fixed, large
@@ -354,12 +390,19 @@ def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
     rotvec_deg = np.degrees(Rotation.from_matrix(fit.correction.delta_rotation).as_rotvec())
     print(f"delta_rotation (deg, camera-frame rotation vector): {rotvec_deg}")
     print(
-        f"Fitted: {resolved.sum()}/{len(observed_pixels)} points resolved, "
-        f"residual mean {fit_norms[resolved].mean():.2f}px, max {fit_norms[resolved].max():.2f}px"
+        f"Fitted, pixel-space (framelet-tiebreak-sensitive): {resolved.sum()}/{len(observed_pixels)} points "
+        f"resolved, residual mean {fit_norms[resolved].mean():.2f}px, max {fit_norms[resolved].max():.2f}px"
     )
     if not resolved.all():
         print(f"WARNING: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
-    return fit, fit_norms, resolved
+
+    corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit.correction, entry.per_image_config)
+    fitted_ground_errors_m = ground_space_residual_m(corrected_crop.cub_path, observed_pixels, ground_points_me_m)
+    print(
+        f"Fitted, ground-space (no ambiguity): {len(fitted_ground_errors_m)}/{len(observed_pixels)} points "
+        f"resolved, residual mean {fitted_ground_errors_m.mean():.1f}m, max {fitted_ground_errors_m.max():.1f}m"
+    )
+    return fit, fit_norms, resolved, corrected_crop, fitted_ground_errors_m
 
 
 # %% [markdown]
@@ -373,8 +416,8 @@ def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
 # rows (9-10) do.** See `results_df` below for whether that held up.
 
 # %%
-observed_pixels_sift, ground_points_sift_me_m, baseline_norms_sift = resolve_3d_control_points(
-    wac_points_map, basemap_points_map, "SIFT"
+observed_pixels_sift, ground_points_sift_me_m, baseline_norms_sift, baseline_ground_errors_sift_m = (
+    resolve_3d_control_points(wac_points_map, basemap_points_map, "SIFT")
 )
 
 results.append(
@@ -385,15 +428,17 @@ results.append(
         "correction": "uncorrected",
         "dof": 0,
         "n_points": len(observed_pixels_sift),
-        "n_kept": len(baseline_norms_sift),
-        "residual_mean_m": baseline_norms_sift.mean() * target_gsd_m,
-        "residual_max_m": baseline_norms_sift.max() * target_gsd_m,
+        "n_kept": len(baseline_ground_errors_sift_m),
+        "residual_mean_m": baseline_ground_errors_sift_m.mean(),
+        "residual_max_m": baseline_ground_errors_sift_m.max(),
         "residual_mean_px": baseline_norms_sift.mean(),
     }
 )
 
 # %%
-fit_sift, fit_norms_sift, resolved_sift = fit_and_report_pose_correction(ground_points_sift_me_m, observed_pixels_sift)
+fit_sift, fit_norms_sift, resolved_sift, corrected_crop_sift, fitted_ground_errors_sift_m = (
+    fit_and_report_pose_correction(ground_points_sift_me_m, observed_pixels_sift)
+)
 
 results.append(
     {
@@ -403,9 +448,9 @@ results.append(
         "correction": "6-DOF pose",
         "dof": 6,
         "n_points": len(observed_pixels_sift),
-        "n_kept": int(resolved_sift.sum()),
-        "residual_mean_m": fit_norms_sift[resolved_sift].mean() * target_gsd_m,
-        "residual_max_m": fit_norms_sift[resolved_sift].max() * target_gsd_m,
+        "n_kept": len(fitted_ground_errors_sift_m),
+        "residual_mean_m": fitted_ground_errors_sift_m.mean(),
+        "residual_max_m": fitted_ground_errors_sift_m.max(),
         "residual_mean_px": fit_norms_sift[resolved_sift].mean(),
     }
 )
@@ -488,7 +533,7 @@ plotting.plot_overlay_toggle(
 # SIFT's), and the fit this notebook's final corrected overlay below is actually built from.
 
 # %%
-observed_pixels_lg, ground_points_lg_me_m, baseline_norms_lg = resolve_3d_control_points(
+observed_pixels_lg, ground_points_lg_me_m, baseline_norms_lg, baseline_ground_errors_lg_m = resolve_3d_control_points(
     wac_points_map_lg, basemap_points_map_lg, "LightGlue"
 )
 
@@ -500,15 +545,17 @@ results.append(
         "correction": "uncorrected",
         "dof": 0,
         "n_points": len(observed_pixels_lg),
-        "n_kept": len(baseline_norms_lg),
-        "residual_mean_m": baseline_norms_lg.mean() * target_gsd_m,
-        "residual_max_m": baseline_norms_lg.max() * target_gsd_m,
+        "n_kept": len(baseline_ground_errors_lg_m),
+        "residual_mean_m": baseline_ground_errors_lg_m.mean(),
+        "residual_max_m": baseline_ground_errors_lg_m.max(),
         "residual_mean_px": baseline_norms_lg.mean(),
     }
 )
 
 # %%
-fit_lg, fit_norms_lg, resolved_lg = fit_and_report_pose_correction(ground_points_lg_me_m, observed_pixels_lg)
+fit_lg, fit_norms_lg, resolved_lg, corrected_crop_lg, fitted_ground_errors_lg_m = fit_and_report_pose_correction(
+    ground_points_lg_me_m, observed_pixels_lg
+)
 
 results.append(
     {
@@ -518,9 +565,9 @@ results.append(
         "correction": "6-DOF pose",
         "dof": 6,
         "n_points": len(observed_pixels_lg),
-        "n_kept": int(resolved_lg.sum()),
-        "residual_mean_m": fit_norms_lg[resolved_lg].mean() * target_gsd_m,
-        "residual_max_m": fit_norms_lg[resolved_lg].max() * target_gsd_m,
+        "n_kept": len(fitted_ground_errors_lg_m),
+        "residual_mean_m": fitted_ground_errors_lg_m.mean(),
+        "residual_max_m": fitted_ground_errors_lg_m.max(),
         "residual_mean_px": fit_norms_lg[resolved_lg].mean(),
     }
 )
@@ -529,39 +576,39 @@ results.append(
 # ## Results table
 #
 # One row per (projection, matcher, correction) combination evaluated -- the original investigation's
-# combinations plus rows 5-6 (SIFT's 3D->2D pair, added afterward to test the explanation below),
-# reported systematically instead of scattered prints. `n_points` is the match/control-point set size
-# feeding that row; `n_kept` is how many actually landed inside the residual stats (RANSAC inliers for
-# the 2D rows, successfully-projected/resolved points for the 3D rows).
+# combinations plus rows 5-6 (SIFT's 3D->2D pair, added to test an explanation below), reported
+# systematically instead of scattered prints. `n_points` is the match/control-point set size feeding
+# that row; `n_kept` is how many actually landed inside the residual stats.
 #
-# **Why the 3D->2D rows' `residual_mean_px` runs higher than the 2D->2D rows' -- investigated live,
-# not guessed, across several passes, including two wrong turns worth keeping visible rather than
-# quietly erasing.**
+# **`residual_mean_px`/`residual_max_m` mean different things for the 2D->2D and 3D->2D rows, and
+# that difference is itself the finding, not an oversight -- investigated live across several passes,
+# including two wrong turns worth keeping visible rather than quietly erasing.**
 #
-# Ruled out: a stale-ellipsoid product sneaking back in (`dem_radii_m` genuinely varies, hundreds of
-# meters of std, real terrain, not a flat constant) and real local terrain relief (residual-vs-
-# elevation correlation across the full point set is ~0 -- an earlier claim that the worst points sat
-# on the highest terrain didn't survive checking against the full sample, not just its worst 5
-# points).
+# Ruled out along the way: a stale-ellipsoid product sneaking back in (`dem_radii_m` genuinely
+# varies, hundreds of meters of std, real terrain, not a flat constant); real local terrain relief
+# (residual-vs-elevation correlation across the full point set is ~0 -- an earlier claim that the
+# worst points sat on the highest terrain didn't survive checking against the full sample); and raw
+# match-set noise polluting `resolve_control_points` (tested directly via rows 5-6: SIFT's
+# already-heavily-filtered matches, fed through the same 3D pipeline, still didn't land close to
+# SIFT's own clean 2D rows -- ruling out match quality as the explanation).
 #
-# **Also ruled out, by rows 5-6 (added specifically to test it)**: raw match-set noise polluting
-# `resolve_control_points` (which does no geometric-consistency outlier rejection of its own, unlike
-# every 2D row). If that were the real explanation, SIFT's already-heavily-filtered matches
-# (`match_features`'s own two RANSAC passes -- row 7's LightGlue-raw comparison point, mean 242m but
-# max 32,289m, is genuinely noisy in a way SIFT's own matcher would already reject) fed through this
-# same 3D pipeline should have landed close to SIFT's clean 2D rows (1-4, ~0.46-0.59px). They didn't:
-# rows 5-6 come out at ~1.06-1.17px -- close to *LightGlue's* 3D rows (9-10, ~1.41-1.56px), not to
-# SIFT's own 2D rows at all.
+# **The real methodological gap, caught by a direct question about what `residual_mean_m` even was
+# for the 3D rows**: it used to be `residual_mean_px * target_gsd_m` -- a unit rescaling of the same
+# pixel-space quantity, not an independent measurement. And that pixel-space quantity itself
+# (predicted-vs-observed pixel, via `wac_camera_model`'s own forward projection) is only a legitimate
+# comparison in the `2D->2D` and `image->ground->image`-round-trip senses -- comparing it against a
+# real, independently-resolved `observed_pixels` re-litigates *which* framelet is "right" whenever a
+# control point's ground location sits in a real overlap band (~29% of framelet height, confirmed
+# live -- see `wac_camera_model.py`'s own module docstring), which has no principled answer.
 #
-# **What the full table actually shows**: both matchers see a broadly similar *additive* jump going
-# from their own 2D->2D uncorrected row to their own 3D->2D uncorrected row (SIFT: row 1 -> row 5,
-# roughly +0.6px; LightGlue: row 7 -> row 9, roughly +0.4px), despite very different absolute 2D
-# baselines. That pattern points at something intrinsic to the 3D->2D *methodology itself* -- most
-# likely a real, systematic difference between how `resolve_control_points` recovers the "observed"
-# pixel (a deterministic un-warp of `cam2map`'s own resampling, via a real `campt` query) and how
-# `wac_camera_model`'s hand-rolled forward projector predicts it -- rather than being about match
-# quality or terrain at all. Not yet isolated further; the two matchers' rough agreement here is the
-# strongest lead so far, not a closed case.
+# `residual_mean_m`/`residual_max_m` for rows 5-10 are now computed a genuinely different way
+# (`ground_space_residual_m`): the real ground point `observed_pixels` *actually* corresponds to
+# (queried directly via `campt`, no framelet search, no ambiguity -- a fixed real pixel has exactly
+# one real ground point), compared in meters against the trusted basemap+DEM ground truth. This
+# never touches `wac_camera_model`'s own tie-break at all. `residual_mean_px` is still reported
+# alongside it (useful for cross-checking the fit's own optimization target, which does need a pixel-
+# space loss), but is the ambiguity-sensitive one -- `residual_mean_m` is the one to trust for
+# comparing the 3D->2D rows against the 2D->2D ones or against each other.
 
 # %%
 results_df = pd.DataFrame(results).set_index("row")
@@ -579,8 +626,11 @@ results_df
 # row-6 fit isn't separately visualized here).
 
 # %%
-corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit_lg.correction, entry.per_image_config)
-corrected_cam2map_path = isis_wac.run_cam2map_for_crop(corrected_crop, entry.dem_ortho_result, entry.per_image_config)
+# corrected_crop_lg already exists -- fit_and_report_pose_correction baked it for row 10's own
+# ground-space residual above; reused here rather than re-running apply_pose_correction_to_crop.
+corrected_cam2map_path = isis_wac.run_cam2map_for_crop(
+    corrected_crop_lg, entry.dem_ortho_result, entry.per_image_config
+)
 plotting.plot_overlay_toggle(
     basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap (table row 10)"
 )

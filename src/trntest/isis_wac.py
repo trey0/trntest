@@ -773,6 +773,78 @@ def ground_to_image_pixels_batch(model: GroundToImageModel, lonlat_deg: np.ndarr
     return [None if row["Error"] != "NULL" else (float(row["Sample"]), float(row["Line"])) for row in rows]
 
 
+def image_to_ground_points_batch(
+    cub_path: Path, pixels_sample_line: np.ndarray
+) -> list[tuple[float, float, float] | None]:
+    """Batched image-to-ground lookup for many pixels at once, via a single real
+    `campt usecoordlist=true` call -- the reverse-direction sibling of
+    `ground_to_image_pixels_batch` (same real subprocess-overhead motivation, see that function's
+    own docstring), and, unlike `ground_point_at_pixel`, also returns each point's real
+    `LocalRadius` -- needed to build a true 3D ground point (not just `(lon, lat)`) for a
+    ground-space (not pixel-space) residual comparison. Ground-space is the only legitimate metric
+    for this project's actual 3D control points: converting `wac_camera_model`'s own forward-
+    predicted pixel back to ground and comparing *that* to the trusted ground point would just
+    re-litigate which framelet is "right" in an overlap band (see `wac_camera_model.py`'s own module
+    docstring); this function instead only ever queries a pixel that's already been resolved by some
+    other process (never searches for one itself), so there's nothing to litigate -- one real pixel
+    has exactly one real ground point.
+
+    `pixels_sample_line` is `(N, 2)`, `(sample, line)` columns, ISIS's own 1-based pixel-center
+    convention -- written to the COORDLIST file in that order: `campt.xml`'s own doc says "Expected
+    order for image coordinates: sample, line" (confirmed directly, not assumed from
+    `ground_to_image_pixels_batch`'s own different, `latitude, longitude` convention for
+    `coordtype=ground`).
+
+    Every pixel here is expected to already be a real, valid coordinate in `cub_path`'s own cube (it
+    came from some prior, already-successful resolution) -- `allowerror=true` is still used
+    defensively, matching this module's usual convention, but a failure here would be a genuine
+    surprise, not an expected edge case the way it is in `ground_to_image_pixels_batch`.
+
+    Returns a list the same length and order as `pixels_sample_line`'s rows -- `None` for any row
+    `campt` reports an error for, a real `(lon_deg, lat_deg, radius_m)` tuple otherwise
+    (`PositiveEast360Longitude`/`PlanetocentricLatitude`/`LocalRadius`, matching this module's usual
+    campt-output convention)."""
+    pixels_sample_line = np.asarray(pixels_sample_line)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        coordlist_path = Path(tmp_dir) / "coordlist.csv"
+        out_path = Path(tmp_dir) / "campt_out.flat"
+        with open(coordlist_path, "w") as f:
+            for sample, line in pixels_sample_line:
+                f.write(f"{sample},{line}\n")
+
+        run_quiet(
+            [
+                "campt",
+                f"from={cub_path}",
+                "usecoordlist=true",
+                f"coordlist={coordlist_path}",
+                "coordtype=image",
+                f"to={out_path}",
+                "format=flat",
+                "append=false",
+                "allowerror=true",
+            ]
+        )
+        with open(out_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+
+    if len(rows) != len(pixels_sample_line):
+        raise RuntimeError(
+            f"campt usecoordlist returned {len(rows)} rows for {len(pixels_sample_line)} input pixels -- "
+            "expected exactly one row per pixel"
+        )
+    return [
+        None
+        if row["Error"] != "NULL"
+        else (
+            float(row["PositiveEast360Longitude"]),
+            float(row["PlanetocentricLatitude"]),
+            float(row["LocalRadius"]),
+        )
+        for row in rows
+    ]
+
+
 def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
     """Builds an ISIS PVL "Mapping" group cloning `dem_ortho_result`'s own local Orthographic CRS
     (see `DemOrthoResult`'s docstring: `config.lunaserv_srs_template`, centered on this camera's own
