@@ -27,7 +27,6 @@ from PIL import Image
 
 from trntest import illumination, lunaserv, orientation, wac
 from trntest.camera import Camera
-from trntest.config import MOON_RADIUS_M
 from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
@@ -129,7 +128,7 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
         dem = src.read(1)
         dem_bounds = src.bounds
 
-    moon_geographic_crs = f"+proj=longlat +R={MOON_RADIUS_M} +no_defs"
+    moon_geographic_crs = lunaserv.geographic_crs()
     min_polygon_points = 3
     corners = [camera.footprint_lonlat_deg[name] for name in ("top_left", "top_right", "bottom_right", "bottom_left")]
     corners = [c for c in corners if c is not None]

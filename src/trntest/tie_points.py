@@ -9,11 +9,20 @@ rather than relying on the eye to judge alignment.
 
 Procedure (split into two stages -- see `select_tie_points`/`resolve_crop_pixels`):
 1. Get each image's own ground footprint (a quadrilateral in lon/lat).
-2. Find each image's own "inscribed" axis-aligned lon/lat bounding box (a box entirely inside that
-   quadrilateral) -- see `inscribed_bbox` for the (deliberately approximate) method.
-3. Intersect the two boxes -> the ground area both images actually cover.
-4. Pick 5 points in that shared box, well clear of its edges (10% margin), in the die's "5"/X
-   pattern (4 corners + center).
+2. Project each footprint into a shared local Orthographic frame (meters, centered on the synthetic
+   camera's own boresight ground point -- see `_footprint_to_local_m`), then find each image's own
+   "inscribed" axis-aligned bounding box in that frame (a box entirely inside the quadrilateral) --
+   see `inscribed_bbox` for the (deliberately approximate, but now planar-metric rather than
+   raw-degree) method. Doing this in local meters rather than raw lon/lat degrees matters: a
+   raw-degree axis-aligned box is a badly distorted shape on the actual sphere near the poles, where
+   a degree of longitude covers a rapidly shrinking real distance -- confirmed live to actually drop
+   die5 points there (see docs/history.md's Phase 30 and docs/plan.md's now-resolved "Accepted, not
+   a bug" item). `inscribed_bbox`/`intersect_bbox`/`die5_points` themselves are pure planar-geometry
+   functions with no lon/lat-specific logic, so this only changes what coordinates they're fed.
+3. Intersect the two boxes (still in local meters) -> the ground area both images actually cover.
+4. Pick 5 points in that shared box (still in local meters), well clear of its edges (10% margin),
+   in the die's "5"/X pattern (4 corners + center), then project back to lon/lat
+   (`_local_m_to_lonlat`).
 5. Project each point into both images' pixel coordinates:
    - synthetic image: a closed-form pinhole inverse (`project_ground_to_synthetic_pixel`), from the
      exact fixed pose that rendered it -- this is exact, not an approximation of some other "real"
@@ -54,10 +63,11 @@ import warnings
 import numpy as np
 import rasterio
 import rasterio.errors
+import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import isis_wac, wac, wac_camera_model
+from trntest import isis_wac, lunaserv, wac, wac_camera_model
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -271,12 +281,15 @@ def project_ground_to_crop_pixel(
 
 
 def inscribed_bbox(corners: dict, interior_point: tuple, shrink_steps: int = 40) -> tuple:
-    """An approximate (not maximum-area) axis-aligned lon/lat rectangle inscribed in the polygon
-    defined by `corners`: binary-searches a single isotropic shrink factor from the corners' own
-    bounding box (centered at `interior_point`, which must be inside the polygon) until all 4
-    shrunk-rectangle corners test as inside. There's no simple closed form for the true
+    """An approximate (not maximum-area) axis-aligned rectangle inscribed in the polygon defined by
+    `corners`: binary-searches a single isotropic shrink factor from the corners' own bounding box
+    (centered at `interior_point`, which must be inside the polygon) until all 4 shrunk-rectangle
+    corners test as inside. There's no simple closed form for the true
     largest-inscribed-rectangle-in-a-quadrilateral; this is a deliberate, documented
-    simplification, adequate for placing visualization tie points."""
+    simplification, adequate for placing visualization tie points. Purely planar -- no lon/lat-
+    specific logic -- so `select_tie_points` feeds it local Orthographic meters, not raw lon/lat
+    degrees, to avoid the near-polar distortion raw degrees would introduce (see the module
+    docstring)."""
     poly = Path([corners[name] for name in CORNER_NAMES])
     lons = [corners[name][0] for name in CORNER_NAMES]
     lats = [corners[name][1] for name in CORNER_NAMES]
@@ -345,6 +358,34 @@ def die5_points(bbox: tuple, center: tuple, margin_frac: float = 0.1) -> dict:
     }
 
 
+def _footprint_to_local_m(corners: dict, center_lon_deg: float, center_lat_deg: float) -> dict:
+    """Projects a `{name: (lon_deg, lat_deg)}` footprint dict (e.g. `camera.footprint_lonlat_deg`,
+    `crop_footprint_corners_for_camera`'s return) into a local Orthographic frame (meters) centered
+    on `(center_lon_deg, center_lat_deg)`, via `rasterio.warp.transform` -- the same real PROJ-backed
+    tool `control_network.map_points_to_lonlat` already uses for the point-wise (not bbox) case,
+    rather than a hand-rolled projection formula."""
+    names = list(corners)
+    lons = [corners[n][0] for n in names]
+    lats = [corners[n][1] for n in names]
+    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    xs, ys = rasterio.warp.transform(lunaserv.geographic_crs(), ortho_crs, lons, lats)
+    return dict(zip(names, zip(xs, ys, strict=True), strict=True))
+
+
+def _local_m_to_lonlat(points_m: dict, center_lon_deg: float, center_lat_deg: float) -> dict:
+    """Inverse of `_footprint_to_local_m`: local Orthographic meters -> `(lon_deg, lat_deg)`, in this
+    project's own 0-360 Positive-East convention. `rasterio.warp.transform` always returns longitude
+    in the standard -180..180 convention regardless of the destination CRS's own definition
+    (confirmed elsewhere in this project, see `craters.py`'s own note) -- normalized here via
+    `% 360.0`, the same fix-up `control_network.map_points_to_lonlat` already applies."""
+    names = list(points_m)
+    xs = [points_m[n][0] for n in names]
+    ys = [points_m[n][1] for n in names]
+    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    lons, lats = rasterio.warp.transform(ortho_crs, lunaserv.geographic_crs(), xs, ys)
+    return {n: (lon % 360.0, lat) for n, lon, lat in zip(names, lons, lats, strict=True)}
+
+
 def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None) -> dict:
     """Pick 5 real ground points visible in both images (die's-5 pattern -- see this module's
     docstring) and project each into the synthetic image's exact pixel coordinates. Requires the
@@ -370,11 +411,22 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
 
     synthetic_center = synthetic_corners["center"]
     assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
-    inscribed_synthetic = inscribed_bbox(synthetic_corners, synthetic_center)
-    inscribed_crop = inscribed_bbox(crop_corners, crop_corners["center"])
-    shared_bbox = intersect_bbox(inscribed_synthetic, inscribed_crop)
+    center_lon_deg, center_lat_deg = synthetic_center
 
-    points = die5_points(shared_bbox, synthetic_center)
+    # Do the box-inscribing/intersection/placement geometry in local isotropic meters, not raw
+    # lon/lat degrees -- see the module docstring for why (near-polar longitude convergence badly
+    # distorts a raw-degree axis-aligned box). Both footprints share one local frame, centered on
+    # the synthetic camera's own boresight ground point, so `intersect_bbox` compares like with
+    # like; `synthetic_corners_m["center"]` is that frame's own origin, (0.0, 0.0).
+    synthetic_corners_m = _footprint_to_local_m(synthetic_corners, center_lon_deg, center_lat_deg)
+    crop_corners_m = _footprint_to_local_m(crop_corners, center_lon_deg, center_lat_deg)
+
+    inscribed_synthetic_m = inscribed_bbox(synthetic_corners_m, synthetic_corners_m["center"])
+    inscribed_crop_m = inscribed_bbox(crop_corners_m, crop_corners_m["center"])
+    shared_bbox_m = intersect_bbox(inscribed_synthetic_m, inscribed_crop_m)
+
+    points_m = die5_points(shared_bbox_m, synthetic_corners_m["center"])
+    points = _local_m_to_lonlat(points_m, center_lon_deg, center_lat_deg)
 
     results = {}
     for name, (lon, lat) in points.items():
@@ -408,11 +460,12 @@ def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: T
     existing SPICE-derived pose, not a1's fitted correction, which is a separate, opt-in refinement
     for a different use case (`isis_wac.apply_pose_correction_to_crop`).
 
-    Points the real camera doesn't actually see, or that still fall in `campt`'s buggy scattered
-    failure mode's counterpart in this reimplementation (a point genuinely outside every framelet's
-    real coverage), are dropped (with a printed warning), not raised -- only raises if *none* of the
-    points resolve, since that would mean something is fundamentally wrong, not just an edge case in
-    the approximate footprint `select_tie_points` uses to pick candidate points."""
+    `select_tie_points` now places every candidate point inside the shared FOV's own local-meters
+    inscribed box (see the module docstring), not an approximate raw-degree footprint that could
+    legitimately overshoot -- so a point genuinely failing to resolve here means something is
+    fundamentally wrong (a real WAC pushframe geometry edge case, or a footprint miscalculation),
+    not an expected case to tolerate. Raises immediately, naming the failing point, rather than
+    dropping it with a printed warning."""
     config = config or load_config()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
@@ -422,25 +475,17 @@ def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: T
     et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(crop.cub_path, n_lines)
 
     resolved = {}
-    dropped = []
     for name, info in tie_points.items():
         lon, lat = info["lonlat"]
-        ground_me_m = lonlat_to_ground_km(lon, lat, config.moon_radius_km) * 1000.0
+        ground_me_m = lonlat_to_ground_km(lon, lat) * 1000.0
         pixel = wac_camera_model.find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line)
         if pixel is None:
-            dropped.append(name)
-            continue
+            raise RuntimeError(
+                f"tie point {name!r} at (lon={lon}, lat={lat}) doesn't project into the real WAC "
+                "crop under its actual camera model -- select_tie_points places every point inside "
+                "the shared FOV's own local-meters inscribed box, so this means something is "
+                "fundamentally wrong, not an expected edge case"
+            )
         sample, line = pixel
         resolved[name] = {**info, "crop_px": (sample - 0.5, line - 0.5)}
-
-    if not resolved:
-        raise RuntimeError(
-            "none of the selected tie points project into the real WAC crop -- "
-            "select_tie_points's approximate footprint may be badly wrong for this candidate"
-        )
-    if dropped:
-        print(
-            f"tie_points.resolve_crop_pixels: {len(dropped)} of {len(tie_points)} tie point(s) don't "
-            f"project into the real WAC crop under its actual camera model, dropped: {dropped}"
-        )
     return resolved

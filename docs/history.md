@@ -4012,3 +4012,47 @@ point; a real, harmless (confirmed live: byte-identical downstream fit numbers) 
 GLD100 fetch race. `reproject` itself remains not wired into any notebook and not dataset-scale
 validated -- still the real remaining work before this branch is done; see
 `docs/reproject-fov-investigation.md`'s intro for the current punch list.
+
+## Phase 64 (2026-08-20) — Fixed the die5 near-polar limitation: point selection now works in local meters, not raw lon/lat degrees; `resolve_crop_pixels` raises instead of tolerating drops
+
+Phase 30 had left one residual limitation "accepted, not a bug": `select_tie_points`'s die5
+point-selection geometry (`inscribed_bbox`/`intersect_bbox`/`die5_points`) worked entirely in raw
+lon/lat degrees, which breaks down near the poles (a degree of longitude covers a rapidly shrinking
+real distance there), so `resolve_crop_pixels` tolerated dropped points as an expected edge case.
+Revisited at the user's request: "There's no reason why the tie points ever need to fall outside the
+intersected FOV of the two images being compared... I think the right fix is to make that work, not
+design around the weakness of sometimes messing that up" -- i.e. fix the root cause, not the symptom.
+
+**Fix**: `inscribed_bbox`/`intersect_bbox`/`die5_points` are pure planar-geometry functions with no
+lon/lat-specific logic, so `select_tie_points` now projects both footprints into a shared local
+Orthographic frame (meters, centered on the synthetic camera's own boresight ground point) before
+running them, then projects the resulting 5 points back to lon/lat -- via `rasterio.warp.transform`
+(the same real PROJ-backed tool `control_network.map_points_to_lonlat` already used for point-wise
+transforms), not a hand-rolled projection formula, per the user's explicit preference for validated
+code: "I generally prefer to rely on validated code vs. write new."
+
+With point selection now trustworthy near the poles too, `resolve_crop_pixels` no longer tolerates a
+resolution failure -- it raises immediately, naming the failing point, instead of dropping it with a
+printed warning. `control_network.resolve_control_points` deliberately keeps its own tolerant-drop
+behavior (a real, different case: `cam2map` resampling can genuinely push a many-point matched
+control-network pixel just past the original crop's real edge), so only its docstring's now-stale
+cross-reference to `resolve_crop_pixels`'s old convention needed updating.
+
+**Also deduplicated**: the `"+proj=longlat +R=... +no_defs"` / `"+proj=ortho +lon_0=... +lat_0=...
++R=... +units=m +no_defs"` PROJ4 string patterns, independently built inline in `lunaserv.py` (4
+sites), `craters.py`, `control_network.py`, and `plotting.py`, into two shared functions
+(`lunaserv.geographic_crs`/`lunaserv.local_orthographic_crs`) -- per the user's explicit preference:
+"I prefer not to redefine the same PROJ frame in multiple places. The issue is not just brevity but
+consistency." Every site above, plus `tie_points.py`'s new local-meters helpers, now calls these
+instead of building the string itself.
+
+**Found in passing**: the just-landed radius-configurability cleanup (making `MOON_RADIUS_KM`/
+`MOON_RADIUS_M` fixed constants, no longer `TrntestConfig` fields) had missed one call site --
+`tie_points.resolve_crop_pixels` still read `config.moon_radius_km`, a field that no longer existed,
+a live `AttributeError` waiting to happen. Fixed as part of this same pass (dropped the now-redundant
+explicit argument; `lonlat_to_ground_km` already defaults to the fixed constant).
+
+Verified: `pytest -q -m "not heavy"` and `trntest-lint` clean inside Docker; new tests cover the
+local-meters round trip, a synthetic near-polar regression case (proving die5 points stay inside the
+true lon/lat polygon where raw-degree `inscribed_bbox` would not), `resolve_crop_pixels`'s new
+raise-immediately behavior, and the two new `lunaserv` CRS-string helpers.

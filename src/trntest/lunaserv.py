@@ -41,6 +41,23 @@ DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
 
 
+def geographic_crs(radius_m: float = MOON_RADIUS_M) -> str:
+    """Plain (unprojected) geographic PROJ4 CRS string for the Moon on a sphere of `radius_m` --
+    the one shared source of truth for this string, since `rasterio.warp` needs an explicit CRS to
+    treat a set of coordinates as lon/lat degrees, not just "these are degrees". Every site in this
+    project that used to build this string inline (here, `craters.py`, `control_network.py`,
+    `plotting.py`, and now `tie_points.py`) calls this instead, so they can't drift apart."""
+    return f"+proj=longlat +R={radius_m} +no_defs"
+
+
+def local_orthographic_crs(center_lon_deg: float, center_lat_deg: float, radius_m: float = MOON_RADIUS_M) -> str:
+    """Local Orthographic PROJ4 CRS string centered on `(center_lon_deg, center_lat_deg)`, on a
+    sphere of `radius_m` -- the shared source of truth for every per-AOI local isotropic-meters
+    working frame this project builds (see `geographic_crs`'s docstring for why this is factored out
+    rather than duplicated)."""
+    return f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={radius_m} +units=m +no_defs"
+
+
 def ortho_shaded_filename(hapke: bool, along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION) -> str:
     """The `output_dir`-relative filename `despeckle_and_shade_ortho` writes its shaded ortho to for
     a given `hapke`/`along_track_correction` combination -- factored out so
@@ -223,7 +240,7 @@ def _reproject_raster_to_local_grid(
     method is one this project controls and picks explicitly, not any server's own opaque resampling.
     The destination Orthographic definition matches `orthographic_xy_m`'s own hand-verified forward
     projection math exactly (same center, same sphere radius, same projection family)."""
-    dst_crs = f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={moon_radius_m} +units=m +no_defs"
+    dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
     dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)
 
     reprojected = np.full((dst_height, dst_width), np.nan, dtype="float32")
@@ -294,7 +311,7 @@ def reproject_dem_to_local_grid(
         native_radius = src.read(1)
 
     minlon, minlat, maxlon, maxlat = native_bbox_deg
-    src_crs = f"+proj=longlat +R={moon_radius_m} +no_defs"
+    src_crs = geographic_crs(moon_radius_m)
     src_transform = transform_from_bounds(minlon, minlat, maxlon, maxlat, native_width, native_height)
 
     return _reproject_raster_to_local_grid(
@@ -347,8 +364,8 @@ def astropedia_coverage_bbox_deg(
     No automatic fallback to the deprecated Lunaserv path -- a caller that wants one has to ask for
     it explicitly."""
     padded_bbox_m = pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION)
-    geo_crs = f"+proj=longlat +R={moon_radius_m} +no_defs"
-    ortho_crs = f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={moon_radius_m} +units=m +no_defs"
+    geo_crs = geographic_crs(moon_radius_m)
+    ortho_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
     minlon, minlat, maxlon, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
     if minlat < -ASTROPEDIA_MAX_ABS_LATITUDE_DEG or maxlat > ASTROPEDIA_MAX_ABS_LATITUDE_DEG:
         raise ValueError(
@@ -413,7 +430,7 @@ def reproject_astropedia_elevation_to_local_grid(
         src_crs = src.crs
         src_nodata = src.nodata
         minlon, minlat, maxlon, maxlat = deg_bbox
-        geo_crs = f"+proj=longlat +R={moon_radius_m} +no_defs"
+        geo_crs = geographic_crs(moon_radius_m)
         left, bottom, right, top = transform_bounds(geo_crs, src_crs, minlon, minlat, maxlon, maxlat)
         window = window_from_bounds(left, bottom, right, top, transform=src.transform)
         src_transform = window_transform(window, src.transform)

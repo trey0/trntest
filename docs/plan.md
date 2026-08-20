@@ -371,14 +371,19 @@ short of `populate()` -- no rendering from this notebook yet.
   but a ground-to-image query at that exact resulting lon/lat then fails) — fixed with a
   `_CROP_EDGE_MARGIN_PX` inset (20px) when querying the crop's own corners. Live-validated: 5 of 5
   tie points now resolve on the real default candidate (was 2-3 of 5), confirmed visually in Phase
-  6A. A separate, more extreme near-polar test candidate (~-81 to -83° latitude) still drops some
+  6A. A separate, more extreme near-polar test candidate (~-81 to -83° latitude) still dropped some
   points — the axis-aligned lon/lat bounding-box approximation this module's whole point-selection
-  approach relies on breaks down that close to a pole (severe longitude convergence). **Accepted, not
-  a bug to fix**: tie points are a debug/QA overlay, not a correctness-critical output —
-  `resolve_crop_pixels` already degrades gracefully (drops individual points with a warning, only
-  raises if literally none resolve), which is the right behavior for a candidate this display doesn't
-  suit well, rather than something to chase with more geometry machinery. See `docs/history.md`'s
-  dated entry.
+  approach relied on broke down that close to a pole (severe longitude convergence). Originally
+  accepted as a known limitation rather than fixed (tie points being a debug/QA overlay, not a
+  correctness-critical output); **since fixed** (see `docs/history.md`'s later dated entry):
+  `select_tie_points` now does the box-inscribing/intersection/placement geometry in a shared local
+  Orthographic frame (meters), not raw lon/lat degrees — `inscribed_bbox`/`intersect_bbox`/
+  `die5_points` are pure planar-geometry functions, so this only changes what coordinates they're
+  fed, via `rasterio.warp.transform` (not a hand-rolled projection). With point *selection* now
+  trustworthy near the poles too, `resolve_crop_pixels` no longer degrades gracefully — it raises
+  immediately on any unresolved point instead of dropping it with a warning, since a failure now
+  means something is fundamentally wrong rather than an expected edge case. See `docs/history.md`'s
+  dated entries.
 - **Resolved (partially — see "Open" below)**: 6B's real-WAC/basemap overlay is visibly not
   perfectly aligned (small, "not huge" per direct user observation). Investigated whether an ASP
   bundle-adjustment tool could correct the SPICE-derived pose via feature-matching against the

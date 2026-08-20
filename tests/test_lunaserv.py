@@ -10,6 +10,26 @@ from trntest import lunaserv
 from trntest.config import MOON_RADIUS_M
 
 
+def test_geographic_crs_default_radius():
+    assert lunaserv.geographic_crs() == f"+proj=longlat +R={MOON_RADIUS_M} +no_defs"
+
+
+def test_geographic_crs_explicit_radius():
+    assert lunaserv.geographic_crs(1_000_000.0) == "+proj=longlat +R=1000000.0 +no_defs"
+
+
+def test_local_orthographic_crs_default_radius():
+    assert lunaserv.local_orthographic_crs(10.0, -20.0) == (
+        f"+proj=ortho +lon_0=10.0 +lat_0=-20.0 +R={MOON_RADIUS_M} +units=m +no_defs"
+    )
+
+
+def test_local_orthographic_crs_explicit_radius():
+    assert lunaserv.local_orthographic_crs(10.0, -20.0, 1_000_000.0) == (
+        "+proj=ortho +lon_0=10.0 +lat_0=-20.0 +R=1000000.0 +units=m +no_defs"
+    )
+
+
 def test_footprint_bbox_deg_no_wraparound():
     footprint = {"a": (170.0, 40.0), "b": (175.0, 42.0), "c": (172.0, 41.0), "d": (178.0, 39.0)}
     bbox = lunaserv.footprint_bbox_deg(footprint)
