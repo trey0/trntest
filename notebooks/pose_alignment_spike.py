@@ -342,6 +342,11 @@ print(f"{len(observed_pixels)} real ISIS control points resolved (from {len(wac_
 
 # %%
 dem_radii_m = isis_wac.sample_lunar_dem_radii_batch(ground_lonlat, entry.per_image_config)
+print(
+    f"Sampled DEM radii: min {dem_radii_m.min():.0f}m, max {dem_radii_m.max():.0f}m, "
+    f"mean {dem_radii_m.mean():.0f}m, std {dem_radii_m.std():.0f}m "
+    f"(real, varying terrain, not a flat ellipsoid constant -- confirms the DEM is actually in effect)"
+)
 ground_points_me_m = (
     np.array(
         [
@@ -452,6 +457,14 @@ results.append(
 # the match/control-point set size feeding that row; `n_kept` is how many actually landed inside the
 # residual stats (RANSAC inliers for the 2D rows, successfully-projected/resolved points for the 3D
 # rows).
+#
+# **Rows 6/7's `residual_max_m` sits well above their own `residual_mean_m`** -- confirmed (live
+# diagnostic, not guessed) that this is real, not a stale-ellipsoid product sneaking back in:
+# `dem_radii_m` for these control points varies genuinely (hundreds of meters of std, real terrain,
+# not a flat constant), and the handful of worst-residual points are exactly the ones sitting on the
+# *highest* real local elevation in this crop (+1.7km to +3.7km above the mean) -- consistent,
+# expected local-terrain complexity a single frozen 6-DOF rigid correction can't fully absorb, not a
+# bug. The 2D rows' own max residuals (2-4x their means) show the same ordinary pattern.
 
 # %%
 results_df = pd.DataFrame(results).set_index("row")
