@@ -238,7 +238,7 @@ corrected_homography_path = pose_alignment.apply_homography_correction(
 # uncorrected raster -- shown once here.
 
 # %%
-plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap (table rows 1, 6)")
+plotting.plot_overlay_toggle(basemap_path, wac_path, title="Uncorrected WAC over basemap (table rows 1, 5, 7)")
 
 # %%
 plotting.plot_overlay_toggle(
@@ -260,10 +260,13 @@ plotting.plot_overlay_toggle(
 #
 # `pose_alignment.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
 # extractor (DISK) + learned matcher -- real headroom for future shadowed/low-texture EDRs SIFT might
-# not find enough points on at all. Same inputs as SIFT above, same downstream homography fit (the
-# model already validated by direct user visual inspection as giving a real, non-noise improvement)
-# -- only the matcher differs, for a direct, apples-to-apples comparison against SIFT's own homography
-# result. **Table row 5.**
+# not find enough points on at all. Same inputs as SIFT above -- only the matcher differs, for a
+# direct, apples-to-apples comparison against SIFT's own rows. **Table row 5** is the raw
+# match-implied offset (same role as row 1, just LightGlue's match set instead of SIFT's -- this is
+# also the same match set `resolve_control_points` below converts into 3D control points, so row 5
+# and row 7 are the closest apples-to-apples "uncorrected" comparison available between the 2D and
+# 3D approaches). **Table row 6** is the same match set's homography fit (the model already
+# validated by direct user visual inspection as giving a real, non-noise improvement).
 
 # %%
 basemap_points_px_lg, wac_points_px_lg = pose_alignment.match_features_lightglue(
@@ -274,6 +277,25 @@ print(f"LightGlue: {len(basemap_points_px_lg)} matched points")
 
 basemap_points_map_lg = pose_alignment.pixel_points_to_map(basemap_points_px_lg, basemap_transform)
 wac_points_map_lg = pose_alignment.pixel_points_to_map(wac_points_px_lg, wac_transform)
+
+raw_offsets_lg_m = wac_points_map_lg - basemap_points_map_lg
+raw_distances_lg_m = np.linalg.norm(raw_offsets_lg_m, axis=1)
+print(f"LightGlue raw offset: mean {raw_distances_lg_m.mean():.0f}m, std {raw_distances_lg_m.std():.0f}m")
+
+results.append(
+    {
+        "row": 5,
+        "projection": "2D->2D",
+        "matcher": "LightGlue",
+        "correction": "uncorrected",
+        "dof": 0,
+        "n_points": len(raw_distances_lg_m),
+        "n_kept": len(raw_distances_lg_m),
+        "residual_mean_m": raw_distances_lg_m.mean(),
+        "residual_max_m": raw_distances_lg_m.max(),
+        "residual_mean_px": raw_distances_lg_m.mean() / target_gsd_m,
+    }
+)
 
 homography_lg, inliers_homography_lg, residuals_homography_lg_m = pose_alignment.fit_homography_correction(
     wac_points_map_lg, basemap_points_map_lg
@@ -286,7 +308,7 @@ print(
 
 results.append(
     {
-        "row": 5,
+        "row": 6,
         "projection": "2D->2D",
         "matcher": "LightGlue",
         "correction": "homography",
@@ -304,7 +326,7 @@ corrected_homography_lg_path = pose_alignment.apply_homography_correction(
     wac_path, homography_lg, alignment_dir / "wac_corrected_homography_lightglue.tif"
 )
 plotting.plot_overlay_toggle(
-    basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap, LightGlue (table row 5)"
+    basemap_path, corrected_homography_lg_path, title="Homography-corrected WAC over basemap, LightGlue (table row 6)"
 )
 
 # %% [markdown]
@@ -376,7 +398,7 @@ et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(entry.crop_result
 print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.6f}")
 
 # %% [markdown]
-# **Table row 6: 3D->2D, LightGlue, uncorrected.** How far off the existing, uncorrected
+# **Table row 7: 3D->2D, LightGlue, uncorrected.** How far off the existing, uncorrected
 # SPICE-derived pose already is, at each real control point, projected through the DEM-shaped camera
 # model -- a direct before/after baseline for the fit below.
 
@@ -395,7 +417,7 @@ print(
 
 results.append(
     {
-        "row": 6,
+        "row": 7,
         "projection": "3D->2D",
         "matcher": "LightGlue",
         "correction": "uncorrected",
@@ -409,7 +431,7 @@ results.append(
 )
 
 # %% [markdown]
-# **Table row 7: 3D->2D, LightGlue, 6-DOF pose.** `fit_pose_correction` fits a single, frozen 6-DOF
+# **Table row 8: 3D->2D, LightGlue, 6-DOF pose.** `fit_pose_correction` fits a single, frozen 6-DOF
 # `PoseCorrection` (3 position, meters, MOON_ME; 3 rotation, composed on the camera side -- matching
 # this project's own precedent that WAC-VIS's real boresight offset is frame-constant, not
 # time-varying) against the real control points, via `scipy.optimize.least_squares`.
@@ -436,7 +458,7 @@ if not resolved.all():
 
 results.append(
     {
-        "row": 7,
+        "row": 8,
         "projection": "3D->2D",
         "matcher": "LightGlue",
         "correction": "6-DOF pose",
@@ -458,13 +480,28 @@ results.append(
 # residual stats (RANSAC inliers for the 2D rows, successfully-projected/resolved points for the 3D
 # rows).
 #
-# **Rows 6/7's `residual_max_m` sits well above their own `residual_mean_m`** -- confirmed (live
-# diagnostic, not guessed) that this is real, not a stale-ellipsoid product sneaking back in:
-# `dem_radii_m` for these control points varies genuinely (hundreds of meters of std, real terrain,
-# not a flat constant), and the handful of worst-residual points are exactly the ones sitting on the
-# *highest* real local elevation in this crop (+1.7km to +3.7km above the mean) -- consistent,
-# expected local-terrain complexity a single frozen 6-DOF rigid correction can't fully absorb, not a
-# bug. The 2D rows' own max residuals (2-4x their means) show the same ordinary pattern.
+# **Why rows 7/8's `residual_mean_px` runs higher than rows 1-6's -- investigated live, not guessed,
+# across several passes (including one wrong turn, corrected below).** Ruled out: a stale-ellipsoid
+# product sneaking back in (`dem_radii_m` genuinely varies, hundreds of meters of std, real terrain,
+# not a flat constant) and real local terrain relief (residual-vs-elevation correlation across the
+# full point set is ~0 -- an earlier claim that the worst points sat on the highest terrain didn't
+# survive checking against the full sample, not just its worst 5 points).
+#
+# **Leading explanation, well-supported but not airtight**: `control_network.resolve_control_points`
+# does *no* geometric-consistency outlier rejection of its own -- only a "does the implied ground
+# point actually project into the crop" membership check -- unlike every 2D row, which benefits from
+# real RANSAC somewhere (`match_features`'s own two passes for SIFT, or `fit_homography_correction`'s
+# own RANSAC when fitting a correction). **Row 5 (LightGlue's raw, unfiltered match-implied offset)
+# makes this visible directly**: mean 242m but max 32,289m -- a real bad match sitting in the raw set
+# that SIFT's own matcher would have already rejected before we ever saw it as "row 1 uncorrected."
+# Row 7/8 draw from that same raw LightGlue set, filtered only by crop membership, so more of that
+# raw noise survives into the 3D control points than into any 2D row. Consistent with row 7's own
+# distribution: median 0.98px sits much closer to row 1/6's ballpark (0.59-0.66px, and closer still
+# once corrected for a separate, confirmed ~18% bias in `target_gsd_m`'s estimate -- 211 m/px here vs.
+# a direct `cam2map PIXRES=camera` measurement of 179 m/px) than its own mean (1.56px) does -- a
+# right-skewed tail of moderately-bad matches, not a uniform bug, pulling the mean up. Not fully
+# closed out: whether adding real outlier rejection to `resolve_control_points` would close the rest
+# of the gap is untested, not just asserted.
 
 # %%
 results_df = pd.DataFrame(results).set_index("row")
@@ -477,11 +514,11 @@ results_df
 # cached `InstrumentPointing` (patching only its single, time-independent `ConstantRotation` matrix
 # -- see that function's own docstring and `docs/corrected-overlay-cam2map-plan.md` for the full
 # mechanism), so ISIS's own already-validated `cam2map` (`run_cam2map_for_crop`, completely
-# unmodified) picks up the corrected pose automatically. **Table row 7.**
+# unmodified) picks up the corrected pose automatically. **Table row 8.**
 
 # %%
 corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit.correction, entry.per_image_config)
 corrected_cam2map_path = isis_wac.run_cam2map_for_crop(corrected_crop, entry.dem_ortho_result, entry.per_image_config)
 plotting.plot_overlay_toggle(
-    basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap (table row 7)"
+    basemap_path, corrected_cam2map_path, title="Pose-corrected WAC over basemap (table row 8)"
 )
