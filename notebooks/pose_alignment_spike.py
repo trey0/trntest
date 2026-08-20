@@ -394,7 +394,7 @@ def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
         f"resolved, residual mean {fit_norms[resolved].mean():.2f}px, max {fit_norms[resolved].max():.2f}px"
     )
     if not resolved.all():
-        print(f"WARNING: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
+        print(f"Note: {(~resolved).sum()} control point(s) unresolved at the fitted correction")
 
     corrected_crop = isis_wac.apply_pose_correction_to_crop(entry.crop_result, fit.correction, entry.per_image_config)
     fitted_ground_errors_m = ground_space_residual_m(corrected_crop.cub_path, observed_pixels, ground_points_me_m)
@@ -609,6 +609,36 @@ results.append(
 # alongside it (useful for cross-checking the fit's own optimization target, which does need a pixel-
 # space loss), but is the ambiguity-sensitive one -- `residual_mean_m` is the one to trust for
 # comparing the 3D->2D rows against the 2D->2D ones or against each other.
+#
+# ## Two open issues, flagged here rather than chased further this session
+#
+# **1. `residual_mean_px` for the 3D->2D rows is now largely redundant with `residual_mean_m`, and
+# still carries a smaller residual version of the same ambiguity.** `control_network.
+# resolve_control_points` switched today from real `campt` (buggy, see above) to `wac_camera_model.
+# find_framelet_and_project` for `observed_pixels` too -- so `residual_mean_px`'s `predicted - obs`
+# now compares two calls to the *same* deterministic function, not a real-vs-buggy-tool mismatch.
+# But `predicted` and `obs` are for two *different* ground points (trusted vs. WAC-observed); if they
+# straddle a framelet-overlap tiebreak boundary, the two calls can still legitimately land in
+# adjacent framelets, producing a discontinuous few-line jump unrelated to real pose error. Whether
+# to just drop `residual_mean_px` from the 3D->2D rows (keeping it only for 2D->2D, where it's a
+# direct, uncontaminated unit conversion) is an open question, not yet decided or implemented.
+#
+# **2. Row 6 (SIFT, 6-DOF pose) looks like a real regression, not an improvement, once measured
+# correctly -- caught live by exactly the ground-space metric issue 1 describes.** `delta_position_m`
+# for the SIFT fit came out as `[566, -397, 1019]` m (~1.2km, physically implausible -- LightGlue's
+# own fit, same session, same crop, is `[-1, -3, 0]` m), yet its *pixel*-space residual still looked
+# like an improvement (0.68px -> 0.56px). The ground-space residual reveals what the pixel metric
+# hid: 126m baseline -> 1257m after "correction," a real ~10x regression. Leading hypothesis, not
+# confirmed: a position/attitude near-singularity in `fit_pose_correction`'s unconstrained 6-DOF
+# least-squares, the same class of issue `docs/wac-jigsaw-investigation.md` already documented for
+# `jigsaw` itself (a single image's geometry alone can't always separate "camera moved" from "camera
+# rotated") -- SIFT's smaller/less-distributed 316-point set may be hitting it where LightGlue's 791
+# points don't. Not investigated further this session (e.g., checking SIFT's actual spatial point
+# distribution for the degeneracy) -- row 6 should not be trusted as-is until this is chased down.
+# The final corrected overlay below is already built from LightGlue's fit (row 10), not SIFT's, so
+# this doesn't affect the notebook's own headline visual result, but it's a real, open correctness
+# question about `fit_pose_correction` worth resolving before leaning on a SIFT-based fit for
+# anything.
 
 # %%
 results_df = pd.DataFrame(results).set_index("row")

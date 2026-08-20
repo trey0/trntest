@@ -5,11 +5,21 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import rasterio
 
-from trntest import control_network, isis_wac
+from trntest import control_network, isis_wac, wac_camera_model
 from trntest.config import TrntestConfig
 
 _ORTHO_CRS = "+proj=ortho +lon_0=0 +lat_0=0 +R=1737400 +units=m +no_defs"
+
+
+def _write_fake_crop_cube(path: Path, n_framelets: int = 5) -> None:
+    """A minimal real (not mocked) single-band raster, just so resolve_control_points can read a
+    real `n_lines` off it via `rasterio` -- matches this project's existing test convention (see
+    e.g. test_tie_points_geometry.py's own identically-named helper)."""
+    n_lines = n_framelets * wac_camera_model.FRAMELET_HEIGHT
+    with rasterio.open(path, "w", driver="GTiff", height=n_lines, width=10, count=1, dtype="uint8") as dst:
+        dst.write(np.zeros((n_lines, 10), dtype="uint8"), 1)
 
 
 def test_map_points_to_lonlat_maps_the_projection_center_to_lon0_lat0():
@@ -32,25 +42,32 @@ def test_map_points_to_lonlat_normalizes_to_0_360_positive_east():
     assert lons[0] > 350.0
 
 
-def test_resolve_control_points_pairs_and_drops_unresolved_points():
+def test_resolve_control_points_pairs_and_drops_unresolved_points(tmp_path):
     wac_points_map = np.array([[0.0, 0.0], [1000.0, 0.0], [2000.0, 0.0]])
     basemap_points_map = np.array([[10.0, 10.0], [1010.0, 10.0], [2010.0, 10.0]])
-    model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+    cub_path = tmp_path / "crop.cub"
+    _write_fake_crop_cube(cub_path)
+    model = isis_wac.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
 
-    # The middle point's implied ground point fails to project into the crop (campt returns None);
-    # the other two resolve to distinct, recognizable pixels. The mocked return is a plain list, in
-    # the same order resolve_control_points iterates the (paired) input points -- avoids needing to
-    # know the exact projected lon/lat values `map_points_to_lonlat` produces for the fixture.
-    with patch.object(isis_wac, "ground_to_image_pixels_batch", return_value=[(101.0, 201.0), None, (103.0, 203.0)]):
-        observed_pixels, ground_lonlat = control_network.resolve_control_points(
-            wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()
-        )
+    # The middle point's implied ground point fails to project into any real framelet
+    # (find_framelet_and_project returns None); the other two resolve to distinct, recognizable
+    # pixels. The mocked return is a plain list, in the same order resolve_control_points iterates
+    # the (paired) input points -- avoids needing to know the exact projected lon/lat values
+    # map_points_to_lonlat produces for the fixture.
+    with patch.object(isis_wac, "sample_lunar_dem_radii_batch", return_value=np.full(3, 1737400.0)):
+        with patch.object(wac_camera_model, "calibrate_et_per_crop_line", return_value=(0.0, 1.0)):
+            with patch.object(
+                wac_camera_model, "find_framelet_and_project", side_effect=[(101.0, 201.0), None, (103.0, 203.0)]
+            ):
+                observed_pixels, ground_lonlat = control_network.resolve_control_points(
+                    wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()
+                )
 
     assert len(observed_pixels) == 2
     assert len(ground_lonlat) == 2
     # The dropped (middle) point's basemap counterpart must be dropped too, not just the WAC-side
     # one -- pairing must stay intact through the filter. Confirmed two ways: the surviving
-    # observed_pixels are exactly the 1st/3rd fake campt results (not 1st/2nd, which a
+    # observed_pixels are exactly the 1st/3rd fake projector results (not 1st/2nd, which a
     # pairing bug that just truncated the arrays instead of filtering by index could produce), and
     # both surviving basemap points share the same real map y-coordinate (10.0), so their resolved
     # latitudes must match each other.
@@ -59,16 +76,20 @@ def test_resolve_control_points_pairs_and_drops_unresolved_points():
     assert ground_lonlat[0][1] == pytest.approx(ground_lonlat[1][1])
 
 
-def test_resolve_control_points_raises_if_nothing_resolves():
+def test_resolve_control_points_raises_if_nothing_resolves(tmp_path):
     wac_points_map = np.array([[0.0, 0.0]])
     basemap_points_map = np.array([[0.0, 0.0]])
-    model = isis_wac.GroundToImageModel(cub_path=Path("/fake/crop.cub"), name_model="fake", used_csm=False)
+    cub_path = tmp_path / "crop.cub"
+    _write_fake_crop_cube(cub_path)
+    model = isis_wac.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
 
-    with patch.object(isis_wac, "ground_to_image_pixels_batch", return_value=[None]):
-        with pytest.raises(RuntimeError):
-            control_network.resolve_control_points(
-                wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()
-            )
+    with patch.object(isis_wac, "sample_lunar_dem_radii_batch", return_value=np.full(1, 1737400.0)):
+        with patch.object(wac_camera_model, "calibrate_et_per_crop_line", return_value=(0.0, 1.0)):
+            with patch.object(wac_camera_model, "find_framelet_and_project", return_value=None):
+                with pytest.raises(RuntimeError):
+                    control_network.resolve_control_points(
+                        wac_points_map, basemap_points_map, _ORTHO_CRS, model, TrntestConfig()
+                    )
 
 
 def test_write_control_network_writes_a_correct_csv_and_invokes_the_isis_python_writer(tmp_path, monkeypatch):

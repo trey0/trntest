@@ -10,30 +10,42 @@ point: the real image-space pixel it was actually observed at (in the *original*
 cube -- the one `jigsaw` will actually adjust), and a trusted 3D ground location. `resolve_control_points`
 does that conversion.
 
-**Elevation-agnostic on purpose, caller must supply consistent ground truth**: `isis_wac.
-run_spiceinit` now attaches ISIS's own real global lunar DEM (`shape=user`) to every real-WAC cube by
-default (was `shape=ellipsoid` -- confirmed live to be the actual root cause of a real, user-observed
-parallax-like effect at crater edges in the blink overlay that originally motivated this 3D-fit
-investigation; see `docs/plan.md`'s dated entry). `resolve_control_points` itself still only ever
-returns `(lon, lat)` -- no elevation -- because `isis_wac.ground_to_image_pixel`/
-`ground_point_at_pixel` don't carry it either; that's a `campt` return-value fact, not a policy
-choice. What matters is that a caller building a 3D ground point from `ground_lonlat` samples
-elevation from the *same* shape model `ground_to_image_model` (i.e. `observed_pixels`) was resolved
-through -- `isis_wac.sample_lunar_dem_radii_batch` does that, camera-independently, for the now-default
-DEM case. Feeding elevation-aware ground truth against a camera model that's still ellipsoid-only (or
-vice versa) conflates real camera-pose error with the ellipsoid-vs-real-terrain gap -- worst exactly
-at high-relief features like crater rims -- which is exactly the failure mode this note exists to
-flag."""
+**Ground-to-image now goes through `wac_camera_model`, not `campt`, for a real, confirmed reason**:
+`isis_wac.ground_to_image_pixels_batch` (a real `campt` ground-to-image query) has a scattered ~38%
+failure rate specifically for WAC's Pushframe sensor (`PushFrameCameraGroundMap::GetLocalNormal`
+landing outside the correct framelet, a known upstream ISIS bug, DOI-USGS/ISIS3#4256, not an
+edge-of-crop artifact -- see `docs/data-sources.md`'s dated entry) -- the same underlying bug class
+that made `jigsaw` itself unusable for this camera (see `docs/wac-jigsaw-investigation.md`).
+`resolve_control_points` uses `wac_camera_model.find_framelet_and_project` instead (matching
+`tie_points.resolve_crop_pixels`'s own precedent), which sidesteps the bug with a real 2D containment
+check rather than ISIS's own heuristic search.
+
+Doing so needs a real 3D ground point (not just `(lon, lat)`) for the WAC-side matched pixel too, so
+`resolve_control_points` now samples elevation for it via `isis_wac.sample_lunar_dem_radii_batch` --
+the *same* real DEM `isis_wac.run_spiceinit` attaches to every real-WAC cube by default now (was
+`shape=ellipsoid` -- confirmed live to be the actual root cause of a real, user-observed parallax-like
+effect at crater edges in the blink overlay that originally motivated this 3D-fit investigation; see
+`docs/plan.md`'s dated entry). The function's own *return value*, `ground_lonlat`, is still `(lon,
+lat)` only, no elevation -- that side comes straight from the basemap's own map-pixel georeferencing,
+which has no elevation attached to sample from at this point. A caller building a 3D ground point from
+`ground_lonlat` must sample elevation from the *same* shape model `ground_to_image_model` resolved
+through, exactly as `resolve_control_points` itself now does for the WAC side -- feeding
+elevation-aware ground truth against a camera model that's still ellipsoid-only (or vice versa)
+conflates real camera-pose error with the ellipsoid-vs-real-terrain gap, worst exactly at high-relief
+features like crater rims."""
 
 import csv
 import os
 import subprocess
+import warnings
 from pathlib import Path
 
 import numpy as np
+import rasterio
+import rasterio.errors
 import rasterio.warp
 
-from trntest import isis_wac, lunaserv
+from trntest import isis_wac, lunaserv, wac_camera_model
 from trntest.config import TrntestConfig, load_config
 from trntest.tie_points import lonlat_to_ground_km
 
@@ -78,37 +90,57 @@ def resolve_control_points(
       *original*, pre-`cam2map` WAC crop cube that shows each matched feature. Recovered by
       converting the matched WAC map-pixel to its own implied ground point -- a deterministic
       un-warp of `cam2map`'s own resampling, using *only* the WAC crop's own map projection, not the
-      basemap -- then querying `isis_wac.ground_to_image_pixels_batch` (one real batched `campt`
-      call for every point at once, not one subprocess per point -- confirmed live to dominate this
-      function's runtime otherwise, e.g. ~230s of subprocess overhead alone for 767 real matches)
-      against the original crop cube (`ground_to_image_model`, from
-      `isis_wac.resolve_ground_to_image_model`) for that ground point's real image location. This
-      does not depend on trusting the current camera pose at all:
-      it's a pure function of the WAC map-pixel and *whatever* camera model produced it, right or
-      wrong, and would give the same answer either way.
+      basemap, plus a real DEM elevation sample (`isis_wac.sample_lunar_dem_radii_batch`) -- then
+      projecting that real 3D point through `wac_camera_model.find_framelet_and_project` (not
+      `isis_wac.ground_to_image_pixels_batch`/real `campt` -- see this module's own docstring for
+      why). This does not depend on trusting the current camera pose at all: it's a pure function of
+      the WAC map-pixel and *whatever* camera pose produced it, right or wrong, and would give the
+      same answer either way.
     - `ground_lonlat` is the trusted ground truth for the same matched feature, taken directly from
       the matched *basemap* map-pixel's own georeferencing -- `(lon, lat)` only, no elevation (see
       this module's own docstring: a caller building a 3D ground point from this must sample
       elevation consistently with whatever shape model `ground_to_image_model` resolved through).
 
-    Tie points whose implied ground point doesn't actually project into the original crop (can
-    happen right at the crop's own edge, e.g. if `PIXRES=map` resampling extended slightly past the
-    camera's real coverage) are dropped with a printed warning -- unlike `tie_points.
-    resolve_crop_pixels`, which raises on any unresolved point now that its candidate points are
-    placed inside the shared FOV's own local-meters inscribed box (so a failure there means
-    something is fundamentally wrong). Here, an edge-of-crop resampling miss on a handful of a
-    many-point matched set is a real, expected case, not a sign anything is broken -- so this raises
-    only if *none* resolve."""
+    Tie points whose implied ground point doesn't actually project into any real framelet of the
+    original crop (`find_framelet_and_project` returns `None` -- a real 2D containment check, so this
+    now means the point is genuinely outside the crop's real coverage, not a spurious solve failure
+    the way a `campt` "no surface intersection" error could be) are dropped with a printed warning --
+    unlike `tie_points.resolve_crop_pixels`, which raises on any unresolved point now that its
+    candidate points are placed inside the shared FOV's own local-meters inscribed box (so a failure
+    there means something is fundamentally wrong). Here, a genuine edge-of-crop resampling miss on a
+    handful of a many-point matched set is still a real, expected case -- so this raises only if
+    *none* resolve."""
+    config = config or load_config()
     wac_lons, wac_lats = map_points_to_lonlat(wac_points_map, map_crs, config)
     basemap_lons, basemap_lats = map_points_to_lonlat(basemap_points_map, map_crs, config)
 
     wac_lonlat = np.stack([wac_lons, wac_lats], axis=1)
-    pixels = isis_wac.ground_to_image_pixels_batch(ground_to_image_model, wac_lonlat)
+    wac_radii_m = isis_wac.sample_lunar_dem_radii_batch(wac_lonlat, config)
+    wac_ground_me_m = (
+        np.array(
+            [
+                lonlat_to_ground_km(lon_deg, lat_deg, radius_m / 1000.0)
+                for (lon_deg, lat_deg), radius_m in zip(wac_lonlat, wac_radii_m, strict=True)
+            ]
+        )
+        * 1000.0
+    )
+
+    with warnings.catch_warnings():
+        # NotGeoreferencedWarning is expected for an ISIS .cub at this pipeline stage (no
+        # geotransform yet, not a bug) -- see plotting.read_raster_band's own docstring for this
+        # same suppression.
+        warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
+        with rasterio.open(ground_to_image_model.cub_path) as src:
+            n_lines = src.height
+    n_framelets = n_lines // wac_camera_model.FRAMELET_HEIGHT
+    et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line(ground_to_image_model.cub_path, n_lines)
 
     observed_pixels = []
     ground_lonlat = []
     n_dropped = 0
-    for pixel, basemap_lon, basemap_lat in zip(pixels, basemap_lons, basemap_lats, strict=True):
+    for ground_me_m, basemap_lon, basemap_lat in zip(wac_ground_me_m, basemap_lons, basemap_lats, strict=True):
+        pixel = wac_camera_model.find_framelet_and_project(ground_me_m, n_framelets, et0, et_per_line)
         if pixel is None:
             n_dropped += 1
             continue
@@ -123,7 +155,7 @@ def resolve_control_points(
     if n_dropped:
         print(
             f"resolve_control_points: dropped {n_dropped}/{len(wac_points_map)} tie points whose "
-            "implied ground point doesn't project into the original crop"
+            "implied ground point doesn't project into any real framelet of the original crop"
         )
     return np.array(observed_pixels, dtype="float64"), np.array(ground_lonlat, dtype="float64")
 
