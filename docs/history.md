@@ -4114,3 +4114,87 @@ per round of feedback) -- both full 36-cell top-to-bottom runs, no errors, exit 
 (ruff format/check, mypy, notebook sync/warnings) clean both times. Still only validated on this one
 entry (`M1327210646CE`) through the real `TrnTestReprojectImage` class and the flagship notebook --
 dataset-scale validation across the rest of the manifest remains open, not done in this pass.
+
+## Phase 66 (2026-08-21) — Replaced `trn_dataset.py`'s filesystem task queue with `huey` (sqlite)
+
+The user's request: cut the custom concurrency-sensitive bookkeeping in `trn_dataset.py`'s task
+queue (`.locks/<product_id>_<product_type>.lock`/`.error`, atomic `os.O_CREAT|O_EXCL` claims --
+`docs/dataset-plan.md`'s original "Task queue" design) in favor of `huey`, a small, well-known
+Python task-queue library with a sqlite backend, on the reasoning that it needs no extra
+infrastructure (no Redis/broker, just a file -- the same "self-contained folder, no extra services"
+ethos this project already follows) and hands back better-tested retry/error-storage/consumer
+tooling for free. Confirmed with the user up front: this was scoped as a code-quality/robustness
+upgrade, not a push for real parallel bulk generation (which this queue was designed to eventually
+support but has never actually been exercised for -- every real use so far is
+`image_generation.py`'s single-image `dataset.populate(limit=1)`), so `populate()` needed to keep
+behaving exactly as before -- one blocking call, no new process to start -- rather than switching to
+a persistent multi-worker consumer model.
+
+**New `src/trntest/tasks.py`**: one module-level `huey = SqliteHuey(...)` instance per worktree's
+`output_dir` (`output_dir/.huey/tasks.db`, not per-dataset-folder -- `@huey.task()` binds to a fixed
+instance at import time, so `output_dir` being this project's existing per-worktree isolation
+boundary, per `docs/environment.md`, was the natural queue-identity boundary too, not the dataset
+folder). `immediate=True` executes a task synchronously in the calling process the moment it's
+enqueued, matching `populate()`'s original behavior with zero new operational steps.
+`immediate_use_memory=False` is required alongside it and easy to miss -- huey's own default
+silently switches immediate mode to in-memory storage, which would make a stored failure invisible
+to a `status()` call from a different process (confirmed empirically with a real subprocess probe
+before writing any of the integration code); the real sqlite file has to stay authoritative so a
+fresh `docker compose run` can still see a prior run's failure, the same property the old `.error`
+files had. `generate_product(image)` is a thin wrapper calling the existing, unchanged
+`TrnTestImage.generate()` directly on the real object (not re-opened from disk via
+`(dataset_folder, product_id, product_type)` args) -- deliberately not designed for the deferred,
+not-yet-built multi-worker `huey_consumer` path's cross-process picklability requirement, since nothing
+today actually crosses a process boundary and an earlier draft that *did* reopen from disk broke
+every fast, disk-free unit test that constructs a `TrnTestDataSet` directly without calling
+`.create()` first.
+
+**`trn_dataset.py`**: deleted `_lock_path`/`_error_path`/`claim_task`/`mark_done`/`mark_failed`/
+`claim_next_task`/`clear_lock` outright. `task_state()` collapsed from four states to three (`done`
+still wins first, via `image.exists()`; `failed`/`pending` now come from querying
+`tasks.huey.result()` for a deterministic task id -- `f"{dataset_folder}::{product_id}::{product_type}"`
+-- instead of checking lock/error files; `in_progress` no longer has a meaningful, file-observable
+equivalent under the synchronous default and was dropped). `populate()` now enqueues
+`tasks.generate_product` per pending task and blocks on its `Result`, catching `TaskException`
+instead of a bare `Exception`. **A genuine, real crash-recovery win, not just a lock-file
+relocation**: since there's no lock file to leak anymore, a worker killed mid-task leaves nothing
+behind to clean up -- the next `populate()` call just re-enqueues based on disk state alone, no
+`clear_lock()`-equivalent manual step needed at all.
+
+**One real tradeoff, made explicit rather than silently accepted**: the old design's atomic
+`claim_task` was what made running several separate `docker compose run` invocations against the
+same dataset folder safe as a way to parallelize -- that's gone. `populate()` is no longer safe to
+run from more than one process concurrently against the same folder; both `trn_dataset.py`'s own
+module docstring and `docs/dataset-plan.md` now say so explicitly. The deferred, documented (not
+built) replacement for real parallel population is a `huey_consumer trntest.tasks.huey -w N -k
+process` long-running worker pool -- `-k process`, not thread/greenlet, to preserve this project's
+existing rule that spiceypy's process-global state is unsafe to share within one process.
+
+**Two real bugs found and fixed empirically before this could be trusted, both worth recording**:
+(1) `populate()`'s first draft called `result.get(blocking=True)` (no `preserve=True`) to read a
+just-enqueued task's outcome -- since a plain `.get()` pops the stored result on read, this erased a
+failure's own record before `task_state()` ever got a chance to see it, so `status()` right after a
+failing `populate()` call incorrectly reported `pending`, not `failed`. Fixed by reading with
+`preserve=True` throughout (successes stay preserved too now, harmless -- `task_state()` never
+queries huey for the "done" case, disk existence wins first). (2) After that fix, `populate()`
+still hung *forever*, but only on a **retried** task (`retry_failed=True`, the same deterministic
+task id reused for a second attempt) -- root-caused via a long bisection (isolating pytest vs. a
+plain script, trimming the test file down repeatedly, then reading huey's own `_execute` source)
+to `generate_product` not returning a value: huey's `_execute` only calls `put_result` for a
+successful task when `task_value is not None` (or `store_none=True`, not set here), so a bare
+`image.generate()` with no `return` never got a result stored at all, and the second attempt's
+blocking `.get()` polled forever for a result that would never arrive. The first (failing) attempt
+never surfaced this, since a stored error is unconditional regardless of return value. Fixed by
+having `generate_product` `return image.generate()` (already returns `raster_path` for free, not a
+workaround). Neither bug was caught by casual single-call testing -- both needed the exact
+retry/failure-then-recheck sequence real usage (and the test suite) exercises.
+
+`huey` added to `pyproject.toml`'s `dependencies` (plus a `huey.*` mypy `ignore_missing_imports`
+override, no stubs published). `tests/test_trn_dataset.py`: removed the tests that were purely
+about the deleted lock-file primitives; rewrote the task-state tests to exercise `pending`/`failed`/
+`done` through the real `populate()`/`task_state()` path instead of poking file state directly; kept
+`populate()`/`truncate()`/`limit`/`retry_failed` tests' original intent, now exercising the
+huey-backed path; added `test_failed_task_state_survives_a_fresh_process`, a real subprocess-based
+regression test for the `immediate_use_memory=False` requirement. Full suite (241 passed, 3 heavy
+deselected) and `trntest-lint --all` both clean. Live-validated via
+`scripts/run_notebook.sh notebooks/image_generation.py`.

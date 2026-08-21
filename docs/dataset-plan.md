@@ -56,7 +56,7 @@ dated entry).
   _work/<edr_product>/                 # per-entry intermediates (.tsai, DEM/ortho tiles, pre-copy
                                         # render output) — kept out of crop/hillshade so those only
                                         # ever hold the canonical named pair
-  .locks/                              # task-queue bookkeeping (see "Task queue" below)
+                                        # (no .locks/ anymore — see "Task queue" below, superseded)
 ```
 
 Filenames key on **`edr_product`** (matches the user's own literal example — `M1327210646CE` →
@@ -308,6 +308,16 @@ tracked TODO to replace it with the above — never characterized in code/docs a
 permanent "informational only" design choice, per the user's explicit direction.
 
 ## Task queue
+
+**Superseded.** The filesystem-only design below (`.locks/<product_id>_<product_type>.lock`/
+`.error`, atomic `os.O_CREAT|O_EXCL` claims) is what was originally implemented, and worked, but was
+later replaced with the `huey` library (sqlite backend) to cut this project's own concurrency-
+sensitive bookkeeping code and lean on a known-good queue implementation instead — see
+`docs/history.md`'s dated entry for the migration and its rationale, and `src/trntest/tasks.py`'s
+module docstring for the current design (one `huey` instance per worktree's `output_dir`, not
+per-dataset-folder; `immediate=True` + `immediate_use_memory=False` so `populate()` keeps its
+original synchronous, no-consumer-needed behavior while still persisting failures to real sqlite).
+Left below for historical context — nothing here describes current behavior.
 
 Filesystem-only, no persisted job DB — task list is always `manifest rows × implemented product
 types`, state always derived:

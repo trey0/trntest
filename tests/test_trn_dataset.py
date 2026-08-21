@@ -1,9 +1,11 @@
+import subprocess
+import sys
 from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
-from trntest import trn_dataset
+from trntest import tasks, trn_dataset
 from trntest.config import TrntestConfig
 
 
@@ -91,7 +93,7 @@ def test_create_writes_manifest_and_subfolders(tmp_path):
     images = _minimal_manifest(["P1", "P2"])
     ds = trn_dataset.TrnTestDataSet.create(folder, images, TrntestConfig())
 
-    for sub in ("crop", "hillshade", "reproject", "_work", ".locks"):
+    for sub in ("crop", "hillshade", "reproject", "_work"):
         assert (folder / sub).is_dir()
     assert (folder / "manifest.csv").is_file()
     assert len(ds) == 2
@@ -184,94 +186,67 @@ def test_image_generate_is_idempotent(tmp_path):
     assert image.generate_impl_calls == 1
 
 
-# -- Task queue primitives ----------------------------------------------------------------------
+# -- Task queue (trntest.tasks-backed) -----------------------------------------------------------
 
 
-def test_task_state_four_cases(tmp_path):
+def test_task_state_pending_failed_done(tmp_path, monkeypatch):
+    """`pending` before anything runs; `failed` after a failing `populate()`; `done` once the real
+    product file exists (via a retried, now-succeeding `populate()`) -- exercised through the real
+    `populate()`/`task_state()` path rather than poking `tasks.huey` directly, since there's no
+    filesystem lock/error bookkeeping left to poke."""
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
     entry = ds[0]
 
     assert trn_dataset.task_state(entry, "crop") == "pending"
 
-    trn_dataset._lock_path(ds.folder, "P1", "crop").parent.mkdir(parents=True, exist_ok=True)
-    trn_dataset._lock_path(ds.folder, "P1", "crop").touch()
-    assert trn_dataset.task_state(entry, "crop") == "in_progress"
-    trn_dataset._lock_path(ds.folder, "P1", "crop").unlink()
-
-    trn_dataset._error_path(ds.folder, "P1", "crop").parent.mkdir(parents=True, exist_ok=True)
-    trn_dataset._error_path(ds.folder, "P1", "crop").touch()
+    ds.populate(product_types=("crop",))
     assert trn_dataset.task_state(entry, "crop") == "failed"
-    trn_dataset._error_path(ds.folder, "P1", "crop").unlink()
 
-    entry.crop.raster_path.parent.mkdir(parents=True, exist_ok=True)
-    entry.crop.raster_path.write_text("x")
-    entry.crop.sidecar_json_path.write_text("{}")
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds.populate(product_types=("crop",), retry_failed=True)
     assert trn_dataset.task_state(entry, "crop") == "done"
 
 
-def test_task_state_done_wins_over_leftover_lock_or_error(tmp_path):
-    """`done` (a real generated file) takes priority even if a stale `.lock`/`.error` is also
+def test_task_state_done_wins_over_leftover_failed_result(tmp_path, monkeypatch):
+    """`done` (a real generated file) takes priority even if a stale failed huey result is also
     present -- see `task_state`'s own docstring for why."""
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
     entry = ds[0]
+    ds.populate(product_types=("crop",))
+    assert trn_dataset.task_state(entry, "crop") == "failed"
+
     entry.crop.raster_path.parent.mkdir(parents=True, exist_ok=True)
     entry.crop.raster_path.write_text("x")
     entry.crop.sidecar_json_path.write_text("{}")
-    trn_dataset._lock_path(ds.folder, "P1", "crop").parent.mkdir(parents=True, exist_ok=True)
-    trn_dataset._lock_path(ds.folder, "P1", "crop").touch()
 
     assert trn_dataset.task_state(entry, "crop") == "done"
 
 
-def test_claim_task_is_atomic(tmp_path):
+def test_failed_task_state_survives_a_fresh_process(tmp_path, monkeypatch):
+    """Regression check for `trntest.tasks`'s `immediate_use_memory=False`: a stored failure must be
+    visible to a genuinely different process reading the same huey sqlite file, not just the process
+    that produced it -- otherwise `status()` in a fresh `docker compose run` couldn't see a prior
+    run's failure, the same property the old `.error` files had. See `trntest.tasks`'s docstring."""
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    ds.populate(product_types=("crop",))
+    assert trn_dataset.task_state(ds[0], "crop") == "failed"
 
-    assert trn_dataset.claim_task(ds, "P1", "crop") is True
-    assert trn_dataset.claim_task(ds, "P1", "crop") is False
-
-
-def test_mark_done_clears_lock_and_error(tmp_path):
-    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    trn_dataset.claim_task(ds, "P1", "crop")
-    trn_dataset._error_path(ds.folder, "P1", "crop").parent.mkdir(parents=True, exist_ok=True)
-    trn_dataset._error_path(ds.folder, "P1", "crop").touch()
-
-    trn_dataset.mark_done(ds, "P1", "crop")
-
-    assert not trn_dataset._lock_path(ds.folder, "P1", "crop").exists()
-    assert not trn_dataset._error_path(ds.folder, "P1", "crop").exists()
-
-
-def test_mark_failed_writes_error_and_clears_lock(tmp_path):
-    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    trn_dataset.claim_task(ds, "P1", "crop")
-
-    trn_dataset.mark_failed(ds, "P1", "crop", RuntimeError("boom"))
-
-    assert not trn_dataset._lock_path(ds.folder, "P1", "crop").exists()
-    assert "boom" in trn_dataset._error_path(ds.folder, "P1", "crop").read_text()
-
-
-def test_claim_next_task_skips_done_in_progress_and_failed(tmp_path):
-    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    entry = ds[0]
-    entry.crop.raster_path.parent.mkdir(parents=True, exist_ok=True)
-    entry.crop.raster_path.write_text("x")
-    entry.crop.sidecar_json_path.write_text("{}")  # crop: done
-    trn_dataset.claim_task(ds, "P1", "hillshade")  # hillshade: in_progress
-
-    assert trn_dataset.claim_next_task(ds) is None
-
-
-def test_clear_lock_reverts_in_progress_to_pending(tmp_path):
-    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    entry = ds[0]
-    trn_dataset.claim_task(ds, "P1", "crop")
-    assert trn_dataset.task_state(entry, "crop") == "in_progress"
-
-    trn_dataset.clear_lock(ds, "P1", "crop")
-
-    assert trn_dataset.task_state(entry, "crop") == "pending"
+    tid = tasks.task_id(str(ds.folder), "P1", "crop")
+    probe = (
+        "from trntest import tasks\n"
+        "from huey.exceptions import TaskException\n"
+        "try:\n"
+        f"    tasks.huey.result({tid!r}, preserve=True)\n"
+        "except TaskException:\n"
+        "    print('FAILED-AS-EXPECTED')\n"
+        "else:\n"
+        "    print('NOT-FOUND-OR-NOT-FAILED')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert "FAILED-AS-EXPECTED" in result.stdout
 
 
 # -- populate() ---------------------------------------------------------------------------------
@@ -313,7 +288,6 @@ def test_populate_retry_failed_clears_errors_and_reruns(tmp_path, monkeypatch):
     ds.populate(retry_failed=True)
 
     assert ds.status().set_index("product_id").loc["P1", "crop"] == "done"
-    assert not trn_dataset._error_path(ds.folder, "P1", "crop").exists()
 
 
 def test_populate_limit_stops_after_n_entries_and_is_resumable(tmp_path, monkeypatch):

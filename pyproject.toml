@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 dependencies = [
     "requests",
     "spiceypy",
+    "huey",
     "numpy",
     "scipy",
     "rasterio",
@@ -112,7 +113,7 @@ warn_unused_configs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["spiceypy.*", "rasterio.*", "pandas.*", "geopandas.*", "shapely.*", "pvl.*", "scipy.*"]
+module = ["spiceypy.*", "rasterio.*", "pandas.*", "geopandas.*", "shapely.*", "pvl.*", "scipy.*", "huey.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
