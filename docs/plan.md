@@ -510,6 +510,23 @@ short of `populate()` -- no rendering from this notebook yet.
   started, and there's no record elsewhere of which files/modules they were meant to cover -- next
   session should ask the user to re-scope chunks B-E from scratch (or just re-run the audit idea
   fresh) rather than assume a prior chunking plan still applies.
+- **New, first minimal prototype built (2026-08-21): per-image Jupyter/HTML reports.** A
+  standalone, one-HTML-page-per-entry report, separate from `image_generation.py`'s long
+  hand-curated demo notebook -- `notebooks/report_template.py` (real `{{ name }}` text
+  substitution via `trntest.report.render_template`, not papermill's `parameters`-tag mechanism,
+  after that turned out unable to support a true one-line `load_entry("<path>", "<id>")` call with
+  literal values -- see `docs/report-plan.md`'s "Mechanism" section; deliberately compact,
+  one-liner cells calling `src/trntest/report.py`, no per-cell markdown headers; not committed as
+  a paired notebook, since its `{{ }}` source can't execute standalone) +
+  `scripts/generate_report.sh`/`scripts/render_report_template.py` (substitute -> jupytext sync ->
+  papermill execute -> nbconvert to HTML, `ExtractOutputPreprocessor` on so figures land as real
+  files under `images/` rather than base64-embedded, `In[N]:`/`Out[N]:` prompt gutters suppressed
+  but code cells left visible). Deliberately minimal first pass (one raster + a couple of manifest
+  fields), hand-run repeatedly against multiple entries, confirmed both the images-as-separate-
+  files property and that each entry's own data renders (not a stale default). Growing the
+  report's content to match `image_generation.py`'s Phase 5/6/8 comparisons and
+  building the multi-entry index page (`<iframe>`-based navigation across entries) are both real,
+  not-yet-started follow-ups. See `docs/report-plan.md` for the full design.
 
 ## Development history
 

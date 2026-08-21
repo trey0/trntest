@@ -15,7 +15,7 @@ See `trntest.Session` for the full pipeline, or the individual modules (`trntest
 for the underlying free functions, each independently callable with an explicit `config`.
 """
 
-from trntest import plotting
+from trntest import plotting, report
 from trntest.camera import Camera, FrameTiming, build_camera, fetch_frame_timing
 from trntest.catalog import CATALOG_COLUMNS
 from trntest.config import TrntestConfig, load_config
@@ -61,6 +61,7 @@ __all__ = [
     "write_manifest",
     "read_manifest",
     "plotting",
+    "report",
     "TrnTestDataSet",
     "TrnTestEntry",
     "TrnTestImage",
