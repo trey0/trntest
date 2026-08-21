@@ -13,6 +13,10 @@ this file). Then, as needed:
   Consult before re-deriving any of this from scratch; update it when a concrete choice changes.
 - `docs/caching.md` — why and how external data (SPICE kernels, WMS tiles) is cached locally
   instead of re-fetched; follow this pattern in any new fetch code.
+- `docs/batch-generation.md` — the recommended workflow for populating a `TrnTestDataSet` at scale
+  via `TrnTestDataSet.populate_via_workers()` (a real multi-worker pool, not `populate()`'s
+  sequential default), and the concrete races/gotchas to watch out for when running one. Read this
+  before running or advising on a large generator batch job.
 - `docs/history.md` — the phase-by-phase development narrative (what was tried, what broke, how
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above

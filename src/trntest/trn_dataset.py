@@ -11,8 +11,10 @@ here.
 **`populate()` no longer supports running several concurrent `docker compose run` invocations
 against the same dataset folder as a way to parallelize** -- the old filesystem lock files that made
 that safe are gone (see "Task queue" below). Only one `populate()` call should run against a given
-dataset folder at a time until the deferred `huey_consumer` multi-worker path
-(`trntest.tasks`'s docstring) is actually built.
+dataset folder at a time. For real multi-worker parallel population, use `populate_via_workers()`
+instead (a separate `huey` queue + a real `huey_consumer` subprocess this method manages itself --
+see `trntest.tasks`'s docstring) -- not a substitute for running several `populate()` calls
+concurrently, a different mechanism entirely.
 
 First-pass scope was `crop` + `hillshade` generation only; `reproject` (`TrnTestReprojectImage`,
 `sat_sim` fed by the real WAC crop's own reflectance instead of the Lunaserv/Astropedia basemap,
@@ -31,6 +33,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pandas as pd
+from huey import Huey
+from huey.api import Result, TaskWrapper
 from huey.exceptions import TaskException
 
 from trntest import camera as camera_module
@@ -213,36 +217,69 @@ class TrnTestDataSet:
             for entry in self:
                 for product_type in product_types:
                     if task_state(entry, product_type) == "failed":
-                        _clear_stored_result(self.folder, entry.product_id, product_type)
+                        _clear_stored_result(self.folder, entry.product_id, product_type, huey_instance=tasks.huey)
 
-        entries_done = 0
-        for entry in self:
-            if limit is not None and entries_done >= limit:
-                return
-            touched = False
-            for product_type in product_types:
-                if task_state(entry, product_type) != "pending":
-                    continue
-                touched = True
-                image = entry.images_by_type[product_type]
-                task = tasks.generate_product.s(image)
-                task.id = tasks.task_id(str(self.folder), entry.product_id, product_type)
-                result = tasks.huey.enqueue(task)
-                try:
-                    # preserve=True: a plain `.get()` pops the stored result on read, which would
-                    # erase a failure's record right here, before `task_state()` ever gets a chance
-                    # to report it -- confirmed empirically. Successes stay preserved too (harmless;
-                    # `task_state()` never queries huey for the "done" case, disk existence wins
-                    # first).
-                    result.get(blocking=True, preserve=True)
-                except TaskException:  # noqa: PERF203 -- one bad task shouldn't abort the whole batch
-                    pass
-            if touched:
-                entries_done += 1
+        # huey's immediate=True (trntest.tasks's docstring) means each task already ran, synchronously,
+        # by the time huey.enqueue() returns inside _enqueue_pending -- so waiting on every Result only
+        # after collecting them all is equivalent to waiting right after each one, not a behavior change.
+        for result in _enqueue_pending(self, product_types, limit, tasks.huey, tasks.generate_product):
+            _await_result(result)
 
-    def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES) -> pd.DataFrame:
+    def populate_via_workers(
+        self,
+        product_types: tuple[str, ...] = PRODUCT_TYPES,
+        retry_failed: bool = False,
+        limit: int | None = None,
+        workers: int = 4,
+    ) -> None:
+        """`populate()`'s real multi-worker equivalent: same `product_types`/`retry_failed`/`limit`
+        semantics (see `populate()`'s own docstring -- `limit` still counts distinct entries with
+        genuinely new pending work, not completions), but routed through `trntest.tasks.huey_parallel`
+        instead of the `immediate=True` default queue, so the actual `image.generate()` calls run in
+        `workers` separate `-k process` worker processes rather than sequentially in this one. This
+        call still blocks until the whole batch finishes -- from the caller's side, a drop-in
+        replacement for `populate()`, just backed by real parallelism instead of one process.
+
+        Manages its own `huey_consumer` subprocess for the duration of this call (`tasks.
+        start_consumer`/`stop_consumer`) -- no separate terminal/process to set up first. If this
+        call is interrupted (an exception, Ctrl-C) partway through, the consumer subprocess is still
+        torn down (`finally`), but any tasks it had already claimed keep running in their own worker
+        processes until they finish -- huey's own `SIGTERM` handling, not this method's; check
+        `status(huey_instance=tasks.huey_parallel)` and re-run to pick up whatever's still pending.
+
+        Uses `tasks.huey_parallel`'s own separate queue/result store -- a task's `failed` state
+        recorded here is invisible to a plain `status()` call (which only checks `tasks.huey`) unless
+        you pass `huey_instance=tasks.huey_parallel` explicitly; `done` is unaffected either way
+        (always disk-based). Safe to run concurrently with `populate()` itself (different queues,
+        different sqlite files) but, like `populate()`, only one `populate_via_workers()` call should
+        run against a given dataset folder at a time -- nothing here re-adds the old cross-process
+        claim safety, it just moves where the single caller's own parallelism comes from."""
+        if retry_failed:
+            for entry in self:
+                for product_type in product_types:
+                    if task_state(entry, product_type, huey_instance=tasks.huey_parallel) == "failed":
+                        _clear_stored_result(
+                            self.folder, entry.product_id, product_type, huey_instance=tasks.huey_parallel
+                        )
+
+        results = _enqueue_pending(self, product_types, limit, tasks.huey_parallel, tasks.generate_product_parallel)
+        if not results:
+            return
+
+        consumer = tasks.start_consumer(workers)
+        try:
+            for result in results:
+                _await_result(result)
+        finally:
+            tasks.stop_consumer(consumer)
+
+    def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
+        """`huey_instance`: which queue's stored results to check for `failed` -- `tasks.huey`
+        (`populate()`'s queue, the default) or `tasks.huey_parallel` (`populate_via_workers()`'s).
+        `done` is unaffected either way (always disk-based)."""
         rows = [
-            {"product_id": entry.product_id, **{pt: task_state(entry, pt) for pt in product_types}} for entry in self
+            {"product_id": entry.product_id, **{pt: task_state(entry, pt, huey_instance) for pt in product_types}}
+            for entry in self
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
 
@@ -263,14 +300,18 @@ class TrnTestDataSet:
         Leaves `_work/<edr_product>/` intermediates (DEM/ortho, `.tsai`) alone -- regeneration reuses
         those where still valid (see `TrnTestEntry.dem_ortho_result`'s own resume-from-files check);
         delete `dataset.folder / "_work" / <edr_product>` yourself first if you also want those
-        re-fetched from scratch."""
+        re-fetched from scratch. Clears stored results from *both* `tasks.huey` and
+        `tasks.huey_parallel` -- a task's most recent attempt could have gone through either
+        `populate()` or `populate_via_workers()`, and this should revert to `pending` for both
+        regardless of which one last touched it."""
         target_entries = list(self) if entries is None else entries if isinstance(entries, list) else [entries]
         for entry in target_entries:
             for product_type in product_types:
                 image = entry.images_by_type[product_type]
                 image.raster_path.unlink(missing_ok=True)
                 image.sidecar_json_path.unlink(missing_ok=True)
-                _clear_stored_result(self.folder, entry.product_id, product_type)
+                _clear_stored_result(self.folder, entry.product_id, product_type, huey_instance=tasks.huey)
+                _clear_stored_result(self.folder, entry.product_id, product_type, huey_instance=tasks.huey_parallel)
 
 
 class TrnTestImage(abc.ABC):
@@ -539,34 +580,82 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
 
 
-# -- Task queue: backed by trntest.tasks's huey instance, no filesystem lock/error files of our
+# -- Task queue: backed by trntest.tasks's huey instances, no filesystem lock/error files of our
 # own anymore -- task list is always manifest rows x implemented product types; `done` is still
-# just `image.exists()`, `failed` is whatever huey's own sqlite-backed result store says for that
-# task's deterministic id (see trntest.tasks.task_id). See that module's docstring and
-# docs/dataset-plan.md's "Task queue" section for the full design and why there's no more
-# `in_progress` state or manual crash-recovery step (a killed process just leaves nothing behind to
-# clean up -- the next `populate()` call re-enqueues based on disk state alone).
+# just `image.exists()`, `failed` is whatever the given huey instance's own sqlite-backed result
+# store says for that task's deterministic id (see trntest.tasks.task_id). See that module's
+# docstring and docs/dataset-plan.md's "Task queue" section for the full design and why there's no
+# more `in_progress` state or manual crash-recovery step (a killed process just leaves nothing
+# behind to clean up -- the next populate*() call re-enqueues based on disk state alone).
 
 
-def task_state(entry: TrnTestEntry, product_type: str) -> str:
+def task_state(entry: TrnTestEntry, product_type: str, huey_instance: Huey = tasks.huey) -> str:
     """`done` (checked first, so a manually-fixed-up product file always wins regardless of any
-    stored huey result) | `failed` | `pending`."""
+    stored huey result) | `failed` | `pending`. `huey_instance`: `tasks.huey` (the default,
+    `populate()`'s queue) or `tasks.huey_parallel` (`populate_via_workers()`'s) -- the two queues
+    are independent, so a task's `failed` state under one is invisible under the other."""
     if entry.images_by_type[product_type].exists():
         return "done"
     tid = tasks.task_id(str(entry.dataset_folder), entry.product_id, product_type)
     try:
-        tasks.huey.result(tid, preserve=True)
+        huey_instance.result(tid, preserve=True)
     except TaskException:
         return "failed"
     return "pending"
 
 
-def _clear_stored_result(dataset_folder: Path, product_id: str, product_type: str) -> None:
-    """Pops (discards) a task's stored huey result, if any, so it's no longer reported `failed` --
-    used by `retry_failed=True` and `truncate()`. No-op if the task never ran or was already
-    cleared."""
+def _clear_stored_result(dataset_folder: Path, product_id: str, product_type: str, huey_instance: Huey) -> None:
+    """Pops (discards) a task's stored result from `huey_instance`, if any, so it's no longer
+    reported `failed` there -- used by `retry_failed=True` and `truncate()`. No-op if the task never
+    ran (on this instance) or was already cleared."""
     tid = tasks.task_id(str(dataset_folder), product_id, product_type)
     try:
-        tasks.huey.result(tid, preserve=False)
+        huey_instance.result(tid, preserve=False)
+    except TaskException:
+        pass
+
+
+def _enqueue_pending(
+    dataset_obj: "TrnTestDataSet",
+    product_types: tuple[str, ...],
+    limit: int | None,
+    huey_instance: Huey,
+    task_fn: TaskWrapper,
+) -> list[Result]:
+    """Shared by `populate()`/`populate_via_workers()`: enqueues every still-`pending` task (dataset
+    entries x `product_types`) into `huey_instance` via `task_fn`, stopping after `limit` distinct
+    entries with genuinely new pending work (same counting rule both methods' own docstrings
+    describe). Returns the enqueued `Result` handles without waiting on any of them -- that's the
+    caller's own job, since `populate()` and `populate_via_workers()` want to wait differently (the
+    former inherently already has, by the time this returns -- see its own comment; the latter only
+    after its consumer subprocess is up)."""
+    results = []
+    entries_done = 0
+    for entry in dataset_obj:
+        if limit is not None and entries_done >= limit:
+            break
+        touched = False
+        for product_type in product_types:
+            if task_state(entry, product_type, huey_instance) != "pending":
+                continue
+            touched = True
+            image = entry.images_by_type[product_type]
+            task = task_fn.s(image)
+            task.id = tasks.task_id(str(dataset_obj.folder), entry.product_id, product_type)
+            results.append(huey_instance.enqueue(task))
+        if touched:
+            entries_done += 1
+    return results
+
+
+def _await_result(result: Result) -> None:
+    """`preserve=True`: a plain `.get()` pops the stored result on read, which would erase a
+    failure's record before `task_state()` ever gets a chance to report it -- confirmed empirically.
+    Successes stay preserved too (harmless; `task_state()` never queries huey for the `done` case,
+    disk existence wins first). `TaskException` is caught, not raised -- one bad task shouldn't abort
+    the whole batch; a batch of real network/ISIS calls is expected to have occasional real
+    failures."""
+    try:
+        result.get(blocking=True, preserve=True)
     except TaskException:
         pass

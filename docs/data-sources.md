@@ -1079,9 +1079,10 @@ meaning or content) holds `manifest.csv` plus `crop/<edr_product>_crop.{cub,json
 `hillshade/<edr_product>_hillshade.{tif,json}`, an empty reserved `reproject/`, per-entry
 intermediates under `_work/<edr_product>/` (`.tsai`, DEM/ortho tiles, pre-copy render output — kept
 out of `crop`/`hillshade` so those two only ever hold the canonical named pair). Task-queue state
-lives outside this folder entirely now, in `<output_dir>/.huey/tasks.db` (a `huey` sqlite database,
-shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s module docstring and
-`docs/dataset-plan.md`'s "Task queue" section). Filenames key on `edr_product` (`M1327210646CE` →
+lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
+databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_workers()`'s real
+worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s
+module docstring and `docs/dataset-plan.md`'s "Task queue" section. Filenames key on `edr_product` (`M1327210646CE` →
 `crop/M1327210646CE_crop.cub`), matching `isis_wac.py`'s own scratch-dir convention; row lookup
 (`TrnTestDataSet[key]`) keys on `product_id` instead, matching `dataset.generate_dataset()`'s
 existing per-image folder convention — the two are always equal in today's real manifest, so this

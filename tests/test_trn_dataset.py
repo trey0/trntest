@@ -1,9 +1,13 @@
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
+from _fake_worker_task import FailingWorkerTask, FakeWorkerTask
+from huey.exceptions import TaskException
 
 from trntest import tasks, trn_dataset
 from trntest.config import TrntestConfig
@@ -384,3 +388,173 @@ def test_truncate_then_populate_actually_regenerates(tmp_path, monkeypatch):
 
     assert call_count["n"] == 4  # crop + hillshade regenerated
     assert (ds.status().set_index("product_id").loc["P1"] == "done").all()
+
+
+def test_truncate_clears_stored_results_from_both_queues(tmp_path, monkeypatch):
+    """`truncate()` must clear a stored failure from `tasks.huey_parallel` too, not just
+    `tasks.huey` -- a task's most recent attempt could have gone through `populate_via_workers()`,
+    and a stale failure there would otherwise still show up via
+    `status(huey_instance=tasks.huey_parallel)` after truncate() claims to have reset everything."""
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate_via_workers(product_types=("crop",))
+    assert trn_dataset.task_state(entry, "crop", huey_instance=tasks.huey_parallel) == "failed"
+
+    ds.truncate(entry, product_types=("crop",))
+
+    assert trn_dataset.task_state(entry, "crop", huey_instance=tasks.huey_parallel) == "pending"
+
+
+# -- populate_via_workers() (huey_parallel-backed) -----------------------------------------------
+
+
+def _use_immediate_parallel_queue(monkeypatch) -> None:
+    """`populate_via_workers()`'s tests below exercise its real control flow (which tasks get
+    enqueued, `limit`/`retry_failed` semantics, which queue `status()` needs to check) without a
+    real `huey_consumer` subprocess: flips `tasks.huey_parallel.immediate` to `True` (huey's own
+    documented pattern for testing without a consumer -- see `trntest.tasks`'s docstring) so
+    `huey_parallel.enqueue()` executes synchronously in this process, then no-ops
+    `tasks.start_consumer`/`stop_consumer` so `populate_via_workers()` doesn't try to spawn a real
+    (now unnecessary) subprocess. The real subprocess machinery itself is covered separately, below,
+    by the `-k process` consumer tests using `_fake_worker_task.py`'s picklable, SPICE-free tasks."""
+    monkeypatch.setattr(tasks.huey_parallel, "immediate", True)
+    monkeypatch.setattr(tasks, "start_consumer", lambda workers: None)
+    monkeypatch.setattr(tasks, "stop_consumer", lambda proc: None)
+
+
+def test_populate_via_workers_drives_every_task_to_done(tmp_path, monkeypatch):
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
+
+    ds.populate_via_workers()
+
+    status = ds.status(huey_instance=tasks.huey_parallel)
+    assert (status[["crop", "hillshade"]] == "done").all(axis=None)
+
+
+def test_populate_via_workers_marks_failed_and_continues(tmp_path, monkeypatch):
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
+
+    ds.populate_via_workers()
+
+    status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
+    assert status.loc["P1", "crop"] == "failed"
+    assert status.loc["P1", "hillshade"] == "done"
+    assert status.loc["P2", "crop"] == "done"
+
+
+def test_populate_via_workers_retry_failed_clears_and_reruns(tmp_path, monkeypatch):
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    ds.populate_via_workers(product_types=("crop",))
+    assert trn_dataset.task_state(ds[0], "crop", huey_instance=tasks.huey_parallel) == "failed"
+
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds.populate_via_workers(product_types=("crop",), retry_failed=True)
+
+    assert trn_dataset.task_state(ds[0], "crop", huey_instance=tasks.huey_parallel) == "done"
+
+
+def test_populate_via_workers_limit_stops_after_n_entries_and_is_resumable(tmp_path, monkeypatch):
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2", "P3"]), TrntestConfig())
+
+    ds.populate_via_workers(limit=2)
+
+    status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
+    assert (status.loc["P1"] == "done").all()
+    assert (status.loc["P2"] == "done").all()
+    assert (status.loc["P3"] == "pending").all()
+
+    ds.populate_via_workers(limit=2)
+
+    status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
+    assert (status.loc["P3"] == "done").all()
+
+
+def test_populate_via_workers_uses_a_queue_separate_from_populate(tmp_path, monkeypatch):
+    """A failure recorded via `populate_via_workers()` is invisible to a plain `status()` call
+    (`tasks.huey`'s own queue) -- the two are independent, by design (see `trntest.tasks`'s
+    docstring)."""
+    _use_immediate_parallel_queue(monkeypatch)
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+
+    ds.populate_via_workers(product_types=("crop",))
+
+    assert trn_dataset.task_state(ds[0], "crop", huey_instance=tasks.huey_parallel) == "failed"
+    assert trn_dataset.task_state(ds[0], "crop", huey_instance=tasks.huey) == "pending"
+
+
+def test_populate_via_workers_does_not_start_a_consumer_when_nothing_pending(tmp_path, monkeypatch):
+    """No pending work -> no subprocess spawned at all, not even a short-lived one -- confirmed by
+    monkeypatching `start_consumer` to fail loudly if called, rather than a silent no-op like the
+    other tests here use."""
+    monkeypatch.setattr(tasks, "start_consumer", lambda workers: pytest.fail("start_consumer should not be called"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest([]), TrntestConfig())
+
+    ds.populate_via_workers()  # no entries at all -- nothing to enqueue
+
+
+# -- Real `huey_consumer -k process` subprocess (trntest.tasks.start_consumer/stop_consumer) ------
+
+
+def _consumer_env(tmp_path: Path) -> dict[str, str]:
+    """`tests/`, not the full `trntest` package, on `PYTHONPATH` -- lets a fresh worker subprocess
+    unpickle `_fake_worker_task.FakeWorkerTask`/`FailingWorkerTask` without needing spiceypy/
+    rasterio/torch/etc. installed or importable. `TRNTEST_OUTPUT_DIR` pointed at `tmp_path` so this
+    test's `tasks.huey_parallel` (already imported, fixed sqlite path, unaffected by this env var)
+    and the consumer subprocess's own fresh one still agree on the same queue -- unnecessary here
+    since the test always uses `tasks.huey_parallel` directly rather than a fresh import, but kept
+    for clarity that both processes must agree on it in general (see `trntest.tasks`'s docstring)."""
+    return {**os.environ, "PYTHONPATH": str(Path(__file__).parent)}
+
+
+def test_start_stop_consumer_lifecycle(tmp_path):
+    """No task involved -- just confirms `start_consumer` really starts a live process and
+    `stop_consumer` really stops it (SIGTERM, not left running)."""
+    proc = tasks.start_consumer(workers=1, env=_consumer_env(tmp_path))
+    try:
+        assert proc.poll() is None  # still running
+    finally:
+        tasks.stop_consumer(proc)
+    assert proc.poll() is not None  # exited
+
+
+def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
+    marker_path = tmp_path / "marker.txt"
+    task = tasks.generate_product_parallel.s(FakeWorkerTask(str(marker_path)))
+    task.id = f"test-real-consumer-success-{tmp_path.name}"
+    result = tasks.huey_parallel.enqueue(task)
+
+    consumer = tasks.start_consumer(workers=1, env=_consumer_env(tmp_path))
+    try:
+        value = result.get(blocking=True, timeout=30, preserve=True)
+    finally:
+        tasks.stop_consumer(consumer)
+
+    assert marker_path.read_text() == "done"
+    assert str(value) == str(marker_path)
+
+
+def test_generate_product_parallel_failure_visible_via_huey_parallel_result(tmp_path):
+    task = tasks.generate_product_parallel.s(FailingWorkerTask())
+    task.id = f"test-real-consumer-failure-{tmp_path.name}"
+    result = tasks.huey_parallel.enqueue(task)
+
+    consumer = tasks.start_consumer(workers=1, env=_consumer_env(tmp_path))
+    try:
+        with pytest.raises(TaskException, match="boom from worker subprocess"):
+            result.get(blocking=True, timeout=30, preserve=True)
+    finally:
+        tasks.stop_consumer(consumer)

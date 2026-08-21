@@ -317,6 +317,9 @@ sensitive bookkeeping code and lean on a known-good queue implementation instead
 module docstring for the current design (one `huey` instance per worktree's `output_dir`, not
 per-dataset-folder; `immediate=True` + `immediate_use_memory=False` so `populate()` keeps its
 original synchronous, no-consumer-needed behavior while still persisting failures to real sqlite).
+A second `huey` instance, `huey_parallel` (`immediate=False`), plus `TrnTestDataSet.
+populate_via_workers()` were added later still, for real multi-worker batch population through a
+managed `huey_consumer -k process` subprocess — see `docs/history.md`'s later dated entry.
 Left below for historical context — nothing here describes current behavior.
 
 Filesystem-only, no persisted job DB — task list is always `manifest rows × implemented product

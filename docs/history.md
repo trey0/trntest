@@ -4198,3 +4198,79 @@ huey-backed path; added `test_failed_task_state_survives_a_fresh_process`, a rea
 regression test for the `immediate_use_memory=False` requirement. Full suite (241 passed, 3 heavy
 deselected) and `trntest-lint --all` both clean. Live-validated via
 `scripts/run_notebook.sh notebooks/image_generation.py`.
+
+## Phase 67 (2026-08-21) — Added `populate_via_workers()`, a real multi-worker equivalent of `populate()`
+
+Direct follow-on to Phase 66's huey migration, same day: the user wanted to think through actually
+running a big batch job with a worker pool, framed as "an option to switch out the `populate()` call
+with an equivalent call (including the `limit`) that is routed through huey." Two things had to be
+worked out before writing any code, both confirmed via huey's own source/docs rather than assumed:
+(1) huey's `Consumer.start()` explicitly raises `ConfigurationError` against an `immediate=True`
+instance, and isn't safely embeddable in a background thread either (it registers OS signal
+handlers, which only works on a process's main thread) -- so real worker-pool execution needs a
+genuinely separate OS process, not just "the same call but async under the hood". (2) `immediate` is
+fixed on a `Huey` instance at construction time, and `populate()`'s existing `tasks.huey` needed to
+stay `immediate=True` (untouched, no workflow change for the existing single-image demo notebook) --
+so real parallelism needed a **second** `Huey` instance, not a mode switch on the first. Presented
+this as a recommendation with the tradeoff (the new call spawning/managing its own `huey_consumer`
+subprocess vs. requiring the user to start one externally first) via `AskUserQuestion`; the user
+picked the auto-managed, one-call option.
+
+**`src/trntest/tasks.py`**: added `huey_parallel` (`tasks_parallel.db`, `immediate=False`) alongside
+the existing `huey`; both now share one `_generate(image)` helper (still must return a non-`None`
+value, same reasoning as Phase 66) behind two thin `@task()` wrappers, `generate_product`/
+`generate_product_parallel`. `generate_product_parallel` takes the real `TrnTestImage` object
+directly, same as `generate_product` -- confirmed empirically (not just assumed) that a real
+`TrnTestCropImage` instance pickles cleanly and round-trips correctly through an actual `-k process`
+worker subprocess, since unlike `generate_product` this one genuinely crosses a process boundary.
+New `start_consumer(workers, env=None)`/`stop_consumer(proc, timeout=10.0)`: spawn/manage a real
+`huey_consumer trntest.tasks.huey_parallel -w N -k process` subprocess (`-k process`, not
+thread/greenlet, preserving this project's existing rule that spiceypy's process-global state is
+unsafe to share *within* one process -- each worker process still only runs one task at a time,
+sequentially, same as `populate()`'s own single process always has), output redirected to
+`<output_dir>/.huey/consumer.log`, `stop_consumer` SIGTERM-then-SIGKILL. `env` exists so
+`tests/test_trn_dataset.py`'s own real-subprocess test can point the consumer's `PYTHONPATH` at a
+SPICE/ASP/ISIS-free picklable test task, not needed by real callers.
+
+**`src/trntest/trn_dataset.py`**: new `TrnTestDataSet.populate_via_workers(product_types,
+retry_failed, limit, workers=4)` -- same signature and `limit`/`retry_failed` semantics as
+`populate()`, but enqueues into `huey_parallel` and blocks on results only after starting the
+consumer subprocess (torn down in a `finally`, even on an interrupted/failed batch -- though any
+tasks the consumer had already claimed keep running to completion in their own worker processes
+regardless, huey's own `SIGTERM` handling, not this method's). Extracted the shared "enqueue every
+still-pending task up to `limit`, return the `Result` handles" loop into a new module-level
+`_enqueue_pending()` (also fixed a ruff `PLR0912` too-many-branches complaint on the first draft) and
+the "block on one `Result`, catch `TaskException`" bit into `_await_result()` -- both now shared by
+`populate()` and `populate_via_workers()`, a net simplification, not just new surface area.
+`task_state()`/`status()`/`_clear_stored_result()` gained a `huey_instance` parameter (default
+`tasks.huey`, unchanged behavior for every existing caller) so the two queues' state can be
+inspected/cleared independently -- `truncate()` now clears a stored result from *both* queues
+unconditionally, since a task's most recent attempt could have gone through either method.
+
+**A real, deliberate asymmetry, not an oversight**: `populate_via_workers()`'s own failures are
+invisible to a plain `status()` call (which only checks `tasks.huey`) unless the caller passes
+`huey_instance=tasks.huey_parallel` explicitly -- the two queues are genuinely independent by
+design, not merged into one unified view. Documented in both methods' docstrings and `tasks.py`'s
+module docstring rather than silently left as a surprise.
+
+**Testing**: the class of bug this project's huey work keeps finding lives at real process/thread
+boundaries, so testing leaned into that rather than mocking around it. Fast, in-process tests for
+`populate_via_workers()`'s own control flow (done/failed/retry/limit/queue-separation, ~10 new
+tests) flip `tasks.huey_parallel.immediate` to `True` (huey's own documented pattern for testing
+without a consumer) and no-op `start_consumer`/`stop_consumer`, avoiding a real subprocess for logic
+that doesn't need one. Separately, a genuinely real `-k process` subprocess test
+(`test_generate_product_parallel_runs_in_a_real_worker_subprocess`,
+`..._failure_visible_via_huey_parallel_result`, `test_start_stop_consumer_lifecycle`) exercises the
+actual cross-process path, using a new `tests/_fake_worker_task.py` (a plain, picklable, SPICE-free
+`FakeWorkerTask`/`FailingWorkerTask` pair, deliberately its own top-level-importable module -- a
+class defined inside `test_trn_dataset.py` itself would need `tests/` *and* `trntest`'s own heavy
+dependency stack importable from the fresh worker subprocess, defeating the point). Full suite: 251
+passed (up from 241), 3 heavy deselected, ~18s; `trntest-lint --all` clean.
+
+**Live-validated against real manifest entries, not just fakes**: a throwaway `TrnTestDataSet`
+against the real `notebooks/dataset_manifest.csv` (81 entries, only entry 0 previously generated by
+the flagship notebook), `populate_via_workers(limit=2, workers=2)` against two never-before-generated
+entries -- both real crop cubes (`isis_wac`/ISIS pipeline) and hillshade renders (`sat_sim`, real
+Lunaserv/Astropedia DEM fetches) completed successfully in 53.4s total for both entries together,
+each through its own separate OS process, real SPICE/network calls included. Validation dataset
+folder deleted afterward -- scratch, not part of the committed demo.
