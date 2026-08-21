@@ -914,6 +914,83 @@ def _blink_gif_b64(base_frame, overlay_frame, initial_visible: bool, interval_ms
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def plot_render_toggle(
+    raster_a_path,
+    raster_b_path,
+    rotation_k: int,
+    width_km: float,
+    height_km: float,
+    label_a: str,
+    label_b: str,
+    show_a_first: bool = True,
+    blink_interval_ms: int = 700,
+):
+    """Blink comparator for two renders that already share the exact same pixel grid by construction
+    -- e.g. `hillshade` vs. `reproject`, both `sat_sim` renders through one shared `Camera` (same
+    pose, same corrected FOV, same rotation -- see `camera.solve_corrected_fov`'s docstring). Unlike
+    `plot_overlay_toggle`, this needs no `rioxarray`/geo-registration step at all: `raster_a_path`/
+    `raster_b_path` are read as plain arrays (`read_raster_band`) and rotated north-up with the one
+    shared `rotation_k`, the same technique `plot_render_vs_basemap`'s render panel uses -- no
+    reprojection, since there's nothing to align. No tie-point markers -- unlike the other panels in
+    this notebook, the whole point here is the blink itself; static markers didn't actually help
+    read it and just added clutter (confirmed live).
+
+    Still brightness-matches `raster_b_path` to `raster_a_path`'s own median (the same single-
+    multiplicative technique `plot_isis_comparison`/`plot_overlay` use) -- necessary even though both
+    are `sat_sim` renders, since the two can land on very different absolute DN scales depending on
+    their own texture source (e.g. `reproject`'s real ISIS-calibrated I/F input, ~0.01-0.2, vs.
+    `hillshade`'s synthetic basemap texture).
+
+    Reuses `_blink_gif_b64` directly for the actual GIF encoding (shared 256-color palette, `<img
+    src="data:image/gif;...">`, no `<style>`/anchor links for GitHub's sanitizer to strip -- see
+    `plot_overlay_toggle`'s docstring for why that mechanism specifically) -- only the frame-rendering
+    step differs (plain rotated arrays here vs. geo-registered `rioxarray` panels there).
+
+    Each frame's title shows both labels with a `☑`/`☐` checkbox glyph marking which one is
+    currently showing (`"☑ {label_a} / ☐ {label_b}"`, flipped on the other frame) -- the same
+    stable-width checkbox convention `plot_overlay_toggle` uses (only the two glyphs swap in place;
+    `label_a`/`label_b` themselves never move), generalized from an on/off binary to naming which of
+    two candidates is on screen.
+
+    Returns an `IPython.display.HTML` object -- must be the bare last expression of a cell (no
+    trailing `;`), same requirement as `plot_overlay_toggle`."""
+    data_a = read_raster_band(raster_a_path)
+    data_b = read_raster_band(raster_b_path)
+
+    valid_a = valid_pixel_mask(data_a)
+    valid_b = valid_pixel_mask(data_b)
+    filled_a = _fill_dead_columns_for_display(data_a, valid_a) if valid_a.any() else data_a
+    filled_b = _fill_dead_columns_for_display(data_b, valid_b) if valid_b.any() else data_b
+
+    median_a = np.nanmedian(filled_a[valid_a]) if valid_a.any() else 1.0
+    median_b = np.nanmedian(filled_b[valid_b]) if valid_b.any() else 1.0
+    if median_b and np.isfinite(median_b):
+        filled_b = filled_b * (median_a / median_b)
+
+    vmin, vmax = 0, np.nanpercentile(filled_a, 99.9)
+
+    def _frame(data, title):
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.imshow(np.rot90(data, rotation_k), cmap="gray", vmin=vmin, vmax=vmax, extent=(0, width_km, height_km, 0))
+        ax.set_title(title)
+        ax.set_xlabel("km")
+        ax.set_ylabel("km")
+        fig.tight_layout()
+        width_px, height_px = fig.get_size_inches() * fig.dpi
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return Image.open(buf).convert("RGB"), round(width_px), round(height_px)
+
+    frame_a, width_px, height_px = _frame(filled_a, f"☑ {label_a} / ☐ {label_b}")
+    frame_b, _, _ = _frame(filled_b, f"☐ {label_a} / ☑ {label_b}")
+
+    gif_b64 = _blink_gif_b64(frame_a, frame_b, show_a_first, blink_interval_ms)
+    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
+    return IPython.display.HTML(html)
+
+
 def plot_sun_elevation_vs_edr_count(
     orbits_df: pd.DataFrame,
     period_start: datetime,

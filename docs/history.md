@@ -4056,3 +4056,61 @@ Verified: `pytest -q -m "not heavy"` and `trntest-lint` clean inside Docker; new
 local-meters round trip, a synthetic near-polar regression case (proving die5 points stay inside the
 true lon/lat polygon where raw-degree `inscribed_bbox` would not), `resolve_crop_pixels`'s new
 raise-immediately behavior, and the two new `lunaserv` CRS-string helpers.
+
+## Phase 65 (2026-08-21) — Wired `reproject` into `image_generation.ipynb` (Phase 8) and added a same-grid render blink comparator
+
+`reproject` (`TrnTestReprojectImage`) had been implemented and FOV-validated for a while (Phase
+60-63) but was still explicitly not wired into any notebook -- the last open item on
+`docs/reproject-fov-investigation.md`'s own punch list. Picked up this session at the user's
+request ("let's work on the reproject generator").
+
+**First pass**: added `reproject` to Phase 2's `dataset.truncate`/`populate` `product_types=`
+(still opt-in -- `trn_dataset.PRODUCT_TYPES` itself unchanged), then a new Phase 8 mirroring Phase
+5/6's own A/B-style raw-quality-vs-basemap + `mapproject`-overlay-vs-basemap checks. The user
+paused this before running it: "make sure to structure it logically so the comparability of the
+different generators is clear" -- the as-written Phase 8 just repeated the basemap check a third
+time, burying the actual point of `reproject`: it shares `hillshade`'s exact `Camera` (pose, FOV,
+pixel grid), so it's the one candidate comparable to `hillshade` **without any reprojection at
+all** -- a clean texture-source-only ablation (Lunaserv/Hapke basemap vs. real WAC reflectance,
+identical geometry).
+
+**Redesigned**: Phase 8 now has just two things -- a valid-pixel coverage print (the real,
+permanent answer to the FOV investigation's own "does the real crop's footprint actually cover the
+FOV corners" question: 100.0% on the default candidate), and a direct blink comparison against
+`hillshade`. No repeated basemap check -- `reproject`'s geometry is already guaranteed identical to
+`hillshade`'s, already validated in Phase 5, so there's nothing new to re-verify there.
+
+New `plotting.plot_render_toggle`: a blink-GIF comparator for two renders that already share one
+pixel grid by construction. Deliberately *not* `plot_overlay_toggle` with different inputs --
+that function's whole shape (`rioxarray`, geo-registration, footprint outline tracing) exists to
+align two rasters that don't share a grid; `hillshade`/`reproject` already do, so all of that is
+unneeded machinery. Reuses `_blink_gif_b64` directly (the actual hard-won GIF-encoding mechanism --
+shared 256-color palette, `<img src="data:image/gif;...">`, nothing for GitHub's sanitizer to
+strip) with a much lighter frame-renderer: plain `read_raster_band` + `np.rot90` + the same
+single-multiplicative brightness match `plot_isis_comparison`/`plot_overlay` already use (still
+needed despite both sides being `sat_sim` renders -- `reproject`'s real ISIS-calibrated I/F input,
+~0.01-0.2, and `hillshade`'s synthetic basemap texture land on very different absolute DN scales).
+
+**Two more rounds of user feedback, both applied**: (1) titles -- shorter, using the
+already-established `hillshade`/`reproject` names rather than the long `render_label` strings, with
+a `plot_overlay_toggle`-style `☑`/`☐` checkbox glyph marking which one is currently showing
+(`"☑ hillshade / ☐ reproject"`, flipped on the other frame) instead of the title swapping wholesale
+-- same stable-width convention `plot_overlay_toggle` established, generalized from an on/off
+binary to naming which of two candidates is on screen. (2) tie-point markers didn't actually help
+read a blink and were dropped from `plot_render_toggle` entirely -- confirmed live, a blink already
+shows misalignment directly, unlike the static side-by-side panels the markers help elsewhere in
+this notebook. Also renamed the section itself from "8B" (with no surviving "8A" -- an interim
+"Phase 8: comparing three candidates, 8A/8B" structure was proposed and rejected before ever being
+written to the file) to a plain, unlettered header.
+
+One real self-caught error along the way, worth recording since it easily could have gone
+unnoticed: an early edit meant for the new reproject entry landed in the *wrong* section of
+`docs/plan.md` (the unrelated camera-pose-alignment/LightGlue bullet) due to a same-named-section
+mixup while both were open in the same file; caught by re-reading the diff before moving on,
+reverted, and re-applied to the correct location.
+
+Live-validated end-to-end via `scripts/run_notebook.sh notebooks/image_generation.py`, twice (once
+per round of feedback) -- both full 36-cell top-to-bottom runs, no errors, exit 0; `trntest-lint`
+(ruff format/check, mypy, notebook sync/warnings) clean both times. Still only validated on this one
+entry (`M1327210646CE`) through the real `TrnTestReprojectImage` class and the flagship notebook --
+dataset-scale validation across the rest of the manifest remains open, not done in this pass.

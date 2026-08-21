@@ -28,7 +28,9 @@
 # `mapproject`; the real WAC crop via ISIS's own native Pushframe camera model and `cam2map`,
 # after `mapproject`'s CSM route turned out to have a real geometric bug for this sensor type --
 # see Phase 6's notes). Phase 7 then compares the two candidates directly against each other, with
-# explicit tie points. See `../docs/plan.md` for the full phase-by-phase approach,
+# explicit tie points, and Phase 8 validates a third candidate -- `reproject`, the same synthetic
+# camera as Phase 5 but textured from the real WAC crop's own reflectance -- the same two ways.
+# See `../docs/plan.md` for the full phase-by-phase approach,
 # `../docs/dataset-plan.md` for the `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` object model
 # Phases 2-6B are built on, and `../docs/data-sources.md` for the researched specifics referenced
 # below.
@@ -76,9 +78,12 @@ session = trntest.Session()
 # re-fetch those from Lunaserv/Astropedia every run, just re-renders from them.
 
 # %%
+PRODUCT_TYPES = ("crop", "hillshade", "reproject")  # "reproject" is opt-in (trn_dataset.PRODUCT_TYPES
+# defaults to just crop+hillshade) -- included explicitly here so Phase 8 below has it to work with.
+
 dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
-dataset.truncate(dataset[0])
-dataset.populate(limit=1)
+dataset.truncate(dataset[0], product_types=PRODUCT_TYPES)
+dataset.populate(limit=1, product_types=PRODUCT_TYPES)
 entry = dataset[0]
 
 camera = entry.camera
@@ -242,6 +247,58 @@ _ = plotting.plot_isis_comparison(
 )
 
 # %% [markdown]
+# ## Phase 8: does the real-WAC-textured reprojection (`reproject`) check out?
+#
+# A third `TrnTestImage` variant, distinct from both candidates above: `sat_sim` rendered through
+# the *exact same* `Camera` as Phase 5's `hillshade` (same pose, same corrected FOV -- see
+# `camera.solve_corrected_fov`'s docstring), but textured from the real WAC crop's own reflectance
+# (Phase 6's `cam2map` reprojection, `isis_wac.run_cam2map_for_crop`) instead of the Lunaserv/
+# Astropedia basemap. The user's own framing: "use `sat_sim` but for input data use the RDR of our
+# WAC crop essentially."
+#
+# Because its geometry is byte-identical to `hillshade`'s (already validated against the basemap in
+# Phase 5), there's no need to re-run those basemap checks a third time here. The two questions
+# specific to `reproject` are instead: does the real crop's own footprint actually cover the
+# synthetic camera's FOV out to its corners -- checked directly below as a valid-pixel fraction, the
+# real-world question `docs/reproject-fov-investigation.md`'s FOV-correction work was ultimately in
+# service of -- and does texturing from the real WAC data, everything else held fixed, actually
+# produce something that looks like `hillshade` (below -- a direct pixel-for-pixel blink, no
+# reprojection needed, since the two share one pixel grid by construction).
+#
+# Opt-in so far (`trn_dataset.PRODUCT_TYPES` still defaults to just `crop`+`hillshade`; Phase 2
+# above passes `product_types=PRODUCT_TYPES` explicitly to include it), and validated end-to-end on
+# this one entry, not yet at dataset scale across the whole manifest.
+
+# %%
+reproject_data = plotting.read_raster_band(entry.reproject.raster_path)
+valid_frac = plotting.valid_pixel_mask(reproject_data).mean()
+print(f"reproject valid pixels: {valid_frac:.1%}")
+
+# %% [markdown]
+# ### Comparing `hillshade` and `reproject` directly
+#
+# Both are `sat_sim` renders through the exact same `Camera` -- same pose, same pixel grid, same
+# north-up rotation -- so unlike every other comparison in this notebook, this one needs no
+# `mapproject`/`cam2map` reprojection step at all: `plotting.plot_render_toggle` reads each render's
+# own raw pixels directly, brightness-matches them (a real ISIS-I/F-vs-synthetic-texture scale
+# difference, not just a stylistic choice -- see its docstring), and blinks between them the same
+# way `plot_overlay_toggle` does. If texture source were the *only* thing that mattered, the two
+# should blink as the same scene lit slightly differently; a real content/shape mismatch here would
+# point at something in `reproject`'s own texturing path, not at geometry (already ruled out by
+# construction).
+
+# %%
+plotting.plot_render_toggle(
+    entry.hillshade.raster_path,
+    entry.reproject.raster_path,
+    entry.rotations.k_synthetic,
+    entry.hillshade.width_km,
+    entry.hillshade.height_km,
+    "hillshade",
+    "reproject",
+)
+
+# %% [markdown]
 # ## Summary
 #
 # - Rendered a real, illuminated LROC WAC EDR picked ahead of time by a catalog-driven, multi-orbit dataset search (`trntest.dataset.images_for_window`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
@@ -249,3 +306,4 @@ _ = plotting.plot_isis_comparison(
 # - Validated the synthetic render's geometry against the hillshade-based basemap two ways (Phase 5): a raw, north-up-rotated quality check (5A), and a true pixel-for-pixel geo-registered overlay via `mapproject` through the render's own CSM sidecar (5B).
 # - Processed the same real footprint's WAC EDR through ISIS3's own pipeline (`isis_wac.run_pipeline`) -- a genuine camera-model-based real-WAC product (EDR fetch through calibration and framelet interleaving) -- cropped it to the real footprint being compared (`isis_wac.crop_for_camera`), and validated that single crop's geometry against the same basemap the same two ways (Phase 6): a raw quality check (6A), and a `cam2map` overlay through ISIS's own native Pushframe camera model (6B) -- not ASP's `mapproject`/CSM, after finding a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors.
 # - Compared the two TRN test image candidates directly against each other, with explicit tie points (Phase 7).
+# - Rendered a third candidate, `reproject`, through the exact same camera as the synthetic render but textured from the real WAC crop's own reflectance instead of the Lunaserv basemap, confirmed real coverage out to the FOV's corners, and directly blinked it against `hillshade` to isolate the effect of the texture source alone (Phase 8).

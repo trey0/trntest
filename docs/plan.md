@@ -113,6 +113,17 @@ short of `populate()` -- no rendering from this notebook yet.
   `docs/reproject-fov-investigation.md` for the full trail, including what's left before merging to
   `main` (notebook wiring, more validation at dataset scale).
 
+  **Resolved (2026-08-21): `reproject` is now permanently wired into `notebooks/image_generation.py`**
+  as Phase 8 -- mirrors Phase 5's own A/B geometry checks (raw quality vs. basemap, then a
+  `mapproject` overlay) against `entry.reproject`, reusing Phase 4's `tie_point_results` and Phase
+  5's crater layer as-is (both already type-agnostic across `TrnTestImage` subclasses), plus a
+  valid-pixel-fraction print as the direct, permanent answer to this investigation's own coverage
+  question. Phase 2's `dataset.truncate`/`populate` calls now pass `product_types=("crop",
+  "hillshade", "reproject")` explicitly to include it -- still opt-in, `trn_dataset.PRODUCT_TYPES`
+  itself is unchanged (just `crop`+`hillshade`). **Still open**: only validated end-to-end on this
+  one entry (`M1327210646CE`) through the real class and notebook -- dataset-scale validation across
+  the rest of the manifest remains a separate follow-up, not done in this pass.
+
   **The FOV correction was briefly anisotropic (`fu != fv`), then reverted back to isotropic.** The
   anisotropic version (kept a bit more of the real crop's margin) surfaced a small, real, never-fully-
   explained residual (~1-8px, <0.6% of the footprint, constant not growing with distance) between the
