@@ -150,6 +150,27 @@ automatically.
   agent a wasted ~4min recompute, not corruption), but a torn/partial read on the losing side is
   plausible if two agents' calls actually overlap mid-write rather than land sequentially. Worth
   checking with other active agents before deliberately re-triggering this on a shared product.
+- **A `docker compose` invocation can silently miss a worktree's own `docker/.env`, even when the
+  file is present and correct on disk** — confirmed live: an early `scripts/run_notebook.sh` run in
+  a real worktree session wrote a genuine ~19GB duplicate of `cache`/`output`/`scratch` directly
+  inside the worktree checkout itself (`.claude/worktrees/<name>/{cache,output,scratch}`), instead
+  of the shared locations `TRNTEST_HOST_CACHE_DIR`/etc. are supposed to point at — Compose's own
+  implicit `.env` discovery depends on exactly how/where the command was invoked (cwd, whether `-f`
+  is used), not just on the file existing somewhere findable, and silently falls back to
+  `docker-compose.yml`'s own relative-path defaults (correct only for the main, non-worktree
+  checkout) rather than erroring. The exact triggering invocation wasn't conclusively identified
+  after the fact. Fixed structurally, not just documented: `scripts/run_notebook.sh` now passes
+  `--env-file "$REPO_ROOT/docker/.env"` explicitly to every `docker compose` call (conditional on
+  the file existing, since the main checkout has none) rather than relying on implicit discovery —
+  if you invoke `docker compose` some other way in a worktree (not through that script), do the
+  same: pass `--env-file docker/.env` explicitly rather than trusting Compose to find it on its own.
+  If you ever see a populated `cache/`/`output/`/`scratch/` directory sitting inside a worktree
+  checkout itself (`git status` will flag it as untracked, and it won't be small) rather than at the
+  shared `trntest_ws/{cache,output,scratch}` root, that's this bug recurring — safe to delete (it's
+  a duplicate of real data that already lives correctly at the shared location, not unique data),
+  but worth a quick check first that nothing currently running has that specific worktree-local copy
+  actually mounted (`docker inspect <container> --format '{{ range .Mounts }}{{ .Source }} -> {{
+  .Destination }}{{ "\n" }}{{ end }}'`, confirm it points at the shared paths, not the local ones).
 - **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
   when the user asks for it in that turn, and only your own branch.** This is a small team of
   agents working closely with the user, not a large/anonymous one, so the informal "just merge it

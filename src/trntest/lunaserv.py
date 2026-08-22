@@ -651,7 +651,51 @@ def _terrain_photometric_angles(
     true local vertical tilted by theta from the tangent point's own -- comparable in magnitude to the
     sagitta effect above (~2-3 deg at a real ~143km footprint's edges) -- so incidence (and, via
     `normal`, part of emission too) likely carries its own separate, unaddressed bias of similar size.
-    Not investigated/validated -- flagged for a future pass, not folded into this fix."""
+
+    **A correct, verified fix exists but is deliberately not wired in.** It's a one-line
+    generalization of the sagitta idea above: use `dem + sphere_sag` (not raw `dem`) as the gradient's
+    input for `normal` too, not just for `ground`'s position -- algebraically exact (the cross product
+    of `ground`'s own two numerically-differentiated tangent vectors expands to exactly this), and
+    verified directly: a synthetic flat sphere's computed normal converges to the true tilt angle as
+    grid resolution increases (residual ~0.0017 deg at production ~100m/px DEM resolution vs. a ~3.3
+    deg true tilt at the test offset). On the real default candidate it changes incidence for the
+    first time (mean 1.84 deg, max 5.67 deg -- previously exactly 0) and emission (mean 2.16 deg,
+    *systematically* signed, confirmed via a linear-plane fit to be 98.3%-explained by a single
+    gradient whose azimuth matches the scene's real sun azimuth to within 0.3 deg -- the correct,
+    expected large-scale photometric-gradient signature of a curved body under directional lighting).
+    Despite being correct and physically sensible, it made the brightness-matched diff against the
+    real WAC crop measurably *worse* (6.89 -> 7.58 mean|diff|, consistent with and without the real
+    Hapke params), with no confirmed explanation why (leading hypothesis, not verified: the base
+    ortho texture `luna_wac_normalized_reflectance` is itself already photometrically normalized by
+    someone else's own processing, which our own from-scratch re-shading was never validated against).
+    An initial "huge improvement, closer to the real image" visual read of this fix in a notebook was
+    later retracted by the user as a mixed-up comparison (blinking corrected-vs-uncorrected, not
+    vs. the real WAC image) -- there is no positive evidence for this fix at this time. Not wired in.
+
+    **A cleaner alternative was investigated and also shelved**: ISIS's own `phocube` (fed a real
+    camera model via `csminit`, using the CSM state `render.run_sat_sim`'s `cam_gen` step already
+    produces for every render) computes real per-pixel photometric angles via ISIS's own rigorous
+    geometry engine directly -- no hand-rolled tangent-plane math, no sagitta/normal-tilt bugs
+    possible by construction. Confirmed working for ellipsoid-based angles on a real rendered cube
+    (`csminit` needed `usgscsm` installed into the `isis` conda env -- not present by default, not
+    added to the Dockerfile since this path wasn't adopted -- and the CSM state's `m_sunPosition`
+    patched in, since `cam_gen`'s conversion doesn't populate it; ASP's own tools never need it).
+    **DEM-aware ("local incidence/emission") did not work**: `phocube localincidence=true`, given a
+    real ISIS shape-model cube (the global 128ppd lunar shape model already in this project's ISIS
+    data area), returned a degenerate, implausible ~145-180 deg local incidence almost everywhere on
+    a real candidate scene chosen for decent illumination -- local emission (same local normal, same
+    call) looked correct, and ellipsoid incidence (same sun position, no DEM) also looked correct, so
+    the fault isn't the sun position or a flipped-normal-everywhere bug. Real ISIS issue tracker
+    evidence (DOI-USGS/ISIS3#3645, "Phocube missing essential output options: local phase angle,
+    slope, slope azimuth") suggests `phocube`'s DEM-aware path is generally less mature than its
+    ellipsoid path, consistent with what was found here. Not root-caused further (didn't try our own
+    higher-resolution local DEM as the shape model instead of the coarse global one, which might
+    behave differently) -- shelved, not pursued, given the ellipsoid-only case wouldn't actually fix
+    the gap this docstring describes. Would also require inverting this project's shade-before-render
+    pipeline order (render geometry first with a real camera model attached, shade after) if ever
+    revisited -- a real, separate redesign, not a drop-in replacement for this function.
+
+    Not investigated/validated further -- flagged for a future pass, not folded into this fix."""
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox
     x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width

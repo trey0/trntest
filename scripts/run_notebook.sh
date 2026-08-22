@@ -59,8 +59,20 @@ LOG_FILE="$LOG_DIR/${NOTEBOOK_NAME}_${TIMESTAMP}.log"
 LATEST_LOG="$LOG_DIR/${NOTEBOOK_NAME}_latest.log"
 PREVIOUS_LOG="$LOG_DIR/${NOTEBOOK_NAME}_previous.log"
 
-docker compose -f docker/docker-compose.yml run --rm demo jupytext --to notebook "$NOTEBOOK_PY"
-docker compose -f docker/docker-compose.yml run --rm demo bash -c "
+# Explicit --env-file, not Compose's own implicit discovery: a worktree checkout's
+# docker/.env (TRNTEST_HOST_CACHE_DIR etc., see scripts/setup_worktree_docker_env.sh) lives in
+# docker/, but Compose's implicit .env lookup depends on exactly how/where `docker compose` was
+# invoked from -- confirmed live to silently miss it at least once even with the file present on
+# disk, falling back to docker-compose.yml's own relative-path defaults (correct for the main
+# checkout, wrong for a worktree one) and writing a real ~19GB cache/output/scratch duplicate
+# inside this checkout instead of the shared location -- see docs/environment.md's "Other sharp
+# edges" section. Conditional: the main checkout has no docker/.env at all (doesn't need one).
+# POSIX sh (this script's own shebang), so a plain optional-flag string, not a bash array.
+ENV_FILE_FLAG=""
+[ -f "$REPO_ROOT/docker/.env" ] && ENV_FILE_FLAG="--env-file $REPO_ROOT/docker/.env"
+
+docker compose $ENV_FILE_FLAG -f docker/docker-compose.yml run --rm demo jupytext --to notebook "$NOTEBOOK_PY"
+docker compose $ENV_FILE_FLAG -f docker/docker-compose.yml run --rm demo bash -c "
     set -eo pipefail
     mkdir -p '$LOG_DIR'
     [ -f '$LATEST_LOG' ] && cp '$LATEST_LOG' '$PREVIOUS_LOG'
