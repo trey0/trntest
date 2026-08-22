@@ -557,6 +557,7 @@ def _terrain_photometric_angles(
     azimuth_deg: float,
     elevation_deg: float,
     cellsize_m: float,
+    radius_m: float,
     along_track_local_enu: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-pixel incidence/emission/phase angles (degrees, as raw geometry -- not
@@ -602,7 +603,31 @@ def _terrain_photometric_angles(
     velocity vector. A third candidate (cross-track instead of along-track, i.e. the *other* camera
     axis) was also tried and was much worse (16.9 deg) -- confirms the axis identity matters, not
     just "some camera-frame-derived vector". See docs/history.md's dated entries for the full
-    numbers from all three."""
+    numbers from all three.
+
+    `radius_m` corrects a real, separate approximation gap in `ground`'s own construction: `x_grid`/
+    `y_grid` (from the local orthographic projection, exact East/North tangent-plane coordinates of
+    each on-sphere point) drop the vertical component by construction -- an orthographic projection
+    *is* that drop -- so reusing `dem` directly as the tangent-plane "Up" coordinate silently omitted
+    the sphere's own curvature drop-off away from the tangent point (the sagitta term). Negligible at
+    DEM-pixel scale (~13m at a ~6.7km offset, see `tests/test_lunaserv.py`'s on-sphere-point test),
+    but not at real full-frame scale -- confirmed on a real ~143km-wide candidate footprint
+    (`docs/reproject-fov-investigation.md`) to bias emission ~0.6 deg on average, up to ~2.4 deg at
+    the frame edges (`notebooks/curvature_sag_investigation.ipynb`, since deleted once this fix
+    landed -- see docs/history.md's dated entry for the full investigation and validation numbers).
+    Fixed with the exact closed form (`sqrt(radius_m**2 - x**2 - y**2) - radius_m`), not a small-angle
+    approximation, so it stays correct at any real footprint size. Incidence is unaffected (`normal`
+    below never depends on `ground`'s position, only on local `dem` relief).
+
+    **Known remaining gap, not fixed here**: `normal` itself (below) is still built entirely in the
+    tangent point's own fixed (East, North, Up) frame -- it never rotates the "Up" reference direction
+    to account for the sphere's curvature away from the tangent point (the same flat-DEM convention
+    `LightSource.hillshade` uses, appropriate for a small terrestrial DEM tile but not necessarily for
+    a whole lunar image). A ground point at real angular offset theta from the tangent point has a
+    true local vertical tilted by theta from the tangent point's own -- comparable in magnitude to the
+    sagitta effect above (~2-3 deg at a real ~143km footprint's edges) -- so incidence (and, via
+    `normal`, part of emission too) likely carries its own separate, unaddressed bias of similar size.
+    Not investigated/validated -- flagged for a future pass, not folded into this fix."""
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox
     x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
@@ -614,7 +639,8 @@ def _terrain_photometric_angles(
     normal = np.dstack([-e_dx, -e_dy, np.ones_like(dem, dtype=np.float64)])
     normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
 
-    ground = np.dstack([x_grid, y_grid, dem.astype(np.float64)])
+    sphere_sag = np.sqrt(np.clip(radius_m**2 - x_grid**2 - y_grid**2, 0.0, None)) - radius_m  # <= 0
+    ground = np.dstack([x_grid, y_grid, dem.astype(np.float64) + sphere_sag])
     view_vec = camera_local_enu_m - ground
     view_dir = view_vec / np.linalg.norm(view_vec, axis=-1, keepdims=True)
 
@@ -697,7 +723,7 @@ def hapke_shade_ortho(
         _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
     )
     incidence_deg, emission_deg, phase_deg = _terrain_photometric_angles(
-        dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m, along_track_local_enu
+        dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m, MOON_RADIUS_M, along_track_local_enu
     )
 
     work_dir = config.output_dir

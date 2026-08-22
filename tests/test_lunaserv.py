@@ -154,7 +154,7 @@ def test_terrain_photometric_angles_flat_dem_directly_below_camera():
     azimuth_deg, elevation_deg = 90.0, 30.0
 
     incidence_deg, emission_deg, phase_deg = lunaserv._terrain_photometric_angles(
-        dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m=200.0 / width
+        dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m=200.0 / width, radius_m=1_737_400.0
     )
     assert incidence_deg == pytest.approx(90.0 - elevation_deg, abs=1e-6)
 
@@ -175,14 +175,64 @@ def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
     camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
 
     _, emission_deg, _ = lunaserv._terrain_photometric_angles(
-        dem, bbox, camera_local_enu_m, azimuth_deg=0.0, elevation_deg=45.0, cellsize_m=200.0 / width
+        dem,
+        bbox,
+        camera_local_enu_m,
+        azimuth_deg=0.0,
+        elevation_deg=45.0,
+        cellsize_m=200.0 / width,
+        radius_m=1_737_400.0,
     )
 
     row = height // 2
     col = width - 1
     x = minx + (col + 0.5) * (maxx - minx) / width
     expected_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
-    assert emission_deg[row, col] == pytest.approx(expected_emission_deg, rel=1e-6)
+    # abs, not the tighter rel=1e-6 this used before `radius_m` existed: at the real Moon's radius,
+    # this grid's ~91m offset has a real (if tiny, ~1.2e-5 deg) sagitta-corrected deviation from the
+    # exact flat-ground formula -- see `test_terrain_photometric_angles_curvature_correction_...`
+    # below for the correction validated at a scale where it actually matters.
+    assert emission_deg[row, col] == pytest.approx(expected_emission_deg, abs=1e-4)
+
+
+def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_large_offset():
+    # At DEM-pixel scale the sagitta correction is negligible (see the abs-tolerance note on
+    # `test_terrain_photometric_angles_emission_grows_with_offset_from_nadir` above) -- but real
+    # candidate footprints are tens of km wide (`docs/reproject-fov-investigation.md`: a real,
+    # live-validated 143.1x142.6km footprint), where it isn't. Flat terrain again (normal always
+    # [0,0,1]), so this isolates just the ground-position/view-vector correction `radius_m` adds.
+    radius_m = 1_737_400.0
+    altitude_m = 68_500.0  # a real value used elsewhere in this project (docs/history.md)
+    width = height = 21
+    half_extent_m = 100_000.0
+    bbox = (-half_extent_m, -half_extent_m, half_extent_m, half_extent_m)
+    dem = np.zeros((height, width))
+    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+
+    _, emission_deg, _ = lunaserv._terrain_photometric_angles(
+        dem,
+        bbox,
+        camera_local_enu_m,
+        azimuth_deg=0.0,
+        elevation_deg=45.0,
+        cellsize_m=2 * half_extent_m / width,
+        radius_m=radius_m,
+    )
+
+    row = height // 2
+    col = width - 1
+    x = -half_extent_m + (col + 0.5) * (2 * half_extent_m) / width
+
+    naive_flat_ground_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
+    # Independently-derived closed form (not a call into lunaserv): the exact "Up" coordinate, in the
+    # tangent-plane frame, of a point on the sphere at horizontal offset x from the tangent point.
+    sag = math.sqrt(radius_m**2 - x**2) - radius_m
+    true_emission_deg = math.degrees(math.atan(abs(x) / (altitude_m - sag)))
+
+    # The correction is real and non-negligible at this scale (a real candidate's own edge)...
+    assert abs(naive_flat_ground_emission_deg - true_emission_deg) > 0.1
+    # ...and the function's actual output matches the curvature-aware value, not the old flat one.
+    assert emission_deg[row, col] == pytest.approx(true_emission_deg, rel=1e-6)
 
 
 def test_local_enu_direction_pure_radial_vector_is_pure_up():
@@ -217,14 +267,16 @@ def test_terrain_photometric_angles_along_track_correction_removes_along_track_c
         azimuth_deg=0.0,
         elevation_deg=45.0,
         cellsize_m=200.0 / width,
+        radius_m=1_737_400.0,
         along_track_local_enu=along_track_local_enu,
     )
 
     center = height // 2, width // 2
     # North offset is exactly along the along-track direction, so it's fully removed -- what's left is exactly as if
-    # the camera had been at (100, 0, 1000) instead (pure cross-track + altitude).
+    # the camera had been at (100, 0, 1000) instead (pure cross-track + altitude). abs, not rel=1e-6, for the same
+    # real-Moon-radius sagitta reason as `test_terrain_photometric_angles_emission_grows_with_offset_from_nadir`.
     expected_emission_deg = math.degrees(math.atan(100.0 / 1000.0))
-    assert emission_deg[center] == pytest.approx(expected_emission_deg, rel=1e-6)
+    assert emission_deg[center] == pytest.approx(expected_emission_deg, abs=1e-4)
 
 
 def _write_native_radius_tif(path, radius_value, native_bbox_deg, width, height):
