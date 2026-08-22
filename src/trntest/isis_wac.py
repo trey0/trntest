@@ -713,6 +713,47 @@ def ground_to_image_pixel(model: GroundToImageModel, lon_deg: float, lat_deg: fl
     return float(ground_point["Sample"]), float(ground_point["Line"])
 
 
+def campt_photometric_angles(cub_path: Path, lon_deg: float, lat_deg: float) -> tuple[float, float, float] | None:
+    """Real `campt` phase/incidence/emission angles (degrees) at a given ground point, against
+    whichever camera model `cub_path` has attached (`csminit`) -- the ISIS ground-truth counterpart to
+    this project's own hand-rolled `lunaserv._terrain_photometric_angles`, used to validate it (see
+    that function's own docstring and `docs/history.md`'s Phase 71 entry). Mirrors
+    `ground_to_image_pixel`'s exact PVL-single-point-query pattern (same `type=ground`/
+    `allowoutside=false` convention) rather than the `usecoordlist=true` batched flat-file approach
+    `ground_to_image_pixels_batch` uses -- this project's own validation only ever needs a handful of
+    sparse sample points (not a full raster), so the per-call subprocess overhead
+    `ground_to_image_pixels_batch`'s own docstring describes doesn't matter enough here to trade away
+    PVL's more directly-verifiable field names for CSV's. Returns `None` on the same
+    doesn't-project-into-this-cube failure `ground_to_image_pixel` already handles that way.
+
+    `cub_path`'s camera model determines whether these are ellipsoid-based or DEM-aware ("local")
+    angles -- `campt` has no separate `local*` output names the way `phocube` does; it just reports
+    whatever its attached shape model (or lack of one) resolves to. See Phase 71's own investigation
+    (`docs/history.md`) for whether that in fact varies with the attached shape model."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={cub_path}",
+            "type=ground",
+            f"latitude={lat_deg}",
+            f"longitude={lon_deg}",
+            "format=pvl",
+            "allowoutside=false",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    ground_point = pvl.loads(result.stdout)["GroundPoint"]
+    return (
+        float(ground_point["Phase"]),
+        float(ground_point["Incidence"]),
+        float(ground_point["Emission"]),
+    )
+
+
 def ground_to_image_pixels_batch(model: GroundToImageModel, lonlat_deg: np.ndarray) -> list[tuple[float, float] | None]:
     """Batched ground-to-image lookup for many points at once, via a single real
     `campt usecoordlist=true` call instead of one `ground_to_image_pixel` subprocess per point --

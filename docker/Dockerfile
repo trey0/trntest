@@ -40,9 +40,14 @@ ENV PATH="${ASP_DIR}/bin:${PATH}"
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 ENV ISISROOT=/opt/conda/envs/isis
 ENV ISISDATA=/workspace/cache/isisdata
+# `usgscsm` (the CSM plugin ISIS's `csminit`/`campt`/etc. need to load a CSM Frame model-state JSON,
+# e.g. `render.run_sat_sim`'s `cam_gen` output) is included here, not just installed transiently in a
+# running container the way it was during Phase 70's initial investigation (see docs/history.md) --
+# Phase 71 wired it into a permanent `@pytest.mark.heavy` test (tests/test_lunaserv.py's real-`campt`
+# ground-truth comparison), which needs it reliably present, not re-installed by hand each session.
 RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /usr/local bin/micromamba \
     && micromamba create -y -n isis --override-channels -c usgs-astrogeology -c conda-forge \
-        --channel-priority flexible isis ale \
+        --channel-priority flexible isis ale usgscsm \
     && micromamba clean --all --yes
 ENV PATH="${ISISROOT}/bin:${PATH}"
 
