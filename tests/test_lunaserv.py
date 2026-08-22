@@ -509,3 +509,93 @@ def test_despeckle_leaves_large_blob_interior_untouched():
     cleaned = lunaserv.despeckle(data)
     interior = cleaned[8:12, 8:12]
     assert np.all(interior == 255)
+
+
+def test_ortho_shaded_filename_no_hapke_ignores_other_flags():
+    assert lunaserv.ortho_shaded_filename(False) == "ortho_shaded.tif"
+    no_hapke = lunaserv.ortho_shaded_filename(False, along_track_correction=True, real_hapke_params=True)
+    assert no_hapke == "ortho_shaded.tif"
+
+
+def test_ortho_shaded_filename_matches_todays_defaults():
+    # All-defaults call must resolve to exactly the file `fetch_dem_and_ortho`'s own defaults would
+    # produce -- `DEFAULT_REAL_HAPKE_PARAMS=True` since Phase 69, so this is deliberately not the
+    # pre-Phase-69 filename (see `test_ortho_shaded_filename_real_params_false_matches_pre_phase_69`
+    # below for that backward-compat guarantee instead).
+    assert lunaserv.ortho_shaded_filename(True) == "ortho_shaded_hapke_atc_realparams.tif"
+
+
+def test_ortho_shaded_filename_real_params_false_matches_pre_phase_69():
+    # Backward-compat check: existing cached files from before `real_hapke_params` existed (when
+    # `hapke`/`along_track_correction` were the only toggles) must still resolve to the same name
+    # under an explicit `real_hapke_params=False`.
+    assert lunaserv.ortho_shaded_filename(True, real_hapke_params=False) == "ortho_shaded_hapke_atc.tif"
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=False) == (
+        "ortho_shaded_hapke.tif"
+    )
+
+
+def test_ortho_shaded_filename_real_params_suffix():
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=True, real_hapke_params=True) == (
+        "ortho_shaded_hapke_atc_realparams.tif"
+    )
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=True) == (
+        "ortho_shaded_hapke_realparams.tif"
+    )
+
+
+def _write_fake_hapke_calibration_cube(path, wavelengths_nm, bbox_deg, width, height):
+    """A tiny synthetic multi-band GeoTIFF in the real calibration cube's own CRS/band-layout
+    convention (Equirectangular, 9 params per wavelength band, `_HAPKE_CALIBRATION_PARAM_ORDER`
+    order) -- each band's constant value encodes `wavelength_index * 100 + param_index`, so reading
+    the wrong band/pixel is easy to catch."""
+    minlon, minlat, maxlon, maxlat = bbox_deg
+    crs = "+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R=1737400 +units=m +no_defs"
+    r = 1_737_400.0
+    minx, maxx = math.radians(minlon) * r, math.radians(maxlon) * r
+    miny, maxy = math.radians(minlat) * r, math.radians(maxlat) * r
+    transform_ = transform_from_bounds(minx, miny, maxx, maxy, width, height)
+    n_params = len(lunaserv._HAPKE_CALIBRATION_PARAM_ORDER)
+    n_bands = len(wavelengths_nm) * n_params
+    profile = dict(driver="GTiff", height=height, width=width, count=n_bands, dtype="float32", crs=crs)
+    with rasterio.open(path, "w", transform=transform_, **profile) as dst:
+        for band in range(1, n_bands + 1):
+            wavelength_index, param_index = divmod(band - 1, n_params)
+            dst.write(np.full((height, width), wavelength_index * 100 + param_index, dtype="float32"), band)
+
+
+def test_sample_hapke_calibration_reads_the_right_band_and_pixel(tmp_path):
+    # Must cover all 7 real wavelengths -- `_sample_hapke_calibration`'s band offset is computed
+    # against the real, full `_HAPKE_CALIBRATION_WAVELENGTHS_NM` layout, not whatever's in the file.
+    path = tmp_path / "fake_hapke_calibration.tif"
+    _write_fake_hapke_calibration_cube(
+        path, lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM, bbox_deg=(9.0, 4.0, 11.0, 6.0), width=4, height=4
+    )
+
+    params = lunaserv._sample_hapke_calibration(path, center_lon_deg=10.1, center_lat_deg=5.1, wavelength_nm=643)
+
+    # 643nm's wavelength_index in the real layout -> encoded value = wavelength_index * 100 + param_index
+    wavelength_index = lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM.index(643)
+    expected = {name: wavelength_index * 100.0 + i for i, name in enumerate(lunaserv._HAPKE_CALIBRATION_PARAM_ORDER)}
+    assert params == pytest.approx(expected)
+
+
+def test_sample_hapke_calibration_different_wavelength_reads_a_different_band_block(tmp_path):
+    path = tmp_path / "fake_hapke_calibration.tif"
+    _write_fake_hapke_calibration_cube(
+        path, lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM, bbox_deg=(9.0, 4.0, 11.0, 6.0), width=4, height=4
+    )
+
+    params_321 = lunaserv._sample_hapke_calibration(path, center_lon_deg=10.1, center_lat_deg=5.1, wavelength_nm=321)
+
+    wavelength_index = lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM.index(321)
+    expected = {name: wavelength_index * 100.0 + i for i, name in enumerate(lunaserv._HAPKE_CALIBRATION_PARAM_ORDER)}
+    assert params_321 == pytest.approx(expected)
+
+
+def test_sample_hapke_calibration_rejects_a_wavelength_not_in_the_cube(tmp_path):
+    path = tmp_path / "fake_hapke_calibration.tif"
+    _write_fake_hapke_calibration_cube(path, wavelengths_nm=(643,), bbox_deg=(9.0, 4.0, 11.0, 6.0), width=4, height=4)
+
+    with pytest.raises(ValueError, match="wavelength_nm"):
+        lunaserv._sample_hapke_calibration(path, center_lon_deg=10.0, center_lat_deg=5.0, wavelength_nm=999)

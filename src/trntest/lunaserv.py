@@ -15,7 +15,7 @@ import rasterio
 from matplotlib.colors import LightSource
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.warp import Resampling, reproject, transform_bounds
+from rasterio.warp import Resampling, reproject, transform, transform_bounds
 from rasterio.windows import from_bounds as window_from_bounds
 from rasterio.windows import transform as window_transform
 
@@ -27,18 +27,35 @@ from trntest.subprocess_utils import run_quiet
 # Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
 # each parameter's documented valid range (see ISIS's photomet.xml), not calibrated against real
 # lunar photometry. This is a feasibility prototype for evaluating ISIS `photomet` as a hillshade
-# replacement (see docs/history.md's dated entry), not a validated reflectance model.
+# replacement (see docs/history.md's dated entry), not a validated reflectance model. Kept as the
+# `real_hapke_params=False` fallback -- see `fetch_real_hapke_params()` below for the real alternative and
+# docs/history.md's dated entry for the placeholder-vs-real comparison that motivated it.
 _HAPKE_PLACEHOLDER_PARAMS = {"wh": 0.52, "hg1": 0.213, "hg2": 1.0, "hh": 0.17, "b0": 0.025, "theta": 0.0}
 
-# `fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction` parameter
-# defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s resumption check (via
-# `ortho_shaded_filename` below) so the two can never silently disagree about which shading mode's
-# cached ortho file is "the" default one to resume from. `shade_ortho`'s plain Lambertian blend
-# (`hapke=False`) and the uncorrected per-pixel geometry (`along_track_correction=False`) remain
-# available as explicit fallbacks -- see docs/history.md's dated entries for why each became the
-# default.
+# ISIS's own real, spatially-resolved lunar Hapke calibration (Sato et al. 2014's fit, converted to
+# ISIS's native parameterization) -- $ISISDATA/lro/calibration/
+# WAC_global_7bands_1x1_wbhs70NS_const_each_pole.<version>.cub, a 63-band (7 wavelengths x 9 params)
+# global 1deg/px cube. Already part of this project's existing `isis_wac.ensure_isisdata` fetch (the
+# `lro` ISIS data package `lrowaccal`/`spiceinit` already need), not a new download. See
+# `fetch_real_hapke_params()` below and docs/history.md's dated entry.
+_HAPKE_CALIBRATION_WAVELENGTHS_NM = (321, 360, 415, 566, 604, 643, 689)
+_HAPKE_CALIBRATION_PARAM_ORDER = ("wh", "hg1", "hg2", "bc0", "hc", "b0", "hh", "theta", "phi")
+_HAPKE_CALIBRATION_CUBE_GLOB = "WAC_global_7bands_1x1_wbhs70NS_const_each_pole.*.cub"
+# Matches `config.lunaserv_ortho_layer`'s own real wavelength (`luna_wac_normalized_reflectance`,
+# 643nm -- see docs/data-sources.md) -- the calibration should describe the same real imagery being
+# shaded.
+DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
+
+# `fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction`/
+# `real_hapke_params` parameter defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s
+# resumption check (via `ortho_shaded_filename` below) so the two can never silently disagree about
+# which shading mode's cached ortho file is "the" default one to resume from. `shade_ortho`'s plain
+# Lambertian blend (`hapke=False`), the uncorrected per-pixel geometry (`along_track_correction=False`),
+# and the illustrative placeholder Hapke coefficients (`real_hapke_params=False`) all remain available
+# as explicit fallbacks -- see docs/history.md's dated entries for why each became the default.
 DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
+DEFAULT_REAL_HAPKE_PARAMS = True
 
 
 def geographic_crs(radius_m: float = MOON_RADIUS_M) -> str:
@@ -58,22 +75,29 @@ def local_orthographic_crs(center_lon_deg: float, center_lat_deg: float, radius_
     return f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={radius_m} +units=m +no_defs"
 
 
-def ortho_shaded_filename(hapke: bool, along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION) -> str:
+def ortho_shaded_filename(
+    hapke: bool,
+    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+) -> str:
     """The `output_dir`-relative filename `despeckle_and_shade_ortho` writes its shaded ortho to for
-    a given `hapke`/`along_track_correction` combination -- factored out so
+    a given `hapke`/`along_track_correction`/`real_hapke_params` combination -- factored out so
     `trn_dataset.TrnTestEntry.dem_ortho_result`'s own resumption check can ask for exactly the file
     `fetch_dem_and_ortho(..., hapke=DEFAULT_HAPKE_SHADING,
-    along_track_correction=DEFAULT_ALONG_TRACK_CORRECTION)` would produce, without duplicating this
-    naming logic (and risking it drifting out of sync). `along_track_correction` only changes the
-    filename when `hapke=True` (it's a no-op on the Lambertian fallback, see `hapke_shade_ortho`'s
-    docstring) -- giving it a real, distinct suffix rather than reusing `hapke=True`'s own plain
-    filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION` flipping to `True` after
-    `DEFAULT_HAPKE_SHADING` already had real cached `ortho_shaded_hapke.tif` files on disk (from
-    before this default existed) is exactly the kind of stale-cache-under-a-new-default's-name risk
-    that bit `DEFAULT_HAPKE_SHADING` itself once already -- see docs/history.md's dated entries."""
+    along_track_correction=DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params=DEFAULT_REAL_HAPKE_PARAMS)` would produce, without duplicating this naming
+    logic (and risking it drifting out of sync). `along_track_correction`/`real_hapke_params` only
+    change the filename when `hapke=True` (both are a no-op on the Lambertian fallback, see
+    `hapke_shade_ortho`'s docstring) -- giving each a real, distinct suffix rather than reusing
+    `hapke=True`'s own plain filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION` flipping to
+    `True` after `DEFAULT_HAPKE_SHADING` already had real cached `ortho_shaded_hapke.tif` files on
+    disk (from before this default existed) is exactly the kind of stale-cache-under-a-new-default's-
+    name risk that bit `DEFAULT_HAPKE_SHADING` itself once already -- see docs/history.md's dated
+    entries. `real_hapke_params` follows the identical pattern for the same reason."""
     if not hapke:
         return "ortho_shaded.tif"
-    return "ortho_shaded_hapke_atc.tif" if along_track_correction else "ortho_shaded_hapke.tif"
+    suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "")
+    return f"ortho_shaded_hapke{suffix}.tif"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -677,6 +701,84 @@ def _write_backplane_cube(path: Path, values: np.ndarray) -> None:
             dst.write(values.astype("float32"), 1)
 
 
+def _hapke_calibration_cube_path(config: TrntestConfig) -> Path:
+    """Resolve the real ISIS lunar Hapke calibration cube's path, fetching the `lro` ISIS data
+    package (via a local import of `isis_wac.ensure_isisdata` -- `isis_wac.py` itself imports
+    `DemOrthoResult` from this module, so a module-level import here would be circular) if not
+    already present. Globs rather than hardcoding a specific version number (`.0001.cub` today) and
+    picks the highest-numbered match, the same "don't assume a specific version" discipline this
+    project already applies to other ISIS data area files."""
+    from trntest import isis_wac  # noqa: PLC0415 -- circular otherwise (isis_wac imports DemOrthoResult)
+
+    isis_wac.ensure_isisdata(config)
+    isisdata = config.cache_root / "isisdata"
+    candidates = sorted((isisdata / "lro" / "calibration").glob(_HAPKE_CALIBRATION_CUBE_GLOB))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No {_HAPKE_CALIBRATION_CUBE_GLOB} found under {isisdata / 'lro' / 'calibration'} -- "
+            "ensure_isisdata should have fetched it as part of the 'lro' ISIS data package."
+        )
+    return candidates[-1]
+
+
+def _sample_hapke_calibration(
+    cube_path: Path, center_lon_deg: float, center_lat_deg: float, wavelength_nm: int
+) -> dict[str, float]:
+    """Pure sampling logic behind `fetch_real_hapke_params` -- reads all 9 parameters for one wavelength
+    band at one real ground point from `cube_path` (any raster GDAL can open in the calibration
+    cube's own Equirectangular CRS/band layout, real or a test fixture). Split out from
+    `fetch_real_hapke_params` so it's unit-testable against a small synthetic fixture, without needing a
+    real `$ISISDATA` or network access -- the same reasoning `_terrain_photometric_angles` being
+    plain-Python (no ISIS subprocess) already followed."""
+    if wavelength_nm not in _HAPKE_CALIBRATION_WAVELENGTHS_NM:
+        raise ValueError(
+            f"wavelength_nm={wavelength_nm} is not one of the cube's own bands {_HAPKE_CALIBRATION_WAVELENGTHS_NM}"
+        )
+    band_offset = _HAPKE_CALIBRATION_WAVELENGTHS_NM.index(wavelength_nm) * len(_HAPKE_CALIBRATION_PARAM_ORDER)
+    lon_0_360 = center_lon_deg % 360.0  # cube's own convention, confirmed via its embedded georeferencing
+
+    with rasterio.open(cube_path) as src:
+        (x,), (y,) = transform(geographic_crs(MOON_RADIUS_M), src.crs, [lon_0_360], [center_lat_deg])
+        row, col = src.index(x, y)
+        return {
+            name: float(src.read(band_offset + i + 1, window=((row, row + 1), (col, col + 1)))[0, 0])
+            for i, name in enumerate(_HAPKE_CALIBRATION_PARAM_ORDER)
+        }
+
+
+def fetch_real_hapke_params(
+    center_lon_deg: float,
+    center_lat_deg: float,
+    config: TrntestConfig,
+    wavelength_nm: int = DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM,
+) -> dict[str, float]:
+    """Real, spatially-resolved Hapke parameters (Sato et al. 2014's own fit, converted to ISIS's
+    native `Wh`/`Hg1`/`Hg2`/`Bc0`/`hc`/`B0`/`Hh`/`Theta`/`phi` parameterization) sampled at one real
+    ground point from ISIS's own calibration cube (`_hapke_calibration_cube_path`) -- the
+    `real_hapke_params=True` alternative to `_HAPKE_PLACEHOLDER_PARAMS`'s illustrative constants (see
+    `hapke_shade_ortho`). Returns all 9 real parameters, keyed lowercase to match
+    `_HAPKE_PLACEHOLDER_PARAMS`'s own keys (`wh`, `hg1`, ...) -- `hapke_shade_ortho` uses only the 6
+    the simpler shadow-hiding-only `HAPKEHEN` model this project already calls accepts (`wh`, `hg1`,
+    `hg2`, `hh`, `b0`, `theta`); `bc0`/`hc`/`phi` describe the fuller Hapke model's separate
+    coherent-backscatter term, confirmed (via this same cube, globally) always `0`/`1`/`0` for this
+    real WAC-derived product -- i.e. genuinely unused by it, not a modeling choice made here.
+
+    A single value per image (this function's own real footprint center), not per-pixel: within one
+    real ~143km candidate footprint, `wh`/`b0`/`hg1` vary only modestly (checked directly against
+    this cube -- a few percent of each parameter's own full-Moon range); real, but secondary next to
+    the placeholder-vs-real gap this exists to fix (e.g. `b0`: 0.025 placeholder vs. ~1.5-2.2 real, a
+    ~60x difference). `hg2`/`hh` vary somewhat more within one footprint, but still a smaller effect
+    than the placeholder gap. Per-pixel sampling (reprojecting the calibration cube onto the same
+    working grid `reproject_astropedia_elevation_to_local_grid` builds the DEM/ortho on) would be a
+    real further refinement, not implemented here -- see docs/plan.md's open items.
+
+    `wavelength_nm` must be one of the cube's own 7 bands (321/360/415/566/604/643/689) -- the
+    default matches `config.lunaserv_ortho_layer`'s own real wavelength (643nm, see
+    docs/data-sources.md), since the calibration should describe the same real imagery being shaded."""
+    path = _hapke_calibration_cube_path(config)
+    return _sample_hapke_calibration(path, center_lon_deg, center_lat_deg, wavelength_nm)
+
+
 def hapke_shade_ortho(
     ortho: np.ndarray,
     dem: np.ndarray,
@@ -687,6 +789,7 @@ def hapke_shade_ortho(
     cellsize_m: float,
     config: TrntestConfig,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
 ) -> np.ndarray:
     """The default ortho-shading mode (`DEFAULT_HAPKE_SHADING`) -- a real Hapke bidirectional
     reflectance function (ISIS `photomet`, `PHTNAME=HAPKEHEN`) instead of `shade_ortho`'s fallback
@@ -694,8 +797,13 @@ def hapke_shade_ortho(
     `ANGLESOURCE=BACKPLANE` fed the angle rasters `_terrain_photometric_angles` computes ourselves
     from `camera`'s own real position (sidesteps the fact that this ortho has no ISIS camera model
     for `photomet` to derive angles from automatically -- see docs/history.md's dated entry for the
-    full evaluation). `_HAPKE_PLACEHOLDER_PARAMS` is illustrative, not lunar-calibrated -- this is a
-    feasibility prototype, not a validated photometric model.
+    full evaluation). `_HAPKE_PLACEHOLDER_PARAMS` is illustrative, not lunar-calibrated -- a
+    feasibility prototype, not a validated photometric model; `real_hapke_params=True` (the default,
+    `DEFAULT_REAL_HAPKE_PARAMS`) uses `fetch_real_hapke_params()`'s real, ISIS-calibration-cube-sourced
+    values for `camera`'s own footprint center instead (see that function's docstring for what it does
+    and doesn't capture) -- `real_hapke_params=False` falls back to the placeholder, kept for
+    comparison in `notebooks/real_hapke_params.ipynb`. See docs/history.md's dated entry for the
+    placeholder-vs-real comparison that motivated making this the default.
 
     `photomet` also requires a `FROM` cube purely as a size/dtype template in `BACKPLANE` mode (its
     own pixel values are irrelevant -- `NORMNAME=SHADE` overwrites them with the photometric model's
@@ -726,6 +834,12 @@ def hapke_shade_ortho(
         dem, bbox, camera_local_enu_m, azimuth_deg, elevation_deg, cellsize_m, MOON_RADIUS_M, along_track_local_enu
     )
 
+    if real_hapke_params:
+        hapkehen_source = fetch_real_hapke_params(*center, config)
+    else:
+        hapkehen_source = _HAPKE_PLACEHOLDER_PARAMS
+    hapkehen_params = {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}  # HAPKEHEN's own 6 keys
+
     work_dir = config.output_dir
     from_cub, phase_cub = work_dir / "hapke_from.cub", work_dir / "hapke_phase.cub"
     incidence_cub, emission_cub = work_dir / "hapke_incidence.cub", work_dir / "hapke_emission.cub"
@@ -750,7 +864,7 @@ def hapke_shade_ortho(
             f"incidence_angle_file={incidence_cub}",
             f"emission_angle_file={emission_cub}",
             "phtname=hapkehen",
-            *(f"{name}={value}" for name, value in _HAPKE_PLACEHOLDER_PARAMS.items()),
+            *(f"{name}={value}" for name, value in hapkehen_params.items()),
             "zerob0standard=true",
             "normname=shade",
             "albedo=1.0",
@@ -780,6 +894,7 @@ def despeckle_and_shade_ortho(
     bbox: tuple,
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
 ) -> None:
     """Despeckle the raw fetched ortho and blend in a real-sun hillshade computed from the (already
     hole-filled) DEM, writing the result to `output_path` -- the single ortho used by both `sat_sim`
@@ -787,9 +902,9 @@ def despeckle_and_shade_ortho(
     ISIS-`photomet`-backed Hapke shading (which needs `bbox`, unlike the fallback `shade_ortho`, to
     place the DEM's own pixels in the same local frame as `camera`'s real position -- see
     `_terrain_photometric_angles`); `hapke=False` falls back to the plain Lambertian
-    `shade_ortho` blend -- see `hapke_shade_ortho`'s docstring. `along_track_correction` is passed
-    straight through to `hapke_shade_ortho` (a no-op when `hapke=False`, `shade_ortho` has no
-    camera-position dependence at all)."""
+    `shade_ortho` blend -- see `hapke_shade_ortho`'s docstring. `along_track_correction`/
+    `real_hapke_params` are passed straight through to `hapke_shade_ortho` (both a no-op when
+    `hapke=False`, `shade_ortho` has no camera-position or Hapke-model dependence at all)."""
     with rasterio.open(ortho_path) as src:
         ortho = src.read(1)
         profile = src.profile
@@ -813,6 +928,7 @@ def despeckle_and_shade_ortho(
             config.dem_target_gsd_m,
             config,
             along_track_correction=along_track_correction,
+            real_hapke_params=real_hapke_params,
         )
     else:
         shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
@@ -844,19 +960,25 @@ def fetch_dem_and_ortho(
     extra_footprint_lonlat_deg: dict | None = None,
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
 ) -> DemOrthoResult:
     """Shades the fetched ortho with ISIS `photomet`'s Hapke model by default
     (`despeckle_and_shade_ortho`'s `hapke` passthrough, see `hapke_shade_ortho`'s docstring), with
     `along_track_correction`'s own real-along-track-axis refinement on by default too (see
     `_terrain_photometric_angles`'s docstring) -- `hapke=False` falls back to the plain Lambertian
-    `shade_ortho` blend instead (`along_track_correction` is then a no-op). Each `hapke`/
-    `along_track_correction` combination writes to its own filename (`ortho_shaded_filename`) rather
-    than a single shared one, so any combination can be fetched for the same camera and compared
-    directly, e.g. `notebooks/hapke_hillshade.ipynb`/`notebooks/along_track_correction.ipynb`, and so
-    `trn_dataset.TrnTestEntry.dem_ortho_result`'s resumption check can never mistake one mode's
-    cached file for another's -- including, deliberately, never resuming a file cached under an
-    older default before `along_track_correction` existed or before it became `True` by default; see
-    docs/history.md's dated entries.
+    `shade_ortho` blend instead (`along_track_correction`/`real_hapke_params` are then both a no-op).
+    `real_hapke_params=True` (the default) uses `fetch_real_hapke_params()`'s real,
+    ISIS-calibration-cube-sourced Hapke coefficients instead of `_HAPKE_PLACEHOLDER_PARAMS`'s
+    illustrative ones, see `hapke_shade_ortho`'s docstring. Each `hapke`/
+    `along_track_correction`/`real_hapke_params` combination writes to its own filename
+    (`ortho_shaded_filename`) rather than a single shared one, so any combination can be fetched for
+    the same camera and compared directly, e.g.
+    `notebooks/hapke_hillshade.ipynb`/`notebooks/along_track_correction.ipynb`/
+    `notebooks/real_hapke_params.ipynb`, and so `trn_dataset.TrnTestEntry.dem_ortho_result`'s
+    resumption check can never mistake one mode's cached file for another's -- including,
+    deliberately, never resuming a file cached under an older default before `along_track_correction`/
+    `real_hapke_params` existed or before either became `True` by default; see docs/history.md's
+    dated entries.
 
     `extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
     own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
@@ -942,7 +1064,7 @@ def fetch_dem_and_ortho(
     dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
     hole_fill_dem(dem_elevation_path, dem_filled_path)
 
-    ortho_shaded_path = config.output_dir / ortho_shaded_filename(hapke, along_track_correction)
+    ortho_shaded_path = config.output_dir / ortho_shaded_filename(hapke, along_track_correction, real_hapke_params)
     despeckle_and_shade_ortho(
         ortho_path,
         dem_filled_path,
@@ -952,6 +1074,7 @@ def fetch_dem_and_ortho(
         bbox,
         hapke=hapke,
         along_track_correction=along_track_correction,
+        real_hapke_params=real_hapke_params,
     )
 
     return DemOrthoResult(
