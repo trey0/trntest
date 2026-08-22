@@ -690,6 +690,57 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
     return base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax
 
 
+@dataclasses.dataclass(frozen=True)
+class BrightnessMatchedDiffResult:
+    """`compute_brightness_matched_diff`'s return -- see that function's own docstring."""
+
+    mean_abs_diff: float
+    median_abs_diff: float
+    valid_pixel_count: int
+
+
+def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> BrightnessMatchedDiffResult:
+    """The quantitative counterpart to `plot_overlay`'s visual comparison: a real, reusable
+    "brightness-matched mean|diff|" number between two geo-aligned rasters on the same map grid (e.g.
+    `DemOrthoResult.ortho` vs. a real WAC crop's `isis_wac.run_cam2map_for_crop` output) -- the same
+    metric this project's own investigation notebooks have repeatedly hand-recomputed ad hoc (see
+    docs/history.md's Phase 68/70/71 entries, none of which kept the actual comparison code), each
+    time as a throwaway script with no guarantee of matching any other attempt's exact methodology.
+    Factored out here specifically so future comparisons are reproducible and mutually comparable,
+    not re-derived from scratch each time.
+
+    Reuses `_prep_overlay_rasters`'s exact brightness-matching technique (a single multiplicative
+    scale at the median, not an affine/percentile stretch -- see its own docstring for why) with
+    `fill_overlay_nodata=False`: unlike `plot_overlay`'s display use, a quantitative diff must never
+    include interpolated/filled pixels, only real data.
+
+    `base_raster_path` and `overlay_raster_path` are expected to already share the same map grid
+    (same CRS/pixel size) but not necessarily the same window/extent -- e.g. `base_raster_path` is
+    typically the full padded DEM/ortho fetch AOI while `overlay_raster_path` covers only a real
+    crop's own smaller real footprint. Confirmed live (2026-08-22, docs/history.md's Phase 71 entry):
+    naively diffing the two underlying arrays by raw position raises a shape-mismatch error, or worse,
+    would silently misalign them if the shapes happened to match by coincidence -- both must be
+    aligned by real coordinate first (`reindex_like`), not raw array indexing. `tolerance` is half the
+    base raster's own pixel size, derived from its `x` coordinate spacing -- generous enough to absorb
+    any real floating-point/rounding difference between how each raster's own window was independently
+    computed, tight enough to never accidentally match two genuinely different grid cells."""
+    base, _, overlay_display, *_ = _prep_overlay_rasters(
+        base_raster_path, overlay_raster_path, fill_overlay_nodata=False
+    )
+    cellsize_m = float(abs(base.x.values[1] - base.x.values[0]))
+    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=cellsize_m / 2.0)
+
+    a = base.values.astype(np.float64)
+    b = overlay_aligned.values.astype(np.float64)
+    valid = np.isfinite(a) & np.isfinite(b)
+    diffs = np.abs(a[valid] - b[valid])
+    return BrightnessMatchedDiffResult(
+        mean_abs_diff=float(np.mean(diffs)) if diffs.size else float("nan"),
+        median_abs_diff=float(np.median(diffs)) if diffs.size else float("nan"),
+        valid_pixel_count=int(valid.sum()),
+    )
+
+
 def _overlay_outline_geoseries(overlay):
     """The overlay's real-data footprint (see `_valid_data_outline`) as a `GeoSeries`, ready to draw
     via `.boundary.plot(...)` -- split out of `_render_overlay_figure` so `plot_overlay_toggle` can

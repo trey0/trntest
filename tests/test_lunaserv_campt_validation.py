@@ -1,7 +1,8 @@
 """Validates `lunaserv._terrain_photometric_angles`'s ellipsoid limit (`dem` all zero) against real
 ISIS `campt` ground truth -- independent confirmation, via a completely different geometry engine,
-that Phase 71's normal-tilt fix (`normal_tilt_correction`, now the default) is correct and not, e.g.,
-double-counting the curvature correction already applied to `ground`'s own position. See
+that Phase 71's normal-tilt fix (unconditional since Phase 72 -- no opt-out parameter any more) is
+correct and not, e.g., double-counting the curvature correction already applied to `ground`'s own
+position. See
 `_terrain_photometric_angles`'s own docstring and `docs/history.md`'s Phase 70/71 entries for the
 full rationale -- this file is the concrete `heavy` test those entries point to.
 
@@ -85,7 +86,6 @@ def test_terrain_photometric_angles_ellipsoid_limit_matches_real_campt_ground_tr
         elevation_deg,
         cellsize_m=entry.per_image_config.dem_target_gsd_m,
         radius_m=MOON_RADIUS_M,
-        normal_tilt_correction=True,
     )
 
     minx, miny, maxx, maxy = dem_ortho_result.bbox

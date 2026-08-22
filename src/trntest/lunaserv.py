@@ -32,6 +32,24 @@ from trntest.subprocess_utils import run_quiet
 # docs/history.md's dated entry for the placeholder-vs-real comparison that motivated it.
 _HAPKE_PLACEHOLDER_PARAMS = {"wh": 0.52, "hg1": 0.213, "hg2": 1.0, "hh": 0.17, "b0": 0.025, "theta": 0.0}
 
+# The ortho texture this project fetches (`config.lunaserv_ortho_layer`, `luna_wac_normalized_
+# reflectance`) is itself a photometric composite, not raw albedo -- confirmed (2026-08-22,
+# docs/history.md) to be ASU/LROC's WAC_EMP product (PDS4 LROLRC_2001/DATA/MDR/WAC_EMP; the exact
+# match on wavelength *and* WAC_EMP's own unusual "643nm offered at 304 ppd" special case is too
+# specific to be coincidence), whose own README states every pixel is "photometrically normalized to
+# a standard geometry of 30 degrees incidence angle, 0 degrees emission angle, and 30 degrees phase
+# angle" using "an empirically derived photometric function similar to that of Boyd et al. (2012)" --
+# not Hapke. `hapke_shade_ortho` relights this texture for a real candidate's own true geometry by
+# multiplying by H(i,e,g)/H(these reference angles), where H is our own Hapke evaluation
+# (`_hapke_reflectance`) -- a principled approximation of undoing Boyd et al.'s empirical
+# normalization (not a bit-exact inverse, since it isn't a Hapke-family function), but the Sato et
+# al. (2014) Hapke parameters this project already samples (`fetch_real_hapke_params`) were
+# themselves derived from/cross-validated against this same WAC photometric dataset, so it's not an
+# arbitrary stand-in either. See docs/history.md's dated entry for the full investigation.
+REFERENCE_INCIDENCE_DEG = 30.0
+REFERENCE_EMISSION_DEG = 0.0
+REFERENCE_PHASE_DEG = 30.0
+
 # ISIS's own real, spatially-resolved lunar Hapke calibration (Sato et al. 2014's fit, converted to
 # ISIS's native parameterization) -- $ISISDATA/lro/calibration/
 # WAC_global_7bands_1x1_wbhs70NS_const_each_pole.<version>.cub, a 63-band (7 wavelengths x 9 params)
@@ -47,22 +65,26 @@ _HAPKE_CALIBRATION_CUBE_GLOB = "WAC_global_7bands_1x1_wbhs70NS_const_each_pole.*
 DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
 
 # `fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction`/
-# `real_hapke_params`/`normal_tilt_correction` parameter defaults -- shared with
-# `trn_dataset.TrnTestEntry.dem_ortho_result`'s resumption check (via `ortho_shaded_filename` below)
-# so the two can never silently disagree about which shading mode's cached ortho file is "the" default
-# one to resume from. `shade_ortho`'s plain Lambertian blend (`hapke=False`), the uncorrected
-# per-pixel geometry (`along_track_correction=False`), the illustrative placeholder Hapke coefficients
-# (`real_hapke_params=False`), and the pre-Phase-70 uncorrected surface normal
-# (`normal_tilt_correction=False`) all remain available as explicit fallbacks -- see docs/history.md's
-# dated entries for why each became the default. `normal_tilt_correction=True` is a deliberate
-# exception to "defaults track a confirmed real-image improvement": it's believed geometrically
-# correct (see `_terrain_photometric_angles`'s own docstring) but is known to make the real-WAC-crop
-# match *worse* for still-unexplained reasons -- defaulted on anyway, and `normal_tilt_correction`
-# is expected to be deleted entirely (not just left at its default) once that's resolved.
+# `real_hapke_params` parameter defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s
+# resumption check (via `ortho_shaded_filename` below) so the two can never silently disagree about
+# which shading mode's cached ortho file is "the" default one to resume from. `shade_ortho`'s plain
+# Lambertian blend (`hapke=False`), the uncorrected per-pixel geometry (`along_track_correction=False`),
+# and the illustrative placeholder Hapke coefficients (`real_hapke_params=False`) all remain available
+# as explicit fallbacks -- see docs/history.md's dated entries for why each became the default.
+#
+# The DEM-gradient normal-tilt correction (Phase 70/71) and the Hapke-ratio relighting correction
+# (Phase 72) are **not** toggles -- both are unconditional in `_terrain_photometric_angles`/
+# `hapke_shade_ortho` respectively, with no parameter to opt out. This is a deliberate user call
+# (2026-08-22, docs/history.md's Phase 72 entry): both are judged physically correct/well-justified
+# on their own terms (independent real-`campt` validation for the normal-tilt fix; WAC_EMP's own
+# documented i=30/e=0/g=30 empirical-normalization convention for the Hapke-ratio fix), even though
+# neither is confirmed to improve, and the Hapke-ratio fix is confirmed to *worsen*, the
+# brightness-matched diff against the real WAC crop for the one candidate tested so far -- that
+# real-image regression remains open and unexplained, but is no longer treated as a reason to keep
+# either correction optional.
 DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
 DEFAULT_REAL_HAPKE_PARAMS = True
-DEFAULT_NORMAL_TILT_CORRECTION = True
 
 
 def geographic_crs(radius_m: float = MOON_RADIUS_M) -> str:
@@ -86,33 +108,32 @@ def ortho_shaded_filename(
     hapke: bool,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
-    normal_tilt_correction: bool = DEFAULT_NORMAL_TILT_CORRECTION,
 ) -> str:
     """The `output_dir`-relative filename `despeckle_and_shade_ortho` writes its shaded ortho to for
-    a given `hapke`/`along_track_correction`/`real_hapke_params`/`normal_tilt_correction` combination
-    -- factored out so `trn_dataset.TrnTestEntry.dem_ortho_result`'s own resumption check can ask for
-    exactly the file `fetch_dem_and_ortho(..., hapke=DEFAULT_HAPKE_SHADING,
+    a given `hapke`/`along_track_correction`/`real_hapke_params` combination -- factored out so
+    `trn_dataset.TrnTestEntry.dem_ortho_result`'s own resumption check can ask for exactly the file
+    `fetch_dem_and_ortho(..., hapke=DEFAULT_HAPKE_SHADING,
     along_track_correction=DEFAULT_ALONG_TRACK_CORRECTION,
-    real_hapke_params=DEFAULT_REAL_HAPKE_PARAMS,
-    normal_tilt_correction=DEFAULT_NORMAL_TILT_CORRECTION)` would produce, without duplicating this
-    naming logic (and risking it drifting out of sync). `along_track_correction`/`real_hapke_params`/
-    `normal_tilt_correction` only change the filename when `hapke=True` (all three are a no-op on the
-    Lambertian fallback, see `hapke_shade_ortho`'s docstring) -- giving each a real, distinct suffix
-    rather than reusing `hapke=True`'s own plain filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION`
-    flipping to `True` after `DEFAULT_HAPKE_SHADING` already had real cached `ortho_shaded_hapke.tif`
-    files on disk (from before this default existed) is exactly the kind of stale-cache-under-a-new-
-    default's-name risk that bit `DEFAULT_HAPKE_SHADING` itself once already -- see docs/history.md's
-    dated entries. `real_hapke_params`/`normal_tilt_correction` follow the identical pattern for the
-    same reason -- `normal_tilt_correction` in particular, since it just became `True` by default
-    while real cached `ortho_shaded_hapke_atc_realparams.tif` files (pre-dating this parameter's
-    existence) may already be on disk."""
+    real_hapke_params=DEFAULT_REAL_HAPKE_PARAMS)` would produce, without duplicating this naming
+    logic (and risking it drifting out of sync). `along_track_correction`/`real_hapke_params` only
+    change the filename when `hapke=True` (both are a no-op on the Lambertian fallback, see
+    `hapke_shade_ortho`'s docstring) -- giving each a real, distinct suffix rather than reusing
+    `hapke=True`'s own plain filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION` flipping to
+    `True` after `DEFAULT_HAPKE_SHADING` already had real cached `ortho_shaded_hapke.tif` files on
+    disk (from before this default existed) is exactly the kind of stale-cache-under-a-new-default's-
+    name risk that bit `DEFAULT_HAPKE_SHADING` itself once already -- see docs/history.md's dated
+    entries. `real_hapke_params` follows the identical pattern for the same reason.
+
+    The `_normaltilt` suffix is **permanent, not conditional on a parameter** (Phase 72,
+    docs/history.md): the normal-tilt correction it names became unconditional, but the suffix itself
+    stays -- real `ortho_shaded_hapke_atc_realparams.tif` files (no `_normaltilt`) already exist on
+    disk from before that correction existed at all, so dropping the suffix now would resume that
+    stale, pre-correction content under today's default's own name, exactly the risk this function's
+    whole naming scheme exists to prevent. `_normaltilt` is simply always appended when `hapke=True`
+    now, the same way `hapke=True` itself always gets the `_hapke` base name."""
     if not hapke:
         return "ortho_shaded.tif"
-    suffix = (
-        ("_atc" if along_track_correction else "")
-        + ("_realparams" if real_hapke_params else "")
-        + ("_normaltilt" if normal_tilt_correction else "")
-    )
+    suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "") + "_normaltilt"
     return f"ortho_shaded_hapke{suffix}.tif"
 
 
@@ -599,7 +620,6 @@ def _terrain_photometric_angles(
     cellsize_m: float,
     radius_m: float,
     along_track_local_enu: np.ndarray | None = None,
-    normal_tilt_correction: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-pixel incidence/emission/phase angles (degrees, as raw geometry -- not
     `LightSource.hillshade`'s own scene-relative contrast-stretched intensity, see its
@@ -660,18 +680,18 @@ def _terrain_photometric_angles(
     approximation, so it stays correct at any real footprint size. Incidence is unaffected (`normal`
     below never depends on `ground`'s position, only on local `dem` relief).
 
-    **`normal_tilt_correction` (default True, opt-out): `normal` now also uses `dem + sphere_sag`
-    (not raw `dem`) as the gradient's input, not just `ground`'s position** -- fixing a real gap where
-    `normal` used to be built entirely in the tangent point's own fixed (East, North, Up) frame,
-    never rotating the "Up" reference direction to account for the sphere's curvature away from the
-    tangent point (the same flat-DEM convention `LightSource.hillshade` uses, appropriate for a small
-    terrestrial DEM tile but not for a whole lunar image). A ground point at real angular offset theta
-    from the tangent point has a true local vertical tilted by theta from the tangent point's own --
-    comparable in magnitude to the sagitta effect above (~2-3 deg at a real ~143km footprint's edges).
-    The fix is algebraically exact (the cross product of `ground`'s own two numerically-differentiated
-    tangent vectors expands to exactly this), and verified directly: a synthetic flat sphere's
-    computed normal converges to the true tilt angle as grid resolution increases (residual ~0.0017
-    deg at production ~100m/px DEM resolution vs. a ~3.3 deg true tilt at the test offset).
+    **`normal` uses `dem + sphere_sag` (not raw `dem`) as the gradient's input, not just `ground`'s
+    position, unconditionally** -- fixing a real gap where `normal` used to be built entirely in the
+    tangent point's own fixed (East, North, Up) frame, never rotating the "Up" reference direction to
+    account for the sphere's curvature away from the tangent point (the same flat-DEM convention
+    `LightSource.hillshade` uses, appropriate for a small terrestrial DEM tile but not for a whole
+    lunar image). A ground point at real angular offset theta from the tangent point has a true local
+    vertical tilted by theta from the tangent point's own -- comparable in magnitude to the sagitta
+    effect above (~2-3 deg at a real ~143km footprint's edges). The fix is algebraically exact (the
+    cross product of `ground`'s own two numerically-differentiated tangent vectors expands to exactly
+    this), and verified directly: a synthetic flat sphere's computed normal converges to the true tilt
+    angle as grid resolution increases (residual ~0.0017 deg at production ~100m/px DEM resolution
+    vs. a ~3.3 deg true tilt at the test offset).
 
     **Known, deliberately-accepted caveat**: on the real default candidate this fix changes incidence
     for the first time (mean 1.84 deg, max 5.67 deg -- previously exactly 0) and emission (mean 2.16
@@ -685,12 +705,12 @@ def _terrain_photometric_angles(
     else's own processing, which our own from-scratch re-shading was never validated against). An
     initial "huge improvement, closer to the real image" visual read of this fix in a notebook was
     later retracted by the user as a mixed-up comparison (blinking corrected-vs-uncorrected, not vs.
-    the real WAC image). This is wired in as the default anyway (2026-08-22, `docs/history.md`): the
-    geometry itself is independently confirmed correct (see below) and the old, uncorrected formula is
-    not something new code should have to opt out of just because its real-image interaction is still
-    unexplained. `normal_tilt_correction=False` remains only as a temporary comparison/fallback mode,
-    expected to be deleted once that real-image regression is separately understood or the fix is
-    fully retired from doubt.
+    the real WAC image). Wired in as the default anyway (2026-08-22, Phase 71, `docs/history.md`), and
+    made fully unconditional -- no opt-out parameter at all (2026-08-22, Phase 72) -- on the user's own
+    explicit call: the geometry itself is independently confirmed correct (see below), and the old,
+    uncorrected formula isn't something worth keeping reachable just because this fix's real-image
+    interaction is still unexplained. There is no `False` fallback to reach the pre-Phase-70 behavior
+    any more; see git history before this date if that's ever needed for comparison again.
 
     **Independently validated against real ISIS `campt` ground truth** (`tests/test_lunaserv_campt_
     validation.py`, `heavy`-marked, not just the synthetic-sphere self-check above): for the ellipsoid
@@ -721,9 +741,19 @@ def _terrain_photometric_angles(
     `campt` (above) superseded `phocube` for the ellipsoid-limit validation actually used here -- it
     reports phase/incidence/emission in one point query, is point- rather than raster-based (no
     pixel-grid alignment needed against a render), and is already extensively validated elsewhere in
-    this project. Whether `campt` can also validate the true DEM-aware case (i.e. whether attaching a
-    real shape model changes its own plain angle output, the way `phocube`'s dedicated `local*` flags
-    are supposed to) is a separate, still-open question -- not yet resolved as of this writing.
+    this project. **Checked live whether `campt` can also validate the true DEM-aware case: no.**
+    Attaching a real shape model (`csminit shapemodel=...`, the same global 128ppd lunar cube
+    `phocube`'s own DEM-mode test used) and comparing against the ellipsoid-mode values at the same 5
+    points found `Incidence` byte-identical (0.0000 deg diff) with or without the shape model
+    attached, while `Emission` shifted by a small but real 0.15-0.57 deg -- a clean, informative
+    pattern: `Incidence` has no view-vector/position term at all, so its exact-zero difference means
+    `campt`'s own normal is unaffected by the attached shape model (still the ellipsoid's, not a real
+    local terrain-tilted one); `Emission`'s small shift is fully explained by the shape model changing
+    where the sensor-to-ground ray actually intersects (real local elevation vs. the ideal ellipsoid
+    radius), not by any change in the normal. So `campt`'s plain angle output stays ellipsoid-normal-
+    based regardless of an attached shape model -- no working equivalent to `phocube`'s (broken)
+    `localincidence`/`localemission`. The DEM-aware validation gap remains genuinely open; no ISIS
+    tool found so far can close it.
 
     Not investigated/validated further -- the real-image regression above remains open, flagged for a
     future pass, not folded into this fix."""
@@ -735,8 +765,7 @@ def _terrain_photometric_angles(
 
     dy = -cellsize_m
     sphere_sag = np.sqrt(np.clip(radius_m**2 - x_grid**2 - y_grid**2, 0.0, None)) - radius_m  # <= 0
-    normal_input = dem.astype(np.float64) + sphere_sag if normal_tilt_correction else dem.astype(np.float64)
-    e_dy, e_dx = np.gradient(normal_input, dy, cellsize_m)
+    e_dy, e_dx = np.gradient(dem.astype(np.float64) + sphere_sag, dy, cellsize_m)
     normal = np.dstack([-e_dx, -e_dy, np.ones_like(dem, dtype=np.float64)])
     normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
 
@@ -855,80 +884,25 @@ def fetch_real_hapke_params(
     return _sample_hapke_calibration(path, center_lon_deg, center_lat_deg, wavelength_nm)
 
 
-def hapke_shade_ortho(
-    ortho: np.ndarray,
-    dem: np.ndarray,
-    bbox: tuple,
-    camera: Camera,
-    azimuth_deg: float,
-    elevation_deg: float,
-    cellsize_m: float,
+def _hapke_reflectance(
+    phase_deg: np.ndarray,
+    incidence_deg: np.ndarray,
+    emission_deg: np.ndarray,
+    hapkehen_params: dict,
     config: TrntestConfig,
-    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
-    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
-    normal_tilt_correction: bool = DEFAULT_NORMAL_TILT_CORRECTION,
 ) -> np.ndarray:
-    """The default ortho-shading mode (`DEFAULT_HAPKE_SHADING`) -- a real Hapke bidirectional
-    reflectance function (ISIS `photomet`, `PHTNAME=HAPKEHEN`) instead of `shade_ortho`'s fallback
-    plain Lambertian `LightSource.hillshade`, via
-    `ANGLESOURCE=BACKPLANE` fed the angle rasters `_terrain_photometric_angles` computes ourselves
-    from `camera`'s own real position (sidesteps the fact that this ortho has no ISIS camera model
-    for `photomet` to derive angles from automatically -- see docs/history.md's dated entry for the
-    full evaluation). `_HAPKE_PLACEHOLDER_PARAMS` is illustrative, not lunar-calibrated -- a
-    feasibility prototype, not a validated photometric model; `real_hapke_params=True` (the default,
-    `DEFAULT_REAL_HAPKE_PARAMS`) uses `fetch_real_hapke_params()`'s real, ISIS-calibration-cube-sourced
-    values for `camera`'s own footprint center instead (see that function's docstring for what it does
-    and doesn't capture) -- `real_hapke_params=False` falls back to the placeholder, kept for
-    comparison in `notebooks/real_hapke_params.ipynb`. See docs/history.md's dated entry for the
-    placeholder-vs-real comparison that motivated making this the default.
-
-    `photomet` also requires a `FROM` cube purely as a size/dtype template in `BACKPLANE` mode (its
-    own pixel values are irrelevant -- `NORMNAME=SHADE` overwrites them with the photometric model's
-    own output) and a `BandBin` label group just to open the file at all (confirmed empirically, not
-    documented in `photomet.xml`) -- added via `editlab` since GDAL's `ISIS3` writer doesn't create
-    one from scratch.
-
-    Hapke's raw reflectance factor is a physically real ~0-1 albedo-scale value, not the
-    scene-relative, always-min-to-max-stretched [0,1] intensity `LightSource.hillshade` itself
-    returns (see `shade_normals`) -- rescaled here by its own 99th-percentile (not literal max, to
-    avoid a few opposition-surge-bright outlier pixels crushing everything else) so the two shading
-    modes land in a visually comparable brightness range for a side-by-side/blink comparison.
-
-    `along_track_correction` (`DEFAULT_ALONG_TRACK_CORRECTION`) applies `_terrain_photometric_angles`'s
-    along-track correction (see its own docstring) using `camera`'s own real along-track attitude
-    axis (`Camera.camera_along_track_direction_moon_me`) -- on by default, validated against real
-    `campt` output to substantially improve on the base per-pixel-camera-position approach alone
-    (this function's own earlier default); `along_track_correction=False` falls back to that base
-    approach. See docs/history.md's dated entries for the full evaluation, including an earlier,
-    less-accurate version of this correction that used the spacecraft's raw orbital velocity instead.
-
-    `normal_tilt_correction` (default True, opt-out) threads straight through to
-    `_terrain_photometric_angles`'s own parameter of the same name -- see its docstring for what it
-    does and the real-image-regression caveat that comes with defaulting it on."""
-    center = camera.footprint_lonlat_deg["center"]
-    assert center is not None, "camera's nadir footprint center must be a real ground point"
-    camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, MOON_RADIUS_M)
-    along_track_local_enu = (
-        _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
-    )
-    incidence_deg, emission_deg, phase_deg = _terrain_photometric_angles(
-        dem,
-        bbox,
-        camera_local_enu_m,
-        azimuth_deg,
-        elevation_deg,
-        cellsize_m,
-        MOON_RADIUS_M,
-        along_track_local_enu,
-        normal_tilt_correction,
-    )
-
-    if real_hapke_params:
-        hapkehen_source = fetch_real_hapke_params(*center, config)
-    else:
-        hapkehen_source = _HAPKE_PLACEHOLDER_PARAMS
-    hapkehen_params = {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}  # HAPKEHEN's own 6 keys
-
+    """Runs ISIS `photomet` (`PHTNAME=HAPKEHEN`, `ANGLESOURCE=BACKPLANE`, `NORMNAME=SHADE`) as a pure
+    Hapke-model evaluator: given phase/incidence/emission angle rasters (any shape -- the real
+    per-pixel candidate geometry, or a small constant-valued array for a single reference geometry),
+    returns H(angles), the raw Hapke reflectance factor, with no dependence on any actual image
+    content -- the `from` cube fed to `photomet` is always zeroed, and `NORMNAME=SHADE` overwrites it
+    with the model's own output regardless. Factored out of `hapke_shade_ortho` so it can call this
+    twice (real geometry, and the fixed reference geometry `luna_wac_normalized_reflectance` is
+    itself normalized to -- see `REFERENCE_INCIDENCE_DEG`'s own module-level comment) without
+    duplicating the `photomet` subprocess-orchestration logic. `photomet` also requires a `FROM` cube
+    purely as a size/dtype template (a `BandBin` label group is enough to open the file at all --
+    confirmed empirically, not documented in `photomet.xml` -- added via `editlab` since GDAL's
+    `ISIS3` writer doesn't create one from scratch)."""
     work_dir = config.output_dir
     from_cub, phase_cub = work_dir / "hapke_from.cub", work_dir / "hapke_phase.cub"
     incidence_cub, emission_cub = work_dir / "hapke_incidence.cub", work_dir / "hapke_emission.cub"
@@ -964,14 +938,114 @@ def hapke_shade_ortho(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)
         with rasterio.open(out_cub) as src:
-            reflectance = src.read(1).astype(np.float64)
+            return src.read(1).astype(np.float64)
 
-    peak = np.percentile(reflectance, 99.0)
-    normalized = np.clip(reflectance / peak, 0.0, 1.0) if peak > 0 and np.isfinite(peak) else np.zeros_like(reflectance)
+
+def hapke_shade_ortho(
+    ortho: np.ndarray,
+    dem: np.ndarray,
+    bbox: tuple,
+    camera: Camera,
+    azimuth_deg: float,
+    elevation_deg: float,
+    cellsize_m: float,
+    config: TrntestConfig,
+    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+) -> np.ndarray:
+    """The default ortho-shading mode (`DEFAULT_HAPKE_SHADING`) -- a real Hapke bidirectional
+    reflectance function (ISIS `photomet`, `PHTNAME=HAPKEHEN`) instead of `shade_ortho`'s fallback
+    plain Lambertian `LightSource.hillshade`, via
+    `ANGLESOURCE=BACKPLANE` fed the angle rasters `_terrain_photometric_angles` computes ourselves
+    from `camera`'s own real position (sidesteps the fact that this ortho has no ISIS camera model
+    for `photomet` to derive angles from automatically -- see docs/history.md's dated entry for the
+    full evaluation). `_HAPKE_PLACEHOLDER_PARAMS` is illustrative, not lunar-calibrated -- a
+    feasibility prototype, not a validated photometric model; `real_hapke_params=True` (the default,
+    `DEFAULT_REAL_HAPKE_PARAMS`) uses `fetch_real_hapke_params()`'s real, ISIS-calibration-cube-sourced
+    values for `camera`'s own footprint center instead (see that function's docstring for what it does
+    and doesn't capture) -- `real_hapke_params=False` falls back to the placeholder, kept for
+    comparison in `notebooks/real_hapke_params.ipynb`. See docs/history.md's dated entry for the
+    placeholder-vs-real comparison that motivated making this the default.
+
+    `photomet`'s own subprocess-orchestration mechanics (a zeroed `FROM` cube as a pure size/dtype
+    template, `NORMNAME=SHADE` overwriting it with the model's own output, the `editlab`-added
+    `BandBin` group needed just to open the file at all) live in the shared `_hapke_reflectance`
+    helper -- see its own docstring.
+
+    **Relights `ortho` by the ratio H(i,e,g)/H(reference), not a bare rescaled H(i,e,g)** (fixed
+    2026-08-22, see docs/history.md's dated entry): `ortho` isn't raw albedo -- it's itself already a
+    photometric composite, normalized to a fixed reference geometry (`REFERENCE_INCIDENCE_DEG`'s own
+    module-level comment explains the reference geometry and why it's only an approximate, not exact,
+    correction). Multiplying it by a *bare*, arbitrarily-rescaled H(i,e,g) (this function's own
+    earlier approach: `reflectance / percentile99(reflectance)`) double-counts the photometric
+    function with no relationship to the geometry the texture was actually produced at -- it isn't a
+    relighting operation at all, just an unprincipled per-pixel contrast rescale. Dividing by
+    H(reference) instead makes the multiplier a true, physically meaningful relighting ratio (~1 for
+    geometries close to the reference, deviating for real geometries far from it), so no separate
+    display-range rescale is needed beyond simple `[0, 255]` clipping -- an unusually bright
+    opposition-surge patch legitimately saturating toward white, rather than the whole frame being
+    dimmed to keep it in range, is the physically correct behavior here, not an artifact to avoid.
+    Like `_terrain_photometric_angles`'s own normal-tilt correction, this has no opt-out parameter --
+    a deliberate user call (2026-08-22, Phase 72, docs/history.md), made despite this specific
+    correction being confirmed to *worsen* the brightness-matched diff against the real WAC crop for
+    the one candidate tested so far. See `REFERENCE_INCIDENCE_DEG`'s own module-level comment and
+    docs/history.md's Phase 72 entry for the full rationale and that empirical result.
+
+    `along_track_correction` (`DEFAULT_ALONG_TRACK_CORRECTION`) applies `_terrain_photometric_angles`'s
+    along-track correction (see its own docstring) using `camera`'s own real along-track attitude
+    axis (`Camera.camera_along_track_direction_moon_me`) -- on by default, validated against real
+    `campt` output to substantially improve on the base per-pixel-camera-position approach alone
+    (this function's own earlier default); `along_track_correction=False` falls back to that base
+    approach. See docs/history.md's dated entries for the full evaluation, including an earlier,
+    less-accurate version of this correction that used the spacecraft's raw orbital velocity instead.
+
+    `_terrain_photometric_angles`'s own normal-tilt correction (see its docstring) is unconditional,
+    with no parameter here to control it any more."""
+    center = camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
+    camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, MOON_RADIUS_M)
+    along_track_local_enu = (
+        _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
+    )
+    incidence_deg, emission_deg, phase_deg = _terrain_photometric_angles(
+        dem,
+        bbox,
+        camera_local_enu_m,
+        azimuth_deg,
+        elevation_deg,
+        cellsize_m,
+        MOON_RADIUS_M,
+        along_track_local_enu,
+    )
+
+    if real_hapke_params:
+        hapkehen_source = fetch_real_hapke_params(*center, config)
+    else:
+        hapkehen_source = _HAPKE_PLACEHOLDER_PARAMS
+    hapkehen_params = {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}  # HAPKEHEN's own 6 keys
+
+    reflectance = _hapke_reflectance(phase_deg, incidence_deg, emission_deg, hapkehen_params, config)
+
+    # H at the fixed reference geometry `ortho` is itself normalized to -- a small constant-valued
+    # array (no per-pixel variation possible, same params/angles everywhere), not a second full-size
+    # raster pass.
+    reference_shape = (3, 3)
+    reference_reflectance = _hapke_reflectance(
+        np.full(reference_shape, REFERENCE_PHASE_DEG),
+        np.full(reference_shape, REFERENCE_INCIDENCE_DEG),
+        np.full(reference_shape, REFERENCE_EMISSION_DEG),
+        hapkehen_params,
+        config,
+    )[0, 0]
+
+    if reference_reflectance > 0 and np.isfinite(reference_reflectance):
+        ratio = reflectance / reference_reflectance
+    else:
+        ratio = np.zeros_like(reflectance)
 
     ortho_norm = ortho.astype(np.float64) / 255.0
-    blended = ortho_norm * normalized
-    return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+    relit = ortho_norm * ratio
+    return np.clip(relit * 255.0, 0, 255).astype(np.uint8)
 
 
 def despeckle_and_shade_ortho(
@@ -984,7 +1058,6 @@ def despeckle_and_shade_ortho(
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
-    normal_tilt_correction: bool = DEFAULT_NORMAL_TILT_CORRECTION,
 ) -> None:
     """Despeckle the raw fetched ortho and blend in a real-sun hillshade computed from the (already
     hole-filled) DEM, writing the result to `output_path` -- the single ortho used by both `sat_sim`
@@ -993,9 +1066,8 @@ def despeckle_and_shade_ortho(
     place the DEM's own pixels in the same local frame as `camera`'s real position -- see
     `_terrain_photometric_angles`); `hapke=False` falls back to the plain Lambertian
     `shade_ortho` blend -- see `hapke_shade_ortho`'s docstring. `along_track_correction`/
-    `real_hapke_params`/`normal_tilt_correction` are passed straight through to `hapke_shade_ortho`
-    (all three a no-op when `hapke=False`, `shade_ortho` has no camera-position or Hapke-model
-    dependence at all)."""
+    `real_hapke_params` are passed straight through to `hapke_shade_ortho` (both a no-op when
+    `hapke=False`, `shade_ortho` has no camera-position or Hapke-model dependence at all)."""
     with rasterio.open(ortho_path) as src:
         ortho = src.read(1)
         profile = src.profile
@@ -1020,7 +1092,6 @@ def despeckle_and_shade_ortho(
             config,
             along_track_correction=along_track_correction,
             real_hapke_params=real_hapke_params,
-            normal_tilt_correction=normal_tilt_correction,
         )
     else:
         shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
@@ -1053,26 +1124,24 @@ def fetch_dem_and_ortho(
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
-    normal_tilt_correction: bool = DEFAULT_NORMAL_TILT_CORRECTION,
 ) -> DemOrthoResult:
     """Shades the fetched ortho with ISIS `photomet`'s Hapke model by default
     (`despeckle_and_shade_ortho`'s `hapke` passthrough, see `hapke_shade_ortho`'s docstring), with
-    `along_track_correction`'s own real-along-track-axis refinement and `normal_tilt_correction`'s
-    curvature-aware surface normal (see `_terrain_photometric_angles`'s docstring) both on by default
-    too -- `hapke=False` falls back to the plain Lambertian `shade_ortho` blend instead
-    (`along_track_correction`/`real_hapke_params`/`normal_tilt_correction` are then all a no-op).
-    `real_hapke_params=True` (the default) uses `fetch_real_hapke_params()`'s real,
-    ISIS-calibration-cube-sourced Hapke coefficients instead of `_HAPKE_PLACEHOLDER_PARAMS`'s
+    `along_track_correction`'s own real-along-track-axis refinement on by default too, and
+    `_terrain_photometric_angles`'s own curvature-aware surface normal unconditionally applied
+    (no longer a parameter here at all, see that function's docstring) -- `hapke=False` falls back to
+    the plain Lambertian `shade_ortho` blend instead (`along_track_correction`/`real_hapke_params` are
+    then both a no-op). `real_hapke_params=True` (the default) uses `fetch_real_hapke_params()`'s
+    real, ISIS-calibration-cube-sourced Hapke coefficients instead of `_HAPKE_PLACEHOLDER_PARAMS`'s
     illustrative ones, see `hapke_shade_ortho`'s docstring. Each `hapke`/`along_track_correction`/
-    `real_hapke_params`/`normal_tilt_correction` combination writes to its own filename
-    (`ortho_shaded_filename`) rather than a single shared one, so any combination can be fetched for
-    the same camera and compared directly, e.g.
-    `notebooks/hapke_hillshade.ipynb`/`notebooks/along_track_correction.ipynb`/
+    `real_hapke_params` combination writes to its own filename (`ortho_shaded_filename`) rather than a
+    single shared one, so any combination can be fetched for the same camera and compared directly,
+    e.g. `notebooks/hapke_hillshade.ipynb`/`notebooks/along_track_correction.ipynb`/
     `notebooks/real_hapke_params.ipynb`, and so `trn_dataset.TrnTestEntry.dem_ortho_result`'s
     resumption check can never mistake one mode's cached file for another's -- including,
     deliberately, never resuming a file cached under an older default before `along_track_correction`/
-    `real_hapke_params`/`normal_tilt_correction` existed or before any became `True` by default; see
-    docs/history.md's dated entries.
+    `real_hapke_params` existed or before either became `True` by default; see docs/history.md's
+    dated entries.
 
     `extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
     own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
@@ -1158,9 +1227,7 @@ def fetch_dem_and_ortho(
     dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
     hole_fill_dem(dem_elevation_path, dem_filled_path)
 
-    ortho_shaded_path = config.output_dir / ortho_shaded_filename(
-        hapke, along_track_correction, real_hapke_params, normal_tilt_correction
-    )
+    ortho_shaded_path = config.output_dir / ortho_shaded_filename(hapke, along_track_correction, real_hapke_params)
     despeckle_and_shade_ortho(
         ortho_path,
         dem_filled_path,
@@ -1171,7 +1238,6 @@ def fetch_dem_and_ortho(
         hapke=hapke,
         along_track_correction=along_track_correction,
         real_hapke_params=real_hapke_params,
-        normal_tilt_correction=normal_tilt_correction,
     )
 
     return DemOrthoResult(

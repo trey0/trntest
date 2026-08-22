@@ -142,12 +142,17 @@ def test_camera_local_enu_m_matches_orthographic_xy_for_on_sphere_point():
 
 
 def test_terrain_photometric_angles_flat_dem_directly_below_camera():
-    # Flat terrain -> constant surface normal -> incidence should be exactly (90 - elevation_deg)
-    # everywhere, regardless of position. At the one pixel directly below the camera (odd grid size
-    # so a pixel center lands exactly at x=y=0), the view direction is exactly straight up too, so
-    # emission there should be ~0 and phase should coincide with incidence.
-    # `normal_tilt_correction=False`: this test's whole premise is a constant, untilted normal --
-    # isolates it from Phase 70's normal-tilt fix, covered separately by its own dedicated tests.
+    # Flat terrain, camera directly overhead the grid's own center (odd grid size so a pixel center
+    # lands exactly at x=y=0): at that exact tangent point the normal-tilt correction (unconditional
+    # since Phase 72, see `_terrain_photometric_angles`'s own docstring) contributes exactly zero --
+    # `sphere_sag` is an even function of (x, y), so its gradient at the origin is exactly 0 both
+    # analytically and under `np.gradient`'s central-difference scheme -- so incidence there is still
+    # exactly (90 - elevation_deg), the view direction is exactly straight up too, so emission should
+    # be ~0 and phase should coincide with incidence. Only checked at the center pixel, not
+    # "everywhere" -- away from the tangent point, incidence now genuinely varies with position (real
+    # physics, not something to isolate away); see
+    # test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt for that
+    # effect's own dedicated validation.
     width = height = 11
     bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
@@ -163,11 +168,10 @@ def test_terrain_photometric_angles_flat_dem_directly_below_camera():
         elevation_deg,
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
-        normal_tilt_correction=False,
     )
-    assert incidence_deg == pytest.approx(90.0 - elevation_deg, abs=1e-6)
 
     center = height // 2, width // 2
+    assert incidence_deg[center] == pytest.approx(90.0 - elevation_deg, abs=1e-6)
     assert emission_deg[center] == pytest.approx(0.0, abs=1e-6)
     assert phase_deg[center] == pytest.approx(90.0 - elevation_deg, abs=1e-6)
 
@@ -177,9 +181,6 @@ def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
     # overhead the grid's own center should match the exact flat-ground formula
     # atan(horizontal_distance / altitude) -- confirms real parallax (not just a nadir
     # approximation) drives emission here.
-    # `normal_tilt_correction=False`: isolates this from Phase 70's normal-tilt fix (which would add
-    # its own small, real deviation from this closed form at this offset too, on top of the
-    # already-called-out sagitta one) -- covered separately by its own dedicated tests.
     width = height = 11
     minx, miny, maxx, maxy = bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
@@ -194,29 +195,32 @@ def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
         elevation_deg=45.0,
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
-        normal_tilt_correction=False,
     )
 
     row = height // 2
     col = width - 1
     x = minx + (col + 0.5) * (maxx - minx) / width
     expected_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
-    # abs, not the tighter rel=1e-6 this used before `radius_m` existed: at the real Moon's radius,
-    # this grid's ~91m offset has a real (if tiny, ~1.2e-5 deg) sagitta-corrected deviation from the
-    # exact flat-ground formula -- see `test_terrain_photometric_angles_curvature_correction_...`
-    # below for the correction validated at a scale where it actually matters.
-    assert emission_deg[row, col] == pytest.approx(expected_emission_deg, abs=1e-4)
+    # abs, not a tight rel: at the real Moon's radius, this grid's ~91m offset has two small, real
+    # deviations from the exact flat-ground formula -- the ground-position sagitta correction
+    # (~1.2e-5 deg) and, since Phase 72, the always-on normal-tilt correction's own contribution at
+    # this same small offset -- see test_terrain_photometric_angles_curvature_correction_...` below
+    # for the ground-position correction validated at a scale where it actually matters, and
+    # test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt for the
+    # normal-tilt correction's own dedicated large-offset validation. `abs=5e-3` covers both real,
+    # tiny effects at this offset without masking a real bug (observed live: ~2.7e-3 deg combined).
+    assert emission_deg[row, col] == pytest.approx(expected_emission_deg, abs=5e-3)
 
 
 def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_large_offset():
     # At DEM-pixel scale the sagitta correction is negligible (see the abs-tolerance note on
     # `test_terrain_photometric_angles_emission_grows_with_offset_from_nadir` above) -- but real
     # candidate footprints are tens of km wide (`docs/reproject-fov-investigation.md`: a real,
-    # live-validated 143.1x142.6km footprint), where it isn't. Flat terrain again, and
-    # `normal_tilt_correction=False` keeps `normal` exactly `[0,0,1]` regardless of offset (Phase 70's
-    # normal-tilt fix, covered by its own dedicated tests below, would otherwise add its own real
-    # deviation from this closed form at an offset this large) -- so this isolates just the
-    # ground-position/view-vector correction `radius_m` adds.
+    # live-validated 143.1x142.6km footprint), where it isn't. Flat terrain, offset purely along x
+    # (y=0), so the true local vertical also tilts purely in the x-z plane (same symmetry argument as
+    # `_terrain_photometric_angles`'s own docstring) -- the closed form below accounts for both the
+    # ground-position sagitta correction *and* the always-on (since Phase 72) normal-tilt correction,
+    # not just the former, since neither is optional any more.
     radius_m = 1_737_400.0
     altitude_m = 68_500.0  # a real value used elsewhere in this project (docs/history.md)
     width = height = 21
@@ -233,7 +237,6 @@ def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_lar
         elevation_deg=45.0,
         cellsize_m=2 * half_extent_m / width,
         radius_m=radius_m,
-        normal_tilt_correction=False,
     )
 
     row = height // 2
@@ -241,20 +244,37 @@ def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_lar
     x = -half_extent_m + (col + 0.5) * (2 * half_extent_m) / width
 
     naive_flat_ground_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
-    # Independently-derived closed form (not a call into lunaserv): the exact "Up" coordinate, in the
-    # tangent-plane frame, of a point on the sphere at horizontal offset x from the tangent point.
+
+    # Independently-derived closed form (not a call into lunaserv): true angular offset theta (sin
+    # theta = x / radius_m), the true local vertical tilted by theta toward the offset ([sin theta, 0,
+    # cos theta] in local ENU, see `_terrain_photometric_angles`'s own docstring), and the ground
+    # point's exact position (sagitta term, unchanged from before).
+    theta = math.asin(x / radius_m)
+    true_normal = (math.sin(theta), 0.0, math.cos(theta))
     sag = math.sqrt(radius_m**2 - x**2) - radius_m
-    true_emission_deg = math.degrees(math.atan(abs(x) / (altitude_m - sag)))
+    ground = (x, 0.0, sag)
+    view_vec = tuple(c - g for c, g in zip(camera_local_enu_m, ground, strict=True))
+    view_norm = math.sqrt(sum(v**2 for v in view_vec))
+    view_dir = tuple(v / view_norm for v in view_vec)
+    true_emission_deg = math.degrees(math.acos(sum(n * v for n, v in zip(true_normal, view_dir, strict=True))))
 
     # The correction is real and non-negligible at this scale (a real candidate's own edge)...
     assert abs(naive_flat_ground_emission_deg - true_emission_deg) > 0.1
-    # ...and the function's actual output matches the curvature-aware value, not the old flat one.
-    assert emission_deg[row, col] == pytest.approx(true_emission_deg, rel=1e-6)
+    # ...and the function's actual output matches the curvature-and-tilt-aware value, not the old
+    # flat one. `abs`, not `rel`: `np.gradient`'s own discretization error is real and larger here
+    # than the dedicated normal-tilt closed-form test's own ~0.016 deg residual, since this test's
+    # grid is deliberately much coarser (~9.5km/px here vs. ~1km/px there -- this test's original
+    # purpose, the ground-position sagitta correction, doesn't depend on grid resolution at all, only
+    # the now-also-present normal-tilt correction does). Observed live: ~0.157 deg -- consistent with
+    # (if smaller than) a naive quadratic truncation-error scaling from the finer test's own residual,
+    # not a sign of a derivation bug. See the dedicated test above for a tight, resolution-controlled
+    # check of the normal-tilt correction specifically.
+    assert emission_deg[row, col] == pytest.approx(true_emission_deg, abs=0.2)
 
 
 def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt():
-    # `normal_tilt_correction=True` (the default) is Phase 70's fix: `normal`'s gradient input uses
-    # `dem + sphere_sag`, not raw `dem` -- so even with perfectly flat terrain, the *normal* tilts by
+    # Phase 70/72's normal-tilt fix (unconditional, no opt-out parameter): `normal`'s gradient input
+    # uses `dem + sphere_sag`, not raw `dem` -- so even with perfectly flat terrain, the *normal* tilts by
     # the sphere's own curvature away from the tangent point, not just `ground`'s position (which the
     # test above already covers). This isolates that normal-tilt effect specifically, and checks it
     # against a closed-form true-tilt angle (not a second call into `lunaserv`), independent of the
@@ -284,7 +304,6 @@ def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_t
         elevation_deg=elevation_deg,
         cellsize_m=2 * half_extent_m / width,
         radius_m=radius_m,
-        normal_tilt_correction=True,
     )
 
     row = 0  # north edge (`y_centers` is built north-to-top, see the function's own construction)
@@ -304,32 +323,6 @@ def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_t
     assert incidence_deg[row, col] == pytest.approx(expected_incidence_deg, abs=0.02)
 
 
-def test_terrain_photometric_angles_normal_tilt_correction_false_keeps_old_flat_normal_behavior():
-    # `normal_tilt_correction=False` must still be available as the pre-Phase-70 fallback -- flat
-    # terrain, so the old code's `normal` is exactly `[0, 0, 1]` everywhere regardless of offset,
-    # giving the same `90 - elevation_deg` incidence at every pixel with no sagitta-of-normal effect.
-    radius_m = 1_737_400.0
-    altitude_m = 68_500.0
-    elevation_deg = 45.0
-    width = height = 21
-    half_extent_m = 100_000.0
-    bbox = (-half_extent_m, -half_extent_m, half_extent_m, half_extent_m)
-    dem = np.zeros((height, width))
-    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
-
-    incidence_deg, _, _ = lunaserv._terrain_photometric_angles(
-        dem,
-        bbox,
-        camera_local_enu_m,
-        azimuth_deg=0.0,
-        elevation_deg=elevation_deg,
-        cellsize_m=2 * half_extent_m / width,
-        radius_m=radius_m,
-        normal_tilt_correction=False,
-    )
-    assert incidence_deg == pytest.approx(90.0 - elevation_deg, abs=1e-9)
-
-
 def test_local_enu_direction_pure_radial_vector_is_pure_up():
     # A vector pointing exactly along the tangent point's own radial direction (no East/North
     # component at all) should land entirely on the "Up" axis in the local frame, regardless of its
@@ -347,9 +340,10 @@ def test_local_enu_direction_pure_radial_vector_is_pure_up():
 def test_terrain_photometric_angles_along_track_correction_removes_along_track_component():
     # Flat terrain again: a camera offset with both an along-track and cross-track component should,
     # once corrected, behave exactly as if only the cross-track component existed -- the along-track
-    # correction's whole point. `normal_tilt_correction=False` keeps `normal` exactly `[0,0,1]` for a
-    # clean isolation, though at this small a grid extent Phase 70's normal-tilt fix would be
-    # negligible anyway.
+    # correction's whole point. Checked at the grid's own center pixel (x=y=0, the tangent point),
+    # where the always-on normal-tilt correction contributes exactly zero by symmetry (see
+    # test_terrain_photometric_angles_flat_dem_directly_below_camera's own comment) -- a clean
+    # isolation without needing to account for it here.
     width = height = 11
     bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
@@ -366,7 +360,6 @@ def test_terrain_photometric_angles_along_track_correction_removes_along_track_c
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
         along_track_local_enu=along_track_local_enu,
-        normal_tilt_correction=False,
     )
 
     center = height // 2, width // 2
@@ -611,60 +604,46 @@ def test_despeckle_leaves_large_blob_interior_untouched():
 
 def test_ortho_shaded_filename_no_hapke_ignores_other_flags():
     assert lunaserv.ortho_shaded_filename(False) == "ortho_shaded.tif"
-    no_hapke = lunaserv.ortho_shaded_filename(
-        False, along_track_correction=True, real_hapke_params=True, normal_tilt_correction=True
-    )
+    no_hapke = lunaserv.ortho_shaded_filename(False, along_track_correction=True, real_hapke_params=True)
     assert no_hapke == "ortho_shaded.tif"
 
 
 def test_ortho_shaded_filename_matches_todays_defaults():
     # All-defaults call must resolve to exactly the file `fetch_dem_and_ortho`'s own defaults would
-    # produce -- `DEFAULT_REAL_HAPKE_PARAMS=True` since Phase 69 and `DEFAULT_NORMAL_TILT_CORRECTION=
-    # True` since Phase 70's fix was wired in, so this is deliberately not either older filename (see
-    # `test_ortho_shaded_filename_real_params_false_matches_pre_phase_69`/
-    # `test_ortho_shaded_filename_normal_tilt_correction_false_matches_pre_phase_70` below for those
-    # backward-compat guarantees instead).
+    # produce. `_normaltilt` is a permanent, unconditional part of this filename since Phase 72 (no
+    # parameter controls it any more -- see `ortho_shaded_filename`'s own docstring for why it's kept
+    # anyway), so this is deliberately not the pre-Phase-70 filename (see
+    # `test_ortho_shaded_filename_real_params_false_matches_pre_phase_69` below for that backward-
+    # compat guarantee, which still applies to `real_hapke_params` specifically).
     assert lunaserv.ortho_shaded_filename(True) == "ortho_shaded_hapke_atc_realparams_normaltilt.tif"
 
 
 def test_ortho_shaded_filename_real_params_false_matches_pre_phase_69():
     # Backward-compat check: existing cached files from before `real_hapke_params` existed (when
     # `hapke`/`along_track_correction` were the only toggles) must still resolve to the same name
-    # under an explicit `real_hapke_params=False` -- pinned to the pre-Phase-70 combination
-    # (`normal_tilt_correction=False`) too, isolating this check to `real_hapke_params` alone.
-    assert lunaserv.ortho_shaded_filename(True, real_hapke_params=False, normal_tilt_correction=False) == (
-        "ortho_shaded_hapke_atc.tif"
+    # under an explicit `real_hapke_params=False` -- plus the now-permanent `_normaltilt` suffix
+    # (Phase 72), which every `hapke=True` filename gets regardless of any parameter now.
+    assert lunaserv.ortho_shaded_filename(True, real_hapke_params=False) == "ortho_shaded_hapke_atc_normaltilt.tif"
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=False) == (
+        "ortho_shaded_hapke_normaltilt.tif"
     )
-    assert lunaserv.ortho_shaded_filename(
-        True, along_track_correction=False, real_hapke_params=False, normal_tilt_correction=False
-    ) == ("ortho_shaded_hapke.tif")
 
 
 def test_ortho_shaded_filename_real_params_suffix():
-    assert lunaserv.ortho_shaded_filename(
-        True, along_track_correction=True, real_hapke_params=True, normal_tilt_correction=False
-    ) == ("ortho_shaded_hapke_atc_realparams.tif")
-    assert lunaserv.ortho_shaded_filename(
-        True, along_track_correction=False, real_hapke_params=True, normal_tilt_correction=False
-    ) == ("ortho_shaded_hapke_realparams.tif")
-
-
-def test_ortho_shaded_filename_normal_tilt_correction_false_matches_pre_phase_70():
-    # Backward-compat check: existing cached files from before `normal_tilt_correction` existed (and
-    # from before it became `True` by default) must still resolve to the same name under an explicit
-    # `normal_tilt_correction=False` -- this is exactly `test_ortho_shaded_filename_real_params_suffix`'s
-    # own `along_track_correction=True, real_hapke_params=True` case, i.e. the actual real filename
-    # that was on disk under this project's defaults right up until Phase 70's fix was wired in.
-    assert lunaserv.ortho_shaded_filename(True, normal_tilt_correction=False) == "ortho_shaded_hapke_atc_realparams.tif"
-
-
-def test_ortho_shaded_filename_normal_tilt_correction_suffix():
-    assert lunaserv.ortho_shaded_filename(True, normal_tilt_correction=True) == (
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=True, real_hapke_params=True) == (
         "ortho_shaded_hapke_atc_realparams_normaltilt.tif"
     )
-    assert lunaserv.ortho_shaded_filename(
-        True, along_track_correction=False, real_hapke_params=False, normal_tilt_correction=True
-    ) == ("ortho_shaded_hapke_normaltilt.tif")
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=True) == (
+        "ortho_shaded_hapke_realparams_normaltilt.tif"
+    )
+
+
+def test_ortho_shaded_filename_normaltilt_suffix_always_present_when_hapke_true():
+    # No parameter controls this any more (Phase 72, see `ortho_shaded_filename`'s own docstring) --
+    # `_normaltilt` is simply always appended whenever `hapke=True`, even with every other flag off.
+    assert lunaserv.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=False) == (
+        "ortho_shaded_hapke_normaltilt.tif"
+    )
 
 
 def _write_fake_hapke_calibration_cube(path, wavelengths_nm, bbox_deg, width, height):

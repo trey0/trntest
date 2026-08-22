@@ -103,16 +103,12 @@ class TrnTestEntry:
         the real resumability win `dataset.populate()`'s second-run-near-instant behavior depends
         on, since a fresh fetch is by far the most expensive part of generating either product type.
         Looks for `lunaserv.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
-        `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_NORMAL_TILT_CORRECTION`'s own filename specifically
-        (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
-        *other*-mode ortho left over from before any default changed (or from a one-off non-default
-        call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho` below picks up the
-        same defaults itself."""
+        `DEFAULT_REAL_HAPKE_PARAMS`'s own filename specifically (`ortho_shaded_filename`) rather than
+        a hardcoded name, so this can never resume a stale *other*-mode ortho left over from before
+        any default changed (or from a one-off non-default call elsewhere) under the current
+        defaults' name -- `fetch_dem_and_ortho` below picks up the same defaults itself."""
         ortho_path = self.per_image_config.output_dir / lunaserv.ortho_shaded_filename(
-            lunaserv.DEFAULT_HAPKE_SHADING,
-            lunaserv.DEFAULT_ALONG_TRACK_CORRECTION,
-            lunaserv.DEFAULT_REAL_HAPKE_PARAMS,
-            lunaserv.DEFAULT_NORMAL_TILT_CORRECTION,
+            lunaserv.DEFAULT_HAPKE_SHADING, lunaserv.DEFAULT_ALONG_TRACK_CORRECTION, lunaserv.DEFAULT_REAL_HAPKE_PARAMS
         )
         dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
         if ortho_path.exists() and dem_path.exists():
