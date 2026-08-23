@@ -42,15 +42,27 @@ def test_run_cam2map_for_crop_writes_under_work_entry_crop(tmp_path):
     )
     crop = isis_wac.CropResult(cub_path=tmp_path / "_work" / "SOMEPRODUCT" / "isis" / "SOMEPRODUCT.crop.cub")
 
-    with patch.object(isis_wac, "run_quiet") as mock_run_quiet:
+    def fake_run_quiet(cmd):
+        # atomic_publish_path yields a temp path, not the final one -- create a file there so the
+        # real rename-on-success has something to rename, matching what a real cam2map/gdal_translate
+        # call would actually leave behind.
+        if cmd[0] == "cam2map":
+            to_arg = next(a for a in cmd if a.startswith("to="))
+            Path(to_arg.removeprefix("to=")).write_text("fake cub")
+        elif cmd[0] == "gdal_translate":
+            Path(cmd[-1]).write_text("fake tif")
+
+    with patch.object(isis_wac, "run_quiet", side_effect=fake_run_quiet) as mock_run_quiet:
         mapproj_tif = isis_wac.run_cam2map_for_crop(crop, dem_ortho_result, config)
 
     expected_dir = config.output_dir / "crop"
     assert mapproj_tif == expected_dir / "SOMEPRODUCT.crop-cam2map.tif"
+    assert mapproj_tif.read_text() == "fake tif"
     assert mock_run_quiet.call_count == 2
     cam2map_cmd = mock_run_quiet.call_args_list[0].args[0]
     assert cam2map_cmd[0] == "cam2map"
-    assert f"to={expected_dir / 'SOMEPRODUCT.crop-cam2map.cub'}" in cam2map_cmd
+    to_arg = next(a for a in cam2map_cmd if a.startswith("to="))
+    assert Path(to_arg.removeprefix("to=")).parent == expected_dir
     assert any(str(expected_dir) in arg for arg in cam2map_cmd if arg.startswith("map="))
 
 

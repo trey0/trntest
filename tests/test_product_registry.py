@@ -1,6 +1,6 @@
 import pytest
 
-from trntest import product_registry
+from trntest import isis_wac, lunaserv, product_registry, render
 
 # -- atomic_publish / atomic_publish_path -----------------------------------------------------------
 
@@ -165,6 +165,18 @@ def test_deletes_product_returns_function_unchanged():
 
 def test_deleters_of_returns_empty_list_for_unregistered_label():
     assert product_registry.deleters_of("test_label_never_registered") == []
+
+
+def test_real_pipeline_writers_are_registered():
+    # docs/intermediate-product-plan.md's Phase 4: the real writer functions decorated so far are
+    # legibly registered under their own label -- importing the modules is enough to trigger
+    # registration (decorators run at module-import/definition time).
+    assert product_registry.writer_of("dem_filled") is lunaserv.fetch_dem
+    assert product_registry.writer_of("ortho_shaded") is lunaserv.fetch_and_shade_ortho
+    assert product_registry.writer_of("isis_stitched_cube") is isis_wac.run_framestitch
+    assert product_registry.writer_of("isis_crop_cube") is isis_wac.crop_for_camera
+    assert product_registry.writer_of("crop_cam2map") is isis_wac.run_cam2map_for_crop
+    assert product_registry.writer_of("sat_sim_render") is render.run_sat_sim
 
 
 def test_decorator_syntax_works_end_to_end():

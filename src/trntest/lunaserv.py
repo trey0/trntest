@@ -22,6 +22,7 @@ from rasterio.windows import transform as window_transform
 from trntest import cache, illumination
 from trntest.camera import Camera
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.product_registry import atomic_publish, writes_product
 from trntest.subprocess_utils import run_quiet
 
 # Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
@@ -373,8 +374,9 @@ def _reproject_raster_to_local_grid(
         "transform": dst_transform,
         "nodata": None,
     }
-    with rasterio.open(output_path, "w", **profile) as dst:
-        dst.write(reprojected, 1)
+    with atomic_publish(Path(output_path)) as tmp:
+        with rasterio.open(tmp, "w", **profile) as dst:
+            dst.write(reprojected, 1)
     return Path(output_path)
 
 
@@ -1400,8 +1402,9 @@ def despeckle_and_shade_ortho(
         shaded = shade_ortho(lambertian_input, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
 
     profile.update(count=1, dtype="uint8")
-    with rasterio.open(output_path, "w", **profile) as dst:
-        dst.write(shaded, 1)
+    with atomic_publish(Path(output_path)) as tmp:
+        with rasterio.open(tmp, "w", **profile) as dst:
+            dst.write(shaded, 1)
 
 
 def result_from_files(ortho_path: Path, dem_path: Path) -> DemOrthoResult:
@@ -1420,16 +1423,102 @@ def result_from_files(ortho_path: Path, dem_path: Path) -> DemOrthoResult:
     return DemOrthoResult(ortho=Path(ortho_path), dem=Path(dem_path), bbox=bbox, width=width, height=height)
 
 
-def fetch_dem_and_ortho(
+@dataclasses.dataclass(frozen=True)
+class DemFetchResult:
+    """The entry's one DEM, as returned by `fetch_dem` -- `bbox`/`width`/`height` describe the padded
+    local-CRS working grid it was fetched onto, the same grid `fetch_and_shade_ortho` must reuse
+    exactly (never re-derive) for its own ortho fetch, so the two can't disagree about the AOI."""
+
+    dem: Path
+    bbox: tuple
+    width: int
+    height: int
+
+
+@writes_product("dem_filled")
+def fetch_dem(
+    camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
+) -> DemFetchResult:
+    """The entry's one DEM fetch -- split out of the old combined `fetch_dem_and_ortho`
+    (`docs/intermediate-product-plan.md`'s Phase 4) so `product_registry` has exactly one legible,
+    checkable writer for the `"dem_filled"` label (principle 2), decoupled from the ortho-shading
+    concern (`fetch_and_shade_ortho`, a genuine intentional-variant family -- multiple valid shaded
+    orthos by design, principle 1) that used to be fused into the same function.
+
+    **Still takes `extra_footprint_lonlat_deg` as a caller-suppliable parameter -- principle 1's "no
+    caller-supplied parameter should be able to change identity" isn't fully closed by this split.**
+    `dem_filled_path`'s own filename still doesn't encode this parameter (unlike `ortho_shaded_filename`'s
+    careful suffix discipline for its own parameters), so two calls against the same output directory
+    with genuinely different footprints can still silently disagree about "the" DEM -- see
+    `docs/plan.md`'s own open item for the real historical bug this class of gap already caused once
+    (docs/history.md's Phase 78 entry) and what a full fix would need. Not solved here: this phase
+    only makes the *current* single writer legible/auditable (`writes_product`) and its actual file
+    write atomic (`atomic_publish`, in `reproject_astropedia_elevation_to_local_grid`), not the
+    filename-collision gap itself -- flagged rather than silently assumed fixed."""
+    config = config or load_config()
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    center = camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
+    center_lon, center_lat = center
+    unpadded_bbox = footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M)
+    if extra_footprint_lonlat_deg is not None:
+        unpadded_bbox = union_bbox(
+            unpadded_bbox,
+            footprint_bbox_local_m(extra_footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M),
+        )
+    bbox = pad_bbox(unpadded_bbox, config.dem_padding_fraction)
+    width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m)
+    print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
+    print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
+
+    # Live default DEM source: USGS Astropedia's flat-file GLD100, not Lunaserv's WMS -- see
+    # docs/data-sources.md's "Astropedia GLD100 flat file" section and docs/history.md's dated entry.
+    # `fetch_dem_astropedia` ensures the whole ~10GB file is downloaded/cached locally once (raises if
+    # this camera's footprint needs data outside the file's real +-79 deg latitude coverage -- no
+    # silent fallback to the deprecated Lunaserv-native path), then
+    # `reproject_astropedia_elevation_to_local_grid` reads just this AOI from the local file and
+    # reprojects it onto this same local-CRS grid -- already real elevation (not planetocentric
+    # radius), so `radius_to_elevation` is skipped.
+    astropedia_path, astropedia_deg_bbox = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
+    dem_elevation_path = config.output_dir / "dem_elevation.tif"
+    reproject_astropedia_elevation_to_local_grid(
+        astropedia_path,
+        astropedia_deg_bbox,
+        bbox,
+        width,
+        height,
+        center_lon,
+        center_lat,
+        MOON_RADIUS_M,
+        dem_elevation_path,
+    )
+
+    dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
+    hole_fill_dem(dem_elevation_path, dem_filled_path)
+    return DemFetchResult(dem=dem_filled_path, bbox=bbox, width=width, height=height)
+
+
+@writes_product("ortho_shaded")
+def fetch_and_shade_ortho(
     camera: Camera,
+    dem: DemFetchResult,
     config: TrntestConfig | None = None,
-    extra_footprint_lonlat_deg: dict | None = None,
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
 ) -> DemOrthoResult:
-    """`ortho_source` (`ORTHO_SOURCES`) picks where the raw ortho/texture comes from before shading:
+    """The ortho-shading half of the old combined `fetch_dem_and_ortho` (Phase 4, split out alongside
+    `fetch_dem` -- see that function's own docstring for why). **Takes `dem` (`fetch_dem`'s own
+    output) as an input, and always reuses its `bbox`/`width`/`height` exactly -- never re-derives the
+    footprint/AOI itself.** This is what actually closes the entanglement `fetch_dem`'s docstring
+    describes for the DEM/ortho *pairing* specifically (the two can no longer fetch against two
+    different bboxes, unlike the old single function where a caller could -- in principle, though
+    never observed live -- have driven them apart via inconsistent internal state); the DEM's own
+    filename-collision gap against a *different* `fetch_dem` call is still open, as noted there.
+
+    `ortho_source` (`ORTHO_SOURCES`) picks where the raw ortho/texture comes from before shading:
     `"wac_emp_pds"` (live default) fetches WAC_EMP's own real reflectance directly from its PDS4
     archive (`fetch_wac_emp_reflectance`/`reproject_wac_emp_reflectance_to_local_grid`) -- real
     physical reflectance, no embedded display stretch, unlike `"lunaserv_wms"` (the deprecated
@@ -1465,28 +1554,16 @@ def fetch_dem_and_ortho(
     `real_hapke_params` existed or before either became `True` by default; see docs/history.md's
     dated entries.
 
-    `extra_footprint_lonlat_deg`, if given, is unioned into the fetch AOI alongside `camera`'s
-    own footprint before padding -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC
-    crop footprint, which isn't always the same size/shape as the synthetic camera's own FOV. Keeps
-    the DEM/ortho fetch big enough to cover both Phase 5 and Phase 6's real ground needs in one
-    request, rather than risking a real-WAC display later running past the edge of what was
-    actually fetched here.
-
-    `extra_footprint_lonlat_deg` is a ray-traced estimate (`crop_footprint_corners`'s idealized
-    ±half-angle rays at exactly 2 along-track positions), not the real mapprojected WAC crop's own
-    actual extent (only knowable after `isis_wac.run_mapproject`, which itself needs this fetch to
-    already exist -- a genuine chicken-and-egg constraint the real crop can drift slightly past on
-    one edge). Tried doubling `dem_padding_fraction`'s effect specifically on this side to close
-    that gap -- confirmed empirically it doesn't actually help (the margin on the tight edge stayed
-    ~0 regardless of 261km vs. 410km total fetch width, since the drift is directional/asymmetric,
-    not just "not enough padding") while meaningfully increasing fetch time (a real WMS timeout hit
-    during testing) -- reverted. The remaining worst-case gap measured ~120m, close to a single
-    ~100m/px DEM pixel -- not the comfortable margin `pad_bbox` gives everywhere else, but not a
-    meaningfully visible nodata gap in practice either."""
+    `bbox`/`width`/`height` (the fetch AOI, already unioned with whatever footprint `fetch_dem` was
+    given -- e.g. `tie_points.crop_footprint_corners_for_camera`'s real WAC crop footprint, which
+    isn't always the same size/shape as the synthetic camera's own FOV) all come from `dem`, not
+    recomputed here -- see `fetch_dem`'s own docstring for that computation and its own remaining
+    caveats (the ray-traced-estimate-vs-real-crop margin, the still-open filename-collision gap)."""
     if ortho_source not in ORTHO_SOURCES:
         raise ValueError(f"ortho_source={ortho_source!r} is not one of {ORTHO_SOURCES!r}")
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    bbox, width, height = dem.bbox, dem.width, dem.height
 
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
@@ -1503,16 +1580,6 @@ def fetch_dem_and_ortho(
     # docs/data-sources.md): `IAU2000:30166` reports the Moon's real 1,737,400 m radius (unlike the
     # generic OGC `AUTO:42003` Orthographic code, which is hardcoded to Earth's WGS84 ellipsoid).
     srs = config.lunaserv_srs_template.format(c_lon=center_lon, c_lat=center_lat)
-    unpadded_bbox = footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M)
-    if extra_footprint_lonlat_deg is not None:
-        unpadded_bbox = union_bbox(
-            unpadded_bbox,
-            footprint_bbox_local_m(extra_footprint_lonlat_deg, center_lon, center_lat, MOON_RADIUS_M),
-        )
-    bbox = pad_bbox(unpadded_bbox, config.dem_padding_fraction)
-    width, height = pixel_dims_for_gsd(bbox, config.dem_target_gsd_m)
-    print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
-    print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
     if ortho_source == "wac_emp_pds":
         # Live default: WAC_EMP's own real reflectance, fetched directly from its PDS4 archive rather
@@ -1538,39 +1605,12 @@ def fetch_dem_and_ortho(
             base_url=config.lunaserv_base_url,
             fmt="image/tiff",
         )
-    # The DEM itself is *not* fetched from Lunaserv at all -- live default source is USGS Astropedia's
-    # flat-file GLD100 (see `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and
-    # `docs/history.md`'s dated entry): Lunaserv's DTM layer was confirmed to have a real, unfixable
-    # (client-side) crosshatch artifact baked into its own native tile, regardless of requested
-    # ppd/CRS/resampling kernel -- Astropedia's flat file has no such artifact. `fetch_dem_astropedia`
-    # ensures the whole ~10GB file is downloaded/cached locally once (raises if this camera's
-    # footprint needs data outside the file's real +-79 deg latitude coverage -- no silent fallback to
-    # the deprecated Lunaserv-native path below), then `reproject_astropedia_elevation_to_local_grid`
-    # reads just this AOI from the local file and reprojects it onto this same local-CRS grid --
-    # already real elevation (not planetocentric radius), so `radius_to_elevation` is skipped.
-    astropedia_path, astropedia_deg_bbox = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
-    dem_elevation_path = config.output_dir / "dem_elevation.tif"
-    reproject_astropedia_elevation_to_local_grid(
-        astropedia_path,
-        astropedia_deg_bbox,
-        bbox,
-        width,
-        height,
-        center_lon,
-        center_lat,
-        MOON_RADIUS_M,
-        dem_elevation_path,
-    )
-
-    dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
-    hole_fill_dem(dem_elevation_path, dem_filled_path)
-
     ortho_shaded_path = config.output_dir / ortho_shaded_filename(
         hapke, along_track_correction, real_hapke_params, ortho_source
     )
     despeckle_and_shade_ortho(
         ortho_path,
-        dem_filled_path,
+        dem.dem,
         camera,
         ortho_shaded_path,
         config,
@@ -1583,8 +1623,33 @@ def fetch_dem_and_ortho(
 
     return DemOrthoResult(
         ortho=ortho_shaded_path,
-        dem=dem_filled_path,
+        dem=dem.dem,
         bbox=bbox,
         width=width,
         height=height,
+    )
+
+
+def fetch_dem_and_ortho(
+    camera: Camera,
+    config: TrntestConfig | None = None,
+    extra_footprint_lonlat_deg: dict | None = None,
+    hapke: bool = DEFAULT_HAPKE_SHADING,
+    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+    ortho_source: str = DEFAULT_ORTHO_SOURCE,
+) -> DemOrthoResult:
+    """Composes `fetch_dem` + `fetch_and_shade_ortho` -- unchanged signature/behavior from before
+    that Phase 4 split (`docs/intermediate-product-plan.md`); see those two functions' own
+    docstrings for what's now individually `product_registry`-decorated, and for the DEM
+    filename-collision gap that split doesn't itself close."""
+    dem = fetch_dem(camera, config, extra_footprint_lonlat_deg)
+    return fetch_and_shade_ortho(
+        camera,
+        dem,
+        config,
+        hapke=hapke,
+        along_track_correction=along_track_correction,
+        real_hapke_params=real_hapke_params,
+        ortho_source=ortho_source,
     )

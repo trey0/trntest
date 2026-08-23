@@ -58,6 +58,7 @@ from trntest import cache, lunaserv, render, wac_camera_model
 from trntest.camera import Camera, FrameTiming
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
+from trntest.product_registry import atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
 from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
 
@@ -317,6 +318,7 @@ class FramestitchResult:
     flip: bool  # the FLIP value framestitch was actually run with -- see run_isd_generate's docstring
 
 
+@writes_product("isis_stitched_cube")
 def run_framestitch(
     even: LrowaccalResult,
     odd: LrowaccalResult,
@@ -331,18 +333,25 @@ def run_framestitch(
     matches `framestitch -help`'s own spelling) confirmed against a real built image -- `-help`
     doesn't document `FRAMEHEIGHT`/`NUM_LINES_OVERLAP` beyond their `Null` defaults, so those are
     left unset here (ISIS auto-computes when left `Null`, per its own convention) unless real runs
-    show that's wrong."""
+    show that's wrong.
+
+    `TO=` goes through `atomic_publish_path` -- `run_pipeline` (this function's only caller) already
+    checks the final stitched cube doesn't exist before reaching here, so this never collides with
+    that check; the only change is that a crash mid-`framestitch` now leaves nothing at the real path
+    (temp file cleaned up) instead of a partial cube ISIS's own overwrite-refusal would otherwise
+    leave stuck on the next run."""
     config = config or load_config()
     out_path = even.cub_path.with_name(even.cub_path.stem.replace(".even", "") + ".stitched.cub")
-    run_quiet(
-        [
-            "framestitch",
-            f"EVEN={even.cub_path}",
-            f"ODD={odd.cub_path}",
-            f"TO={out_path}",
-            f"FLIP={'TRUE' if flip else 'FALSE'}",
-        ]
-    )
+    with atomic_publish_path(out_path) as tmp:
+        run_quiet(
+            [
+                "framestitch",
+                f"EVEN={even.cub_path}",
+                f"ODD={odd.cub_path}",
+                f"TO={tmp}",
+                f"FLIP={'TRUE' if flip else 'FALSE'}",
+            ]
+        )
     return FramestitchResult(cub_path=out_path, flip=flip)
 
 
@@ -564,6 +573,7 @@ class CropResult:
     cub_path: Path
 
 
+@writes_product("isis_crop_cube")
 def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: TrntestConfig | None = None) -> CropResult:
     """A single, real, persisted ISIS crop of `stitched` to `crop_window_for_camera(camera)`'s
     window -- the one "WAC crop" output product both Phase 6A (raw display of `.cub_path` directly)
@@ -587,15 +597,16 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
     window = crop_window_for_camera(camera)
     out_path = stitched.cub_path.with_name(stitched.cub_path.stem + ".crop.cub")
     if not out_path.exists():
-        run_quiet(
-            [
-                "crop",
-                f"from={stitched.cub_path}",
-                f"to={out_path}",
-                f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
-                f"nlines={window.height}",
-            ]
-        )
+        with atomic_publish_path(out_path) as tmp:
+            run_quiet(
+                [
+                    "crop",
+                    f"from={stitched.cub_path}",
+                    f"to={tmp}",
+                    f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
+                    f"nlines={window.height}",
+                ]
+            )
     return CropResult(cub_path=out_path)
 
 
@@ -861,6 +872,7 @@ def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
     )
 
 
+@writes_product("crop_cam2map")
 def run_cam2map_for_crop(
     crop: CropResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
@@ -930,21 +942,28 @@ def run_cam2map_for_crop(
     map_path.write_text(_orthographic_map_pvl(dem_ortho_result))
 
     mapproj_cub = out_dir / (crop.cub_path.stem + "-cam2map.cub")
-    run_quiet(
-        [
-            "cam2map",
-            f"from={crop.cub_path}",
-            f"map={map_path}",
-            f"to={mapproj_cub}",
-            "pixres=map",
-            "defaultrange=camera",
-            "warpalgorithm=forwardpatch",
-            "patchsize=1",
-        ]
-    )
+    # atomic_publish_path also fixes a real pre-existing gap as a side effect: this function had no
+    # existence guard at all, so a second call for the same crop (e.g. plot_overlay() called twice)
+    # used to hit ISIS's own "to= already exists" refusal on mapproj_cub. cam2map now always writes to
+    # a guaranteed-fresh temp path, and the final rename replaces any prior mapproj_cub atomically (a
+    # plain POSIX rename over an existing destination, unlike ISIS's own to= semantics).
+    with atomic_publish_path(mapproj_cub) as tmp_cub:
+        run_quiet(
+            [
+                "cam2map",
+                f"from={crop.cub_path}",
+                f"map={map_path}",
+                f"to={tmp_cub}",
+                "pixres=map",
+                "defaultrange=camera",
+                "warpalgorithm=forwardpatch",
+                "patchsize=1",
+            ]
+        )
 
     mapproj_tif = out_dir / (crop.cub_path.stem + "-cam2map.tif")
-    run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(mapproj_tif)])
+    with atomic_publish_path(mapproj_tif) as tmp_tif:
+        run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(tmp_tif)])
     return mapproj_tif
 
 

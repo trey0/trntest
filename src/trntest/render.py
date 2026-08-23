@@ -14,6 +14,7 @@ import spiceypy as spice
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
+from trntest.product_registry import writes_product
 from trntest.subprocess_utils import run_quiet
 
 
@@ -40,7 +41,13 @@ class RenderResult:
 DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 
+@writes_product("sat_sim_render")
 def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None) -> RenderResult:
+    """Not retrofit with `atomic_publish`/`atomic_publish_path` (docs/intermediate-product-plan.md's
+    Phase 2) -- `sat_sim`/`cam_gen`'s own `-o <prefix>` convention appends its own suffix to whatever
+    prefix they're given (`<prefix>-<camera_stem>.tif`/`.json`, not the exact literal path), which
+    doesn't fit either helper's single-exact-path contract without extra bookkeeping this pass didn't
+    take on -- registered here (`writes_product`) for legibility regardless."""
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
