@@ -30,6 +30,14 @@ def test_local_orthographic_crs_explicit_radius():
     )
 
 
+def test_moon_geocentric_crs_default_radius():
+    assert lunaserv.moon_geocentric_crs() == f"+proj=geocent +R={MOON_RADIUS_M} +units=m +no_defs"
+
+
+def test_moon_geocentric_crs_explicit_radius():
+    assert lunaserv.moon_geocentric_crs(1_000_000.0) == "+proj=geocent +R=1000000.0 +units=m +no_defs"
+
+
 def test_footprint_bbox_deg_no_wraparound():
     footprint = {"a": (170.0, 40.0), "b": (175.0, 42.0), "c": (172.0, 41.0), "d": (178.0, 39.0)}
     bbox = lunaserv.footprint_bbox_deg(footprint)
@@ -102,70 +110,74 @@ def test_pixel_dims_for_gsd_isotropic_for_square_bbox():
     assert width_px == height_px == 200
 
 
-def test_camera_local_enu_m_directly_overhead_tangent_point():
-    radius_m = 1_737_400.0
-    altitude_m = 100_000.0
-    lon0_deg, lat0_deg = 30.0, 0.0
-    lon0, lat0 = math.radians(lon0_deg), math.radians(lat0_deg)
-    camera_moon_me_m = [
-        (radius_m + altitude_m) * math.cos(lat0) * math.cos(lon0),
-        (radius_m + altitude_m) * math.cos(lat0) * math.sin(lon0),
-        (radius_m + altitude_m) * math.sin(lat0),
-    ]
-    east, north, up = lunaserv._camera_local_enu_m(camera_moon_me_m, lon0_deg, lat0_deg, radius_m)
-    assert (east, north) == pytest.approx((0.0, 0.0), abs=1e-6)
-    assert up == pytest.approx(altitude_m, rel=1e-9)
+# The 5 tests below exercise `_terrain_photometric_angles` directly with synthetic, non-real-Moon-
+# location geometry (a flat/offset-camera setup, not tied to any actual candidate) -- since Phase 77
+# (docs/history.md's dated entry) that function is fully MOON_ME-native and needs a real tangent point
+# just to build the local Orthographic CRS it inverts DEM points through, even for a synthetic test.
+# These fix an arbitrary tangent point, `(lon, lat) = (0.0, 0.0)`, where MOON_ME's own axes happen to
+# be a simple permutation of the old local (East, North, Up) frame these tests used to work in
+# directly (`_local_enu_basis(0.0, 0.0)`: up=(1,0,0), east=(0,1,0), north=(0,0,1)) -- so each test's
+# own inputs translate mechanically via the two helpers below, and every test's own *expected-value*
+# closed-form math (the actual thing each test checks) is unchanged from before this refactor.
+def _moon_me_position_at_tangent_point_00(east_m=0.0, north_m=0.0, up_m=0.0, radius_m=1_737_400.0):
+    return np.array([radius_m + up_m, east_m, north_m])
 
 
-def test_camera_local_enu_m_matches_orthographic_xy_for_on_sphere_point():
-    # A point *on* the sphere (zero altitude) at a nearby (lon, lat) should land at the same
-    # (east, north) `orthographic_xy_m` already computes for it (both are the same tangent-plane
-    # projection, just derived two different ways -- see `_camera_local_enu_m`'s docstring), with
-    # up ~0 (small, curvature-only 2nd-order error for a nearby point).
-    radius_m = 1_737_400.0
-    center_lon_deg, center_lat_deg = 10.0, 5.0
-    point_lon_deg, point_lat_deg = 10.2, 5.1
-    point_moon_me_m = [
-        radius_m * math.cos(math.radians(point_lat_deg)) * math.cos(math.radians(point_lon_deg)),
-        radius_m * math.cos(math.radians(point_lat_deg)) * math.sin(math.radians(point_lon_deg)),
-        radius_m * math.sin(math.radians(point_lat_deg)),
-    ]
-    east, north, up = lunaserv._camera_local_enu_m(point_moon_me_m, center_lon_deg, center_lat_deg, radius_m)
-    expected_x, expected_y = lunaserv.orthographic_xy_m(
-        point_lon_deg, point_lat_deg, center_lon_deg, center_lat_deg, radius_m
-    )
-    assert (east, north) == pytest.approx((expected_x, expected_y), rel=1e-4)
-    # Curvature (sagitta) term, ~radius * angle_rad**2 / 2 for a ~0.22 deg separation -- ~13m here,
-    # not exactly 0 (the point is *on* the sphere, but the tangent *plane* dips below it away from
-    # the tangent point itself).
-    assert up == pytest.approx(0.0, abs=20.0)
+def _moon_me_direction_at_tangent_point_00(east=0.0, north=0.0, up=0.0):
+    return np.array([up, east, north])
+
+
+def _sun_direction_moon_me_at_tangent_point_00(azimuth_deg, elevation_deg):
+    # Same local-ENU sun-vector formula `_terrain_photometric_angles` used to build internally before
+    # Phase 77 (now built once by `real_geometry_photometric_angles` via
+    # `_moon_me_direction_from_local_enu` -- see its own test below), reused here so these direct
+    # unit tests can keep expressing the sun in the same readable azimuth/elevation terms.
+    az_rad, el_rad = math.radians(90.0 - azimuth_deg), math.radians(elevation_deg)
+    east = math.cos(az_rad) * math.cos(el_rad)
+    north = math.sin(az_rad) * math.cos(el_rad)
+    up = math.sin(el_rad)
+    return _moon_me_direction_at_tangent_point_00(east, north, up)
+
+
+def test_moon_me_direction_from_local_enu_pure_up_returns_the_tangent_points_own_up_axis():
+    # The inverse rotation of the old (deleted) `_local_enu_direction`: a local-frame vector with only
+    # an "Up" component, rotated into MOON_ME, should land exactly on the tangent point's own real
+    # radial direction (`_local_enu_basis`'s own `up`) -- a direct check of the rotation alone (no
+    # tangent-point *position* subtraction involved, since this is a direction, not a position).
+    lon0_deg, lat0_deg = 12.0, -34.0
+    magnitude = 1.6  # km/s-scale, but this function is unit-agnostic
+    moon_me = lunaserv._moon_me_direction_from_local_enu([0.0, 0.0, magnitude], lon0_deg, lat0_deg)
+    _, _, up = lunaserv._local_enu_basis(lon0_deg, lat0_deg)
+    assert moon_me == pytest.approx(magnitude * up, rel=1e-9)
 
 
 def test_terrain_photometric_angles_flat_dem_directly_below_camera():
     # Flat terrain, camera directly overhead the grid's own center (odd grid size so a pixel center
-    # lands exactly at x=y=0): at that exact tangent point the normal-tilt correction (unconditional
-    # since Phase 72, see `_terrain_photometric_angles`'s own docstring) contributes exactly zero --
-    # `sphere_sag` is an even function of (x, y), so its gradient at the origin is exactly 0 both
-    # analytically and under `np.gradient`'s central-difference scheme -- so incidence there is still
-    # exactly (90 - elevation_deg), the view direction is exactly straight up too, so emission should
-    # be ~0 and phase should coincide with incidence. Only checked at the center pixel, not
-    # "everywhere" -- away from the tangent point, incidence now genuinely varies with position (real
-    # physics, not something to isolate away); see
+    # lands exactly at x=y=0): at that exact tangent point the normal-tilt effect (unconditional since
+    # Phase 72, part of the exact MOON_ME embedding since Phase 77 -- see
+    # `_terrain_photometric_angles`'s own docstring) contributes exactly zero by symmetry -- so
+    # incidence there is still exactly (90 - elevation_deg), the view direction is exactly straight up
+    # too, so emission should be ~0 and phase should coincide with incidence. Only checked at the
+    # center pixel, not "everywhere" -- away from the tangent point, incidence now genuinely varies
+    # with position (real physics, not something to isolate away); see
     # test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt for that
     # effect's own dedicated validation.
     width = height = 11
     bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
     altitude_m = 1_000.0
-    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+    center_lon_deg, center_lat_deg = 0.0, 0.0
+    camera_center_moon_me_m = _moon_me_position_at_tangent_point_00(up_m=altitude_m)
     azimuth_deg, elevation_deg = 90.0, 30.0
+    sun_direction_moon_me = _sun_direction_moon_me_at_tangent_point_00(azimuth_deg, elevation_deg)
 
     incidence_deg, emission_deg, phase_deg = lunaserv._terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg,
-        elevation_deg,
+        center_lon_deg,
+        center_lat_deg,
+        camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
     )
@@ -185,14 +197,17 @@ def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
     minx, miny, maxx, maxy = bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
     altitude_m = 1_000.0
-    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+    center_lon_deg, center_lat_deg = 0.0, 0.0
+    camera_center_moon_me_m = _moon_me_position_at_tangent_point_00(up_m=altitude_m)
+    sun_direction_moon_me = _sun_direction_moon_me_at_tangent_point_00(azimuth_deg=0.0, elevation_deg=45.0)
 
     _, emission_deg, _ = lunaserv._terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg=0.0,
-        elevation_deg=45.0,
+        center_lon_deg,
+        center_lat_deg,
+        camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
     )
@@ -202,39 +217,43 @@ def test_terrain_photometric_angles_emission_grows_with_offset_from_nadir():
     x = minx + (col + 0.5) * (maxx - minx) / width
     expected_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
     # abs, not a tight rel: at the real Moon's radius, this grid's ~91m offset has two small, real
-    # deviations from the exact flat-ground formula -- the ground-position sagitta correction
-    # (~1.2e-5 deg) and, since Phase 72, the always-on normal-tilt correction's own contribution at
+    # deviations from the exact flat-ground formula -- the ground-position sagitta effect
+    # (~1.2e-5 deg) and, since Phase 72, the always-on normal-tilt effect's own contribution at
     # this same small offset -- see test_terrain_photometric_angles_curvature_correction_...` below
-    # for the ground-position correction validated at a scale where it actually matters, and
+    # for the ground-position effect validated at a scale where it actually matters, and
     # test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt for the
-    # normal-tilt correction's own dedicated large-offset validation. `abs=5e-3` covers both real,
+    # normal-tilt effect's own dedicated large-offset validation. `abs=5e-3` covers both real,
     # tiny effects at this offset without masking a real bug (observed live: ~2.7e-3 deg combined).
     assert emission_deg[row, col] == pytest.approx(expected_emission_deg, abs=5e-3)
 
 
 def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_large_offset():
-    # At DEM-pixel scale the sagitta correction is negligible (see the abs-tolerance note on
+    # At DEM-pixel scale the sagitta effect is negligible (see the abs-tolerance note on
     # `test_terrain_photometric_angles_emission_grows_with_offset_from_nadir` above) -- but real
     # candidate footprints are tens of km wide (`docs/reproject-fov-investigation.md`: a real,
     # live-validated 143.1x142.6km footprint), where it isn't. Flat terrain, offset purely along x
     # (y=0), so the true local vertical also tilts purely in the x-z plane (same symmetry argument as
     # `_terrain_photometric_angles`'s own docstring) -- the closed form below accounts for both the
-    # ground-position sagitta correction *and* the always-on (since Phase 72) normal-tilt correction,
-    # not just the former, since neither is optional any more.
+    # ground-position sagitta effect *and* the always-on (since Phase 72) normal-tilt effect, not
+    # just the former, since neither is optional any more.
     radius_m = 1_737_400.0
     altitude_m = 68_500.0  # a real value used elsewhere in this project (docs/history.md)
     width = height = 21
     half_extent_m = 100_000.0
     bbox = (-half_extent_m, -half_extent_m, half_extent_m, half_extent_m)
     dem = np.zeros((height, width))
-    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+    center_lon_deg, center_lat_deg = 0.0, 0.0
+    camera_local_enu_m = (0.0, 0.0, altitude_m)  # local-ENU, only used below for the independent closed form
+    camera_center_moon_me_m = _moon_me_position_at_tangent_point_00(up_m=altitude_m, radius_m=radius_m)
+    sun_direction_moon_me = _sun_direction_moon_me_at_tangent_point_00(azimuth_deg=0.0, elevation_deg=45.0)
 
     _, emission_deg, _ = lunaserv._terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg=0.0,
-        elevation_deg=45.0,
+        center_lon_deg,
+        center_lat_deg,
+        camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m=2 * half_extent_m / width,
         radius_m=radius_m,
     )
@@ -245,10 +264,12 @@ def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_lar
 
     naive_flat_ground_emission_deg = math.degrees(math.atan(abs(x) / altitude_m))
 
-    # Independently-derived closed form (not a call into lunaserv): true angular offset theta (sin
-    # theta = x / radius_m), the true local vertical tilted by theta toward the offset ([sin theta, 0,
-    # cos theta] in local ENU, see `_terrain_photometric_angles`'s own docstring), and the ground
-    # point's exact position (sagitta term, unchanged from before).
+    # Independently-derived closed form (not a call into lunaserv, and in local-ENU terms -- an
+    # arbitrary, equally-valid choice of Cartesian frame for this self-contained computation, unrelated
+    # to how the function under test now does its own): true angular offset theta (sin theta = x /
+    # radius_m), the true local vertical tilted by theta toward the offset ([sin theta, 0, cos theta]
+    # in local ENU, see `_terrain_photometric_angles`'s own docstring), and the ground point's exact
+    # position (sagitta term, unchanged from before).
     theta = math.asin(x / radius_m)
     true_normal = (math.sin(theta), 0.0, math.cos(theta))
     sag = math.sqrt(radius_m**2 - x**2) - radius_m
@@ -264,18 +285,17 @@ def test_terrain_photometric_angles_curvature_correction_reduces_emission_at_lar
     # flat one. `abs`, not `rel`: `np.gradient`'s own discretization error is real and larger here
     # than the dedicated normal-tilt closed-form test's own ~0.016 deg residual, since this test's
     # grid is deliberately much coarser (~9.5km/px here vs. ~1km/px there -- this test's original
-    # purpose, the ground-position sagitta correction, doesn't depend on grid resolution at all, only
-    # the now-also-present normal-tilt correction does). Observed live: ~0.157 deg -- consistent with
+    # purpose, the ground-position sagitta effect, doesn't depend on grid resolution at all, only
+    # the now-also-present normal-tilt effect does). Observed live: ~0.157 deg -- consistent with
     # (if smaller than) a naive quadratic truncation-error scaling from the finer test's own residual,
     # not a sign of a derivation bug. See the dedicated test above for a tight, resolution-controlled
-    # check of the normal-tilt correction specifically.
+    # check of the normal-tilt effect specifically.
     assert emission_deg[row, col] == pytest.approx(true_emission_deg, abs=0.2)
 
 
 def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_true_tilt():
-    # Phase 70/72's normal-tilt fix (unconditional, no opt-out parameter): `normal`'s gradient input
-    # uses `dem + sphere_sag`, not raw `dem` -- so even with perfectly flat terrain, the *normal* tilts by
-    # the sphere's own curvature away from the tangent point, not just `ground`'s position (which the
+    # Phase 70/72's normal-tilt fix: even with perfectly flat terrain, the *normal* tilts by the
+    # sphere's own curvature away from the tangent point, not just `ground`'s position (which the
     # test above already covers). This isolates that normal-tilt effect specifically, and checks it
     # against a closed-form true-tilt angle (not a second call into `lunaserv`), independent of the
     # docstring's own already-cited synthetic-sphere validation number.
@@ -294,14 +314,17 @@ def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_t
     half_extent_m = 100_000.0
     bbox = (-half_extent_m, -half_extent_m, half_extent_m, half_extent_m)
     dem = np.zeros((height, width))
-    camera_local_enu_m = np.array([0.0, 0.0, altitude_m])
+    center_lon_deg, center_lat_deg = 0.0, 0.0
+    camera_center_moon_me_m = _moon_me_position_at_tangent_point_00(up_m=altitude_m, radius_m=radius_m)
+    sun_direction_moon_me = _sun_direction_moon_me_at_tangent_point_00(azimuth_deg=0.0, elevation_deg=elevation_deg)
 
     incidence_deg, _, _ = lunaserv._terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg=0.0,
-        elevation_deg=elevation_deg,
+        center_lon_deg,
+        center_lat_deg,
+        camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m=2 * half_extent_m / width,
         radius_m=radius_m,
     )
@@ -323,43 +346,33 @@ def test_terrain_photometric_angles_normal_tilt_correction_matches_closed_form_t
     assert incidence_deg[row, col] == pytest.approx(expected_incidence_deg, abs=0.02)
 
 
-def test_local_enu_direction_pure_radial_vector_is_pure_up():
-    # A vector pointing exactly along the tangent point's own radial direction (no East/North
-    # component at all) should land entirely on the "Up" axis in the local frame, regardless of its
-    # magnitude -- a direct check of `_local_enu_direction`'s basis vectors alone (no tangent-point
-    # subtraction involved, unlike `_camera_local_enu_m`).
-    lon0_deg, lat0_deg = 12.0, -34.0
-    lon0, lat0 = math.radians(lon0_deg), math.radians(lat0_deg)
-    magnitude = 1.6  # km/s-scale, but this function is unit-agnostic
-    radial = magnitude * np.array([math.cos(lat0) * math.cos(lon0), math.cos(lat0) * math.sin(lon0), math.sin(lat0)])
-    east, north, up = lunaserv._local_enu_direction(radial, lon0_deg, lat0_deg)
-    assert (east, north) == pytest.approx((0.0, 0.0), abs=1e-9)
-    assert up == pytest.approx(magnitude, rel=1e-9)
-
-
 def test_terrain_photometric_angles_along_track_correction_removes_along_track_component():
     # Flat terrain again: a camera offset with both an along-track and cross-track component should,
     # once corrected, behave exactly as if only the cross-track component existed -- the along-track
     # correction's whole point. Checked at the grid's own center pixel (x=y=0, the tangent point),
-    # where the always-on normal-tilt correction contributes exactly zero by symmetry (see
+    # where the normal-tilt effect contributes exactly zero by symmetry (see
     # test_terrain_photometric_angles_flat_dem_directly_below_camera's own comment) -- a clean
     # isolation without needing to account for it here.
     width = height = 11
     bbox = (-100.0, -100.0, 100.0, 100.0)
     dem = np.zeros((height, width))
+    center_lon_deg, center_lat_deg = 0.0, 0.0
     # Camera 100m east, 200m north, 1000m up from the pixel directly below (grid center).
-    camera_local_enu_m = np.array([100.0, 200.0, 1000.0])
-    along_track_local_enu = np.array([0.0, 1.0, 0.0])  # due north -- an arbitrary nonzero magnitude is fine too
+    camera_center_moon_me_m = _moon_me_position_at_tangent_point_00(east_m=100.0, north_m=200.0, up_m=1000.0)
+    # Due north -- an arbitrary nonzero magnitude is fine too.
+    along_track_direction_moon_me = _moon_me_direction_at_tangent_point_00(north=1.0)
+    sun_direction_moon_me = _sun_direction_moon_me_at_tangent_point_00(azimuth_deg=0.0, elevation_deg=45.0)
 
     _, emission_deg, _ = lunaserv._terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg=0.0,
-        elevation_deg=45.0,
+        center_lon_deg,
+        center_lat_deg,
+        camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m=200.0 / width,
         radius_m=1_737_400.0,
-        along_track_local_enu=along_track_local_enu,
+        along_track_direction_moon_me=along_track_direction_moon_me,
     )
 
     center = height // 2, width // 2

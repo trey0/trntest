@@ -21,7 +21,6 @@ import pytest
 
 import trntest
 from trntest import illumination, isis_wac, lunaserv, render, tie_points
-from trntest.config import MOON_RADIUS_M
 from trntest.subprocess_utils import run_quiet
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,20 +71,21 @@ def test_terrain_photometric_angles_ellipsoid_limit_matches_real_campt_ground_tr
     # Our own function, at the ellipsoid limit (flat `dem`), over the exact same bbox/grid as the
     # real DEM/ortho fetch -- production cellsize (`config.dem_target_gsd_m`), not a coarser
     # synthetic one, so this exercises `np.gradient`'s real discretization error at the same
-    # resolution the docstring's own ~0.0017 deg residual figure was measured at.
-    camera_local_enu_m = lunaserv._camera_local_enu_m(
-        camera.camera_center_moon_me_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M
-    )
+    # resolution the docstring's own residual figure was measured at. Calls the *public*
+    # `real_geometry_photometric_angles` (not the private `_terrain_photometric_angles`) -- since
+    # Phase 77 (docs/history.md's dated entry) that function is fully MOON_ME-native and needs no
+    # local-frame camera-position conversion at all, so this exercises the real end-to-end path
+    # exactly as every other caller uses it, not a hand-built intermediate.
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon_deg, center_lat_deg, camera.et)
     flat_dem = np.zeros((dem_ortho_result.height, dem_ortho_result.width))
-    incidence_deg, emission_deg, phase_deg = lunaserv._terrain_photometric_angles(
+    incidence_deg, emission_deg, phase_deg = lunaserv.real_geometry_photometric_angles(
         flat_dem,
         dem_ortho_result.bbox,
-        camera_local_enu_m,
+        camera,
         azimuth_deg,
         elevation_deg,
         cellsize_m=entry.per_image_config.dem_target_gsd_m,
-        radius_m=MOON_RADIUS_M,
+        along_track_correction=False,
     )
 
     minx, miny, maxx, maxy = dem_ortho_result.bbox

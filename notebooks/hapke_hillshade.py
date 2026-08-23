@@ -36,7 +36,8 @@
 # problem entirely.
 #
 # Those angle rasters use the synthetic camera's own **real, finite position**
-# (`Camera.camera_center_moon_me_m`, via `lunaserv._camera_local_enu_m`), not an idealized
+# (`Camera.camera_center_moon_me_m`, used directly in real MOON_ME coordinates -- see
+# `lunaserv._terrain_photometric_angles`'s own docstring), not an idealized
 # infinitely-distant nadir viewer -- so emission and phase genuinely vary per pixel from actual
 # parallax (each pixel's own real vector to the spacecraft), the same real perspective geometry
 # `sat_sim`'s own synthetic render is posed with, not just local terrain slope. An earlier version

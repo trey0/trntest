@@ -104,6 +104,19 @@ def local_orthographic_crs(center_lon_deg: float, center_lat_deg: float, radius_
     return f"+proj=ortho +lon_0={center_lon_deg} +lat_0={center_lat_deg} +R={radius_m} +units=m +no_defs"
 
 
+def moon_geocentric_crs(radius_m: float = MOON_RADIUS_M) -> str:
+    """Geocentric (ECEF-style X/Y/Z Cartesian) PROJ4 CRS string for the Moon on a sphere of
+    `radius_m` -- MOON_ME itself, expressed as a real CRS. `rasterio.warp.transform` converts
+    directly from `local_orthographic_crs`'s own projected (x, y) *plus* a real elevation `z` into
+    this in one vectorized call, giving each DEM pixel its true 3D MOON_ME position via a real,
+    already-imported library tool instead of a hand-derived closed-form correction --
+    `_terrain_photometric_angles` is the one caller (2026-08-23, docs/history.md's dated entry: this
+    replaced three successive hand-derived terrain-embedding corrections, verified live to reproduce
+    the same MOON_ME X/Y/Z as both the two-step ortho->geographic->geocentric path and the original
+    closed form, to full float64 precision)."""
+    return f"+proj=geocent +R={radius_m} +units=m +no_defs"
+
+
 def ortho_shaded_filename(
     hapke: bool,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
@@ -569,8 +582,14 @@ def shade_ortho(
 
 def _local_enu_basis(center_lon_deg: float, center_lat_deg: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The (East, North, Up) unit vectors, in MOON_ME, of the local tangent plane at
-    `(center_lon_deg, center_lat_deg)` -- shared by `_camera_local_enu_m` (a *position*, relative to
-    the tangent point) and `_local_enu_direction` (a *direction*, no tangent point involved)."""
+    `(center_lon_deg, center_lat_deg)` -- used by `_moon_me_direction_from_local_enu` to rotate a
+    single local-frame *direction* (the sun's azimuth/elevation) into MOON_ME. `_terrain_photometric_
+    angles` itself no longer works in this local frame at all (2026-08-23, docs/history.md's dated
+    entry) -- real positions (DEM points, camera) are genuine MOON_ME throughout now, since a
+    tangent-plane position embedding is exactly the hand-derived-approximation pattern that kept
+    needing new correction terms (Phases 70/72/76); a free *direction* has no such embedding step and
+    was never part of that bug class, so rotating one between orthonormal frames stays exact and
+    is kept here, at the one boundary that still needs it."""
     lon0, lat0 = math.radians(center_lon_deg), math.radians(center_lat_deg)
     east = np.array([-math.sin(lon0), math.cos(lon0), 0.0])
     north = np.array([-math.sin(lat0) * math.cos(lon0), -math.sin(lat0) * math.sin(lon0), math.cos(lat0)])
@@ -578,234 +597,114 @@ def _local_enu_basis(center_lon_deg: float, center_lat_deg: float) -> tuple[np.n
     return east, north, up
 
 
-def _local_enu_direction(vector_moon_me, center_lon_deg: float, center_lat_deg: float) -> np.ndarray:
-    """Rotate a MOON_ME-frame *direction* (e.g. `Camera.camera_along_track_direction_moon_me` -- a
-    vector quantity, not tied to any particular origin) into the local (East, North, Up) frame
-    `_camera_local_enu_m`/`_terrain_photometric_angles` already use -- no tangent-point subtraction,
-    unlike a position, since a direction has no location of its own to be relative to."""
+def _moon_me_direction_from_local_enu(local_enu_vector, center_lon_deg: float, center_lat_deg: float) -> np.ndarray:
+    """Rotate a local (East, North, Up) *direction* (e.g. the sun's azimuth/elevation, converted to a
+    local ENU unit vector by `real_geometry_photometric_angles`) into MOON_ME, via `_local_enu_basis`'s
+    same orthonormal (East, North, Up) triad -- the linear combination `east*e + north*n + up*u`. The
+    exact inverse rotation of the old (now-deleted) `_local_enu_direction`; lossless either direction,
+    since (east, north, up) are orthonormal."""
     east, north, up = _local_enu_basis(center_lon_deg, center_lat_deg)
-    v = np.asarray(vector_moon_me, dtype=np.float64)
-    return np.array([east @ v, north @ v, up @ v])
-
-
-def _camera_local_enu_m(
-    camera_center_moon_me_m, center_lon_deg: float, center_lat_deg: float, radius_m: float
-) -> np.ndarray:
-    """The real camera position (`Camera.camera_center_moon_me_m`, MOON_ME-frame meters) as (East,
-    North, Up) meters relative to the local tangent point `(center_lon_deg, center_lat_deg)` --
-    `fetch_dem_and_ortho`'s own local Orthographic CRS is centered on this exact same tangent
-    point, and a real `+proj=ortho` map projection's (x, y) for a given (lon, lat) depends only on
-    that (lon, lat), not on any height/elevation carried in a separate raster band -- so the DEM/
-    ortho grid's own (x, y) coordinates already effectively live in this tangent point's local
-    East/North plane, with each pixel's DEM value as its own "Up" coordinate off that plane
-    (`_terrain_photometric_angles`'s same locally-flat approximation the existing Lambertian
-    `shade_ortho` already relies on for its surface-normal gradient). Expressing the real, finite
-    camera position in the identical local frame lets it be combined directly with per-pixel ground
-    positions for a true (non-nadir, real-parallax) view direction, with no separate full 3D
-    geodetic round-trip per pixel."""
-    lon0, lat0 = math.radians(center_lon_deg), math.radians(center_lat_deg)
-    tangent_point = radius_m * np.array(
-        [math.cos(lat0) * math.cos(lon0), math.cos(lat0) * math.sin(lon0), math.sin(lat0)]
-    )
-    delta = np.asarray(camera_center_moon_me_m, dtype=np.float64) - tangent_point
-    return _local_enu_direction(delta, center_lon_deg, center_lat_deg)
+    e, n, u = np.asarray(local_enu_vector, dtype=np.float64)
+    return e * east + n * north + u * up
 
 
 def _terrain_photometric_angles(
     dem: np.ndarray,
     bbox: tuple,
-    camera_local_enu_m: np.ndarray,
-    azimuth_deg: float,
-    elevation_deg: float,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    camera_center_moon_me_m,
+    sun_direction_moon_me,
     cellsize_m: float,
     radius_m: float,
-    along_track_local_enu: np.ndarray | None = None,
+    along_track_direction_moon_me=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-pixel incidence/emission/phase angles (degrees, as raw geometry -- not
     `LightSource.hillshade`'s own scene-relative contrast-stretched intensity, see its
     `shade_normals` -- which ISIS `photomet` needs real angles for) for `dem`'s own orthographic
-    ortho, using the **real, finite camera position** (`camera_local_enu_m`,
-    `_camera_local_enu_m`'s output) rather than an idealized infinitely-distant nadir viewer -- so
-    emission and phase genuinely vary per pixel from actual parallax (each pixel's own real vector
-    to the spacecraft), not just from local terrain slope. Earlier version of this function assumed
-    a fixed straight-down view direction (fine for describing an already-existing flat WMS mosaic,
-    but not a real camera's own perspective geometry) -- see docs/history.md's dated entry.
+    ortho, using the **real, finite camera position** (`camera_center_moon_me_m`) rather than an
+    idealized infinitely-distant nadir viewer -- so emission and phase genuinely vary per pixel from
+    actual parallax (each pixel's own real vector to the spacecraft), not just from local terrain
+    slope. Earlier version of this function assumed a fixed straight-down view direction (fine for
+    describing an already-existing flat WMS mosaic, but not a real camera's own perspective geometry)
+    -- see docs/history.md's dated entry.
+
+    **Fully MOON_ME-native (2026-08-23, docs/history.md's dated entry) -- no local-ENU frame or
+    hand-derived closed-form terrain correction anywhere in this function any more.** Three
+    successive such corrections were found and fixed here across Phases 70/72/76 (a sagitta term, a
+    normal-tilt correction, then a relief-displacement fix) -- each discovered by noticing the
+    previous one was still only an approximation, which is exactly the failure mode of re-deriving
+    tangent-plane trig by hand instead of using real 3D geometry. All three are now subsumed by one
+    call: `ground`, each DEM pixel's true 3D position, comes directly from `rasterio.warp.transform`
+    (already imported in this file) converting `dem`'s local orthographic `(x, y)` *plus* its own
+    elevation into `moon_geocentric_crs`'s real MOON_ME X/Y/Z -- confirmed live to reproduce the same
+    numbers as both the old two-step (ortho -> geographic -> geocentric) path and the original closed
+    form, to full float64 precision (this is an equivalence, not a further correctness fix -- the old
+    formula was already algebraically exact, just harder to trust by inspection). `camera_center_
+    moon_me_m`/`along_track_direction_moon_me` (`Camera.camera_center_moon_me_m`/`camera_along_track_
+    direction_moon_me`, both already real MOON_ME) are used directly, with no rotation into any local
+    frame at all -- `_camera_local_enu_m`/`_local_enu_direction`, which used to do that rotation, are
+    deleted. `sun_direction_moon_me` is the one remaining input converted from a local frame (the
+    sun's azimuth/elevation, by `real_geometry_photometric_angles`'s caller, via
+    `_moon_me_direction_from_local_enu`) -- deliberately kept, since rotating a free *direction*
+    between orthonormal frames is exact and lossless (no elevation-embedding step to get subtly
+    wrong, unlike a *position*), so it was never part of the bug class the rest of this refactor
+    fixes; see that function's own docstring for the full reasoning.
 
     The surface normal at each pixel comes from the identical `np.gradient`-based convention
-    `LightSource.hillshade` itself uses internally, so this stays geometrically consistent with
-    `shade_ortho`'s existing Lambertian shading (which only ever needed incidence, unaffected by any
-    of this). The Sun, unlike the camera, stays treated as an effectively parallel-ray, scene-wide
-    direction (real lunar distance makes this negligible -- see
-    `illumination.sun_azimuth_elevation_deg`'s docstring), so only `sun_dir` below is a single
-    vector rather than a per-pixel one.
+    `LightSource.hillshade` itself uses internally (now over real MOON_ME coordinates instead of a
+    locally-embedded approximation), so this stays geometrically consistent with `shade_ortho`'s
+    existing Lambertian shading (which only ever needed incidence, unaffected by any of this). The
+    Sun, unlike the camera, stays treated as an effectively parallel-ray, scene-wide direction (real
+    lunar distance makes this negligible -- see `illumination.sun_azimuth_elevation_deg`'s
+    docstring), so `sun_direction_moon_me` is a single vector rather than a per-pixel one.
 
-    `along_track_local_enu`, if given (`_local_enu_direction` of
-    `Camera.camera_along_track_direction_moon_me`), projects the raw per-pixel view direction onto
-    the plane perpendicular to it before computing emission/phase -- a "poor man's" correction for
-    this project's single-frozen-camera-pose approximation of a real, multi-second pushframe scan:
-    `camera_local_enu_m` is one fixed position (matched to the crop's own center-frame time), but the
-    real spacecraft was measurably elsewhere (confirmed via real ISIS `campt` SpacecraftPosition at
-    the crop's edges: ~150km of real motion across a real ~97s scan for one such crop) at the time
-    any other line was actually captured, so the raw along-track component of `view_dir` reflects
-    the *wrong* real position away from center. A real scanning pushframe/pushbroom sensor observes
-    each line close to nadir *in its own along-track direction* at the instant it's captured (that's
-    the basic operating assumption of "scan by flying forward"), so discarding the along-track
-    component of the raw (wrong-position) view direction and keeping only the cross-track component
-    approximates that real per-line near-nadir-along-track geometry without needing this project's
-    per-line real timing machinery that already exists elsewhere (`isis_wac`'s per-line time
-    reconstruction).
-
-    `camera_along_track_direction_moon_me` -- the sensor's own real along-track axis (derived from
-    the camera's own re-aimed attitude, not the spacecraft's raw orbital velocity direction) -- is
-    the *second* version of this correction: validated directly against real `campt` phase at the
-    same 5 points as the first (raw-orbital-velocity) version and found substantially more accurate
-    (mean absolute phase error 1.3 deg vs. 4.8 deg) -- seemingly because the real camera has enough
-    off-nadir pointing that its own along-track axis isn't quite parallel to the spacecraft's actual
-    velocity vector. A third candidate (cross-track instead of along-track, i.e. the *other* camera
-    axis) was also tried and was much worse (16.9 deg) -- confirms the axis identity matters, not
-    just "some camera-frame-derived vector". See docs/history.md's dated entries for the full
-    numbers from all three.
-
-    `radius_m` corrects a real, separate approximation gap in `ground`'s own construction: `x_grid`/
-    `y_grid` (from the local orthographic projection, exact East/North tangent-plane coordinates of
-    each on-sphere point) drop the vertical component by construction -- an orthographic projection
-    *is* that drop -- so reusing `dem` directly as the tangent-plane "Up" coordinate silently omitted
-    the sphere's own curvature drop-off away from the tangent point (the sagitta term). Negligible at
-    DEM-pixel scale (~13m at a ~6.7km offset, see `tests/test_lunaserv.py`'s on-sphere-point test),
-    but not at real full-frame scale -- confirmed on a real ~143km-wide candidate footprint
-    (`docs/reproject-fov-investigation.md`) to bias emission ~0.6 deg on average, up to ~2.4 deg at
-    the frame edges (`notebooks/curvature_sag_investigation.ipynb`, since deleted once this fix
-    landed -- see docs/history.md's dated entry for the full investigation and validation numbers).
-    Fixed with the exact closed form (`sqrt(radius_m**2 - x**2 - y**2) - radius_m`), not a small-angle
-    approximation, so it stays correct at any real footprint size. Incidence is unaffected (`normal`
-    below never depends on `ground`'s position, only on local `dem` relief).
-
-    **`normal` uses `dem + sphere_sag` (not raw `dem`) as the gradient's input, not just `ground`'s
-    position, unconditionally** -- fixing a real gap where `normal` used to be built entirely in the
-    tangent point's own fixed (East, North, Up) frame, never rotating the "Up" reference direction to
-    account for the sphere's curvature away from the tangent point (the same flat-DEM convention
-    `LightSource.hillshade` uses, appropriate for a small terrestrial DEM tile but not for a whole
-    lunar image). A ground point at real angular offset theta from the tangent point has a true local
-    vertical tilted by theta from the tangent point's own -- comparable in magnitude to the sagitta
-    effect above (~2-3 deg at a real ~143km footprint's edges). The fix is algebraically exact (the
-    cross product of `ground`'s own two numerically-differentiated tangent vectors expands to exactly
-    this), and verified directly: a synthetic flat sphere's computed normal converges to the true tilt
-    angle as grid resolution increases (residual ~0.0017 deg at production ~100m/px DEM resolution
-    vs. a ~3.3 deg true tilt at the test offset).
-
-    **Known, deliberately-accepted caveat**: on the real default candidate this fix changes incidence
-    for the first time (mean 1.84 deg, max 5.67 deg -- previously exactly 0) and emission (mean 2.16
-    deg, *systematically* signed, confirmed via a linear-plane fit to be 98.3%-explained by a single
-    gradient whose azimuth matches the scene's real sun azimuth to within 0.3 deg -- the correct,
-    expected large-scale photometric-gradient signature of a curved body under directional lighting)
-    -- despite being correct and physically sensible, it made the brightness-matched diff against the
-    real WAC crop measurably *worse* (6.89 -> 7.58 mean|diff|, consistent with and without the real
-    Hapke params), with no confirmed explanation why (leading hypothesis, not verified: the base ortho
-    texture `luna_wac_normalized_reflectance` is itself already photometrically normalized by someone
-    else's own processing, which our own from-scratch re-shading was never validated against). An
-    initial "huge improvement, closer to the real image" visual read of this fix in a notebook was
-    later retracted by the user as a mixed-up comparison (blinking corrected-vs-uncorrected, not vs.
-    the real WAC image). Wired in as the default anyway (2026-08-22, Phase 71, `docs/history.md`), and
-    made fully unconditional -- no opt-out parameter at all (2026-08-22, Phase 72) -- on the user's own
-    explicit call: the geometry itself is independently confirmed correct (see below), and the old,
-    uncorrected formula isn't something worth keeping reachable just because this fix's real-image
-    interaction is still unexplained. There is no `False` fallback to reach the pre-Phase-70 behavior
-    any more; see git history before this date if that's ever needed for comparison again.
+    `along_track_direction_moon_me`, if given, projects the raw per-pixel view direction onto the
+    plane perpendicular to it before computing emission/phase -- a "poor man's" correction for this
+    project's single-frozen-camera-pose approximation of a real, multi-second pushframe scan:
+    `camera_center_moon_me_m` is one fixed position (matched to the crop's own center-frame time), but
+    the real spacecraft was measurably elsewhere (confirmed via real ISIS `campt` SpacecraftPosition
+    at the crop's edges: ~150km of real motion across a real ~97s scan for one such crop) at the time
+    any other line was actually captured, so the raw along-track component of `view_dir` reflects the
+    *wrong* real position away from center. A real scanning pushframe/pushbroom sensor observes each
+    line close to nadir *in its own along-track direction* at the instant it's captured (that's the
+    basic operating assumption of "scan by flying forward"), so discarding the along-track component
+    of the raw (wrong-position) view direction and keeping only the cross-track component approximates
+    that real per-line near-nadir-along-track geometry without needing this project's per-line real
+    timing machinery that already exists elsewhere (`isis_wac`'s per-line time reconstruction).
+    `camera_along_track_direction_moon_me` -- the sensor's own real along-track axis (derived from the
+    camera's own re-aimed attitude, not the spacecraft's raw orbital velocity direction) -- was
+    validated directly against real `campt` phase at 5 sample points and found substantially more
+    accurate than the spacecraft's raw orbital velocity direction (mean absolute phase error 1.3 deg
+    vs. 4.8 deg) or the camera's cross-track axis (16.9 deg) -- see docs/history.md's dated entries
+    for the full numbers.
 
     **Independently validated against real ISIS `campt` ground truth** (`tests/test_lunaserv_campt_
-    validation.py`, `heavy`-marked, not just the synthetic-sphere self-check above): for the ellipsoid
-    limit (`dem` all zero), this function's incidence/emission/phase agree with real `campt` output
-    (queried against a real candidate's own real CSM camera + real sun position, `csminit`-attached)
-    to within the residual expected from known, already-understood approximations -- observed live:
-    max |diff| ~0.018 deg across 15 angle comparisons (5 sample points x phase/incidence/emission),
-    consistent with the synthetic-sphere numerical-gradient residual above plus treating the sun as
-    one scene-wide direction rather than a true per-point vector, not a sign of anything missed. This
-    rules out double-counting the curvature correction (the specific concern raised when wiring this
-    in) as an explanation for the real-image regression above; that regression is still unexplained.
-    Getting `csminit` to accept a `cam_gen`-produced CSM state at all needed one more real fix beyond
-    Phase 70's own `m_sunPosition` patch: `csminit`'s `isd=` parameter wants a from-scratch ISD (ALE's
-    own format, `isis_wac.run_isd_generate`'s), not a pre-built CSM model *state* string like
-    `cam_gen` produces -- `state=` is the parameter that actually wants this file's own native format
-    (see `render.patch_sun_position`'s own docstring).
+    validation.py`, `heavy`-marked): for the ellipsoid limit (`dem` all zero), this function's
+    incidence/emission/phase agree with real `campt` output (queried against a real candidate's own
+    real CSM camera + real sun position, `csminit`-attached) to within the residual expected from
+    known, already-understood approximations -- observed live: max |diff| ~0.018 deg across 15 angle
+    comparisons (5 sample points x phase/incidence/emission). **Independently validated against ASP
+    `sfs`'s own ray-DEM intersection** (`tests/test_sfs_validation_lambertian_incidence.py`,
+    `heavy`-marked), for the full DEM-aware case, across a real candidate's entire real-coverage
+    region (not a sparse sample): mean|diff| 0.0005 deg / max|diff| 0.0005 deg -- essentially
+    floating-point/interpolation noise, not real geometric disagreement (this was 0.0237/0.5138 deg
+    before the Phase 76 relief-displacement fix this refactor now subsumes). Both residual budgets are
+    expected to carry over unchanged by this refactor (proven algebraically equivalent to what was
+    measured), not improve -- a real change in either would indicate a bug in this refactor, not
+    progress. ISIS's own `phocube` was also investigated as a DEM-aware validation tool and shelved
+    (its `localincidence=true` mode returned degenerate, implausible values on a real scene -- real
+    ISIS issue DOI-USGS/ISIS3#3645 suggests its DEM-aware path is generally less mature than its
+    ellipsoid path); `campt`'s own plain angle output was separately confirmed to stay
+    ellipsoid-normal-based even with a real DEM shape model attached, so it has no DEM-aware mode of
+    its own to fall back on either. See docs/history.md's dated entries for the full investigation.
 
-    ISIS's own `phocube` was also investigated as a possible validation/production tool and shelved:
-    it computes real per-pixel photometric angles via ISIS's own geometry engine, confirmed working
-    for ellipsoid-based angles on a real rendered cube (needs `usgscsm`, `csminit`, and the CSM
-    state's `m_sunPosition` patched in -- `cam_gen`'s conversion doesn't populate it), but its
-    DEM-aware `localincidence=true` mode returned degenerate, implausible ~145-180 deg values on a
-    real, decently-illuminated candidate scene (its `localemission`, using the identical local normal,
-    looked correct -- and ellipsoid incidence, same sun position, also looked correct -- so the fault
-    isn't the sun position or a flipped-normal-everywhere bug). Real ISIS issue tracker evidence
-    (DOI-USGS/ISIS3#3645, "Phocube missing essential output options: local phase angle, slope, slope
-    azimuth") suggests `phocube`'s DEM-aware path is generally less mature than its ellipsoid path.
-    `campt` (above) superseded `phocube` for the ellipsoid-limit validation actually used here -- it
-    reports phase/incidence/emission in one point query, is point- rather than raster-based (no
-    pixel-grid alignment needed against a render), and is already extensively validated elsewhere in
-    this project. **Checked live whether `campt` can also validate the true DEM-aware case: no.**
-    Attaching a real shape model (`csminit shapemodel=...`, the same global 128ppd lunar cube
-    `phocube`'s own DEM-mode test used) and comparing against the ellipsoid-mode values at the same 5
-    points found `Incidence` byte-identical (0.0000 deg diff) with or without the shape model
-    attached, while `Emission` shifted by a small but real 0.15-0.57 deg -- a clean, informative
-    pattern: `Incidence` has no view-vector/position term at all, so its exact-zero difference means
-    `campt`'s own normal is unaffected by the attached shape model (still the ellipsoid's, not a real
-    local terrain-tilted one); `Emission`'s small shift is fully explained by the shape model changing
-    where the sensor-to-ground ray actually intersects (real local elevation vs. the ideal ellipsoid
-    radius), not by any change in the normal. So `campt`'s plain angle output stays ellipsoid-normal-
-    based regardless of an attached shape model -- no working equivalent to `phocube`'s (broken)
-    `localincidence`/`localemission`. The DEM-aware validation gap remains genuinely open; no ISIS
-    tool found so far can close it.
-
-    Not investigated/validated further -- the real-image regression above remains open, flagged for a
-    future pass, not folded into this fix.
-
-    **`ground`/`normal` now use the *exact* embedding of "reference sphere + real `dem` elevation,"
-    not a further first-order approximation on top of the sagitta/normal-tilt fixes above (Phase 76,
-    2026-08-23)** -- found while investigating why `sfs_validation`'s independent, DEM-aware incidence
-    cross-check (below) still showed a small but real, sun-azimuth-correlated residual even after
-    those fixes. The remaining gap: `dem`'s own elevation value was still being added along the
-    tangent point's *fixed* Up axis (`dem + sphere_sag`), not each point's own *true local radial*
-    direction -- the actual, physically correct definition of planetary elevation, and the same
-    "relief displacement" effect known in orthophoto/DEM photogrammetry (real terrain relief shifts a
-    point's own apparent horizontal position under an orthographic-style projection, not just its
-    height). Embedding `dem` correctly therefore also displaces a point's own (East, North) position
-    outward by a factor `1 + dem/radius_m` (`relief_scale`), not just its "Up" coordinate by
-    `dem*cos(theta)` instead of the previous plain `dem` -- both exact, closed-form, derived directly
-    from `sphere_sag`'s own definition, not small-angle approximations. Reduces exactly to the
-    previous embedding when `dem` is 0 everywhere (`relief_scale = 1`, `dem*cos(theta) = 0`) -- every
-    existing flat-`dem` test (the sagitta/normal-tilt tests above included) is byte-for-byte
-    unaffected by this.
-
-    Since `ground`'s (East, North) components are no longer exactly the flat grid's own `(x_grid,
-    y_grid)`, `normal` can no longer use the `normalize(-df/dx, -df/dy, 1)` shortcut (only valid when
-    the embedding's horizontal components *are* the flat coordinates being differentiated) -- instead,
-    `normal` is built from the general "parametric surface normal" construction: each of `ground`'s 3
-    coordinate channels' own partial derivatives in (row, col) index space (`np.gradient(ground, dy,
-    cellsize_m, axis=(0, 1))`), cross-producted. This is a strict generalization, not a special-cased
-    rewrite -- at `dem=0` it reduces to exactly the old `(-df/dx, -df/dy, 1)` formula (the cross
-    product of `(1, 0, df/dx)` and `(0, 1, df/dy)` in that case, up to the same normalization).
-
-    **Empirically, this essentially closes the remaining incidence-angle gap.** Cross-checked against
-    `sfs_validation.run_sfs_lambertian_incidence`'s independent, fully DEM-aware, real-terrain
-    incidence angle (Ames Stereo Pipeline's own ray-DEM intersection, via a Hapke-model-independent
-    Lambertian-mode inversion trick) across a real candidate's entire real-coverage region (not a
-    sparse sample): mean|diff| 0.0237 deg / max|diff| 0.5138 deg *before* this fix, down to mean
-    0.0005 deg / max 0.0005 deg *after* -- essentially floating-point/interpolation noise, not real
-    geometric disagreement. The user first noticed this wasn't just noise (a visible, small,
-    sun-azimuth-aligned directional trend, plus real ~1 deg-scale patches concentrated at high-relief
-    terrain like crater rims -- the relief-displacement effect scales with `dem` itself, so it's
-    largest exactly there, not smoothly across the frame); a linear-plane fit to the pre-fix residual
-    confirmed the directional signature (gradient azimuth 215-227 deg, matching this candidate's own
-    227.8 deg sun azimuth to within the fit's own uncertainty) and ruled out a simpler "purely radial
-    sagitta-approximation" explanation directly (correlation with plain distance from the tangent
-    point: ~0.046, essentially zero). See `docs/history.md`'s dated entry for the full derivation and
-    live numbers, and `tests/test_sfs_validation_lambertian_incidence.py` (now asserting the much
-    tighter post-fix budget) for the permanent regression check.
-
-    Only independently re-validated for **incidence** this way (Lambert's law has no emission/phase
-    term to extract the same way) -- `ground`'s own position (feeding `view_vec`/emission/phase) uses
-    the same corrected embedding for consistency, on the same physical reasoning, but that specific
-    consequence hasn't been independently cross-checked against `sfs` or any other tool the way
-    incidence has."""
+    A real, still-unexplained regression remains open and is *not* addressed by this refactor: wiring
+    in the normal-tilt correction (Phase 71) made the brightness-matched diff against the real WAC
+    crop measurably *worse* (6.89 -> 7.58 mean|diff|), despite the geometry itself being independently
+    confirmed correct above -- leading hypothesis, not verified: the base ortho texture is itself
+    already photometrically normalized by someone else's own processing that this project's own
+    from-scratch re-shading was never validated against. Flagged for a future pass."""
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox
     x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
@@ -813,43 +712,45 @@ def _terrain_photometric_angles(
     x_grid, y_grid = np.meshgrid(x_centers, y_centers)
 
     dy = -cellsize_m
-    sphere_sag = np.sqrt(np.clip(radius_m**2 - x_grid**2 - y_grid**2, 0.0, None)) - radius_m  # <= 0
     dem64 = dem.astype(np.float64)
-    # `cos_theta`: the reference-sphere point's own true local-radial "Up" makes angle theta with the
-    # tangent point's Up (`sphere_sag = radius_m*(cos(theta) - 1)`, so this is exact, not a small-angle
-    # approximation). `relief_scale`: real terrain elevation (`dem`) is defined along *that* point's own
-    # true local radial direction, not the tangent point's fixed Up -- so embedding it correctly also
-    # displaces the point's own (East, North) position outward by this factor ("relief displacement",
-    # the same effect known in orthophoto/DEM photogrammetry), not just its height. `ground` is now the
-    # exact (not first-order) embedding of "reference sphere + `dem`'s own real elevation," reducing
-    # exactly to the previous `(x_grid, y_grid, dem + sphere_sag)` when `dem` is 0 everywhere (`
-    # relief_scale=1`, `dem64*cos_theta=0`) -- every existing flat-`dem` test is unaffected by this.
-    cos_theta = (sphere_sag + radius_m) / radius_m
-    relief_scale = 1.0 + dem64 / radius_m
-    ground = np.dstack([x_grid * relief_scale, y_grid * relief_scale, sphere_sag + dem64 * cos_theta])
+    # Each DEM pixel's own true 3D MOON_ME position, via one vectorized `rasterio.warp.transform`
+    # call from `dem`'s own local orthographic (x, y) plus its real elevation into `moon_geocentric_
+    # crs`'s real MOON_ME X/Y/Z -- see this function's own docstring for why this replaced three
+    # successive hand-derived closed-form corrections.
+    ground_x, ground_y, ground_z = transform(
+        local_orthographic_crs(center_lon_deg, center_lat_deg, radius_m),
+        moon_geocentric_crs(radius_m),
+        x_grid.ravel(),
+        y_grid.ravel(),
+        dem64.ravel(),
+    )
+    ground_shape = (height, width)
+    ground = np.stack(
+        [np.reshape(ground_x, ground_shape), np.reshape(ground_y, ground_shape), np.reshape(ground_z, ground_shape)],
+        axis=-1,
+    )
 
-    # `normal`: the true surface normal of this exact embedding, via each of `ground`'s own 3
-    # coordinate channels' partial derivatives (row/col index space -> physical space, `dy`/`cellsize_m`)
-    # and their cross product -- the general "parametric surface normal" construction, not the
-    # `normalize(-df/dx, -df/dy, 1)` shortcut that only applies when the embedding's (East, North)
-    # components equal the flat grid's own (x, y) exactly (true before this fix, no longer true once
-    # `relief_scale` != 1). See docs/history.md's dated entry for the closed-form derivation and its
-    # empirical validation (independently confirmed against ASP `sfs`'s own ray-DEM-intersection
-    # incidence angle to ~0.0005 deg mean/max, down from ~0.024/0.51 deg before this fix).
+    # `normal`: the true surface normal, via each of `ground`'s own 3 MOON_ME coordinate channels'
+    # partial derivatives (row/col index space -> physical space, `dy`/`cellsize_m`) and their cross
+    # product -- the general "parametric surface normal" construction, unchanged from before this
+    # refactor except that `ground` now comes directly from a real geocentric transform rather than a
+    # locally-embedded approximation.
     ground_d_row, ground_d_col = np.gradient(ground, dy, cellsize_m, axis=(0, 1))
     normal = np.cross(ground_d_col, ground_d_row)
     normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
 
-    view_vec = camera_local_enu_m - ground
+    camera_center_moon_me_m = np.asarray(camera_center_moon_me_m, dtype=np.float64)
+    view_vec = camera_center_moon_me_m - ground
     view_dir = view_vec / np.linalg.norm(view_vec, axis=-1, keepdims=True)
 
-    if along_track_local_enu is not None:
-        v_hat = along_track_local_enu / np.linalg.norm(along_track_local_enu)
+    if along_track_direction_moon_me is not None:
+        v_hat = np.asarray(along_track_direction_moon_me, dtype=np.float64)
+        v_hat = v_hat / np.linalg.norm(v_hat)
         view_dir = view_dir - np.sum(view_dir * v_hat, axis=-1, keepdims=True) * v_hat
         view_dir /= np.linalg.norm(view_dir, axis=-1, keepdims=True)
 
-    az_rad, el_rad = math.radians(90.0 - azimuth_deg), math.radians(elevation_deg)
-    sun_dir = np.array([math.cos(az_rad) * math.cos(el_rad), math.sin(az_rad) * math.cos(el_rad), math.sin(el_rad)])
+    sun_dir = np.asarray(sun_direction_moon_me, dtype=np.float64)
+    sun_dir = sun_dir / np.linalg.norm(sun_dir)
 
     incidence_deg = np.degrees(np.arccos(np.clip(normal @ sun_dir, -1.0, 1.0)))
     emission_deg = np.degrees(np.arccos(np.clip(np.sum(normal * view_dir, axis=-1), -1.0, 1.0)))
@@ -1069,8 +970,8 @@ def hapke_shade_ortho(
     approach. See docs/history.md's dated entries for the full evaluation, including an earlier,
     less-accurate version of this correction that used the spacecraft's raw orbital velocity instead.
 
-    `_terrain_photometric_angles`'s own normal-tilt correction (see its docstring) is unconditional,
-    with no parameter here to control it any more."""
+    `_terrain_photometric_angles`'s own real-3D-geometry terrain embedding (see its docstring) is
+    unconditional, with no parameter here to control it any more."""
     reflectance, hapkehen_params = real_geometry_hapke_reflectance(
         dem, bbox, camera, azimuth_deg, elevation_deg, cellsize_m, config, along_track_correction, real_hapke_params
     )
@@ -1096,35 +997,43 @@ def real_geometry_photometric_angles(
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """`(incidence_deg, emission_deg, phase_deg)` at `camera`'s own real per-pixel geometry --
-    `_terrain_photometric_angles` given `camera`'s own real position (`_camera_local_enu_m`) and,
-    when `along_track_correction` is on (the default), its own real along-track attitude axis
-    (`_local_enu_direction`). Factored out of `real_geometry_hapke_reflectance` (Phase 74 follow-up)
-    for callers that only need the angles themselves, not a Hapke evaluation -- e.g.
-    `sfs_validation.py`'s Lambertian-mode incidence cross-check, which compares this function's own
-    `incidence_deg` directly against `sfs`'s independently ray-traced one (confirmed live to agree to
-    ~0.02 deg mean, ~0.5 deg max -- see docs/history.md's dated entry). That small residual isn't
-    pure noise: most of it is crater-rim discretization noise, but a real, small (~0.056 deg/100km)
-    directional component points along the sun azimuth's own axis, not radially from the tangent
-    point (ruled out directly, near-zero correlation with distance from center) -- the expected
-    signature of a first-order tangent-plane approximation's own remaining curvature error, distinct
-    from the already-corrected radial/sagitta term, since incidence error is a `normal . sun`
-    dot-product error and is most sensitive to normal-vector error that projects along the sun
-    direction specifically."""
+    `_terrain_photometric_angles` given `camera`'s own real MOON_ME position
+    (`camera.camera_center_moon_me_m`, used directly -- no local-frame conversion, see
+    `_terrain_photometric_angles`'s own docstring) and, when `along_track_correction` is on (the
+    default), its own real along-track attitude axis (`camera.camera_along_track_direction_moon_me`,
+    also used directly). Factored out of `real_geometry_hapke_reflectance` (Phase 74 follow-up) for
+    callers that only need the angles themselves, not a Hapke evaluation -- e.g. `sfs_validation.py`'s
+    Lambertian-mode incidence cross-check, which compares this function's own `incidence_deg` directly
+    against `sfs`'s independently ray-traced one (confirmed live to agree to ~0.0005 deg mean/max,
+    after Phase 76's relief-displacement fix -- see docs/history.md's dated entries).
+
+    `azimuth_deg`/`elevation_deg` describe the sun relative to `center`'s own local horizon -- the one
+    place this function still does a local-frame-to-MOON_ME conversion
+    (`_moon_me_direction_from_local_enu`), since it's the existing, human-readable convention every
+    caller/test/notebook uses and `shade_ortho`'s Lambertian fallback genuinely needs az/el regardless
+    for matplotlib's `LightSource` API. This is exact and lossless (a free direction rotated between
+    orthonormal frames, not a position embedding), so it was never part of the hand-derived-
+    approximation bug class Phases 70/72/76/this-refactor otherwise eliminated -- see
+    `_terrain_photometric_angles`'s own docstring for the full reasoning."""
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
-    camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, MOON_RADIUS_M)
-    along_track_local_enu = (
-        _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
+    center_lon_deg, center_lat_deg = center
+    az_rad, el_rad = math.radians(90.0 - azimuth_deg), math.radians(elevation_deg)
+    sun_local_enu = np.array(
+        [math.cos(az_rad) * math.cos(el_rad), math.sin(az_rad) * math.cos(el_rad), math.sin(el_rad)]
     )
+    sun_direction_moon_me = _moon_me_direction_from_local_enu(sun_local_enu, center_lon_deg, center_lat_deg)
+    along_track_direction_moon_me = camera.camera_along_track_direction_moon_me if along_track_correction else None
     return _terrain_photometric_angles(
         dem,
         bbox,
-        camera_local_enu_m,
-        azimuth_deg,
-        elevation_deg,
+        center_lon_deg,
+        center_lat_deg,
+        camera.camera_center_moon_me_m,
+        sun_direction_moon_me,
         cellsize_m,
         MOON_RADIUS_M,
-        along_track_local_enu,
+        along_track_direction_moon_me,
     )
 
 
