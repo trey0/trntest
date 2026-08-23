@@ -40,6 +40,15 @@ from trntest.subprocess_utils import run_quiet
 _ASP_HAPKE_COEFF_ORDER = ("wh", "hg1", "hg2", "b0", "hh")
 
 
+def _sfs_validation_dir(config: TrntestConfig) -> Path:
+    """`_work/<entry>/sfs_validation/` -- this module's own generator-scoped tier
+    (`docs/intermediate-product-plan.md`'s Phase 3): investigation-only outputs, not consumed by any
+    other generator."""
+    d = config.output_dir / "sfs_validation"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def hapke_params_to_asp_model_coeffs(hapkehen_params: dict) -> str:
     """`hapkehen_params` (`lunaserv.hapkehen_params_from_source`'s 6-key dict) as ASP `sfs
     --model-coeffs`'s own space-separated `"omega b c B0 h"` string -- see this module's own
@@ -167,16 +176,17 @@ def run_sfs_forward_render(
     )
     model_coeffs = hapke_params_to_asp_model_coeffs(hapkehen_params)
 
+    work_dir = _sfs_validation_dir(config)
     albedo = true_albedo_map(ortho, real_reflectance)
-    albedo_path = config.output_dir / "sfs_albedo.tif"
+    albedo_path = work_dir / "sfs_albedo.tif"
     albedo_profile = dem_profile.copy()
     albedo_profile.update(dtype="float32", count=1, nodata=None)
     with rasterio.open(albedo_path, "w", **albedo_profile) as dst:
         dst.write(albedo.astype(np.float32), 1)
 
-    camera_cub_path = _camera_cub_for_sfs(camera, dem_ortho_result, config.output_dir / "sfs_camera.cub", config)
+    camera_cub_path = _camera_cub_for_sfs(camera, dem_ortho_result, work_dir / "sfs_camera.cub", config)
 
-    out_prefix = config.output_dir / "sfs_run" / "run"
+    out_prefix = work_dir / "sfs_run" / "run"
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     run_quiet(
         [
@@ -265,17 +275,16 @@ def run_sfs_lambertian_incidence(
         dem = src.read(1)
         dem_profile = src.profile
 
-    albedo_ones_path = config.output_dir / "sfs_lambert_albedo_ones.tif"
+    work_dir = _sfs_validation_dir(config)
+    albedo_ones_path = work_dir / "sfs_lambert_albedo_ones.tif"
     albedo_profile = dem_profile.copy()
     albedo_profile.update(dtype="float32", count=1, nodata=None)
     with rasterio.open(albedo_ones_path, "w", **albedo_profile) as dst:
         dst.write(np.ones_like(dem, dtype=np.float32), 1)
 
-    camera_cub_path = _camera_cub_for_sfs(
-        camera, dem_ortho_result, config.output_dir / "sfs_lambert_camera.cub", config
-    )
+    camera_cub_path = _camera_cub_for_sfs(camera, dem_ortho_result, work_dir / "sfs_lambert_camera.cub", config)
 
-    out_prefix = config.output_dir / "sfs_lambert_run" / "run"
+    out_prefix = work_dir / "sfs_lambert_run" / "run"
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     run_quiet(
         [

@@ -118,6 +118,7 @@ def run_mapproject_image(
     of the same camera agree by construction, so the parameter is no longer load-bearing for
     correctness -- just kept generic. See docs/reproject-fov-investigation.md for the full history."""
     config = config or load_config()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     run_quiet(
         [
             "mapproject",

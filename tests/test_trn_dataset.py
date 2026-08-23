@@ -162,6 +162,42 @@ def test_crop_and_hillshade_path_naming(tmp_path):
     assert entry.hillshade.sidecar_json_path == folder / "hillshade" / "M1327210646CE_hillshade.json"
 
 
+def test_hillshade_and_reproject_mapprojected_path_are_generator_scoped(tmp_path, monkeypatch):
+    # docs/intermediate-product-plan.md's Phase 3: _work/<entry>/<generator>/<label>, not a flat
+    # _work/<entry>/<label> -- hillshade and reproject must land in their own separate subfolders
+    # even though they share this same inherited _mapprojected_path implementation.
+    folder = tmp_path / "ds"
+    row = pd.Series(
+        {
+            "product_id": "M1327210646CE",
+            "edr_product": "M1327210646CE",
+            "edr_volume": "LROLRC_0041C",
+            "edr_subdir": "ESM4",
+            "edr_doy": "2019334",
+            "cdr_volume": "LROLRC_1041C",
+            "cdr_product": "M1327210646CC",
+            "start_frame": 440,
+        }
+    )
+    entry = trn_dataset.TrnTestEntry(row, folder, TrntestConfig())
+    work_dir = folder / "_work" / "M1327210646CE"
+
+    captured_out_paths = []
+
+    def fake_run_mapproject_image(image_path, camera_path, output_path, dem_ortho_result, config):
+        captured_out_paths.append(output_path)
+        return output_path
+
+    monkeypatch.setattr(trn_dataset.render, "run_mapproject_image", fake_run_mapproject_image)
+    monkeypatch.setattr(trn_dataset.TrnTestEntry, "dem_ortho_result", None)
+
+    entry.hillshade._mapprojected_path()
+    entry.reproject._mapprojected_path()
+
+    assert captured_out_paths[0] == work_dir / "hillshade" / "M1327210646CE_hillshade-mapproj.tif"
+    assert captured_out_paths[1] == work_dir / "reproject" / "M1327210646CE_reproject-mapproj.tif"
+
+
 # -- TrnTestImage shared base-class logic (via the fake subclass) -----------------------------
 
 

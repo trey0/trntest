@@ -88,8 +88,9 @@ class TrnTestEntry:
 
     @functools.cached_property
     def crop_result(self) -> isis_wac.CropResult:
-        """The scratch-dir crop cube (`config.scratch_dir/isis_wac/<edr_product>/...`) -- distinct
-        from `TrnTestCropImage.raster_path`, the dataset-folder copy `crop.generate()` makes of it."""
+        """The private crop cube (`_work/<edr_product>/isis/...`, see `isis_wac._spike_dir`) --
+        distinct from `TrnTestCropImage.raster_path`, the published dataset-folder copy
+        `crop.generate()` makes of it."""
         return isis_wac.crop_for_camera(self.stitched, self.camera, self.per_image_config)
 
     @functools.cached_property
@@ -521,13 +522,17 @@ class TrnTestHillshadeImage(TrnTestImage):
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
 
     def _mapprojected_path(self) -> Path:
-        # _work/, not hillshade/ -- same "don't spill mapproject's own intermediates into the
-        # canonical named pair's folder" reasoning as TrnTestCropImage's own override.
+        # _work/<entry>/<generator>/, not the canonical hillshade/reproject/ folder itself -- same
+        # "don't spill mapproject's own intermediates into the published pair's folder" reasoning as
+        # TrnTestCropImage's own override. self.raster_path.parent.name ("hillshade"/"reproject")
+        # already names this image's own generator -- reused here instead of a second, separate
+        # per-subclass constant (docs/intermediate-product-plan.md's Phase 3 generator-scoped tier).
         # camera_type="csm" (the default) against self.sidecar_json_path is safe: camera.
         # solve_corrected_fov is isotropic (fu == fv), so cam_gen's CSM Frame conversion of our own
         # .tsai has no anisotropy to lose -- see docs/reproject-fov-investigation.md for the
         # anisotropic version this once was and why it was reverted.
-        out_path = self.entry.per_image_config.output_dir / (self.raster_path.stem + "-mapproj.tif")
+        out_dir = self.entry.per_image_config.output_dir / self.raster_path.parent.name
+        out_path = out_dir / (self.raster_path.stem + "-mapproj.tif")
         return render.run_mapproject_image(
             self.raster_path, self.sidecar_json_path, out_path, self.entry.dem_ortho_result, self.entry.per_image_config
         )

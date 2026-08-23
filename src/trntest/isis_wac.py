@@ -145,7 +145,15 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
 
 
 def _spike_dir(config: TrntestConfig) -> Path:
-    d = config.scratch_dir / "isis_wac" / config.edr_product
+    """`_work/<entry>/isis/` -- the entry-scoped, `isis/`-distinguished tier
+    `docs/intermediate-product-plan.md`'s Phase 3 describes: kept separate from the rest of
+    `_work/<entry>/` specifically so it survives routine pruning that the cheaper stuff doesn't need
+    to (it's the single most expensive thing here to regenerate -- a real multi-subprocess ISIS
+    toolchain run). Moved in from the old, workspace-level `scratch_dir/isis_wac/<edr_product>/` (not
+    per-dataset, keyed by `edr_product` alone) -- the cross-dataset-reuse case that separation used to
+    serve isn't actually load-bearing, since real datasets are non-overlapping in `edr_product` by
+    construction (see that plan's own "Decision" note)."""
+    d = config.output_dir / "isis"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -911,10 +919,17 @@ def run_cam2map_for_crop(
     -- confirmed harmless: the output CRS/transform were verified correct (matching
     `dem_ortho_result`'s own projection exactly) despite it, and the process still exits 0."""
     config = config or load_config()
-    map_path = crop.cub_path.with_suffix(".ortho.map")
+    # _work/<entry>/crop/ -- generator-scoped (docs/intermediate-product-plan.md's Phase 3), even
+    # though this is also reused by TrnTestReprojectImage's own texture-source step: it's the crop's
+    # own mapproject output regardless of which product type ends up consuming it, so it stays under
+    # the crop generator's own subtree rather than the isis/ tier crop.cub_path itself now lives in.
+    out_dir = config.output_dir / "crop"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    map_path = out_dir / (crop.cub_path.stem + ".ortho.map")
     map_path.write_text(_orthographic_map_pvl(dem_ortho_result))
 
-    mapproj_cub = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.cub")
+    mapproj_cub = out_dir / (crop.cub_path.stem + "-cam2map.cub")
     run_quiet(
         [
             "cam2map",
@@ -928,7 +943,7 @@ def run_cam2map_for_crop(
         ]
     )
 
-    mapproj_tif = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.tif")
+    mapproj_tif = out_dir / (crop.cub_path.stem + "-cam2map.tif")
     run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(mapproj_tif)])
     return mapproj_tif
 

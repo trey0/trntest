@@ -1,9 +1,20 @@
+import dataclasses
+
 import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
 
 from trntest import sfs_validation
+from trntest.config import TrntestConfig
+
+
+def test_sfs_validation_dir_lands_under_work_entry_sfs_validation(tmp_path):
+    # docs/intermediate-product-plan.md's Phase 3: generator-scoped _work/<entry>/sfs_validation/.
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT")
+    d = sfs_validation._sfs_validation_dir(config)
+    assert d == tmp_path / "_work" / "SOMEPRODUCT" / "sfs_validation"
+    assert d.is_dir()
 
 
 def test_hapke_params_to_asp_model_coeffs_orders_as_omega_b_c_b0_h():

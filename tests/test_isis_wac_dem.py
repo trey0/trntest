@@ -5,9 +5,53 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import rasterio
 
 from trntest import isis_wac
 from trntest.config import MOON_RADIUS_M, TrntestConfig
+from trntest.lunaserv import DemOrthoResult, local_orthographic_crs
+
+
+def test_spike_dir_lands_under_work_entry_isis(tmp_path):
+    # docs/intermediate-product-plan.md's Phase 3: _work/<entry>/isis/, not the old, workspace-level
+    # scratch_dir/isis_wac/<edr_product>/ -- driven by output_dir (the entry's own root), not
+    # scratch_dir, which this call deliberately leaves untouched.
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT", scratch_dir=tmp_path)
+    d = isis_wac._spike_dir(config)
+    assert d == tmp_path / "_work" / "SOMEPRODUCT" / "isis"
+    assert d.is_dir()
+
+
+def _write_ortho_style_tif(path, center_lon_deg, center_lat_deg, resolution_m):
+    crs = local_orthographic_crs(center_lon_deg, center_lat_deg, MOON_RADIUS_M)
+    transform = rasterio.transform.from_origin(-500.0, 500.0, resolution_m, resolution_m)
+    with rasterio.open(
+        path, "w", driver="GTiff", height=10, width=10, count=1, dtype="float32", crs=crs, transform=transform
+    ) as dst:
+        dst.write(np.zeros((10, 10), dtype="float32"), 1)
+
+
+def test_run_cam2map_for_crop_writes_under_work_entry_crop(tmp_path):
+    # docs/intermediate-product-plan.md's Phase 3: generator-scoped _work/<entry>/crop/<label> --
+    # not alongside crop.cub_path itself (which, post-migration, lives under _work/<entry>/isis/).
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT")
+    dem_path = tmp_path / "dem.tif"
+    _write_ortho_style_tif(dem_path, center_lon_deg=10.0, center_lat_deg=-5.0, resolution_m=100.0)
+    dem_ortho_result = DemOrthoResult(
+        ortho=dem_path, dem=dem_path, bbox=(-500.0, -500.0, 500.0, 500.0), width=10, height=10
+    )
+    crop = isis_wac.CropResult(cub_path=tmp_path / "_work" / "SOMEPRODUCT" / "isis" / "SOMEPRODUCT.crop.cub")
+
+    with patch.object(isis_wac, "run_quiet") as mock_run_quiet:
+        mapproj_tif = isis_wac.run_cam2map_for_crop(crop, dem_ortho_result, config)
+
+    expected_dir = config.output_dir / "crop"
+    assert mapproj_tif == expected_dir / "SOMEPRODUCT.crop-cam2map.tif"
+    assert mock_run_quiet.call_count == 2
+    cam2map_cmd = mock_run_quiet.call_args_list[0].args[0]
+    assert cam2map_cmd[0] == "cam2map"
+    assert f"to={expected_dir / 'SOMEPRODUCT.crop-cam2map.cub'}" in cam2map_cmd
+    assert any(str(expected_dir) in arg for arg in cam2map_cmd if arg.startswith("map="))
 
 
 def test_ensure_lunar_shape_model_reuses_existing_file_without_fetching(tmp_path):
