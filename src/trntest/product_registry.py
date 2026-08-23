@@ -102,12 +102,16 @@ def atomic_publish(dest: Path) -> Iterator[Path]:
     temp path (file or directory) is removed and the exception re-raised -- `dest` is never partially
     written or left in a torn state.
 
-    Same unique-temp-name mechanism as `cache.cached_get` (`tempfile.mkstemp(dir=dest.parent,
-    prefix=dest.name + ".", suffix=".tmp")`), generalized from fetched files to generated ones -- see
-    that function's own docstring for why a fixed shared temp path per destination is unsafe under
-    concurrent/rapid sequential use."""
+    Same unique-temp-name mechanism as `cache.cached_get` (`tempfile.mkstemp`), generalized from
+    fetched files to generated ones -- see that function's own docstring for why a fixed shared temp
+    path per destination is unsafe under concurrent/rapid sequential use. Unlike `cached_get`'s own
+    `<dest.name>.<random>.part`, the temp name here preserves `dest`'s real suffix at the end
+    (`<dest.stem>.tmp.<random><dest.suffix>`) rather than appending a generic `.tmp` -- some callers
+    (format-sniffing tools, or just correctness in general) care about the real extension, not just
+    this helper's own rasterio/subprocess call sites that happen not to (see `atomic_publish_path`'s
+    own docstring for a real case, ISIS `to=` outputs, where this mattered)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.", suffix=dest.suffix)
     os.close(fd)
     tmp = Path(tmp_name)
     try:
@@ -133,9 +137,16 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
     Caller builds their own subprocess argv referencing the yielded path and runs it (typically via
     `run_quiet`); on clean exit this renames the tool's real output at that path to `dest`, same as
     `atomic_publish`. On any exception -- including the tool never having created anything at the
-    yielded path at all -- cleanup is a no-op if there's nothing there."""
+    yielded path at all -- cleanup is a no-op if there's nothing there.
+
+    The temp name preserves `dest`'s real suffix (`<dest.stem>.tmp.<random><dest.suffix>`), not a
+    generic `.tmp` -- confirmed live to matter for real ISIS `to=` cube outputs (`framestitch`/`crop`/
+    `cam2map`): a `.tmp`-suffixed path silently never got written to at all (ISIS's own cube-writer
+    apparently declines to create real cube content at a path without a `.cub`-like extension, no
+    error surfaced -- the failure only showed up later, as this context manager's own rename finding
+    nothing there). See `atomic_publish`'s own docstring for the same fix applied there too."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.", suffix=dest.suffix)
     os.close(fd)
     tmp = Path(tmp_name)
     tmp.unlink()

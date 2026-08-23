@@ -24,7 +24,7 @@ def test_atomic_publish_leaves_no_temp_file_after_success(tmp_path):
     with product_registry.atomic_publish(dest) as tmp:
         tmp.write_text("data")
 
-    assert list(dest.parent.glob(f"{dest.name}.*.tmp")) == []
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
 
 
 def test_atomic_publish_cleans_up_and_reraises_on_exception(tmp_path):
@@ -36,7 +36,7 @@ def test_atomic_publish_cleans_up_and_reraises_on_exception(tmp_path):
             raise ValueError("boom")
 
     assert not dest.exists()
-    assert list(dest.parent.glob(f"{dest.name}.*.tmp")) == []
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
 
 
 def test_atomic_publish_creates_parent_directory(tmp_path):
@@ -46,6 +46,17 @@ def test_atomic_publish_creates_parent_directory(tmp_path):
         tmp.write_text("nested")
 
     assert dest.read_text() == "nested"
+
+
+def test_atomic_publish_path_preserves_dest_suffix_on_the_temp_path(tmp_path):
+    # Confirmed live (heavy-suite regression): a real ISIS `framestitch TO=<path>` call silently
+    # never wrote anything at a `.tmp`-suffixed path, only at one ending in `.cub` -- the temp path
+    # must keep dest's real suffix, not a generic one, or callers like this go silently unwritten.
+    dest = tmp_path / "out.cub"
+
+    with product_registry.atomic_publish_path(dest) as tmp:
+        assert tmp.suffix == ".cub"
+        tmp.write_text("subprocess output")
 
 
 def test_atomic_publish_path_yields_a_path_that_does_not_exist(tmp_path):
@@ -67,7 +78,7 @@ def test_atomic_publish_path_cleans_up_on_exception_even_if_never_created(tmp_pa
             raise RuntimeError("subprocess failed")
 
     assert not dest.exists()
-    assert list(dest.parent.glob(f"{dest.name}.*.tmp")) == []
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
 
 
 def test_atomic_publish_path_cleans_up_temp_output_on_exception(tmp_path):
@@ -79,7 +90,7 @@ def test_atomic_publish_path_cleans_up_temp_output_on_exception(tmp_path):
             raise RuntimeError("boom")
 
     assert not dest.exists()
-    assert list(dest.parent.glob(f"{dest.name}.*.tmp")) == []
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
 
 
 def test_writes_product_registers_and_returns_function_unchanged():
