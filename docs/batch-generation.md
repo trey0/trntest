@@ -108,6 +108,15 @@ sequenced. The consumer log confirms real concurrency, not just luck — one ent
 next 27-40s — and both product types for both entries came out `done`, no errors. See
 `docs/history.md`'s dated entry for the full run.
 
+**A follow-up validation the same day found this first run hadn't actually covered
+`entry.dem_ortho_result`'s own concurrency** (`crop` never touches it — only `hillshade`/`reproject`
+do): `populate_via_workers(product_types=("hillshade", "reproject"), workers=2)` against fresh rows
+initially failed, twice, with two different real races (a shared Hapke-shading scratch-cube
+collision, then a separate camera-building/CK-kernel-resolution race) — both fixed
+(`docs/history.md`'s Phase 80 entry), after which the same call completed cleanly with confirmed
+concurrent execution (7ms apart, 50-80s overlap). `reproject` is still opt-in (not in
+`PRODUCT_TYPES`), but is now validated safe to mix with `hillshade` under concurrent workers too.
+
 Sequencing by product type (below) is now a pure throughput choice, not a safety requirement — may
 still be worth it for large batches (avoids two workers both cold-fetching the same not-yet-cached
 external resource around the same time, see "Cold-cache concurrent fetch races" below), but a
