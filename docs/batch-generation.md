@@ -86,21 +86,32 @@ the *same* folder at once are not). The old filesystem lock files that made conc
 (`docs/history.md`'s dated entry) — `populate_via_workers()`'s own worker pool is the supported way
 to get real parallelism now, not multiple top-level calls.
 
-**Don't split one entry's product types across concurrent workers.** This is the sharpest, most
-likely-to-actually-happen edge case, confirmed by tracing the code, not theoretical: `crop`,
-`hillshade`, and `reproject` for the *same* manifest entry all depend on `TrnTestEntry.camera`,
-which calls `isis_wac.run_pipeline` against that entry's `edr_product` scratch directory
-(`config.scratch_dir/isis_wac/<edr_product>/`) — the same shared, **not concurrency-safe** write
-path `docs/environment.md`'s "Other sharp edges" section documents (confirmed to have actually
-raced between two concurrent Claude Code agents there). `populate_via_workers()` enqueues one task
-per `(entry, product_type)` pair with no affinity between a given entry's own tasks, so with
-`workers > 1` and multiple `product_types`, it's entirely possible for `crop` and `hillshade` of
-*the same entry* to land on two different worker processes at the same time, each independently
-re-deriving `entry.camera`/`entry.dem_ortho_result` and racing on the same scratch/`_work` writes.
+**Mixing one entry's product types across concurrent workers is no longer a correctness
+requirement (2026-08-23, docs/intermediate-product-plan.md's Phases 1-4).** This used to be the
+sharpest, most likely-to-actually-happen edge case here: `crop`, `hillshade`, and `reproject` for
+the *same* manifest entry all depend on `TrnTestEntry.camera`, which calls `isis_wac.run_pipeline`
+against that entry's own ISIS working directory — a shared write path two concurrent workers could
+land on at the same time, each independently re-deriving `entry.camera`/`entry.dem_ortho_result`.
+The intermediate-product access-discipline work closed this structurally, not just in this one
+spot: that shared ISIS state moved from a workspace-level `scratch_dir/isis_wac/<edr_product>/`
+into the entry's own `_work/<entry>/isis/` tier, and its real writers
+(`isis_wac.crop_for_camera`/`run_framestitch`, plus `lunaserv.fetch_dem`/`fetch_and_shade_ortho`)
+now publish atomically (`product_registry.atomic_publish_path`/`atomic_publish` — write to a
+uniquely-named temp path, then atomic rename) — two workers racing on the same label now converge
+on an equivalent, complete result rather than tearing a partial file or hitting ISIS's own
+overwrite-refusal mid-write.
 
-Mitigation: when running with `workers > 1` and more than one product type, generate one product
-type across the *whole* batch before starting the next, rather than passing multiple
-`product_types` to one `populate_via_workers()` call:
+**Live-validated** (2026-08-23): two never-before-generated manifest rows,
+`populate_via_workers(product_types=("crop", "hillshade"), workers=2)`, product types *not*
+sequenced. The consumer log confirms real concurrency, not just luck — one entry's own `crop` and
+`hillshade` tasks started 27ms apart on two separate worker processes and ran overlapping for the
+next 27-40s — and both product types for both entries came out `done`, no errors. See
+`docs/history.md`'s dated entry for the full run.
+
+Sequencing by product type (below) is now a pure throughput choice, not a safety requirement — may
+still be worth it for large batches (avoids two workers both cold-fetching the same not-yet-cached
+external resource around the same time, see "Cold-cache concurrent fetch races" below), but a
+mixed-`product_types` call like the validated one above is no longer expected to race:
 
 ```python
 dataset.populate_via_workers(product_types=("crop",), workers=4)
@@ -108,9 +119,7 @@ dataset.populate_via_workers(product_types=("hillshade",), workers=4)
 ```
 
 This still parallelizes fully across *entries* (today's real manifest has one `edr_product` per
-row, so cross-entry scratch collisions aren't expected in practice) — it just never has two
-different product types of the *same* entry computed concurrently. A single product type with
-`workers=1` (or a small, already-cache-warmed batch) doesn't need this.
+row, so cross-entry write collisions aren't expected in practice) either way.
 
 **Cold-cache concurrent fetch races.** The same class of race `docs/environment.md` documents for
 multiple *agents* hitting the same external host/cache path applies here too, self-inflicted by one

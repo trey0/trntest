@@ -70,6 +70,13 @@ equal, so this split is low-risk.
 across datasets** (confirmed with the user) rather than duplicated inside `_work/` — two datasets
 referencing the same EDR product share that expensive work instead of redoing it.
 
+**Superseded (2026-08-23, `docs/intermediate-product-plan.md`'s Phase 3)**: this decision was
+deliberately reversed — the cross-dataset-reuse case above wasn't actually load-bearing (real
+datasets are non-overlapping in `edr_product` by construction), while the shared, un-namespaced
+`scratch_dir/isis_wac/<edr_product>/` path was a real, confirmed-live concurrency hazard
+(`docs/environment.md`'s "Other sharp edges" section). `isis_wac._spike_dir` now returns
+`_work/<entry>/isis/` instead — see `docs/history.md`'s dated entry for the full change.
+
 ## Hillshade = pure relocation, no pipeline change
 
 Traced precisely: `sat_sim --ortho <dem_ortho_result.ortho>` already renders the hillshade-blended

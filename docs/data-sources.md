@@ -1175,11 +1175,14 @@ module docstring and `docs/dataset-plan.md`'s "Task queue" section. Filenames ke
 existing per-image folder convention — the two are always equal in today's real manifest, so this
 split is currently low-risk, just future-proofing.
 
-**The real WAC pipeline's own raw-EDR scratch** (`config.scratch_dir/isis_wac/<edr_product>/` —
-stitched cube, calibration intermediates) is deliberately *not* duplicated inside a
-`TrnTestDataSet`'s `_work/` — it stays in the shared scratch location, so two different datasets
-referencing the same `edr_product` reuse that real ISIS work (`isis_wac.run_pipeline`/
-`crop_for_camera` are already idempotent) instead of redoing it.
+**The real WAC pipeline's own raw-EDR scratch** (`_work/<edr_product>/isis/` — stitched cube,
+calibration intermediates, `isis_wac._spike_dir`) lives inside each `TrnTestDataSet`'s own
+`_work/`, one distinguished subtree per entry, not a shared cross-dataset scratch location
+(`isis_wac.run_pipeline`/`crop_for_camera` are still idempotent, so re-running against the same
+already-populated entry is still cheap — just no longer shared *across* dataset folders). Was
+`config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path, until
+`docs/intermediate-product-plan.md`'s Phase 3 (2026-08-23) moved it here — see
+`docs/dataset-plan.md`'s own superseded note and `docs/history.md`'s dated entry for why.
 
 **`isis_wac.run_isd_generate_for_crop`'s sidecar is accurate, not just informational** — it exists
 specifically so `crop/<edr_product>_crop.json` truthfully describes `crop/<edr_product>_crop.cub`'s

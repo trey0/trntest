@@ -141,15 +141,22 @@ automatically.
   ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
-- **`isis_wac.run_isd_generate`'s own `-o` write into `scratch/isis_wac/<product>/` is also not
-  concurrency-safe** — same class of issue as the GLD100 race above (a plain overwrite, no
-  uniquely-named-temp-file-then-atomic-rename), confirmed live: two agents both calling
-  `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
-  (`M1327210646CE`) around the same time raced on that file. In the observed case both runs still
-  came out correct (isd_generate's write happened to complete cleanly either way, so it cost one
-  agent a wasted ~4min recompute, not corruption), but a torn/partial read on the losing side is
-  plausible if two agents' calls actually overlap mid-write rather than land sequentially. Worth
-  checking with other active agents before deliberately re-triggering this on a shared product.
+- **`isis_wac.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
+  overwrite, no uniquely-named-temp-file-then-atomic-rename — confirmed live: two agents both
+  calling `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
+  (`M1327210646CE`) around the same time raced on that file (back when it lived at the old, shared
+  `scratch/isis_wac/<product>/` path). In the observed case both runs still came out correct
+  (isd_generate's write happened to complete cleanly either way, so it cost one agent a wasted
+  ~4min recompute, not corruption), but a torn/partial read on the losing side is plausible if two
+  agents' calls actually overlap mid-write rather than land sequentially. **Path changed
+  (2026-08-23, `docs/intermediate-product-plan.md`'s Phase 3)**: this write now lives under
+  `_work/<entry>/isis/` inside each `TrnTestDataSet`'s own (per-worktree-namespaced) `output/`
+  tree, not the single cross-worktree-shared `scratch/` — so the specific *cross-agent* version of
+  this race (two different worktrees' agents both reaching the same path) is now structurally
+  impossible; the function itself still has no atomic-publish guard (unlike `crop_for_camera`/
+  `run_framestitch`, retrofitted in that same phase), so a same-dataset-folder race is still
+  possible in principle (e.g. two `populate_via_workers()` tasks against the same entry) — just
+  not yet a confirmed-live one the way the cross-agent case was.
 - **A `docker compose` invocation can silently miss a worktree's own `docker/.env`, even when the
   file is present and correct on disk** — confirmed live: an early `scripts/run_notebook.sh` run in
   a real worktree session wrote a genuine ~19GB duplicate of `cache`/`output`/`scratch` directly
