@@ -78,11 +78,18 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # cached file to resume from). `lunaserv.fetch_dem_and_ortho(..., hapke=False)` fetches the same
 # DEM/ortho pair again -- cheap, Lunaserv/Astropedia fetches are independently cached by `cache.py`
 # -- but shades it with the plain Lambertian fallback instead, writing to its own `ortho_shaded.tif`
-# so it doesn't collide with the Hapke file.
+# so it doesn't collide with the Hapke file. Passes `extra_footprint_lonlat_deg=entry.crop_footprint`
+# explicitly, matching `entry.dem_ortho_result`'s own internal call -- without it, this second call's
+# smaller camera-only-footprint AOI silently overwrote the *shared* per-candidate `dem_filled-tile-0.tif`
+# with a differently-sized DEM, corrupting `entry.dem_ortho_result`'s own already-fetched (larger,
+# crop-unioned) ortho's pairing for any later resumer (a real bug caught live -- see docs/history.md's
+# Phase 78 entry).
 
 # %%
 dem_ortho_hapke = entry.dem_ortho_result
-dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(camera, entry.per_image_config, hapke=False)
+dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(
+    camera, entry.per_image_config, extra_footprint_lonlat_deg=entry.crop_footprint, hapke=False
+)
 
 print("Hapke ortho:      ", dem_ortho_hapke.ortho)
 print("Lambertian ortho: ", dem_ortho_lambertian.ortho)

@@ -86,6 +86,28 @@ DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
 DEFAULT_REAL_HAPKE_PARAMS = True
 
+# `fetch_dem_and_ortho`'s ortho-texture source. "wac_emp_pds" (live default, 2026-08-23,
+# docs/history.md) fetches WAC_EMP's own real reflectance directly from its PDS4 archive
+# (`fetch_wac_emp_reflectance`/`reproject_wac_emp_reflectance_to_local_grid`) -- real physical
+# reflectance, no embedded display stretch. "lunaserv_wms" is the deprecated fallback (the original
+# `luna_wac_normalized_reflectance` WMS layer), kept reachable for comparison but confirmed to carry a
+# real, uncorrected affine display stretch (not raw reflectance) -- see docs/data-sources.md.
+DEFAULT_ORTHO_SOURCE = "wac_emp_pds"
+ORTHO_SOURCES = ("wac_emp_pds", "lunaserv_wms")
+
+# `hapke_shade_ortho`'s final, purely cosmetic reflectance->uint8 display stretch (`stretch_
+# reflectance_to_uint8`) -- deliberately a fixed, documented linear range (not a per-image
+# adaptive/percentile stretch), matching this project's general preference for deterministic behavior
+# over data-dependent behavior. Chosen to keep typical real lunar reflectance at WAC_EMP's own
+# i=30/e=0/g=30 reference geometry (mare ~0.05-0.10, highlands ~0.12-0.20, fresh crater
+# rays/ejecta up to ~0.3) inside [0, 255] without saturating most of a typical scene -- not asserted to
+# reproduce the old Lunaserv WMS stretch's specific numbers (not required, see the implementation plan
+# this followed). Applied once, at the very end of the pipeline, to `relit_reflectance`
+# (`hapke_shade_ortho`'s own real-units output) -- deliberately *after* all physics (relighting), not
+# baked into the input texture the way Lunaserv's old WMS stretch effectively was.
+DISPLAY_STRETCH_REFLECTANCE_MIN = 0.0
+DISPLAY_STRETCH_REFLECTANCE_MAX = 0.30
+
 
 def geographic_crs(radius_m: float = MOON_RADIUS_M) -> str:
     """Plain (unprojected) geographic PROJ4 CRS string for the Moon on a sphere of `radius_m` --
@@ -121,17 +143,18 @@ def ortho_shaded_filename(
     hapke: bool,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+    ortho_source: str = DEFAULT_ORTHO_SOURCE,
 ) -> str:
     """The `output_dir`-relative filename `despeckle_and_shade_ortho` writes its shaded ortho to for
-    a given `hapke`/`along_track_correction`/`real_hapke_params` combination -- factored out so
-    `trn_dataset.TrnTestEntry.dem_ortho_result`'s own resumption check can ask for exactly the file
-    `fetch_dem_and_ortho(..., hapke=DEFAULT_HAPKE_SHADING,
+    a given `hapke`/`along_track_correction`/`real_hapke_params`/`ortho_source` combination -- factored
+    out so `trn_dataset.TrnTestEntry.dem_ortho_result`'s own resumption check can ask for exactly the
+    file `fetch_dem_and_ortho(..., hapke=DEFAULT_HAPKE_SHADING,
     along_track_correction=DEFAULT_ALONG_TRACK_CORRECTION,
-    real_hapke_params=DEFAULT_REAL_HAPKE_PARAMS)` would produce, without duplicating this naming
-    logic (and risking it drifting out of sync). `along_track_correction`/`real_hapke_params` only
-    change the filename when `hapke=True` (both are a no-op on the Lambertian fallback, see
-    `hapke_shade_ortho`'s docstring) -- giving each a real, distinct suffix rather than reusing
-    `hapke=True`'s own plain filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION` flipping to
+    real_hapke_params=DEFAULT_REAL_HAPKE_PARAMS, ortho_source=DEFAULT_ORTHO_SOURCE)` would produce,
+    without duplicating this naming logic (and risking it drifting out of sync). `along_track_correction`/
+    `real_hapke_params` only change the filename when `hapke=True` (both are a no-op on the Lambertian
+    fallback, see `hapke_shade_ortho`'s docstring) -- giving each a real, distinct suffix rather than
+    reusing `hapke=True`'s own plain filename is deliberate: `DEFAULT_ALONG_TRACK_CORRECTION` flipping to
     `True` after `DEFAULT_HAPKE_SHADING` already had real cached `ortho_shaded_hapke.tif` files on
     disk (from before this default existed) is exactly the kind of stale-cache-under-a-new-default's-
     name risk that bit `DEFAULT_HAPKE_SHADING` itself once already -- see docs/history.md's dated
@@ -143,11 +166,20 @@ def ortho_shaded_filename(
     disk from before that correction existed at all, so dropping the suffix now would resume that
     stale, pre-correction content under today's default's own name, exactly the risk this function's
     whole naming scheme exists to prevent. `_normaltilt` is simply always appended when `hapke=True`
-    now, the same way `hapke=True` itself always gets the `_hapke` base name."""
+    now, the same way `hapke=True` itself always gets the `_hapke` base name.
+
+    `_wacemp` is appended whenever `ortho_source="wac_emp_pds"` (the live default, 2026-08-23,
+    docs/history.md's dated entry) -- unconditionally on `hapke`, since the input texture's own real
+    numeric convention changed (real reflectance, no embedded display stretch -- see
+    `hapke_shade_ortho`'s docstring) regardless of which shading mode blends it. `ortho_source=
+    "lunaserv_wms"` (the deprecated fallback) keeps the original, suffix-less filenames exactly as
+    before this migration -- real pre-migration cached files on disk stay valid, resumable content
+    under their own existing names, not silently reinterpreted under a new source's semantics."""
+    wacemp_suffix = "_wacemp" if ortho_source == "wac_emp_pds" else ""
     if not hapke:
-        return "ortho_shaded.tif"
+        return f"ortho_shaded{wacemp_suffix}.tif"
     suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "") + "_normaltilt"
-    return f"ortho_shaded_hapke{suffix}.tif"
+    return f"ortho_shaded_hapke{suffix}{wacemp_suffix}.tif"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -512,6 +544,168 @@ def reproject_astropedia_elevation_to_local_grid(
 
     return _reproject_raster_to_local_grid(
         elevation,
+        src_crs,
+        src_transform,
+        dst_bbox_m,
+        dst_width,
+        dst_height,
+        center_lon_deg,
+        center_lat_deg,
+        moon_radius_m,
+        output_path,
+        resampling=resampling,
+        tolerance=tolerance,
+        src_nodata=src_nodata,
+        dst_nodata=np.nan,
+    )
+
+
+# Confirmed live via the WAC_EMP PDS4 archive's own S3 bucket listing (2026-08-23, docs/data-sources.md):
+# the equirect (non-polar) tile grid covers only 0-60 deg in each hemisphere -- a genuinely separate
+# polar-stereographic tile pair (`P900N`/`P900S` in the real product-ID scheme) covers 60-90 deg, in
+# an unverified format this project doesn't fetch (see `wac_emp_tile_id_for_bbox`'s docstring).
+WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0
+# The equirect grid's own tiling scheme, confirmed live (not guessed from one example filename) via
+# the archive's real directory listing: exactly one 60-deg-tall latitude band per hemisphere (0-60,
+# center magnitude 30.0 -- hence the tile ID's fixed "E300" segment below), and 4 lon zones 90 deg
+# wide each, centered at 45/135/225/315 (0-90, 90-180, 180-270, 270-360, Positive-East).
+_WAC_EMP_LON_ZONE_WIDTH_DEG = 90.0
+_WAC_EMP_LAT_BAND_CENTER_CODE = 300  # fixed: (0+60)/2 * 10 -- the tile ID's literal "E300" segment
+
+
+def wac_emp_tile_id_for_bbox(
+    dst_bbox_m: tuple,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    moon_radius_m: float,
+    wavelength_nm: int = DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM,
+    ppd: int = 304,
+) -> str:
+    """Resolve the single WAC_EMP PDS4 tile (product ID, no extension) that fully covers `dst_bbox_m`
+    (the local-Orthographic working grid's own already-padded bbox, meters -- see
+    `fetch_dem_and_ortho`), for one real `wavelength_nm`/`ppd` combination.
+
+    Real product ID format, confirmed live via the archive's own S3 bucket listing (not guessed from
+    one example filename -- see docs/data-sources.md's "WAC_EMP PDS4 archive" section for the full
+    listing/derivation): `WAC_EMP_<wavelength_nm>NM_E300<N|S><lon_center_deg*10:04d>_<ppd:03d>P`.
+    `wavelength_nm` must be one of the real archive's 7 bands (matches
+    `_HAPKE_CALIBRATION_WAVELENGTHS_NM`, the same real bands ISIS's own calibration cube offers,
+    confirmed to be the identical wavelength set) -- the default (643) matches
+    `DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM`, the same real imagery wavelength already used elsewhere
+    in this file. `ppd` must be a real resolution the archive actually offers for that wavelength
+    (every band has 64 ppd; 643nm additionally has a real 304 ppd product, this project's own default).
+
+    Uses the same `transform_bounds`-on-the-destination-grid technique `astropedia_coverage_bbox_deg`
+    already established (not an independently-padded degree-space bbox -- see that function's own
+    docstring for why the latter caused real corner nodata gaps before this project's DEM fetch).
+
+    Raises `ValueError` (mirroring `astropedia_coverage_bbox_deg`'s own message style) if the padded
+    AOI extends beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG`, straddles the equator (the tile grid's own
+    hemisphere boundary), or straddles a 90-deg longitude zone boundary -- no silent multi-tile mosaic
+    in this pass, matching `astropedia_coverage_bbox_deg`'s own "no automatic fallback/mosaic" stance."""
+    if wavelength_nm not in _HAPKE_CALIBRATION_WAVELENGTHS_NM:
+        raise ValueError(
+            f"wavelength_nm={wavelength_nm} is not one of the real archive's own bands "
+            f"{_HAPKE_CALIBRATION_WAVELENGTHS_NM}"
+        )
+    padded_bbox_m = pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION)
+    geo_crs = geographic_crs(moon_radius_m)
+    ortho_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
+    minlon, minlat, maxlon, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
+
+    if minlat < -WAC_EMP_MAX_ABS_LATITUDE_DEG or maxlat > WAC_EMP_MAX_ABS_LATITUDE_DEG:
+        raise ValueError(
+            f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) extends "
+            f"beyond WAC_EMP's real equirect tile grid's +-{WAC_EMP_MAX_ABS_LATITUDE_DEG} deg coverage "
+            "-- the polar-stereographic tile set beyond this isn't fetched by this project (unverified "
+            "format, see wac_emp_tile_id_for_bbox's own docstring); the deprecated Lunaserv-WMS ortho "
+            "path (fetch_dem_and_ortho(..., ortho_source='lunaserv_wms')) has no such limit but carries "
+            "a confirmed, uncorrected affine display stretch -- see docs/data-sources.md."
+        )
+    if minlat < 0.0 < maxlat:
+        raise ValueError(
+            f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) straddles "
+            "the equator -- WAC_EMP's equirect tile grid has a separate tile per hemisphere and this "
+            "project doesn't mosaic across the boundary."
+        )
+    hemisphere = "N" if maxlat >= 0.0 else "S"
+
+    minlon_norm, maxlon_norm = minlon % 360.0, maxlon % 360.0
+    if minlon_norm > maxlon_norm:
+        raise ValueError(
+            f"Camera footprint's padded AOI (longitude range {minlon:.2f}..{maxlon:.2f} deg) appears "
+            "to straddle the 0/360 deg longitude boundary -- not handled by this tile lookup."
+        )
+    zone_min = int(minlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
+    zone_max = int(maxlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
+    if zone_min != zone_max:
+        raise ValueError(
+            f"Camera footprint's padded AOI (longitude range {minlon:.2f}..{maxlon:.2f} deg) straddles "
+            f"a WAC_EMP tile's {_WAC_EMP_LON_ZONE_WIDTH_DEG:.0f}-deg longitude zone boundary -- this "
+            "project doesn't mosaic across the boundary."
+        )
+    lon_center_code = round(zone_min * _WAC_EMP_LON_ZONE_WIDTH_DEG + _WAC_EMP_LON_ZONE_WIDTH_DEG / 2) * 10
+
+    return f"WAC_EMP_{wavelength_nm}NM_E{_WAC_EMP_LAT_BAND_CENTER_CODE}{hemisphere}{lon_center_code:04d}_{ppd:03d}P"
+
+
+def fetch_wac_emp_reflectance(
+    dst_bbox_m: tuple,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    config: TrntestConfig,
+    wavelength_nm: int = DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM,
+    ppd: int = 304,
+) -> tuple[Path, str]:
+    """Live default ortho/texture source: resolve and fetch/cache the single real WAC_EMP PDS4 tile
+    covering `dst_bbox_m` (`wac_emp_tile_id_for_bbox`, which also raises if the footprint needs a tile
+    this project doesn't fetch), mirroring `fetch_dem_astropedia`'s own shape. Returns the local cached
+    file path plus the resolved tile's product ID -- `reproject_wac_emp_reflectance_to_local_grid`
+    needs only the path (it reads the AOI window directly from the file's own embedded
+    georeferencing); the product ID is returned for logging/cache-busting/debugging."""
+    product_id = wac_emp_tile_id_for_bbox(
+        dst_bbox_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M, wavelength_nm=wavelength_nm, ppd=ppd
+    )
+    path = cache.fetch_wac_emp_tile(product_id, config.cache_root, config.wac_emp_base_url)
+    return path, product_id
+
+
+def reproject_wac_emp_reflectance_to_local_grid(
+    wac_emp_path,
+    dst_bbox_m,
+    dst_width: int,
+    dst_height: int,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    moon_radius_m: float,
+    output_path,
+    resampling: Resampling = Resampling.bilinear,
+    tolerance: float = 0.125,
+) -> Path:
+    """Read just the AOI from the local cached WAC_EMP tile and reproject it onto the same per-camera
+    local Orthographic working grid the DEM fetch uses -- mirrors
+    `reproject_astropedia_elevation_to_local_grid`'s exact window-read-then-warp shape, except the AOI
+    window comes directly from `dst_bbox_m` transformed into the file's own embedded CRS (no separate
+    degree-space bbox intermediate needed here, unlike Astropedia's path -- this file's own PDS3 label
+    already carries a real, trustworthy projected CRS/transform GDAL's PDS3 driver reads natively, not
+    a hand-rolled equirect PROJ4 string or manual byte offsets, confirmed live against the real label).
+
+    This data is real physical reflectance (IEEE754 float32, no embedded display stretch, confirmed
+    live -- see docs/data-sources.md) -- unlike Lunaserv's WMS-served DN, no `/255.0` un-scaling
+    assumption applies to this output at all; `hapke_shade_ortho`/`shade_ortho` treat it as reflectance
+    directly (see their own docstrings for the resulting numeric-pipeline change)."""
+    with rasterio.open(wac_emp_path) as src:
+        src_crs = src.crs
+        src_nodata = src.nodata
+        left, bottom, right, top = transform_bounds(
+            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m), src_crs, *dst_bbox_m
+        )
+        window = window_from_bounds(left, bottom, right, top, transform=src.transform)
+        src_transform = window_transform(window, src.transform)
+        reflectance = src.read(1, window=window)
+
+    return _reproject_raster_to_local_grid(
+        reflectance,
         src_crs,
         src_transform,
         dst_bbox_m,
@@ -955,9 +1149,14 @@ def hapke_shade_ortho(
     geometries close to the reference, deviating for real geometries far from it), so no separate
     display-range rescale is needed beyond simple `[0, 255]` clipping -- an unusually bright
     opposition-surge patch legitimately saturating toward white, rather than the whole frame being
-    dimmed to keep it in range, is the physically correct behavior here, not an artifact to avoid.
-    Like `_terrain_photometric_angles`'s own normal-tilt correction, this has no opt-out parameter --
-    a deliberate user call (2026-08-22, Phase 72, docs/history.md), made despite this specific
+    dimmed to keep it in range, was reasoned (Phase 72) to be the physically correct behavior here,
+    not an artifact to avoid. **On review (2026-08-23, Phase 78): that reasoning was never actually
+    validated or deliberately signed off on as a real decision -- it's improvised and was allowed to
+    stand unchallenged, not a settled design stance. Whether/how often this saturation actually
+    happens on real candidates, and whether it's actually acceptable, is an open question -- see
+    `docs/plan.md`'s open items.** Like `_terrain_photometric_angles`'s own normal-tilt correction,
+    this has no opt-out parameter -- a deliberate user call (2026-08-22, Phase 72, docs/history.md),
+    made despite this specific
     correction being confirmed to *worsen* the brightness-matched diff against the real WAC crop for
     the one candidate tested so far. See `REFERENCE_INCIDENCE_DEG`'s own module-level comment and
     docs/history.md's Phase 72 entry for the full rationale and that empirical result.
@@ -971,7 +1170,18 @@ def hapke_shade_ortho(
     less-accurate version of this correction that used the spacecraft's raw orbital velocity instead.
 
     `_terrain_photometric_angles`'s own real-3D-geometry terrain embedding (see its docstring) is
-    unconditional, with no parameter here to control it any more."""
+    unconditional, with no parameter here to control it any more.
+
+    **Returns real relit reflectance directly (float64, physical units), not a display-ready `uint8`
+    image** (2026-08-23, docs/history.md's dated entry -- the WAC_EMP-PDS migration). `ortho` is now
+    assumed to already be real physical reflectance (WAC_EMP's own PDS4 archive tile, no embedded
+    display stretch -- see `reproject_wac_emp_reflectance_to_local_grid`'s docstring), not Lunaserv's
+    old WMS-served `uint8` DN this function used to assume implicitly via its own `/255.0`
+    un-scale-then-`*255.0`-rescale round trip. `relit_reflectance = ortho * ratio` directly on that real
+    basis -- no unknown display stretch riding along any more. `despeckle_and_shade_ortho` applies the
+    separate, explicit `stretch_reflectance_to_uint8` cosmetic step afterward, not this function --
+    keeping the physics (relighting, here) and the display cosmetics (the stretch) in that deliberate
+    order, rather than fused into one `uint8`-in-`uint8`-out call the way this function used to be."""
     reflectance, hapkehen_params = real_geometry_hapke_reflectance(
         dem, bbox, camera, azimuth_deg, elevation_deg, cellsize_m, config, along_track_correction, real_hapke_params
     )
@@ -982,9 +1192,29 @@ def hapke_shade_ortho(
     else:
         ratio = np.zeros_like(reflectance)
 
-    ortho_norm = ortho.astype(np.float64) / 255.0
-    relit = ortho_norm * ratio
-    return np.clip(relit * 255.0, 0, 255).astype(np.uint8)
+    return ortho.astype(np.float64) * ratio
+
+
+def stretch_reflectance_to_uint8(
+    reflectance: np.ndarray,
+    lo: float = DISPLAY_STRETCH_REFLECTANCE_MIN,
+    hi: float = DISPLAY_STRETCH_REFLECTANCE_MAX,
+) -> np.ndarray:
+    """The one, explicit place real relit reflectance (`hapke_shade_ortho`'s own output) becomes a
+    display-ready `uint8` image -- a fixed linear stretch (`DISPLAY_STRETCH_REFLECTANCE_MIN`/`_MAX`,
+    see their own module-level comment for why fixed, not adaptive), applied once at the very end of
+    the pipeline rather than baked into the input texture the way Lunaserv's old, uncorrected WMS
+    display stretch effectively was (see docs/data-sources.md). Purely cosmetic -- has no bearing on
+    any of this module's actual photometric physics, all of which is already complete by the time this
+    runs.
+
+    `DISPLAY_STRETCH_REFLECTANCE_MAX = 0.30` was confirmed empirically non-saturating for exactly one
+    real candidate (2026-08-23, Phase 78) -- not swept across others. Whether/how often real input
+    actually exceeds it (clipping to 255, with the downstream effects that has -- e.g. biasing
+    `sfs_validation.true_albedo_map`'s recovered albedo at those pixels) is an open question, not a
+    validated non-issue -- see `docs/plan.md`'s open items."""
+    normalized = (reflectance.astype(np.float64) - lo) / (hi - lo)
+    return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
 
 
 def real_geometry_photometric_angles(
@@ -1111,6 +1341,7 @@ def despeckle_and_shade_ortho(
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+    ortho_source: str = DEFAULT_ORTHO_SOURCE,
 ) -> None:
     """Despeckle the raw fetched ortho and blend in a real-sun hillshade computed from the (already
     hole-filled) DEM, writing the result to `output_path` -- the single ortho used by both `sat_sim`
@@ -1120,7 +1351,24 @@ def despeckle_and_shade_ortho(
     `_terrain_photometric_angles`); `hapke=False` falls back to the plain Lambertian
     `shade_ortho` blend -- see `hapke_shade_ortho`'s docstring. `along_track_correction`/
     `real_hapke_params` are passed straight through to `hapke_shade_ortho` (both a no-op when
-    `hapke=False`, `shade_ortho` has no camera-position or Hapke-model dependence at all)."""
+    `hapke=False`, `shade_ortho` has no camera-position or Hapke-model dependence at all).
+
+    `hapke=True`'s branch applies `stretch_reflectance_to_uint8` explicitly, right here, to
+    `hapke_shade_ortho`'s real-relit-reflectance output -- the one place that cosmetic display step
+    happens (2026-08-23, docs/history.md's dated entry).
+
+    **`hapke=False`'s branch also needs `stretch_reflectance_to_uint8` first when `ortho_source=
+    "wac_emp_pds"`** -- a real bug caught live (not just reasoned about) the first time this migration
+    regenerated `notebooks/hapke_hillshade.ipynb`: `shade_ortho` is deliberately unchanged, still
+    assuming its `ortho` input is already `[0, 255]` DN (see its own docstring, and the implementation
+    plan this followed, for why it's kept that way rather than generalized), but `cleaned` is real
+    reflectance (~0.05-0.3) when the source is WAC_EMP -- `shade_ortho`'s own internal `/255.0` then
+    `*255.0` round-trip algebraically cancels for values this small, so the whole result truncated to
+    an all-zero, fully black image under `.astype(np.uint8)` (confirmed live: 100% zero pixels).
+    Applying the same display stretch *before* handing the array to `shade_ortho` -- turning it back
+    into a DN-like `[0, 255]` array first -- fixes this without touching `shade_ortho` itself at all.
+    `ortho_source="lunaserv_wms"` skips this (its `cleaned` is already real DN, `shade_ortho`'s own
+    native convention)."""
     with rasterio.open(ortho_path) as src:
         ortho = src.read(1)
         profile = src.profile
@@ -1134,7 +1382,7 @@ def despeckle_and_shade_ortho(
     center_lon, center_lat = center
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon, center_lat, camera.et)
     if hapke:
-        shaded = hapke_shade_ortho(
+        relit_reflectance = hapke_shade_ortho(
             cleaned,
             dem,
             bbox,
@@ -1146,8 +1394,10 @@ def despeckle_and_shade_ortho(
             along_track_correction=along_track_correction,
             real_hapke_params=real_hapke_params,
         )
+        shaded = stretch_reflectance_to_uint8(relit_reflectance)
     else:
-        shaded = shade_ortho(cleaned, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
+        lambertian_input = stretch_reflectance_to_uint8(cleaned) if ortho_source == "wac_emp_pds" else cleaned
+        shaded = shade_ortho(lambertian_input, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
 
     profile.update(count=1, dtype="uint8")
     with rasterio.open(output_path, "w", **profile) as dst:
@@ -1177,8 +1427,27 @@ def fetch_dem_and_ortho(
     hapke: bool = DEFAULT_HAPKE_SHADING,
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+    ortho_source: str = DEFAULT_ORTHO_SOURCE,
 ) -> DemOrthoResult:
-    """Shades the fetched ortho with ISIS `photomet`'s Hapke model by default
+    """`ortho_source` (`ORTHO_SOURCES`) picks where the raw ortho/texture comes from before shading:
+    `"wac_emp_pds"` (live default) fetches WAC_EMP's own real reflectance directly from its PDS4
+    archive (`fetch_wac_emp_reflectance`/`reproject_wac_emp_reflectance_to_local_grid`) -- real
+    physical reflectance, no embedded display stretch, unlike `"lunaserv_wms"` (the deprecated
+    fallback, the original Lunaserv WMS `luna_wac_normalized_reflectance` layer, confirmed to carry a
+    real, uncorrected affine display stretch -- see docs/data-sources.md). Raises `ValueError` if
+    `ortho_source` isn't one of `ORTHO_SOURCES`. `"wac_emp_pds"` additionally raises if the camera's
+    footprint needs latitude beyond WAC_EMP's own real equirect-tile coverage or straddles a tile
+    boundary (`wac_emp_tile_id_for_bbox`) -- no silent fallback to `"lunaserv_wms"` in that case; a
+    caller that wants the fallback has to ask for it explicitly.
+
+    **`ortho_source="lunaserv_wms"` is only numerically coherent with `hapke=False`** after this
+    migration -- `hapke_shade_ortho` now assumes its `ortho` input is already real reflectance (see
+    its own docstring), which `"lunaserv_wms"`'s raw WMS DN is not (it's DN under an unknown, confirmed
+    non-trivial affine stretch). `shade_ortho`'s plain-Lambertian fallback is the one that still speaks
+    `"lunaserv_wms"`'s own DN convention unchanged. No code-level guard against this combination --
+    just don't request it.
+
+    Shades the fetched ortho with ISIS `photomet`'s Hapke model by default
     (`despeckle_and_shade_ortho`'s `hapke` passthrough, see `hapke_shade_ortho`'s docstring), with
     `along_track_correction`'s own real-along-track-axis refinement on by default too, and
     `_terrain_photometric_angles`'s own curvature-aware surface normal unconditionally applied
@@ -1214,6 +1483,8 @@ def fetch_dem_and_ortho(
     during testing) -- reverted. The remaining worst-case gap measured ~120m, close to a single
     ~100m/px DEM pixel -- not the comfortable margin `pad_bbox` gives everywhere else, but not a
     meaningfully visible nodata gap in practice either."""
+    if ortho_source not in ORTHO_SOURCES:
+        raise ValueError(f"ortho_source={ortho_source!r} is not one of {ORTHO_SOURCES!r}")
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1243,16 +1514,30 @@ def fetch_dem_and_ortho(
     print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
     print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
-    ortho_path = cache.fetch_lunaserv_getmap(
-        config.lunaserv_ortho_layer,
-        bbox,
-        width,
-        height,
-        cache_root=config.cache_root,
-        srs=srs,
-        base_url=config.lunaserv_base_url,
-        fmt="image/tiff",
-    )
+    if ortho_source == "wac_emp_pds":
+        # Live default: WAC_EMP's own real reflectance, fetched directly from its PDS4 archive rather
+        # than through Lunaserv's WMS render -- confirmed (docs/history.md's dated entry) that the WMS
+        # layer's DN carries a real, uncorrected affine display stretch, not raw reflectance.
+        # `fetch_wac_emp_reflectance` raises if this footprint needs a tile beyond the real archive's
+        # own equirect coverage (see its own docstring) -- no silent fallback to the deprecated
+        # Lunaserv path below.
+        wac_emp_path, wac_emp_product_id = fetch_wac_emp_reflectance(bbox, center_lon, center_lat, config)
+        print(f"WAC_EMP tile: {wac_emp_product_id}")
+        ortho_path = config.output_dir / "ortho_wac_emp.tif"
+        reproject_wac_emp_reflectance_to_local_grid(
+            wac_emp_path, bbox, width, height, center_lon, center_lat, MOON_RADIUS_M, ortho_path
+        )
+    else:
+        ortho_path = cache.fetch_lunaserv_getmap(
+            config.lunaserv_ortho_layer,
+            bbox,
+            width,
+            height,
+            cache_root=config.cache_root,
+            srs=srs,
+            base_url=config.lunaserv_base_url,
+            fmt="image/tiff",
+        )
     # The DEM itself is *not* fetched from Lunaserv at all -- live default source is USGS Astropedia's
     # flat-file GLD100 (see `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and
     # `docs/history.md`'s dated entry): Lunaserv's DTM layer was confirmed to have a real, unfixable
@@ -1280,7 +1565,9 @@ def fetch_dem_and_ortho(
     dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
     hole_fill_dem(dem_elevation_path, dem_filled_path)
 
-    ortho_shaded_path = config.output_dir / ortho_shaded_filename(hapke, along_track_correction, real_hapke_params)
+    ortho_shaded_path = config.output_dir / ortho_shaded_filename(
+        hapke, along_track_correction, real_hapke_params, ortho_source
+    )
     despeckle_and_shade_ortho(
         ortho_path,
         dem_filled_path,
@@ -1291,6 +1578,7 @@ def fetch_dem_and_ortho(
         hapke=hapke,
         along_track_correction=along_track_correction,
         real_hapke_params=real_hapke_params,
+        ortho_source=ortho_source,
     )
 
     return DemOrthoResult(

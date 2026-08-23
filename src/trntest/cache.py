@@ -252,6 +252,22 @@ def fetch_isis_kernel(rel_path: str, cache_root: Path, base_url: str) -> Path:
     return cached_get(f"{base_url}{rel_path}", isis_kernel_rel_path(rel_path), cache_root=cache_root)
 
 
+def wac_emp_rel_path(product_id: str) -> str:
+    """product_id like 'WAC_EMP_643NM_E300N1350_304P' (no extension) -> cache path -- one file per
+    tile/wavelength/ppd combination, same one-named-file-per-real-thing shape as
+    `astropedia_rel_path`, just parametrized instead of singular (WAC_EMP has multiple real tiles,
+    GLD100 doesn't)."""
+    return f"pds_wac_emp/{product_id}.IMG"
+
+
+def fetch_wac_emp_tile(product_id: str, cache_root: Path, base_url: str) -> Path:
+    """Fetch one WAC_EMP PDS4 archive tile (see `lunaserv.wac_emp_tile_id_for_bbox`) and cache it
+    locally, once. Plain `cached_get`, not `fetch_astropedia_gld100`'s special resumable-curl path --
+    a WAC_EMP tile is ~1.86GB at 304 ppd (see docs/data-sources.md), comfortably within `cached_get`'s
+    range, the same call already made for `fetch_isis_kernel`'s ~1.65GB CK merges."""
+    return cached_get(f"{base_url}{product_id}.IMG", wac_emp_rel_path(product_id), cache_root=cache_root)
+
+
 def lroc_rel_path(dataset: str, volume: str, subdir: str, doy: str, product: str, ext: str) -> str:
     return f"{dataset}/{volume}/DATA/{subdir}/{doy}/WAC/{product}.{ext}"
 
