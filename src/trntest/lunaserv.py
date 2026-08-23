@@ -7,6 +7,7 @@ ortho). See docs/data-sources.md and docs/caching.md.
 
 import dataclasses
 import math
+import tempfile
 import warnings
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from rasterio.windows import transform as window_transform
 from trntest import cache, illumination
 from trntest.camera import Camera
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
-from trntest.product_registry import atomic_publish, writes_product
+from trntest.product_registry import atomic_publish, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 # Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
@@ -725,16 +726,14 @@ def reproject_wac_emp_reflectance_to_local_grid(
 
 
 def hole_fill_dem(dem_path, filled_path):
-    run_quiet(
-        [
-            "dem_mosaic",
-            str(dem_path),
-            "--hole-fill-length",
-            "50",
-            "-o",
-            str(filled_path).removesuffix("-tile-0.tif"),
-        ]
-    )
+    """`dem_mosaic`'s own `-o <prefix>` convention appends a fixed `-tile-0.tif` to whatever prefix
+    it's given -- `filled_path` is always named to match (ending in exactly `-tile-0.tif`, the
+    caller's own convention). `atomic_publish_prefix` builds a temp prefix the same way, so this is
+    atomic despite the prefix-based (not exact-path) tool convention that `atomic_publish_path`'s own
+    contract doesn't directly fit -- see that helper's own docstring."""
+    filled_path = Path(filled_path)
+    with atomic_publish_prefix(filled_path, "-tile-0.tif") as tmp_prefix:
+        run_quiet(["dem_mosaic", str(dem_path), "--hole-fill-length", "50", "-o", str(tmp_prefix)])
 
 
 def despeckle(data: np.ndarray, size: int = 3, n_mad: float = 6.0) -> np.ndarray:
@@ -1056,7 +1055,6 @@ def _hapke_reflectance(
     incidence_deg: np.ndarray,
     emission_deg: np.ndarray,
     hapkehen_params: dict,
-    config: TrntestConfig,
 ) -> np.ndarray:
     """Runs ISIS `photomet` (`PHTNAME=HAPKEHEN`, `ANGLESOURCE=BACKPLANE`, `NORMNAME=SHADE`) as a pure
     Hapke-model evaluator: given phase/incidence/emission angle rasters (any shape -- the real
@@ -1069,43 +1067,53 @@ def _hapke_reflectance(
     duplicating the `photomet` subprocess-orchestration logic. `photomet` also requires a `FROM` cube
     purely as a size/dtype template (a `BandBin` label group is enough to open the file at all --
     confirmed empirically, not documented in `photomet.xml` -- added via `editlab` since GDAL's
-    `ISIS3` writer doesn't create one from scratch)."""
-    work_dir = config.output_dir
-    from_cub, phase_cub = work_dir / "hapke_from.cub", work_dir / "hapke_phase.cub"
-    incidence_cub, emission_cub = work_dir / "hapke_incidence.cub", work_dir / "hapke_emission.cub"
-    out_cub = work_dir / "hapke_out.cub"
+    `ISIS3` writer doesn't create one from scratch).
 
-    _write_backplane_cube(from_cub, np.zeros_like(incidence_deg, dtype=np.float32))
-    _write_backplane_cube(phase_cub, phase_deg)
-    _write_backplane_cube(incidence_cub, incidence_deg)
-    _write_backplane_cube(emission_cub, emission_deg)
+    **Uses a call-scoped `tempfile.TemporaryDirectory()` for its own scratch cubes**, not
+    `config.output_dir` -- confirmed live (`docs/intermediate-product-plan.md`'s Phase 2 always
+    intended this, but it wasn't actually implemented until a real race surfaced it): two workers
+    computing the same entry's `hillshade` and `reproject` concurrently both reach this function
+    (via `despeckle_and_shade_ortho`/`hapke_shade_ortho`) and raced on these fixed-name cubes,
+    corrupting each other's writes (`**I/O ERROR** Failed to write blob`). Nothing here persists or
+    resumes across calls -- pure single-call scratch, so a call-scoped temp dir (auto-deleted on
+    return, success or exception) is the right fix, not a unique-but-persistent path, which would
+    just trade a collision bug for an accumulation one."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        work_dir = Path(tmp_dir)
+        from_cub, phase_cub = work_dir / "hapke_from.cub", work_dir / "hapke_phase.cub"
+        incidence_cub, emission_cub = work_dir / "hapke_incidence.cub", work_dir / "hapke_emission.cub"
+        out_cub = work_dir / "hapke_out.cub"
 
-    run_quiet(["editlab", f"from={from_cub}", "options=addg", "grpname=BandBin"])
-    run_quiet(["editlab", f"from={from_cub}", "options=addkey", "grpname=BandBin", "keyword=Center", "value=1.0"])
+        _write_backplane_cube(from_cub, np.zeros_like(incidence_deg, dtype=np.float32))
+        _write_backplane_cube(phase_cub, phase_deg)
+        _write_backplane_cube(incidence_cub, incidence_deg)
+        _write_backplane_cube(emission_cub, emission_deg)
 
-    out_cub.unlink(missing_ok=True)
-    run_quiet(
-        [
-            "photomet",
-            f"from={from_cub}",
-            f"to={out_cub}",
-            "anglesource=backplane",
-            f"phase_angle_file={phase_cub}",
-            f"incidence_angle_file={incidence_cub}",
-            f"emission_angle_file={emission_cub}",
-            "phtname=hapkehen",
-            *(f"{name}={value}" for name, value in hapkehen_params.items()),
-            "zerob0standard=true",
-            "normname=shade",
-            "albedo=1.0",
-            "incref=0.0",
-        ]
-    )
+        run_quiet(["editlab", f"from={from_cub}", "options=addg", "grpname=BandBin"])
+        run_quiet(["editlab", f"from={from_cub}", "options=addkey", "grpname=BandBin", "keyword=Center", "value=1.0"])
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", NotGeoreferencedWarning)
-        with rasterio.open(out_cub) as src:
-            return src.read(1).astype(np.float64)
+        run_quiet(
+            [
+                "photomet",
+                f"from={from_cub}",
+                f"to={out_cub}",
+                "anglesource=backplane",
+                f"phase_angle_file={phase_cub}",
+                f"incidence_angle_file={incidence_cub}",
+                f"emission_angle_file={emission_cub}",
+                "phtname=hapkehen",
+                *(f"{name}={value}" for name, value in hapkehen_params.items()),
+                "zerob0standard=true",
+                "normname=shade",
+                "albedo=1.0",
+                "incref=0.0",
+            ]
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NotGeoreferencedWarning)
+            with rasterio.open(out_cub) as src:
+                return src.read(1).astype(np.float64)
 
 
 def hapke_shade_ortho(
@@ -1187,7 +1195,7 @@ def hapke_shade_ortho(
     reflectance, hapkehen_params = real_geometry_hapke_reflectance(
         dem, bbox, camera, azimuth_deg, elevation_deg, cellsize_m, config, along_track_correction, real_hapke_params
     )
-    reference_reflectance = reference_hapke_reflectance(hapkehen_params, config)
+    reference_reflectance = reference_hapke_reflectance(hapkehen_params)
 
     if reference_reflectance > 0 and np.isfinite(reference_reflectance):
         ratio = reflectance / reference_reflectance
@@ -1302,7 +1310,7 @@ def real_geometry_hapke_reflectance(
         hapkehen_source = _HAPKE_PLACEHOLDER_PARAMS
     hapkehen_params = hapkehen_params_from_source(hapkehen_source)
 
-    reflectance = _hapke_reflectance(phase_deg, incidence_deg, emission_deg, hapkehen_params, config)
+    reflectance = _hapke_reflectance(phase_deg, incidence_deg, emission_deg, hapkehen_params)
     return reflectance, hapkehen_params
 
 
@@ -1315,7 +1323,7 @@ def hapkehen_params_from_source(hapkehen_source: dict) -> dict:
     return {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}
 
 
-def reference_hapke_reflectance(hapkehen_params: dict, config: TrntestConfig) -> float:
+def reference_hapke_reflectance(hapkehen_params: dict) -> float:
     """H(reference), the Hapke reflectance factor at the fixed reference geometry `ortho` is itself
     normalized to (`REFERENCE_INCIDENCE_DEG`'s own module-level comment) -- the shared denominator
     both `hapke_shade_ortho`'s relighting ratio and `sfs_validation.true_albedo_map`'s "true albedo"
@@ -1329,7 +1337,6 @@ def reference_hapke_reflectance(hapkehen_params: dict, config: TrntestConfig) ->
         np.full(reference_shape, REFERENCE_INCIDENCE_DEG),
         np.full(reference_shape, REFERENCE_EMISSION_DEG),
         hapkehen_params,
-        config,
     )[0, 0]
 
 

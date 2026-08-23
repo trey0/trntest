@@ -9,9 +9,13 @@ writers/readers/deleters are decorated (`docs/intermediate-product-plan.md`'s Ph
   writes/reads/deletes this label" a legible, checkable fact (principle 7) rather than something only
   recoverable by reading every caller. `writes_product` additionally enforces principle 2 (exactly one
   writer per label) at decoration time.
-- `atomic_publish`/`atomic_publish_path`: generalizes `cache.cached_get`'s existing temp-file-then-
-  atomic-rename pattern (see that function's own docstring) from fetched files to generated ones, so
-  a reader never observes a partially-written artifact (principle 4).
+- `atomic_publish`/`atomic_publish_path`/`atomic_publish_prefix`: generalizes `cache.cached_get`'s
+  existing temp-file-then-atomic-rename pattern (see that function's own docstring) from fetched
+  files to generated ones, so a reader never observes a partially-written artifact (principle 4).
+  Three shapes for three different real writer conventions: a caller-chosen exact path
+  (`atomic_publish`), a tool's own `to=`/`-o` exact-path parameter (`atomic_publish_path`), and a
+  tool's own output-*prefix* parameter that gets its own fixed suffix appended
+  (`atomic_publish_prefix`).
 """
 
 import contextlib
@@ -158,4 +162,33 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
             shutil.rmtree(tmp, ignore_errors=True)
         else:
             tmp.unlink(missing_ok=True)
+        raise
+
+
+@contextlib.contextmanager
+def atomic_publish_prefix(dest: Path, tool_suffix: str) -> Iterator[Path]:
+    """For ASP/ISIS tools that take an output *prefix* (`-o <prefix>`), not an exact path, and append
+    their own fixed suffix to it -- `dem_mosaic`'s `<prefix>-tile-0.tif` (`lunaserv.hole_fill_dem`),
+    `sat_sim`'s `<prefix>-<camera_stem>.tif` (`render.run_sat_sim`) -- neither of which fits
+    `atomic_publish_path`'s exact-final-path contract directly.
+
+    Yields a unique temp *prefix* (reserved the same way `atomic_publish_path` reserves its path: a
+    `tempfile.mkstemp` claim, then immediately unlinked) such that `<yielded><tool_suffix>` is a
+    guaranteed-fresh, non-existent path for the tool to write its real output to. Caller runs the tool
+    against the yielded prefix; on clean exit, `<yielded><tool_suffix>` is atomically renamed to
+    `dest`. `tool_suffix` must be the exact string the tool appends, including any separator (e.g.
+    `"-tile-0.tif"`, or `f"-{camera_stem}.tif"`) -- get this wrong and the rename silently finds
+    nothing there, the same failure mode `atomic_publish_path`'s own docstring describes for a plain
+    wrong-extension guess."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.")
+    os.close(fd)
+    tmp_prefix = Path(tmp_name)
+    tmp_prefix.unlink()
+    tmp_output = Path(str(tmp_prefix) + tool_suffix)
+    try:
+        yield tmp_prefix
+        tmp_output.rename(dest)
+    except BaseException:
+        tmp_output.unlink(missing_ok=True)
         raise
