@@ -3,7 +3,13 @@ import pytest
 import rasterio
 import rasterio.transform
 
-from trntest.plotting import _fill_dead_columns_for_display, _prep_overlay_rasters, compute_brightness_matched_diff
+from trntest.plotting import (
+    _fill_dead_columns_for_display,
+    _prep_overlay_rasters,
+    compute_brightness_matched_diff,
+    plot_incidence_validation,
+    plot_sfs_comparison,
+)
 
 
 def _write_raster(path, value: float):
@@ -132,3 +138,36 @@ def test_compute_brightness_matched_diff_aligns_rasters_with_different_extents_b
     result = compute_brightness_matched_diff(base_path, overlay_path)
     assert result.valid_pixel_count == 16
     assert result.mean_abs_diff == pytest.approx(0.0, abs=1e-6)  # uniform rasters -> brightness match closes the gap
+
+
+def test_plot_sfs_comparison_brightness_matches_both_overlays_to_the_real_panel(tmp_path):
+    real_path = tmp_path / "real.tif"
+    ours_path = tmp_path / "ours.tif"
+    sim_path = tmp_path / "sim.tif"
+    _write_raster(real_path, value=100.0)
+    _write_raster(ours_path, value=20.0)  # 5x dimmer -- brightness match should undo this
+    _write_raster(sim_path, value=50.0)  # 2x dimmer
+
+    fig = plot_sfs_comparison(real_path, ours_path, sim_path, title="test")
+
+    axes = fig.axes
+    assert len(axes) == 3
+    # Each overlay panel's displayed image should be brightness-matched up to the real panel's own
+    # level (100.0), not left at its own raw 20.0/50.0 -- confirms the scaling actually ran, not just
+    # that the function returned without error.
+    np.testing.assert_allclose(axes[1].images[0].get_array(), 100.0)
+    np.testing.assert_allclose(axes[2].images[0].get_array(), 100.0)
+
+
+def test_plot_incidence_validation_shows_the_real_difference_field():
+    incidence_sfs_deg = np.array([[10.0, 20.0], [np.nan, 40.0]])
+    incidence_ours_deg = np.array([[10.5, 19.5], [np.nan, 39.0]])
+
+    fig = plot_incidence_validation(incidence_sfs_deg, incidence_ours_deg, title="test")
+
+    # 3 image panels + 3 colorbar axes (one per panel, unlike plot_sfs_comparison's shared scale).
+    image_axes = [ax for ax in fig.axes if ax.images]
+    assert len(image_axes) == 3
+    np.testing.assert_allclose(image_axes[0].images[0].get_array(), incidence_sfs_deg)
+    np.testing.assert_allclose(image_axes[1].images[0].get_array(), incidence_ours_deg)
+    np.testing.assert_allclose(image_axes[2].images[0].get_array(), incidence_sfs_deg - incidence_ours_deg)

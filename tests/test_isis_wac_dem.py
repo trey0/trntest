@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from trntest import isis_wac
-from trntest.config import TrntestConfig
+from trntest.config import MOON_RADIUS_M, TrntestConfig
 
 
 def test_ensure_lunar_shape_model_reuses_existing_file_without_fetching(tmp_path):
@@ -125,3 +125,33 @@ def test_sample_lunar_dem_radii_batch_raises_on_row_count_mismatch():
         with patch.object(isis_wac, "run_quiet", side_effect=_fake_mappt_run_quiet(rows)):
             with pytest.raises(RuntimeError):
                 isis_wac.sample_lunar_dem_radii_batch(np.array([[168.0, 39.8], [169.0, 38.0]]), TrntestConfig())
+
+
+def test_sample_local_dem_patch_subtracts_moon_radius_and_reshapes_to_3x3():
+    fake_radii = MOON_RADIUS_M + np.arange(9, dtype=float)  # distinct, traceable values
+    with patch.object(isis_wac, "sample_lunar_dem_radii_batch", return_value=fake_radii) as mock_sample:
+        patch_arr = isis_wac.sample_local_dem_patch(10.0, 20.0, cellsize_m=100.0, config=TrntestConfig())
+
+    assert patch_arr.shape == (3, 3)
+    assert patch_arr.flatten() == pytest.approx(np.arange(9, dtype=float))
+    # 9 points sampled, one real mappt call (batched), not 9 separate ones.
+    assert mock_sample.call_count == 1
+    lonlat_deg = mock_sample.call_args[0][0]
+    assert lonlat_deg.shape == (9, 2)
+
+
+def test_sample_local_dem_patch_orders_rows_north_first():
+    # Real geographic check (not just reshape mechanics): the first 3 sampled points (row 0 of the
+    # returned patch) must be the *northernmost* offset row, matching
+    # `_terrain_photometric_angles`'s own "row 0 = north/top" convention -- verified against the
+    # actual (lon, lat) coordinates passed to `sample_lunar_dem_radii_batch`, not assumed from the
+    # code's own construction order.
+    with patch.object(isis_wac, "sample_lunar_dem_radii_batch", return_value=np.zeros(9)) as mock_sample:
+        isis_wac.sample_local_dem_patch(10.0, 20.0, cellsize_m=1000.0, config=TrntestConfig())
+
+    lonlat_deg = mock_sample.call_args[0][0]
+    lats = lonlat_deg[:, 1]
+    north_row_lat = lats[0:3].mean()
+    center_row_lat = lats[3:6].mean()
+    south_row_lat = lats[6:9].mean()
+    assert north_row_lat > center_row_lat > south_row_lat

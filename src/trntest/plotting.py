@@ -468,6 +468,15 @@ def plot_render_vs_basemap(
     return fig
 
 
+def _cellsize_m(raster_da) -> float:
+    """Pixel size (meters) from `raster_da`'s own `x` coordinate spacing -- shared by
+    `compute_brightness_matched_diff` and `plot_sfs_comparison`'s own `reindex_like` alignment
+    tolerance (half a pixel, generous enough to absorb real floating-point/rounding differences
+    between two independently-computed windows, tight enough to never match two genuinely different
+    grid cells -- see `compute_brightness_matched_diff`'s own docstring)."""
+    return float(abs(raster_da.x.values[1] - raster_da.x.values[0]))
+
+
 def _open_raster_dataarray(path):
     """`rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs
     (e.g. multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
@@ -727,8 +736,7 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
     base, _, overlay_display, *_ = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata=False
     )
-    cellsize_m = float(abs(base.x.values[1] - base.x.values[0]))
-    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=cellsize_m / 2.0)
+    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=_cellsize_m(base) / 2.0)
 
     a = base.values.astype(np.float64)
     b = overlay_aligned.values.astype(np.float64)
@@ -739,6 +747,73 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
         median_abs_diff=float(np.median(diffs)) if diffs.size else float("nan"),
         valid_pixel_count=int(valid.sum()),
     )
+
+
+def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title: str | None = None):
+    """Real WAC crop vs. our own Hapke hillshade vs. Ames Stereo Pipeline `sfs`'s independent
+    forward-render (`sfs_validation.run_sfs_forward_render`), all three on the real WAC panel's own
+    display range and brightness-matched to it via the same single-multiplicative-median-scale
+    technique `_prep_overlay_rasters`/`compute_brightness_matched_diff` use (see either's docstring
+    for why this, not an affine/percentile stretch). `sfs_sim_intensity_path` is expected to already
+    be coverage-masked (`sfs_validation.mask_sfs_uncovered`) -- `sfs`'s own literal-`0.0`
+    "outside camera coverage" convention would otherwise dominate the median and wash out the
+    brightness match entirely, the same failure mode `compute_brightness_matched_diff`'s own
+    docstring warns a mismatched-extent raster can cause."""
+    real = _open_raster_dataarray(real_wac_path)
+    tolerance = _cellsize_m(real) / 2.0
+    ours = _open_raster_dataarray(ours_path).reindex_like(real, method="nearest", tolerance=tolerance)
+    sim = _open_raster_dataarray(sfs_sim_intensity_path).reindex_like(real, method="nearest", tolerance=tolerance)
+
+    real_median = np.nanmedian(real.values)
+    vmax = np.nanpercentile(real.values, 99.5)
+
+    def brightness_matched(overlay):
+        overlay_median = np.nanmedian(overlay.values)
+        scale = real_median / overlay_median if overlay_median and np.isfinite(overlay_median) else 1.0
+        return overlay.values * scale
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+    axes[0].imshow(real.values, cmap="gray", vmin=0, vmax=vmax)
+    axes[0].set_title("Real WAC (cam2map)")
+    axes[1].imshow(brightness_matched(ours), cmap="gray", vmin=0, vmax=vmax)
+    axes[1].set_title("Our Hapke hillshade\n(brightness-matched)")
+    axes[2].imshow(brightness_matched(sim), cmap="gray", vmin=0, vmax=vmax)
+    axes[2].set_title("ASP sfs forward-render\n(brightness-matched)")
+    for ax in axes:
+        ax.axis("off")
+    fig.tight_layout()
+    if title:
+        fig.suptitle(title, y=1.05)
+    return fig
+
+
+def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg: np.ndarray, title: str | None = None):
+    """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check
+    (`sfs_validation.run_sfs_lambertian_incidence`/`incidence_deg_from_lambertian_sim_intensity`):
+    `sfs`'s own independently ray-traced incidence field, `lunaserv.real_geometry_photometric_
+    angles`'s own field, and their difference (degrees) -- both plain arrays, already `NaN` outside
+    real camera coverage (`sfs`'s own -- see `incidence_deg_from_lambertian_sim_intensity`), not
+    raster paths, since both are already in-memory by the time a caller has something to compare."""
+    diff_deg = incidence_sfs_deg - incidence_ours_deg
+    vmin = float(np.nanmin([np.nanmin(incidence_sfs_deg), np.nanmin(incidence_ours_deg)]))
+    vmax = float(np.nanmax([np.nanmax(incidence_sfs_deg), np.nanmax(incidence_ours_deg)]))
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    im0 = axes[0].imshow(incidence_sfs_deg, cmap="viridis", vmin=vmin, vmax=vmax)
+    axes[0].set_title("incidence, from sfs\n(Lambertian-mode inversion)")
+    fig.colorbar(im0, ax=axes[0], fraction=0.046)
+    im1 = axes[1].imshow(incidence_ours_deg, cmap="viridis", vmin=vmin, vmax=vmax)
+    axes[1].set_title("incidence, ours\n(real_geometry_photometric_angles)")
+    fig.colorbar(im1, ax=axes[1], fraction=0.046)
+    im2 = axes[2].imshow(diff_deg, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
+    axes[2].set_title("sfs - ours (deg)")
+    fig.colorbar(im2, ax=axes[2], fraction=0.046)
+    for ax in axes:
+        ax.axis("off")
+    fig.tight_layout()
+    if title:
+        fig.suptitle(title, y=1.05)
+    return fig
 
 
 def _overlay_outline_geoseries(overlay):

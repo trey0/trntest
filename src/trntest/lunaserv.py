@@ -756,7 +756,56 @@ def _terrain_photometric_angles(
     tool found so far can close it.
 
     Not investigated/validated further -- the real-image regression above remains open, flagged for a
-    future pass, not folded into this fix."""
+    future pass, not folded into this fix.
+
+    **`ground`/`normal` now use the *exact* embedding of "reference sphere + real `dem` elevation,"
+    not a further first-order approximation on top of the sagitta/normal-tilt fixes above (Phase 76,
+    2026-08-23)** -- found while investigating why `sfs_validation`'s independent, DEM-aware incidence
+    cross-check (below) still showed a small but real, sun-azimuth-correlated residual even after
+    those fixes. The remaining gap: `dem`'s own elevation value was still being added along the
+    tangent point's *fixed* Up axis (`dem + sphere_sag`), not each point's own *true local radial*
+    direction -- the actual, physically correct definition of planetary elevation, and the same
+    "relief displacement" effect known in orthophoto/DEM photogrammetry (real terrain relief shifts a
+    point's own apparent horizontal position under an orthographic-style projection, not just its
+    height). Embedding `dem` correctly therefore also displaces a point's own (East, North) position
+    outward by a factor `1 + dem/radius_m` (`relief_scale`), not just its "Up" coordinate by
+    `dem*cos(theta)` instead of the previous plain `dem` -- both exact, closed-form, derived directly
+    from `sphere_sag`'s own definition, not small-angle approximations. Reduces exactly to the
+    previous embedding when `dem` is 0 everywhere (`relief_scale = 1`, `dem*cos(theta) = 0`) -- every
+    existing flat-`dem` test (the sagitta/normal-tilt tests above included) is byte-for-byte
+    unaffected by this.
+
+    Since `ground`'s (East, North) components are no longer exactly the flat grid's own `(x_grid,
+    y_grid)`, `normal` can no longer use the `normalize(-df/dx, -df/dy, 1)` shortcut (only valid when
+    the embedding's horizontal components *are* the flat coordinates being differentiated) -- instead,
+    `normal` is built from the general "parametric surface normal" construction: each of `ground`'s 3
+    coordinate channels' own partial derivatives in (row, col) index space (`np.gradient(ground, dy,
+    cellsize_m, axis=(0, 1))`), cross-producted. This is a strict generalization, not a special-cased
+    rewrite -- at `dem=0` it reduces to exactly the old `(-df/dx, -df/dy, 1)` formula (the cross
+    product of `(1, 0, df/dx)` and `(0, 1, df/dy)` in that case, up to the same normalization).
+
+    **Empirically, this essentially closes the remaining incidence-angle gap.** Cross-checked against
+    `sfs_validation.run_sfs_lambertian_incidence`'s independent, fully DEM-aware, real-terrain
+    incidence angle (Ames Stereo Pipeline's own ray-DEM intersection, via a Hapke-model-independent
+    Lambertian-mode inversion trick) across a real candidate's entire real-coverage region (not a
+    sparse sample): mean|diff| 0.0237 deg / max|diff| 0.5138 deg *before* this fix, down to mean
+    0.0005 deg / max 0.0005 deg *after* -- essentially floating-point/interpolation noise, not real
+    geometric disagreement. The user first noticed this wasn't just noise (a visible, small,
+    sun-azimuth-aligned directional trend, plus real ~1 deg-scale patches concentrated at high-relief
+    terrain like crater rims -- the relief-displacement effect scales with `dem` itself, so it's
+    largest exactly there, not smoothly across the frame); a linear-plane fit to the pre-fix residual
+    confirmed the directional signature (gradient azimuth 215-227 deg, matching this candidate's own
+    227.8 deg sun azimuth to within the fit's own uncertainty) and ruled out a simpler "purely radial
+    sagitta-approximation" explanation directly (correlation with plain distance from the tangent
+    point: ~0.046, essentially zero). See `docs/history.md`'s dated entry for the full derivation and
+    live numbers, and `tests/test_sfs_validation_lambertian_incidence.py` (now asserting the much
+    tighter post-fix budget) for the permanent regression check.
+
+    Only independently re-validated for **incidence** this way (Lambert's law has no emission/phase
+    term to extract the same way) -- `ground`'s own position (feeding `view_vec`/emission/phase) uses
+    the same corrected embedding for consistency, on the same physical reasoning, but that specific
+    consequence hasn't been independently cross-checked against `sfs` or any other tool the way
+    incidence has."""
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox
     x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
@@ -765,11 +814,32 @@ def _terrain_photometric_angles(
 
     dy = -cellsize_m
     sphere_sag = np.sqrt(np.clip(radius_m**2 - x_grid**2 - y_grid**2, 0.0, None)) - radius_m  # <= 0
-    e_dy, e_dx = np.gradient(dem.astype(np.float64) + sphere_sag, dy, cellsize_m)
-    normal = np.dstack([-e_dx, -e_dy, np.ones_like(dem, dtype=np.float64)])
+    dem64 = dem.astype(np.float64)
+    # `cos_theta`: the reference-sphere point's own true local-radial "Up" makes angle theta with the
+    # tangent point's Up (`sphere_sag = radius_m*(cos(theta) - 1)`, so this is exact, not a small-angle
+    # approximation). `relief_scale`: real terrain elevation (`dem`) is defined along *that* point's own
+    # true local radial direction, not the tangent point's fixed Up -- so embedding it correctly also
+    # displaces the point's own (East, North) position outward by this factor ("relief displacement",
+    # the same effect known in orthophoto/DEM photogrammetry), not just its height. `ground` is now the
+    # exact (not first-order) embedding of "reference sphere + `dem`'s own real elevation," reducing
+    # exactly to the previous `(x_grid, y_grid, dem + sphere_sag)` when `dem` is 0 everywhere (`
+    # relief_scale=1`, `dem64*cos_theta=0`) -- every existing flat-`dem` test is unaffected by this.
+    cos_theta = (sphere_sag + radius_m) / radius_m
+    relief_scale = 1.0 + dem64 / radius_m
+    ground = np.dstack([x_grid * relief_scale, y_grid * relief_scale, sphere_sag + dem64 * cos_theta])
+
+    # `normal`: the true surface normal of this exact embedding, via each of `ground`'s own 3
+    # coordinate channels' partial derivatives (row/col index space -> physical space, `dy`/`cellsize_m`)
+    # and their cross product -- the general "parametric surface normal" construction, not the
+    # `normalize(-df/dx, -df/dy, 1)` shortcut that only applies when the embedding's (East, North)
+    # components equal the flat grid's own (x, y) exactly (true before this fix, no longer true once
+    # `relief_scale` != 1). See docs/history.md's dated entry for the closed-form derivation and its
+    # empirical validation (independently confirmed against ASP `sfs`'s own ray-DEM-intersection
+    # incidence angle to ~0.0005 deg mean/max, down from ~0.024/0.51 deg before this fix).
+    ground_d_row, ground_d_col = np.gradient(ground, dy, cellsize_m, axis=(0, 1))
+    normal = np.cross(ground_d_col, ground_d_row)
     normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
 
-    ground = np.dstack([x_grid, y_grid, dem.astype(np.float64) + sphere_sag])
     view_vec = camera_local_enu_m - ground
     view_dir = view_vec / np.linalg.norm(view_vec, axis=-1, keepdims=True)
 
@@ -1001,13 +1071,52 @@ def hapke_shade_ortho(
 
     `_terrain_photometric_angles`'s own normal-tilt correction (see its docstring) is unconditional,
     with no parameter here to control it any more."""
+    reflectance, hapkehen_params = real_geometry_hapke_reflectance(
+        dem, bbox, camera, azimuth_deg, elevation_deg, cellsize_m, config, along_track_correction, real_hapke_params
+    )
+    reference_reflectance = reference_hapke_reflectance(hapkehen_params, config)
+
+    if reference_reflectance > 0 and np.isfinite(reference_reflectance):
+        ratio = reflectance / reference_reflectance
+    else:
+        ratio = np.zeros_like(reflectance)
+
+    ortho_norm = ortho.astype(np.float64) / 255.0
+    relit = ortho_norm * ratio
+    return np.clip(relit * 255.0, 0, 255).astype(np.uint8)
+
+
+def real_geometry_photometric_angles(
+    dem: np.ndarray,
+    bbox: tuple,
+    camera: Camera,
+    azimuth_deg: float,
+    elevation_deg: float,
+    cellsize_m: float,
+    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """`(incidence_deg, emission_deg, phase_deg)` at `camera`'s own real per-pixel geometry --
+    `_terrain_photometric_angles` given `camera`'s own real position (`_camera_local_enu_m`) and,
+    when `along_track_correction` is on (the default), its own real along-track attitude axis
+    (`_local_enu_direction`). Factored out of `real_geometry_hapke_reflectance` (Phase 74 follow-up)
+    for callers that only need the angles themselves, not a Hapke evaluation -- e.g.
+    `sfs_validation.py`'s Lambertian-mode incidence cross-check, which compares this function's own
+    `incidence_deg` directly against `sfs`'s independently ray-traced one (confirmed live to agree to
+    ~0.02 deg mean, ~0.5 deg max -- see docs/history.md's dated entry). That small residual isn't
+    pure noise: most of it is crater-rim discretization noise, but a real, small (~0.056 deg/100km)
+    directional component points along the sun azimuth's own axis, not radially from the tangent
+    point (ruled out directly, near-zero correlation with distance from center) -- the expected
+    signature of a first-order tangent-plane approximation's own remaining curvature error, distinct
+    from the already-corrected radial/sagitta term, since incidence error is a `normal . sun`
+    dot-product error and is most sensitive to normal-vector error that projects along the sun
+    direction specifically."""
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
     camera_local_enu_m = _camera_local_enu_m(camera.camera_center_moon_me_m, *center, MOON_RADIUS_M)
     along_track_local_enu = (
         _local_enu_direction(camera.camera_along_track_direction_moon_me, *center) if along_track_correction else None
     )
-    incidence_deg, emission_deg, phase_deg = _terrain_photometric_angles(
+    return _terrain_photometric_angles(
         dem,
         bbox,
         camera_local_enu_m,
@@ -1018,34 +1127,69 @@ def hapke_shade_ortho(
         along_track_local_enu,
     )
 
+
+def real_geometry_hapke_reflectance(
+    dem: np.ndarray,
+    bbox: tuple,
+    camera: Camera,
+    azimuth_deg: float,
+    elevation_deg: float,
+    cellsize_m: float,
+    config: TrntestConfig,
+    along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
+    real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
+) -> tuple[np.ndarray, dict]:
+    """H(i,e,g) at `camera`'s own real per-pixel geometry (`real_geometry_photometric_angles`) -- the
+    same computation `hapke_shade_ortho` itself makes to build its H(real)/H(reference) relighting
+    ratio, factored out (Phase 74 follow-up) so `sfs_validation.true_albedo_map` can divide this
+    exact factor back out of an already-shaded ortho to recover the geometry-independent albedo
+    `hapke_shade_ortho` started from, without duplicating this setup or risking it drifting out of
+    sync with `hapke_shade_ortho`'s own computation -- an earlier version of
+    `sfs_validation.true_albedo_map` divided by `reference_hapke_reflectance` instead, a real
+    double-counting bug (see docs/history.md's dated entry). Returns `(reflectance, hapkehen_params)`
+    -- the params dict too, since a caller building an albedo map also needs it for
+    `sfs_validation.hapke_params_to_asp_model_coeffs`."""
+    incidence_deg, emission_deg, phase_deg = real_geometry_photometric_angles(
+        dem, bbox, camera, azimuth_deg, elevation_deg, cellsize_m, along_track_correction
+    )
+
+    center = camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
     if real_hapke_params:
         hapkehen_source = fetch_real_hapke_params(*center, config)
     else:
         hapkehen_source = _HAPKE_PLACEHOLDER_PARAMS
-    hapkehen_params = {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}  # HAPKEHEN's own 6 keys
+    hapkehen_params = hapkehen_params_from_source(hapkehen_source)
 
     reflectance = _hapke_reflectance(phase_deg, incidence_deg, emission_deg, hapkehen_params, config)
+    return reflectance, hapkehen_params
 
-    # H at the fixed reference geometry `ortho` is itself normalized to -- a small constant-valued
-    # array (no per-pixel variation possible, same params/angles everywhere), not a second full-size
-    # raster pass.
+
+def hapkehen_params_from_source(hapkehen_source: dict) -> dict:
+    """Slices a params dict (`_HAPKE_PLACEHOLDER_PARAMS`, or `fetch_real_hapke_params`'s wider 9-key
+    return) down to exactly the 6 keys the simpler shadow-hiding-only `HAPKEHEN` model this project
+    calls actually accepts (`wh`, `hg1`, `hg2`, `hh`, `b0`, `theta`) -- shared by `hapke_shade_ortho`
+    and `sfs_validation.py`'s own use of the same real calibration source, so both stay in sync
+    about which 6 of `fetch_real_hapke_params`'s 9 keys are the ones that matter here."""
+    return {name: hapkehen_source[name] for name in _HAPKE_PLACEHOLDER_PARAMS}
+
+
+def reference_hapke_reflectance(hapkehen_params: dict, config: TrntestConfig) -> float:
+    """H(reference), the Hapke reflectance factor at the fixed reference geometry `ortho` is itself
+    normalized to (`REFERENCE_INCIDENCE_DEG`'s own module-level comment) -- the shared denominator
+    both `hapke_shade_ortho`'s relighting ratio and `sfs_validation.true_albedo_map`'s "true albedo"
+    proxy (`ortho / H(reference)`, undoing the same normalization from the other direction) divide
+    by. A small constant-valued array (no per-pixel variation possible, same params/angles
+    everywhere), not a full-size raster pass -- `_hapke_reflectance`'s own `photomet` call still
+    needs a real array shape to run against, hence the `(3, 3)` filler."""
     reference_shape = (3, 3)
-    reference_reflectance = _hapke_reflectance(
+    return _hapke_reflectance(
         np.full(reference_shape, REFERENCE_PHASE_DEG),
         np.full(reference_shape, REFERENCE_INCIDENCE_DEG),
         np.full(reference_shape, REFERENCE_EMISSION_DEG),
         hapkehen_params,
         config,
     )[0, 0]
-
-    if reference_reflectance > 0 and np.isfinite(reference_reflectance):
-        ratio = reflectance / reference_reflectance
-    else:
-        ratio = np.zeros_like(reflectance)
-
-    ortho_norm = ortho.astype(np.float64) / 255.0
-    relit = ortho_norm * ratio
-    return np.clip(relit * 255.0, 0, 255).astype(np.uint8)
 
 
 def despeckle_and_shade_ortho(
