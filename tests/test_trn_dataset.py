@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from _fake_worker_task import FailingWorkerTask, FakeWorkerTask
+from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import TaskException
 
 from trntest import tasks, trn_dataset
@@ -274,7 +274,7 @@ def test_failed_task_state_survives_a_fresh_process(tmp_path, monkeypatch):
     ds.populate(product_types=("crop",))
     assert trn_dataset.task_state(ds[0], "crop") == "failed"
 
-    tid = tasks.task_id(str(ds.folder), "P1", "crop")
+    tid = tasks.task_id(str(ds.folder), "P1")
     probe = (
         "from trntest import tasks\n"
         "from huey.exceptions import TaskException\n"
@@ -569,7 +569,7 @@ def test_start_stop_consumer_lifecycle(tmp_path):
 
 def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
     marker_path = tmp_path / "marker.txt"
-    task = tasks.generate_product_parallel.s(FakeWorkerTask(str(marker_path)))
+    task = tasks.generate_product_parallel.s(FakeWorkerEntry(str(marker_path)), ("fake",))
     task.id = f"test-real-consumer-success-{tmp_path.name}"
     result = tasks.huey_parallel.enqueue(task)
 
@@ -584,7 +584,7 @@ def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
 
 
 def test_generate_product_parallel_failure_visible_via_huey_parallel_result(tmp_path):
-    task = tasks.generate_product_parallel.s(FailingWorkerTask())
+    task = tasks.generate_product_parallel.s(FailingWorkerEntry(), ("fake",))
     task.id = f"test-real-consumer-failure-{tmp_path.name}"
     result = tasks.huey_parallel.enqueue(task)
 

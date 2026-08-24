@@ -4,9 +4,10 @@
 for the full design and why.
 
 Two separate `Huey` instances, each with its own sqlite file under `<output_dir>/.huey/` and its
-own thin task wrapper around the shared `_generate` helper -- not one, because huey fixes a
+own thin task wrapper around the shared `_generate_entry` helper -- not one, because huey fixes a
 `Huey` instance's `immediate` mode at construction time, and the two real use cases need opposite
-values:
+values. One task per *entry* (covering every requested product type for it, not one task per
+`(entry, product_type)`) -- see `_generate_entry`'s own docstring for why:
 
 - `huey` (`tasks.db`, `immediate=True`): what `populate()` drives, unchanged since this module's
   first version. Executes synchronously in the calling process the moment a task is enqueued -- no
@@ -39,7 +40,6 @@ concurrent agents' queues stay separate the same way their dataset folders alrea
 """
 
 import subprocess
-from pathlib import Path
 
 from huey import SqliteHuey
 
@@ -55,16 +55,42 @@ huey_parallel = SqliteHuey(filename=str(_huey_dir / "tasks_parallel.db"), immedi
 _CONSUMER_LOG_PATH = _huey_dir / "consumer.log"
 
 
-def task_id(dataset_folder: str, product_id: str, product_type: str) -> str:
+def task_id(dataset_folder: str, product_id: str) -> str:
     """Deterministic (not random) task id, so `trn_dataset.task_state()` can look up a task's
     stored result from a process that never enqueued it -- e.g. `status()` in a fresh
-    `docker compose run` after a prior run's failure."""
-    return f"{dataset_folder}::{product_id}::{product_type}"
+    `docker compose run` after a prior run's failure. One id per *entry*, not per
+    `(entry, product_type)` -- see `_generate_entry`'s own docstring for why task granularity moved
+    to the entry level."""
+    return f"{dataset_folder}::{product_id}"
 
 
-def _generate(image) -> Path:
-    """Shared body for both `generate_product`/`generate_product_parallel` below -- takes the real
-    `TrnTestImage` object rather than plain, picklable `(dataset_folder, product_id, product_type)`
+class EntryGenerationError(Exception):
+    """Raised by `_generate_entry` when one or more of an entry's requested product types failed to
+    generate. Carries every failure (`self.errors`, `{product_type: Exception}`), not just the
+    first -- each product type is attempted independently within the task (see `_generate_entry`'s
+    own docstring), so one's failure must not hide another's own distinct error."""
+
+    def __init__(self, errors: dict[str, Exception]):
+        self.errors = errors
+        summary = "; ".join(f"{pt}: {type(exc).__name__}: {exc}" for pt, exc in errors.items())
+        super().__init__(f"{len(errors)} of this entry's product type(s) failed: {summary}")
+
+
+def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
+    """Shared body for both `generate_product`/`generate_product_parallel` below -- one task per
+    *entry*, covering every product type in `product_types` for it, not one task per
+    `(entry, product_type)` as this module originally had. That finer granularity meant two
+    product types of the same entry (e.g. `hillshade` and `reproject`, both needing
+    `entry.camera`/`entry.dem_ortho_result`) could land on two different `-k process` worker
+    processes at once -- `functools.cached_property` only memoizes within one process, so each
+    worker independently, redundantly rebuilt the same real SPICE/ISIS/DEM state for that entry
+    (confirmed live: a real `("hillshade", "reproject")` batch cost noticeably more wall-clock than
+    it needed to, see `docs/history.md`'s dated entry). Bundling every requested product type for
+    one entry into a single task restores `populate()`'s own natural single-process sharing (the
+    same `entry` object's cached properties, reused across product types) while still parallelizing
+    across *entries* under `populate_via_workers()`.
+
+    Takes the real `TrnTestEntry` object rather than plain, picklable `(dataset_folder, product_id)`
     args and re-deriving it via `TrnTestDataSet.open()`, even though `generate_product_parallel`
     (unlike `generate_product`) does cross a real process boundary to a `-k process` worker
     subprocess: re-opening from disk here would force every caller -- including fast, disk-free
@@ -72,35 +98,57 @@ def _generate(image) -> Path:
     to run a fake `generate()`. See `generate_product_parallel`'s own docstring for why passing the
     object directly is confirmed empirically safe across that process boundary, not just assumed.
 
-    Must return a non-`None` value -- confirmed empirically: huey's own `_execute` only calls
-    `put_result` for a successful task when `task_value is not None` (or `store_none=True`, not set
-    for either instance here), so a bare `image.generate(); return None` (Python's implicit
-    default) never gets stored at all, and a blocking `result.get()` then polls forever for a
-    result that will never arrive. `TrnTestImage.generate()` already returns `raster_path`, so this
-    is a free fix, not a workaround."""
-    return image.generate()
+    Each product type is attempted independently -- one's exception is caught, not left to abort the
+    rest, matching this module's existing "one bad task shouldn't abort the whole batch" tolerance
+    (see `trn_dataset.populate()`'s own docstring), just applied within one entry's own task instead
+    of only across entries. If any failed, raises `EntryGenerationError` (carrying all of them) only
+    *after* every product type has been attempted -- so a `crop` success isn't lost just because
+    `hillshade` also happened to fail in the same task; `trn_dataset.task_state()`'s own
+    `image.exists()`-first check still reports each product type's real state correctly regardless
+    of this shared, entry-level failure signal (see that function's own docstring).
+
+    Must return a non-`None` value on success -- confirmed empirically: huey's own `_execute` only
+    calls `put_result` for a successful task when `task_value is not None` (or `store_none=True`,
+    not set for either instance here), so a bare `None` return never gets stored at all, and a
+    blocking `result.get()` then polls forever for a result that will never arrive. Returns
+    `{product_type: raster_path}` for every product type that succeeded."""
+    results = {}
+    errors = {}
+    for product_type in product_types:
+        image = entry.images_by_type[product_type]
+        try:
+            results[product_type] = image.generate()
+        except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "this
+            # product type failed," not KeyboardInterrupt/SystemExit, which must propagate
+            # immediately -- and every other product type must still get its own chance to run.
+            errors[product_type] = exc
+    if errors:
+        raise EntryGenerationError(errors)
+    return results
 
 
 @huey.task()
-def generate_product(image) -> Path:
+def generate_product(entry, product_types: tuple[str, ...]) -> dict:
     """Thin wrapper so `populate()` goes through huey's queue/result machinery (stored exceptions,
-    huey's own introspection) instead of calling `image.generate()` directly. See `_generate`'s
-    docstring for the shared logic and the non-`None`-return requirement."""
-    return _generate(image)
+    huey's own introspection) instead of calling `_generate_entry` directly. See that function's own
+    docstring for the shared logic, the entry-level task granularity, and the non-`None`-return
+    requirement."""
+    return _generate_entry(entry, product_types)
 
 
 @huey_parallel.task()
-def generate_product_parallel(image) -> Path:
+def generate_product_parallel(entry, product_types: tuple[str, ...]) -> dict:
     """Same as `generate_product`, bound to `huey_parallel` instead -- what `populate_via_workers`
-    enqueues. Takes the real `TrnTestImage` object, not picklable primitive args, same as
+    enqueues. Takes the real `TrnTestEntry` object, not picklable primitive args, same as
     `generate_product`: confirmed empirically (a plain object, not just simple types, round-trips
     fine as a task argument even under a real `-k process` worker subprocess -- huey's own
     serializer handles it) rather than assumed, since unlike `generate_product` this one **does**
-    cross a real process boundary. `TrnTestImage`/`TrnTestEntry` pickle cleanly as long as no
-    `functools.cached_property` already computed on `entry` holds something unpicklable (SPICE
-    objects are never cached directly on `entry` today, only derived plain data, so this holds in
-    practice; revisit if that ever changes)."""
-    return _generate(image)
+    cross a real process boundary. `TrnTestEntry` pickles cleanly as long as no
+    `functools.cached_property` already computed on it holds something unpicklable (SPICE objects
+    are never cached directly on `entry` today, only derived plain data, so this holds in practice;
+    revisit if that ever changes) -- true at enqueue time regardless, since nothing's been computed
+    on a freshly-enqueued entry yet."""
+    return _generate_entry(entry, product_types)
 
 
 def start_consumer(workers: int, env: dict[str, str] | None = None) -> subprocess.Popen:
