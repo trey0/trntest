@@ -100,6 +100,44 @@ def test_crater_depth_m_returns_none_outside_dem_extent(tmp_path):
     assert crater_depth.crater_depth_m(dem_path, far_away_polygon) is None
 
 
+def test_stoffler_fresh_depth_km_matches_simple_regime_below_crossover():
+    # D=1km is well below the ~10.58km crossover -- the simple-crater formula should be selected
+    # (and should be the smaller of the two raw formula values there).
+    d = crater_depth.stoffler_fresh_depth_km(1.0)
+    simple = 0.196 * 1.0**1.010
+    complex_ = 1.044 * 1.0**0.301
+    assert simple < complex_
+    assert d == pytest.approx(simple)
+
+
+def test_stoffler_fresh_depth_km_matches_complex_regime_above_crossover():
+    # D=100km is well above the crossover -- the complex-crater formula should be selected (and
+    # should be the smaller of the two raw formula values there).
+    d = crater_depth.stoffler_fresh_depth_km(100.0)
+    simple = 0.196 * 100.0**1.010
+    complex_ = 1.044 * 100.0**0.301
+    assert complex_ < simple
+    assert d == pytest.approx(complex_)
+
+
+def test_stoffler_fresh_depth_km_continuous_at_crossover():
+    d_cross = crater_depth.STOFFLER_CROSSOVER_DIAMETER_KM
+    assert d_cross == pytest.approx(10.58, abs=0.01)
+    # Both raw formulas should agree with each other, and with `stoffler_fresh_depth_km`, exactly at
+    # the crossover -- confirms `min()` introduces no discontinuity there.
+    simple = 0.196 * d_cross**1.010
+    complex_ = 1.044 * d_cross**0.301
+    assert simple == pytest.approx(complex_, rel=1e-6)
+    assert crater_depth.stoffler_fresh_depth_km(d_cross) == pytest.approx(simple, rel=1e-6)
+
+
+def test_stoffler_fresh_depth_km_vectorized_over_array():
+    diameters = np.array([1.0, 100.0])
+    depths = crater_depth.stoffler_fresh_depth_km(diameters)
+    assert depths[0] == pytest.approx(crater_depth.stoffler_fresh_depth_km(1.0))
+    assert depths[1] == pytest.approx(crater_depth.stoffler_fresh_depth_km(100.0))
+
+
 def test_too_close_to_astropedia_pole():
     # major_km=1 -> negligible half-extent, well clear of the 79 deg limit at 78.5 deg.
     assert not crater_depth._too_close_to_astropedia_pole(78.5, major_km=1.0)

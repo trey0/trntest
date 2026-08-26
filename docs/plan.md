@@ -391,6 +391,36 @@ short of `populate()` -- no rendering from this notebook yet.
   estimate for the whole non-polar database (see `docs/data-sources.md` for the full caveats on that
   number). Not yet wired into `image_generation.ipynb` or related to an actual sharpness grade; both
   are real next steps.
+
+  **Done (2026-08-26): `crater_depth.stoffler_fresh_depth_km`** — the reference-depth half of an
+  actual sharpness grade (Stoffler et al. 2006, *Reviews in Mineralogy and Geochemistry* 60(1),
+  519-596, DOI `10.2138/rmg.2006.60.05`): a fresh crater's expected depth for a given diameter, the
+  classic two-regime lunar depth-diameter relation (simple craters steeper, complex craters
+  shallower, crossing at ~10.58 km). Implemented as `min(simple_regime, complex_regime)` rather than
+  an explicit branch on the crossover -- provably identical to the textbook piecewise form for any
+  `diameter_km > 0` (the simple-crater curve is the smaller of the two below the crossover, the
+  complex-crater curve is smaller above it, and they cross exactly once), so the elementwise minimum
+  picks the right regime on both sides with no branch and is exactly continuous at the crossover by
+  construction. 4 new tests confirm both regimes, exact continuity, and vectorization.
+
+  **Done (2026-08-26): `src/trntest/crater_depth_batch.py`** — the whole-database precompute
+  `crater_depth.py`'s own docstring already called out as a real next step, tiled for cache
+  coherence rather than a naive independent-per-crater loop. See `docs/data-sources.md`'s "Crater
+  depth (Breton et al. 2019 method)" section for the full design (ownership-by-center vs.
+  padded-raster-extent, why a direct read off GLD100's own raw grid would have been wrong, a real
+  `nodata`-tag bug caught and fixed along the way) and real measured timing (~13.6 hours for the
+  whole grid single-threaded -- slower than the earlier naive ~6.9-hour estimate, since that number
+  never accounted for real per-tile reprojection overhead). `grade_database_via_workers` is the real
+  multi-worker path, mirroring `trn_dataset.TrnTestDataSet.populate_via_workers`'s own established
+  pattern (`tasks.start_consumer`/`stop_consumer`, generalized to take a `huey_module` argument
+  rather than duplicate that subprocess-management code for a second task domain) -- live-validated
+  end to end against real data. A third-party dataset that looked like it might shortcut this whole
+  precompute (`huggingface.co/datasets/juliensimon/lunar-craters-robbins`, Robbins craters plus a
+  pre-computed depth column) was investigated and rejected -- see `docs/data-sources.md` for the
+  concrete red flags found on direct inspection. Not yet combined into an actual sharpness score
+  (deliberately: `stoffler_fresh_depth_km` and the measured-depth precompute are kept independent,
+  so a future change to the grade formula itself doesn't require re-running the multi-hour DEM pass)
+  or wired into any notebook.
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

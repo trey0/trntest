@@ -420,6 +420,63 @@ not derived from scratch.
   number holds at full non-uniform latitude coverage), or (c) any parallelism (this project already
   has a real multi-worker pattern, `TrnTestDataSet.populate_via_workers`/`tasks.huey_parallel`, that
   a real batch job here could plausibly reuse rather than build fresh).
+- **Whole-database batch precompute, done (2026-08-26, `src/trntest/crater_depth_batch.py`)**: tiled,
+  not a naive independent per-crater loop -- a fixed lon/lat grid (`DEFAULT_TILE_SIZE_DEG = 2.0`,
+  tunable), each tile's DEM reprojected **once** and shared across every crater it owns, rather than
+  the throughput test's own deliberately-naive fresh-open-per-crater measurement above. A crater is
+  *owned* by exactly one tile via its center point falling in that tile's nominal (unpadded) bounds
+  (`craters.query_craters_in_bbox`) -- but the DEM each tile actually reprojects covers a larger,
+  independently-tunable *padded* bbox (`DEFAULT_PADDED_TILE_SIZE_DEG = 3.0`), so a crater near a
+  nominal-tile edge still gets its full extent read from its own tile's raster rather than being
+  truncated. A crater whose real ellipse (plus `crater_depth_m`'s own tiny buffer) doesn't fit even
+  the padded raster gets `depth_m=None` -- both tile sizes are fixed globals, not sized per-crater,
+  a deliberate simplification since this precompute's actual purpose (prioritizing sharper craters
+  for a debug view) doesn't need the rare oversized-crater miss fixed. Confirmed live this needed
+  its own local-Orthographic reprojection per tile (reusing `lunaserv.reproject_astropedia_elevation_to_local_grid`),
+  not a direct window read off the raw global file -- exactly the anisotropy gap the throughput test
+  above already flagged as a real requirement, not an optional nicety.
+  **A real, non-obvious correctness bug caught while building this**: `lunaserv._reproject_raster_to_local_grid`'s
+  own raw output has no `nodata` tag set on the file, even though real gaps are filled with literal
+  `NaN` -- invisible in the existing per-camera pipeline because `lunaserv.fetch_dem` always runs the
+  reprojected DEM through `hole_fill_dem` (`dem_mosaic --hole-fill-length`) before anything reads it,
+  which is also what sets a proper `nodata` tag; the batch tiler initially skipped that step and
+  would have silently leaked `NaN` into `crater_depth_m`'s percentile as if it were real elevation
+  for any DEM gap. Fixed by running every tile's reprojected DEM through the same `hole_fill_dem`
+  step before grading it.
+  **Real measured timing (10 real tiles sampled pole-to-pole, real GLD100 + real Robbins data)
+  reconciles with, and corrects, the naive estimate above**: ~2.2s/tile fixed overhead (mostly the
+  `dem_mosaic` subprocess call) + ~0.014s/crater marginal cost -- the *marginal* per-crater cost is
+  genuinely cheaper than the naive loop's 19.4ms/crater (DEM access is shared within a tile, not
+  reopened per crater), but the fixed per-tile overhead more than offsets that at this tile size,
+  since it's paid once per tile regardless of how many craters that tile owns. Total for the whole
+  grid (14,220 tiles, 1,250,659 craters within GLD100's own ±79 deg coverage, confirmed via a direct
+  query, not estimated): **~13.6 hours single-threaded** -- *slower* than the naive estimate's ~6.9
+  hours, since that number never accounted for a real per-tile subprocess cost at all, only crater
+  count. `grade_database` (sequential) and `grade_database_via_workers` (real `-k process` worker
+  pool, mirroring `trn_dataset.TrnTestDataSet.populate_via_workers`'s established pattern exactly,
+  via a generalized `tasks.start_consumer(huey_module=...)` and this module's own dedicated
+  `huey_crater_depth` instance -- not `tasks.huey_parallel`, which is bound to a different task
+  domain) both implemented; live-validated end to end (6 real tiles, 3 workers, ~1.7x wall-clock
+  speedup at this small a batch size, real resumability confirmed across the sequential/parallel
+  boundary). Output: one small CSV per tile (not one growing file), atomically published, under
+  `default_output_dir` (alongside the other Robbins-derived cache artifacts, keyed in its own
+  directory name by the tuning parameters that determine its content) -- `load_graded_database`
+  concatenates them back for querying. Deliberately stores measured depth only, not a sharpness
+  grade -- combining it with `crater_depth.stoffler_fresh_depth_km` into an actual grade is left to
+  the caller.
+- **Investigated and rejected as a shortcut (2026-08-26)**: a third-party HuggingFace dataset,
+  `huggingface.co/datasets/juliensimon/lunar-craters-robbins`, claims to be this same Robbins
+  database plus a pre-computed `depth_km` column. Direct inspection found it isn't safe to trust:
+  its `crater_id` values don't exist anywhere in this project's own cached Robbins GeoPackage (no
+  usable join key), and matching by position/diameter instead found no real correspondence either --
+  several of its "giant" (400-1,100 km) craters have no remotely similar-sized real crater anywhere
+  near their claimed position in this project's own verified Robbins data, and one row has an
+  outright impossible value (`latitude_deg = -105.383`, `diameter_km = 3411.69`, bigger than the Moon
+  itself). The dataset card also doesn't explain how `depth_km` was actually derived. Not proof of
+  malice, but strong enough evidence of unreliability that this project's own from-scratch
+  `crater_depth_batch.py` pipeline (verifiable against real DEM data, not a black-box third-party
+  column) was kept instead -- recorded here so a future session doesn't re-spend time re-evaluating
+  the same dataset from scratch.
 
 ## ASP `sat_sim`
 

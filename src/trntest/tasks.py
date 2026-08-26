@@ -103,14 +103,23 @@ def generate_product_parallel(image) -> Path:
     return _generate(image)
 
 
-def start_consumer(workers: int, env: dict[str, str] | None = None) -> subprocess.Popen:
-    """Starts a real `huey_consumer` OS process against `huey_parallel`'s queue -- `-k process`
-    worker processes, not threads (see this module's own docstring for why). Output is redirected
-    to `<output_dir>/.huey/consumer.log` rather than left to flood the caller's own stdout, matching
-    this project's `subprocess_utils.run_quiet` convention for noisy tooling -- not built on that
-    helper itself, since this is a long-running background process to start/monitor/stop, not a
-    one-shot call to run to completion and capture. Caller must call `stop_consumer` once the batch
-    drains -- otherwise this keeps polling forever, same as any other `huey_consumer` invocation.
+def start_consumer(
+    workers: int, huey_module: str = "trntest.tasks.huey_parallel", env: dict[str, str] | None = None
+) -> subprocess.Popen:
+    """Starts a real `huey_consumer` OS process against `huey_module`'s queue (default:
+    `huey_parallel` above) -- `-k process` worker processes, not threads (see this module's own
+    docstring for why). Output is redirected to `<output_dir>/.huey/consumer.log` rather than left
+    to flood the caller's own stdout, matching this project's `subprocess_utils.run_quiet`
+    convention for noisy tooling -- not built on that helper itself, since this is a long-running
+    background process to start/monitor/stop, not a one-shot call to run to completion and capture.
+    Caller must call `stop_consumer` once the batch drains -- otherwise this keeps polling forever,
+    same as any other `huey_consumer` invocation.
+
+    `huey_module` is a plain dotted `<module>.<Huey-instance-name>` path -- `huey_consumer` itself
+    imports it generically, so this isn't limited to instances defined in this file;
+    `crater_depth_batch.grade_database_via_workers` points it at its own `huey_crater_depth`
+    instance instead, reusing this same subprocess-management machinery rather than duplicating it
+    for a second task domain.
 
     `env`, if given, replaces (not merges into) the subprocess's environment -- `None` (the default)
     inherits the calling process's own environment unchanged, same as plain `subprocess.Popen`.
@@ -119,7 +128,7 @@ def start_consumer(workers: int, env: dict[str, str] | None = None) -> subproces
     dependencies -- not expected to matter for real callers."""
     with open(_CONSUMER_LOG_PATH, "w") as log_file:
         return subprocess.Popen(
-            ["huey_consumer", "trntest.tasks.huey_parallel", "-w", str(workers), "-k", "process"],
+            ["huey_consumer", huey_module, "-w", str(workers), "-k", "process"],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,

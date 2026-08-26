@@ -97,6 +97,43 @@ def crater_depth_m(
     return float(rim_depth - floor_depth)
 
 
+STOFFLER_SIMPLE_COEFF = 0.196
+STOFFLER_SIMPLE_EXPONENT = 1.010
+STOFFLER_COMPLEX_COEFF = 1.044
+STOFFLER_COMPLEX_EXPONENT = 0.301
+# Derived, not hardcoded independently, so it can't drift from the two curves above -- solves
+# `STOFFLER_SIMPLE_COEFF * D^STOFFLER_SIMPLE_EXPONENT == STOFFLER_COMPLEX_COEFF *
+# D^STOFFLER_COMPLEX_EXPONENT` for D. Documentation/test value only (~10.58 km, matching Stoffler et
+# al. 2006's own stated crossover) -- `stoffler_fresh_depth_km` itself doesn't branch on it.
+STOFFLER_CROSSOVER_DIAMETER_KM = (STOFFLER_COMPLEX_COEFF / STOFFLER_SIMPLE_COEFF) ** (
+    1.0 / (STOFFLER_SIMPLE_EXPONENT - STOFFLER_COMPLEX_EXPONENT)
+)
+
+
+def stoffler_fresh_depth_km(diameter_km):
+    """Reference ("fresh crater") depth for a crater of `diameter_km`, per Stoffler et al. 2006
+    ("Cratering History and Lunar Chronology", *Reviews in Mineralogy and Geochemistry* 60(1),
+    519-596, DOI `10.2138/rmg.2006.60.05`) -- the classic two-regime lunar depth-diameter relation:
+    simple craters follow `STOFFLER_SIMPLE_COEFF * D^STOFFLER_SIMPLE_EXPONENT`, complex craters
+    follow the shallower `STOFFLER_COMPLEX_COEFF * D^STOFFLER_COMPLEX_EXPONENT`, crossing at
+    `STOFFLER_CROSSOVER_DIAMETER_KM` (~10.58 km).
+
+    Returns `min(simple, complex)` rather than branching on the crossover explicitly -- provably
+    identical to the textbook piecewise form for any `diameter_km > 0`. Since the simple-crater
+    exponent is the larger one, the complex-crater curve decays more slowly and so dominates (is
+    larger) as `D -> 0`; the simple-crater curve eventually overtakes it once, at the crossover, and
+    stays larger for all `D` beyond it. The two curves therefore cross exactly once for `D > 0`, so
+    their elementwise minimum picks the correct regime on both sides with no separate branch, and is
+    exactly continuous at the crossover by construction (both formulas agree there). Vectorized via
+    `np.minimum` -- takes a scalar or an array/Series of diameters alike. `diameter_km` and the
+    returned depth are both in km, matching `DIAM_CIRC_IMG`'s own units (convert to meters -- as
+    `crater_depths_for_footprint`'s own `depth_m`/`diameter_km` columns already do -- before
+    comparing to a measured depth)."""
+    simple_km = STOFFLER_SIMPLE_COEFF * np.power(diameter_km, STOFFLER_SIMPLE_EXPONENT)
+    complex_km = STOFFLER_COMPLEX_COEFF * np.power(diameter_km, STOFFLER_COMPLEX_EXPONENT)
+    return np.minimum(simple_km, complex_km)
+
+
 def _too_close_to_astropedia_pole(lat_deg: float, major_km: float) -> bool:
     """`True` if a crater centered at `lat_deg` with ellipse-fit major axis `major_km` could extend
     past GLD100's real `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` coverage limit -- i.e. its own
