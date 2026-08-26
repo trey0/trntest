@@ -9,7 +9,7 @@ report's content and adding the multi-entry index page are both explicit follow-
 ## Context
 
 `notebooks/image_generation.py` is the flagship demo notebook: one long, hand-curated, multi-phase
-walkthrough of a *single* manifest entry (`docs/dataset-plan.md`'s `TrnTestEntry`), meant to be
+walkthrough of a *single* manifest entry (`docs/plan.md`'s `TrnTestEntry`), meant to be
 read top-to-bottom in JupyterLab or on GitHub. There's no lightweight way to look at *many* entries
 side by side, or to generate a shareable, standalone artifact for one entry without dragging in the
 whole demo notebook's narrative.

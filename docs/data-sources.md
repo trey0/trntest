@@ -1156,9 +1156,9 @@ different real candidates), confirmed to hold across a wide line range with no z
 
 ## `TrnTestDataSet` on-disk layout, and the crop ISD sidecar's real accuracy
 
-See `docs/dataset-plan.md` for the full design (class hierarchy, task queue) — this section is just
-the durable, current-state facts about what ends up on disk, kept here alongside this file's other
-concrete-format references.
+See `docs/plan.md`'s `trn_dataset.py`/`tasks.py` architecture rows for the class hierarchy/task
+queue design — this section is just the durable, current-state facts about what ends up on disk,
+kept here alongside this file's other concrete-format references.
 
 **Layout**: `<output_dir>/trn_dataset/` (not `<output_dir>/dataset/`, which is
 `dataset.generate_dataset()`'s own, separate flat per-`product_id` layout — the two don't collide in
@@ -1169,7 +1169,7 @@ out of `crop`/`hillshade` so those two only ever hold the canonical named pair).
 lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
 databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_workers()`'s real
 worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s
-module docstring and `docs/dataset-plan.md`'s "Task queue" section. Filenames key on `edr_product` (`M1327210646CE` →
+module docstring. Filenames key on `edr_product` (`M1327210646CE` →
 `crop/M1327210646CE_crop.cub`), matching `isis_wac.py`'s own scratch-dir convention; row lookup
 (`TrnTestDataSet[key]`) keys on `product_id` instead, matching `dataset.generate_dataset()`'s
 existing per-image folder convention — the two are always equal in today's real manifest, so this
@@ -1180,9 +1180,8 @@ calibration intermediates, `isis_wac._spike_dir`) lives inside each `TrnTestData
 `_work/`, one distinguished subtree per entry, not a shared cross-dataset scratch location
 (`isis_wac.run_pipeline`/`crop_for_camera` are still idempotent, so re-running against the same
 already-populated entry is still cheap — just no longer shared *across* dataset folders). Was
-`config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path, until
-`docs/intermediate-product-plan.md`'s Phase 3 (2026-08-23) moved it here — see
-`docs/dataset-plan.md`'s own superseded note and `docs/history.md`'s dated entry for why.
+`config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path, until `docs/history.md`'s
+Phase 79 entry (2026-08-23) moved it here — see that entry for why.
 
 **`isis_wac.run_isd_generate_for_crop`'s sidecar is accurate, not just informational** — it exists
 specifically so `crop/<edr_product>_crop.json` truthfully describes `crop/<edr_product>_crop.cub`'s

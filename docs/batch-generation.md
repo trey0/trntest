@@ -2,9 +2,8 @@
 
 How to actually populate a `TrnTestDataSet` at scale — real network/SPICE/ISIS/ASP work across many
 manifest entries — using `TrnTestDataSet.populate_via_workers()`, and the concrete things to watch
-out for when you do. See `src/trntest/tasks.py`'s module docstring and `docs/dataset-plan.md`'s
-"Task queue" section for the underlying `huey` design this builds on; this doc is the practical
-workflow layer on top, not a design doc.
+out for when you do. See `src/trntest/tasks.py`'s module docstring for the underlying `huey` design
+this builds on; this doc is the practical workflow layer on top, not a design doc.
 
 ## Two ways to populate a dataset — pick the right one
 
@@ -87,7 +86,7 @@ the *same* folder at once are not). The old filesystem lock files that made conc
 to get real parallelism now, not multiple top-level calls.
 
 **Mixing one entry's product types across concurrent workers is no longer a correctness
-requirement (2026-08-23, docs/intermediate-product-plan.md's Phases 1-4).** This used to be the
+requirement (2026-08-23, `docs/history.md`'s Phase 79 entry).** This used to be the
 sharpest, most likely-to-actually-happen edge case here: `crop`, `hillshade`, and `reproject` for
 the *same* manifest entry all depend on `TrnTestEntry.camera`, which calls `isis_wac.run_pipeline`
 against that entry's own ISIS working directory — a shared write path two concurrent workers could
@@ -100,6 +99,16 @@ now publish atomically (`product_registry.atomic_publish_path`/`atomic_publish` 
 uniquely-named temp path, then atomic rename) — two workers racing on the same label now converge
 on an equivalent, complete result rather than tearing a partial file or hitting ISIS's own
 overwrite-refusal mid-write.
+
+**Since then (2026-08-24), this scenario can no longer happen at all, not just safely — task
+granularity moved from `(entry, product_type)` to `entry` (`docs/history.md`'s dated entry).** One
+`huey` task now covers every requested, still-pending product type for a given entry, run
+sequentially within that single task/process; `populate_via_workers(workers=N)` parallelizes across
+*entries* only. Two of the same entry's product types landing on two different workers at the same
+moment — the scenario the atomic-publish work above made safe — is now structurally impossible in
+addition to being safe, and as a real side benefit `entry.camera`/`entry.dem_ortho_result` (both
+`functools.cached_property`) are computed once per entry and reused across its product types
+instead of being redundantly rebuilt once per worker that used to land on it.
 
 **Live-validated** (2026-08-23): two never-before-generated manifest rows,
 `populate_via_workers(product_types=("crop", "hillshade"), workers=2)`, product types *not*
@@ -117,10 +126,17 @@ collision, then a separate camera-building/CK-kernel-resolution race) — both f
 concurrent execution (7ms apart, 50-80s overlap). `reproject` is still opt-in (not in
 `PRODUCT_TYPES`), but is now validated safe to mix with `hillshade` under concurrent workers too.
 
-Sequencing by product type (below) is now a pure throughput choice, not a safety requirement — may
-still be worth it for large batches (avoids two workers both cold-fetching the same not-yet-cached
-external resource around the same time, see "Cold-cache concurrent fetch races" below), but a
-mixed-`product_types` call like the validated one above is no longer expected to race:
+Both validations above describe the pre-2026-08-24 `(entry, product_type)` task granularity —
+`crop`/`hillshade`/`reproject` of the *same* entry landing on two different workers, the specific
+thing being exercised, can no longer happen at all post-granularity-change (see above). The
+atomic-publish fixes these validations confirmed remain valuable regardless — for genuine
+cross-entry write collisions and crash/partial-write safety, not just this now-eliminated race.
+
+Sequencing by product type (below) is now a pure throughput choice, not a safety requirement — it
+no longer protects against a same-entry cross-worker race (structurally impossible now, see above),
+just against many *different* entries' tasks all cold-fetching the same not-yet-cached external
+resource around the same time (see "Cold-cache concurrent fetch races" below). A
+mixed-`product_types` call like the validated one above is not expected to race either way:
 
 ```python
 dataset.populate_via_workers(product_types=("crop",), workers=4)

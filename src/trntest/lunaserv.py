@@ -1070,8 +1070,9 @@ def _hapke_reflectance(
     `ISIS3` writer doesn't create one from scratch).
 
     **Uses a call-scoped `tempfile.TemporaryDirectory()` for its own scratch cubes**, not
-    `config.output_dir` -- confirmed live (`docs/intermediate-product-plan.md`'s Phase 2 always
-    intended this, but it wasn't actually implemented until a real race surfaced it): two workers
+    `config.output_dir` -- confirmed live (`docs/intermediate-product-discipline.md`'s principles
+    always intended this, but it wasn't actually implemented until a real race surfaced it, see
+    `docs/history.md`'s Phase 80 entry): two workers
     computing the same entry's `hillshade` and `reproject` concurrently both reach this function
     (via `despeckle_and_shade_ortho`/`hapke_shade_ortho`) and raced on these fixed-name cubes,
     corrupting each other's writes (`**I/O ERROR** Failed to write blob`). Nothing here persists or
@@ -1447,7 +1448,7 @@ def fetch_dem(
     camera: Camera, config: TrntestConfig | None = None, extra_footprint_lonlat_deg: dict | None = None
 ) -> DemFetchResult:
     """The entry's one DEM fetch -- split out of the old combined `fetch_dem_and_ortho`
-    (`docs/intermediate-product-plan.md`'s Phase 4) so `product_registry` has exactly one legible,
+    (`docs/history.md`'s Phase 79 entry) so `product_registry` has exactly one legible,
     checkable writer for the `"dem_filled"` label (principle 2), decoupled from the ortho-shading
     concern (`fetch_and_shade_ortho`, a genuine intentional-variant family -- multiple valid shaded
     orthos by design, principle 1) that used to be fused into the same function.
@@ -1647,7 +1648,7 @@ def fetch_dem_and_ortho(
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
 ) -> DemOrthoResult:
     """Composes `fetch_dem` + `fetch_and_shade_ortho` -- unchanged signature/behavior from before
-    that Phase 4 split (`docs/intermediate-product-plan.md`); see those two functions' own
+    that split (`docs/history.md`'s Phase 79 entry); see those two functions' own
     docstrings for what's now individually `product_registry`-decorated, and for the DEM
     filename-collision gap that split doesn't itself close."""
     dem = fetch_dem(camera, config, extra_footprint_lonlat_deg)

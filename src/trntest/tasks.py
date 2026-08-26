@@ -1,7 +1,7 @@
 """The `huey` (sqlite-backed) task queues `trn_dataset.py`'s `TrnTestDataSet.populate()`/
 `populate_via_workers()` drive. Replaces this project's old filesystem lock/error files with
-`huey`'s own well-tested queue/result machinery -- see docs/dataset-plan.md's "Task queue" section
-for the full design and why.
+`huey`'s own well-tested queue/result machinery -- see `docs/history.md`'s Phase 66 entry for the
+migration and why.
 
 Two separate `Huey` instances, each with its own sqlite file under `<output_dir>/.huey/` and its
 own thin task wrapper around the shared `_generate_entry` helper -- not one, because huey fixes a
@@ -15,7 +15,7 @@ values. One task per *entry* (covering every requested product type for it, not 
   blocks-until-done behavior exactly. `immediate_use_memory=False` is required alongside it:
   huey's own default silently switches immediate mode to in-memory storage, which would make a
   task's failure invisible to a `status()` call from a *different* process (confirmed empirically
-  -- see docs/dataset-plan.md) -- the real sqlite file must stay authoritative so a fresh
+  -- see `docs/history.md`'s Phase 66 entry) -- the real sqlite file must stay authoritative so a fresh
   `docker compose run` can still see a prior failure, the same property the old `.error` files had.
 - `huey_parallel` (`tasks_parallel.db`, `immediate=False`): what `populate_via_workers()` drives.
   huey's `Consumer` class refuses to start against an `immediate=True` instance (confirmed via its

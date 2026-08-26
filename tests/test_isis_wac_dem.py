@@ -130,7 +130,7 @@ def test_spiceinit_vis_even_cube_reuses_when_already_spiceinit(tmp_path):
 
 
 def test_spike_dir_lands_under_work_entry_isis(tmp_path):
-    # docs/intermediate-product-plan.md's Phase 3: _work/<entry>/isis/, not the old, workspace-level
+    # docs/history.md's Phase 79 entry: _work/<entry>/isis/, not the old, workspace-level
     # scratch_dir/isis_wac/<edr_product>/ -- driven by output_dir (the entry's own root), not
     # scratch_dir, which this call deliberately leaves untouched.
     config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT", scratch_dir=tmp_path)
@@ -149,7 +149,7 @@ def _write_ortho_style_tif(path, center_lon_deg, center_lat_deg, resolution_m):
 
 
 def test_run_cam2map_for_crop_writes_under_work_entry_crop(tmp_path):
-    # docs/intermediate-product-plan.md's Phase 3: generator-scoped _work/<entry>/crop/<label> --
+    # docs/history.md's Phase 79 entry: generator-scoped _work/<entry>/crop/<label> --
     # not alongside crop.cub_path itself (which, post-migration, lives under _work/<entry>/isis/).
     config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT")
     dem_path = tmp_path / "dem.tif"

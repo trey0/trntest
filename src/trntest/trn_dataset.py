@@ -4,9 +4,9 @@ expensive-to-derive state), and `TrnTestImage` (one product type of one entry --
 `entry.hillshade` -- owning the genuinely shared generate/plot logic once, with small per-type
 subclasses). Replaces `dataset.generate_dataset()`'s flat, all-at-once output layout with something
 that can be populated incrementally/resumably, driven by the `trntest.tasks` `huey` task queue (see
-that module's docstring and docs/dataset-plan.md's "Task queue" section for the full design). See
-docs/dataset-plan.md for the full design this implements -- start there before changing anything
-here.
+that module's docstring for the full design). See `docs/plan.md`'s `trn_dataset.py`/`tasks.py` rows
+for the current architecture summary and `docs/history.md`'s dated entries for how it got here --
+start there before changing anything here.
 
 **`populate()` no longer supports running several concurrent `docker compose run` invocations
 against the same dataset folder as a way to parallelize** -- the old filesystem lock files that made
@@ -22,8 +22,7 @@ through the exact same camera as `hillshade`) is now implemented too, but delibe
 `PRODUCT_TYPES` (`populate()`/`status()`'s default) -- opt-in only (pass
 `product_types=(..., "reproject")` explicitly) until it's wired into a notebook and validated at
 dataset scale, not just the one image `docs/reproject-fov-investigation.md` cross-validated. See
-docs/dataset-plan.md for the original design and docs/reproject-fov-investigation.md for
-`reproject`'s own history.
+docs/reproject-fov-investigation.md for `reproject`'s own history.
 """
 
 import abc
@@ -405,8 +404,8 @@ class TrnTestImage(abc.ABC):
         )
 
     def plot_overlay(self, title: str | None = None, layers: list[plotting.OverlayLayer] | None = None):
-        """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay`
-        docs/dataset-plan.md's own pseudocode names -- the notebook this replaces already switched
+        """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay` -- the
+        notebook this replaces already switched
         to the auto-blinking-GIF toggle version (see its own docstring) before this class existed,
         and reverting that UX improvement here would be a real regression, not a neutral relocation.
         Returns an `IPython.display.HTML` object -- callers must not add a trailing `;` in a
@@ -484,7 +483,7 @@ class TrnTestHillshadeImage(TrnTestImage):
     sidecar. "Hillshade base map data reprojected using sat_sim" is a literal description of what
     `render.run_sat_sim` already produces (the hillshade gets baked into the ortho *before* sat_sim
     ever runs -- see `lunaserv.despeckle_and_shade_ortho`), so this is a pure relocation, not new
-    pipeline logic -- see docs/dataset-plan.md."""
+    pipeline logic."""
 
     @property
     def raster_path(self) -> Path:
@@ -530,7 +529,8 @@ class TrnTestHillshadeImage(TrnTestImage):
         # "don't spill mapproject's own intermediates into the published pair's folder" reasoning as
         # TrnTestCropImage's own override. self.raster_path.parent.name ("hillshade"/"reproject")
         # already names this image's own generator -- reused here instead of a second, separate
-        # per-subclass constant (docs/intermediate-product-plan.md's Phase 3 generator-scoped tier).
+        # per-subclass constant (this project's own generator-scoped `_work/` tier, `docs/history.md`'s
+        # Phase 79 entry).
         # camera_type="csm" (the default) against self.sidecar_json_path is safe: camera.
         # solve_corrected_fov is isotropic (fu == fv), so cam_gen's CSM Frame conversion of our own
         # .tsai has no anisotropy to lose -- see docs/reproject-fov-investigation.md for the
@@ -549,7 +549,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
     `sat_sim` but for input data use the RDR of our WAC crop essentially."
 
     Subclasses `TrnTestHillshadeImage`, not `TrnTestImage` directly, since it goes through the exact
-    same sat_sim-render-then-mapproject shape (per docs/dataset-plan.md's own note) -- only the
+    same sat_sim-render-then-mapproject shape -- only the
     `--ortho` texture source differs, so `raster_path`/`sidecar_json_path`/`render_label`/
     `_generate_impl` are the only overrides needed; `width_km`/`height_km`/`footprint_lonlat_deg`/
     `rotation_k`/`tie_point_px_key`/`_mapprojected_path` are all inherited unchanged (dynamic
@@ -598,8 +598,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
 # product type for it (see tasks._generate_entry's own docstring for why); `done` is still just
 # `image.exists()`, per product type, `failed` is whatever the given huey instance's own
 # sqlite-backed result store says for that entry's deterministic id (see trntest.tasks.task_id).
-# See that module's docstring and docs/dataset-plan.md's "Task queue" section for the full design
-# and why there's no
+# See that module's docstring for the full design and why there's no
 # more `in_progress` state or manual crash-recovery step (a killed process just leaves nothing
 # behind to clean up -- the next populate*() call re-enqueues based on disk state alone).
 

@@ -42,7 +42,7 @@ _ASP_HAPKE_COEFF_ORDER = ("wh", "hg1", "hg2", "b0", "hh")
 
 def _sfs_validation_dir(config: TrntestConfig) -> Path:
     """`_work/<entry>/sfs_validation/` -- this module's own generator-scoped tier
-    (`docs/intermediate-product-plan.md`'s Phase 3): investigation-only outputs, not consumed by any
+    (`docs/history.md`'s Phase 79 entry): investigation-only outputs, not consumed by any
     other generator."""
     d = config.output_dir / "sfs_validation"
     d.mkdir(parents=True, exist_ok=True)

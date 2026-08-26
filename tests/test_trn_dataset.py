@@ -17,7 +17,7 @@ def _minimal_manifest(product_ids: list[str]) -> pd.DataFrame:
     """A manifest DataFrame with just enough columns for the task-queue/class-hierarchy tests below
     -- none of which touch `TrnTestEntry.per_image_config`/`camera`/etc. (no real SPICE/ASP/ISIS), so
     a full `dataset.DATASET_COLUMNS` row isn't needed. `edr_product == product_id`, matching how
-    today's real manifest always has them equal (see docs/dataset-plan.md's "On-disk layout" section)."""
+    today's real manifest always has them equal (see docs/data-sources.md's "on-disk layout" section)."""
     return pd.DataFrame({"product_id": product_ids, "edr_product": product_ids})
 
 
@@ -163,7 +163,7 @@ def test_crop_and_hillshade_path_naming(tmp_path):
 
 
 def test_hillshade_and_reproject_mapprojected_path_are_generator_scoped(tmp_path, monkeypatch):
-    # docs/intermediate-product-plan.md's Phase 3: _work/<entry>/<generator>/<label>, not a flat
+    # docs/history.md's Phase 79 entry: _work/<entry>/<generator>/<label>, not a flat
     # _work/<entry>/<label> -- hillshade and reproject must land in their own separate subfolders
     # even though they share this same inherited _mapprojected_path implementation.
     folder = tmp_path / "ds"
@@ -580,7 +580,7 @@ def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
         tasks.stop_consumer(consumer)
 
     assert marker_path.read_text() == "done"
-    assert str(value) == str(marker_path)
+    assert str(value["fake"]) == str(marker_path)
 
 
 def test_generate_product_parallel_failure_visible_via_huey_parallel_result(tmp_path):

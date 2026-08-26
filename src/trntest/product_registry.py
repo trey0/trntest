@@ -1,9 +1,9 @@
 """Intermediate-product access-discipline primitives -- see `docs/intermediate-product-discipline.md`
-for the principles this implements and `docs/intermediate-product-plan.md` for this project's own
+for the principles this implements and `docs/history.md`'s Phase 79/80 entries for this project's own
 rollout of it.
 
 Two independent pieces, both pure infrastructure with no behavior change of their own until real
-writers/readers/deleters are decorated (`docs/intermediate-product-plan.md`'s Phase 4):
+writers/readers/deleters are decorated (`docs/history.md`'s Phase 79 entry):
 
 - `writes_product`/`reads_product`/`deletes_product`: a lightweight registry making "which code path
   writes/reads/deletes this label" a legible, checkable fact (principle 7) rather than something only

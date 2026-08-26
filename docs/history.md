@@ -4538,3 +4538,115 @@ Same session, continuing directly from Phase 79. The user asked which loose end 
 **Verified**: fast suite green throughout (22 new tests across `test_product_registry.py`/`test_isis_wac_dem.py`, only the same pre-existing unrelated worker-subprocess flake), the same 5 heavy tests pass against real ISIS/network after each fix, and the `("hillshade", "reproject"), workers=2` validation -- which failed with two different real bugs, twice, against three different pairs of fresh manifest rows -- finally completes cleanly on genuinely fresh entries, with the consumer log confirming real overlap (same-entry tasks starting 7ms apart, running 50-80s concurrently). Two commits on a new branch, `feature/dem-ortho-atomic-race-fix`, off `main` (Phase 79's branch was already merged and pushed).
 
 **Not done in this pass**: the DEM filename-collision gap is still open (unchanged from Phase 79). The narrower two-workers-spiceinit-the-same-file risk noted above is left open, not fixed. Phase 6 (published-output registry coverage) remains not-yet-scheduled.
+
+## Phase 81 (2026-08-24) — Moved task granularity from `(entry, product_type)` to `entry`
+
+Follow-on to Phases 79-80's atomic-publish work, same week: those phases made two of the same
+entry's product types landing on two different `-k process` workers *safe* (atomic publishing
+converges on an equivalent result instead of tearing a file), but didn't address the other real cost
+of that granularity -- `functools.cached_property` only memoizes within one process, so `hillshade`
+and `reproject` of the same entry, landing on two different workers, each independently,
+redundantly rebuilt the same real SPICE/ISIS/DEM state for that entry (`entry.camera`/
+`entry.dem_ortho_result`). Confirmed live as a real, measurable wall-clock cost, not just a
+theoretical inefficiency, in a `("hillshade", "reproject")` batch.
+
+**Fix**: `tasks.py`'s `_generate` (took one `TrnTestImage`) replaced by `_generate_entry(entry,
+product_types)` -- one huey task per *entry*, covering every requested-and-still-pending product
+type for it, each attempted independently within the task (one's failure doesn't block the others).
+A new `EntryGenerationError` carries every product type's exception (`{product_type: Exception}`),
+raised only after all types in the task were attempted, so a task with one real failure and one real
+success doesn't lose or misreport the success. `tasks.task_id(dataset_folder, product_id)` drops its
+`product_type` parameter -- one deterministic id per entry, not per `(entry, product_type)`.
+
+`trn_dataset.py` updated to match: `task_state()`'s stored-huey-result fallback and
+`_clear_stored_result()` are now keyed per entry; `_enqueue_pending()` builds each entry's own
+pending-product-type subset and enqueues one task covering it (`task_fn.s(entry, pending_types)`,
+not `task_fn.s(image)` per type); `populate()`/`populate_via_workers()`'s `retry_failed` clearing and
+`truncate()`'s stored-result clearing collapsed from a per-product-type loop to one per-entry call.
+`task_state()`'s own `image.exists()`-first precedence means per-product-type `done`/`pending`
+reporting stays exactly correct despite the underlying stored result now being entry-level -- the
+real, accepted tradeoff is coarser `failed`-attribution when more than one product type in the same
+task didn't complete (can't tell from the stored result alone which of the task's several types
+failed, only that at least one did).
+
+**Real side effect, not just a performance win**: this also structurally eliminates the specific
+same-entry-cross-worker race Phases 79-80's atomic-publish fixes made *safe* -- two of one entry's
+product types can no longer land on two different workers at all now, since they're always in the
+same task. `docs/batch-generation.md`'s "Mixing product types across concurrent workers" and
+`docs/environment.md`'s `run_isd_generate` same-dataset-folder-race note both updated to reflect
+this. The atomic-publish work itself stays valuable regardless -- for genuine cross-entry write
+collisions and crash/partial-write safety, not just this now-eliminated race.
+
+**Verified**: fast suite green (only the same pre-existing unrelated worker-subprocess flake), plus
+a direct manual repro confirming a `crop` failure doesn't block `hillshade`'s own success within one
+entry's task. `docs/plan.md` (`tasks.py`/`trn_dataset.py` rows) and `docs/batch-generation.md`
+updated to describe the new granularity. (`docs/dataset-plan.md`/`docs/intermediate-product-plan.md`
+themselves were removed in a same-day follow-up -- see Phase 82.)
+
+## Phase 82 (2026-08-24) — Removed the superseded `dataset-plan.md`/`intermediate-product-plan.md` design docs and swept their references
+
+Same-day follow-up to Phase 81. Both docs were fully-implemented, historical planning documents --
+`dataset-plan.md`'s design (`TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage`, the original filesystem
+task queue) had long since been superseded in practice by `docs/plan.md`'s own architecture table
+and the `huey` migration (Phase 66); `intermediate-product-plan.md`'s Phases 1-5 were fully
+implemented and validated by Phase 79. Neither was in `AGENTS.md`'s list of docs kept current, and
+both were carrying stale internal claims of their own (`dataset-plan.md`'s "Status: designed, not
+yet implemented" header, in particular, hadn't been true for many phases). `git rm` both.
+
+**Swept the ~30 references to them** across `src/trntest/` (`trn_dataset.py`, `tasks.py`,
+`product_registry.py`, `sfs_validation.py`, `isis_wac.py`, `lunaserv.py`), `tests/`
+(`test_product_registry.py`, `test_isis_wac_dem.py`, `test_sfs_validation.py`,
+`test_trn_dataset.py`), `docs/` (`plan.md`, `data-sources.md`, `batch-generation.md`,
+`environment.md`, `reproject-fov-investigation.md`, `report-plan.md`), and the notebook markdown
+cells in `image_generation.py`/`select_datasets.py`/`reproject_spike.py` -- each redirected to
+whichever current doc actually carries that fact now (mostly `docs/plan.md`'s architecture table,
+`docs/data-sources.md`'s on-disk-layout section, or a specific `docs/history.md` phase entry in
+place of the removed doc's own internal phase numbering, since that numbering no longer resolves to
+anything). `docs/history.md`'s own narrative mentions of both files (there are many, e.g. Phase
+66/79's own entries) were deliberately left as-is -- they're accurate historical statements about
+what existed at the time, consistent with this file's own framing as a narrative log, not a
+currently-synced reference.
+
+**Notebooks**: `image_generation.py`/`select_datasets.py` had their markdown-cell prose updated the
+same way, then each was re-run via `scripts/run_notebook.sh` to keep its `.ipynb` pair in sync
+(structural-sync is part of `trntest-lint`) -- real re-execution, not just a text edit, since these
+are jupytext-paired notebooks with committed, executed output. Both completed cleanly.
+`reproject_spike.py`'s own re-run hit a real, already-documented, pre-existing gap instead --
+`docs/plan.md`'s own open items already flag this notebook (along with
+`along_track_correction`/`real_hapke_params`/`pose_alignment_spike`) as not regenerated since Phase
+78's `ortho_source="wac_emp_pds"` default change, and its candidate row's footprint (latitude
+51-60 deg) exceeds WAC_EMP's 60 deg equirect coverage under that default -- unrelated to this
+phase's doc sweep. Rather than force a real pipeline fix or leave a half-executed notebook
+committed (papermill's incremental `--request-save-on-cell-execute` had already written a
+partial run with the raised exception baked in as a cell output before failing), the partial
+`.ipynb` was discarded (`git checkout --`) and `jupytext --sync` used instead to update just the
+one changed markdown cell's text in the `.ipynb`, leaving its existing (already-stale, already-known)
+outputs/execution counts untouched -- keeps structural sync (what `trntest-lint` actually checks)
+without pretending the notebook's own real output freshness gap is resolved.
+
+**Also found and fixed a real, separate bug in Phase 81 itself, unrelated to the doc sweep**:
+`tests/test_trn_dataset.py::test_generate_product_parallel_runs_in_a_real_worker_subprocess`
+asserted `str(value) == str(marker_path)`, but `_generate_entry` (Phase 81) always returns
+`{product_type: raster_path}`, not a bare path -- confirmed via `git show` that this assertion was
+never updated when Phase 81's own commit changed the call to pass `("fake",)`, so it's been failing
+deterministically since that commit, not something this phase's edits caused. Fixed to
+`str(value["fake"]) == str(marker_path)`.
+
+**A second, real but separate finding, not fixed here**: verifying the above turned up that this
+project's fast suite can fail on a *second* consecutive `docker compose run --rm demo pytest`
+invocation against the same worktree -- `tasks.py`'s module-level `huey`/`huey_parallel` instances
+are keyed to `load_config().output_dir`, which is bind-mounted to this worktree's real,
+host-persistent `output/` directory (survives across ephemeral container runs), while pytest's
+`tmp_path` naming is deterministic per test function in a fresh container. A test that intentionally
+records an entry-level "failed" result (`test_populate_marks_failed_and_continues`) leaves that
+record behind under a task id a later invocation's `tmp_path` reproduces exactly, and since Phase
+81 moved to one shared stored result per *entry*, that stale record now taints every product type
+sharing that entry's task id, not just the one that actually failed -- `_enqueue_pending()` sees
+nothing "pending" and never re-enqueues, so a product type that would otherwise succeed fresh never
+gets attempted. Confirmed directly: `rm -rf output/<worktree>/.huey` before a run makes the whole
+fast suite pass cleanly every time; without it, a second consecutive run reliably fails two tests.
+Flagged as a follow-up task (not fixed in this phase -- a real test-isolation fix, out of scope for
+a docs-focused change) rather than silently worked around.
+
+**Verified**: `trntest-lint` clean (source/tests/notebooks); fast suite green (323 passed) with
+`.huey` cleared immediately beforehand, per the finding above.

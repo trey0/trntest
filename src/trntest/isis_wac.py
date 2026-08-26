@@ -147,7 +147,7 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
 
 def _spike_dir(config: TrntestConfig) -> Path:
     """`_work/<entry>/isis/` -- the entry-scoped, `isis/`-distinguished tier
-    `docs/intermediate-product-plan.md`'s Phase 3 describes: kept separate from the rest of
+    `docs/history.md`'s Phase 79 entry describes: kept separate from the rest of
     `_work/<entry>/` specifically so it survives routine pruning that the cheaper stuff doesn't need
     to (it's the single most expensive thing here to regenerate -- a real multi-subprocess ISIS
     toolchain run). Moved in from the old, workspace-level `scratch_dir/isis_wac/<edr_product>/` (not
@@ -661,8 +661,8 @@ def run_isd_generate_for_crop(
     """Generate a CSM Pushframe ISD for `crop` itself (the actual cropped cube ISIS's own `crop` app
     produced), not the full stitched cube `run_isd_generate` is limited to -- so the resulting JSON's
     own image dimensions/frame count are read from, and correctly reflect, the crop's real size, for
-    `trn_dataset.TrnTestCropImage`'s sidecar (see docs/dataset-plan.md's "Crop sidecar: accurate, not
-    just informational"). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
+    `trn_dataset.TrnTestCropImage`'s sidecar (see `docs/data-sources.md`'s "crop ISD sidecar's real
+    accuracy" section). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
     for actual reprojection** -- like any Pushframe ISD in this codebase, `usgscsm`'s `groundToImage`
     isn't reliable enough for that (see the module docstring); real ground<->image lookups still go
     through `resolve_ground_to_image_model`/`ground_to_image_pixel`, unaffected by any of this. This
@@ -976,7 +976,7 @@ def run_cam2map_for_crop(
     -- confirmed harmless: the output CRS/transform were verified correct (matching
     `dem_ortho_result`'s own projection exactly) despite it, and the process still exits 0."""
     config = config or load_config()
-    # _work/<entry>/crop/ -- generator-scoped (docs/intermediate-product-plan.md's Phase 3), even
+    # _work/<entry>/crop/ -- generator-scoped (docs/history.md's Phase 79 entry), even
     # though this is also reused by TrnTestReprojectImage's own texture-source step: it's the crop's
     # own mapproject output regardless of which product type ends up consuming it, so it stays under
     # the crop generator's own subtree rather than the isis/ tier crop.cub_path itself now lives in.

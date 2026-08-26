@@ -224,7 +224,7 @@ def test_deleters_of_returns_empty_list_for_unregistered_label():
 
 
 def test_real_pipeline_writers_are_registered():
-    # docs/intermediate-product-plan.md's Phase 4: the real writer functions decorated so far are
+    # docs/history.md's Phase 79 entry: the real writer functions decorated so far are
     # legibly registered under their own label -- importing the modules is enough to trigger
     # registration (decorators run at module-import/definition time).
     assert product_registry.writer_of("dem_filled") is lunaserv.fetch_dem

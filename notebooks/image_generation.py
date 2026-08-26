@@ -30,10 +30,9 @@
 # see Phase 6's notes). Phase 7 then compares the two candidates directly against each other, with
 # explicit tie points, and Phase 8 validates a third candidate -- `reproject`, the same synthetic
 # camera as Phase 5 but textured from the real WAC crop's own reflectance -- the same two ways.
-# See `../docs/plan.md` for the full phase-by-phase approach,
-# `../docs/dataset-plan.md` for the `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` object model
-# Phases 2-6B are built on, and `../docs/data-sources.md` for the researched specifics referenced
-# below.
+# See `../docs/plan.md` for the full phase-by-phase approach and the `TrnTestDataSet`/
+# `TrnTestEntry`/`TrnTestImage` object model Phases 2-6B are built on, and `../docs/data-sources.md`
+# for the researched specifics referenced below.
 #
 # This notebook drives the installed `trntest` package (see `../src/trntest/`) rather than
 # duplicating its logic -- each cell is close to a one-line call into the package.
@@ -61,7 +60,7 @@ session = trntest.Session()
 # ## Phase 2: generate the selected image + SPICE-derived camera pose
 #
 # `trntest.TrnTestDataSet.create(...)` sets up (or reuses) a self-contained dataset folder for
-# the *whole* manifest above -- see `../docs/dataset-plan.md` for the full design. This notebook
+# the *whole* manifest above -- see `../docs/plan.md`'s `trn_dataset.py` row for the full design. This notebook
 # always wants a fresh render of the manifest's first entry reflecting whatever pipeline code is
 # currently checked out (not a silently-reused prior run, which would be actively misleading while
 # iterating on `render.py`/`isis_wac.py`), so `dataset.truncate(dataset[0])` first deletes that
@@ -72,7 +71,7 @@ session = trntest.Session()
 # ISIS-processed WAC crop. `populate(limit=1)` stops once it's done genuinely new work on 1 entry
 # -- since `truncate()` just reset entry 0 specifically to `pending`, and entries are processed in
 # manifest order starting from 0, this always lands on entry 0, never spilling into other manifest
-# rows regardless of their own state (see `../docs/dataset-plan.md`'s "Task queue" section for why
+# rows regardless of their own state (see `../src/trntest/tasks.py`'s module docstring for why
 # `limit` counts new work done, not manifest position, and why that distinction matters here).
 # `truncate()` leaves `_work/<edr_product>/`'s DEM/ortho intermediates alone, so this doesn't
 # re-fetch those from Lunaserv/Astropedia every run, just re-renders from them.
@@ -302,7 +301,7 @@ plotting.plot_render_toggle(
 # ## Summary
 #
 # - Rendered a real, illuminated LROC WAC EDR picked ahead of time by a catalog-driven, multi-orbit dataset search (`trntest.dataset.images_for_window`, via the PDS ODE REST API and SPICE-derived orbit/illumination geometry), then computed LRO's true position/orientation at that image's timestamp directly in the Moon's `MOON_ME` frame via `spiceypy`, using a minimal, selectively-cached SPICE kernel set (see `docs/caching.md`).
-# - Built a `.tsai` Pinhole camera from that pose and rendered a synthetic 256x256 image with ASP's `sat_sim`, fed by real DEM/imagery pulled live from Lunaserv WMS for the camera's own computed ground footprint (`trntest.TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` -- see `docs/dataset-plan.md`). Produced a CSM/"ISD" JSON sidecar for it (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
+# - Built a `.tsai` Pinhole camera from that pose and rendered a synthetic 256x256 image with ASP's `sat_sim`, fed by real DEM/imagery pulled live from Lunaserv WMS for the camera's own computed ground footprint (`trntest.TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` -- see `docs/plan.md`). Produced a CSM/"ISD" JSON sidecar for it (`cam_gen`), and cross-validated the whole pose pipeline: `cam_gen` independently recovered the same sub-spacecraft geodetic position from the `.tsai`'s raw ECEF pose that the original SPICE computation produced.
 # - Validated the synthetic render's geometry against the hillshade-based basemap two ways (Phase 5): a raw, north-up-rotated quality check (5A), and a true pixel-for-pixel geo-registered overlay via `mapproject` through the render's own CSM sidecar (5B).
 # - Processed the same real footprint's WAC EDR through ISIS3's own pipeline (`isis_wac.run_pipeline`) -- a genuine camera-model-based real-WAC product (EDR fetch through calibration and framelet interleaving) -- cropped it to the real footprint being compared (`isis_wac.crop_for_camera`), and validated that single crop's geometry against the same basemap the same two ways (Phase 6): a raw quality check (6A), and a `cam2map` overlay through ISIS's own native Pushframe camera model (6B) -- not ASP's `mapproject`/CSM, after finding a real bug in `usgscsm`'s `groundToImage` for Pushframe sensors.
 # - Compared the two TRN test image candidates directly against each other, with explicit tie points (Phase 7).
