@@ -2,6 +2,7 @@ import math
 import zipfile
 from unittest import mock
 
+import geopandas
 import numpy as np
 import pandas as pd
 import pytest
@@ -305,3 +306,47 @@ def test_load_graded_database_returns_empty_frame_for_missing_dir(tmp_path):
     combined = crater_depth_batch.load_graded_database(tmp_path / "does_not_exist")
     assert combined.empty
     assert list(combined.columns) == ["CRATER_ID", "diameter_km", "depth_m", "depth_diameter_ratio", "arc_img"]
+
+
+def test_consolidate_graded_geopackage_left_joins_depth_onto_full_robbins_table(tmp_path):
+    zip_path = tmp_path / "robbins.zip"
+    _write_robbins_zip(
+        zip_path,
+        rows=[
+            ("00-1-graded", 0.0, 0.0, 1.0, 1.0, 0.0, 0.9, 1.5),
+            ("00-1-ungraded", 10.0, 10.0, 2.0, 2.0, 0.0, 0.8, 3.0),
+        ],
+    )
+    gpkg_path = craters.geopackage_path(zip_path)
+    craters._convert_to_geopackage(zip_path, gpkg_path, moon_radius_m=_MOON_RADIUS_M)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "CRATER_ID": "00-1-graded",
+                "diameter_km": 1.5,
+                "depth_m": 42.0,
+                "depth_diameter_ratio": 0.028,
+                "arc_img": 0.9,
+            }
+        ]
+    ).to_csv(output_dir / "tile_a.csv", index=False)
+
+    with mock.patch.object(craters, "ensure_geopackage", return_value=gpkg_path):
+        dest = crater_depth_batch.consolidate_graded_geopackage(_config(tmp_path), output_dir=output_dir)
+
+    assert dest == output_dir / "robbins_with_depth.gpkg"
+    joined = geopandas.read_file(dest)
+    assert len(joined) == 2
+    # Only depth_m/depth_diameter_ratio are merged in -- diameter_km/arc_img must not create
+    # duplicate/suffixed columns alongside the Robbins-native DIAM_CIRC_IMG/ARC_IMG.
+    assert "diameter_km" not in joined.columns
+    assert "arc_img" not in joined.columns
+    by_id = joined.set_index("CRATER_ID")
+    assert by_id.loc["00-1-graded", "depth_m"] == pytest.approx(42.0)
+    assert by_id.loc["00-1-graded", "depth_diameter_ratio"] == pytest.approx(0.028)
+    assert by_id.loc["00-1-graded", "ARC_IMG"] == pytest.approx(0.9)
+    assert pd.isna(by_id.loc["00-1-ungraded", "depth_m"])
+    assert by_id.loc["00-1-ungraded", "DIAM_CIRC_IMG"] == pytest.approx(3.0)

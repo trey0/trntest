@@ -74,13 +74,24 @@ takes a `TrnTestImage`, a different domain entirely; per `tasks.py`'s own docstr
 instance per real use case, not shared. `-k process` (real worker processes, not threads) for the
 same reason `tasks.py` already gives: SPICE/spiceypy-adjacent process-global state (this module
 doesn't touch SPICE directly, but `craters.py`/`lunaserv.py` do) isn't safe to share within one
-process."""
+process.
+
+**`consolidate_graded_geopackage` is the read-side consolidation step** -- left-joins
+`load_graded_database`'s combined depth table onto the full Robbins GeoDataFrame by `CRATER_ID` and
+writes it as its own GeoPackage, so a per-footprint query (this project's more common case) can
+reuse `craters.query_craters_in_bbox`'s exact same fast `bbox=`-restricted, spatial-index-backed
+pattern directly against "Robbins plus depth" rather than needing to know tiling ever happened.
+GeoPackage, not Parquet, specifically because that spatial-index reuse is worth more here than
+Parquet's columnar/compression advantage would be for the less-frequent whole-database-scan case --
+see the function's own docstring for the full reasoning. A snapshot, not auto-synced -- re-run it
+after grading more tiles."""
 
 import math
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+import geopandas
 import pandas as pd
 from huey import SqliteHuey
 from huey.exceptions import TaskException
@@ -435,3 +446,54 @@ def load_graded_database(output_dir: Path) -> pd.DataFrame:
     if not tile_paths:
         return pd.DataFrame(columns=columns)
     return pd.concat([pd.read_csv(p) for p in tile_paths], ignore_index=True)
+
+
+@product_registry.writes_product("robbins_with_depth")
+def consolidate_graded_geopackage(
+    config: TrntestConfig | None = None,
+    output_dir: Path | None = None,
+    tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
+    padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
+    target_gsd_m: float = DEFAULT_TARGET_GSD_M,
+) -> Path:
+    """Left-joins `load_graded_database`'s combined depth table onto the *full* Robbins GeoDataFrame
+    (`craters.ensure_geopackage`, every column, real geometry, no bbox restriction) by `CRATER_ID`,
+    and writes the result as its own atomically-published GeoPackage -- a single, ready-to-query
+    "Robbins database, now with depth" artifact, `output_dir / "robbins_with_depth.gpkg"`.
+
+    GeoPackage, not Parquet, deliberately: every existing query function in this codebase
+    (`craters.query_craters_in_bbox`, `crater_overlay_layer`, `crater_depths_for_footprint`, this
+    module's own `grade_tile`) already relies on GeoPackage's real `rtree` spatial index for fast
+    `bbox=`-restricted queries -- confirmed live elsewhere at ~0.05s for a 10x10 deg box against the
+    full ~1.3M-row table. A caller wanting per-footprint sharpness (this project's own more common
+    case, per the user's own framing) can query this file with that exact same pattern, unchanged.
+    An occasional whole-database load (`geopandas.read_file(path)`, no `bbox=`) is slower and heavier
+    than a lean Parquet would be, but workable for what's expected to stay the less-frequent case --
+    not worth a second, separately-maintained artifact/format until that's confirmed to actually
+    matter in practice.
+
+    Only `depth_m`/`depth_diameter_ratio` are joined in, not `load_graded_database`'s own
+    `diameter_km`/`arc_img` columns -- those already exist on the Robbins side as `DIAM_CIRC_IMG`/
+    `ARC_IMG`, so merging them in too would just create redundant, confusingly-named duplicate
+    columns. A **left** join, not inner: every real Robbins crater is kept, including any not yet
+    graded (`grade_database`/`grade_database_via_workers` still mid-run, or never reached) --
+    `depth_m`/`depth_diameter_ratio` are `NaN` for those rows, indistinguishable from a crater that
+    *was* graded but didn't fit its tile's padded raster (`grade_tile`'s own `None` convention,
+    already an accepted ambiguity, not a new one introduced here).
+
+    **This is a snapshot, not kept in sync automatically** -- re-run this after grading more tiles to
+    refresh it; nothing in `grade_database`/`grade_database_via_workers` calls this on its own,
+    matching this project's existing pattern for other generated-not-auto-synced artifacts (e.g.
+    `notebooks/dataset_manifest.csv`)."""
+    config = config or load_config()
+    output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
+
+    depth_df = load_graded_database(output_dir)[["CRATER_ID", "depth_m", "depth_diameter_ratio"]]
+    gpkg_path = craters.ensure_geopackage(config)
+    robbins_gdf = geopandas.read_file(gpkg_path)
+    joined = robbins_gdf.merge(depth_df, on="CRATER_ID", how="left")
+
+    dest = output_dir / "robbins_with_depth.gpkg"
+    with product_registry.atomic_publish(dest) as tmp:
+        joined.to_file(tmp, driver="GPKG")
+    return dest
