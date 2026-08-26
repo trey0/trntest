@@ -138,6 +138,31 @@ def test_stoffler_fresh_depth_km_vectorized_over_array():
     assert depths[1] == pytest.approx(crater_depth.stoffler_fresh_depth_km(100.0))
 
 
+def test_sharpness_ratio_is_one_for_a_reference_fresh_crater():
+    # A crater exactly as deep as Stoffler's own reference depth should score exactly 1.0.
+    diameter_km = 5.0
+    fresh_depth_m = crater_depth.stoffler_fresh_depth_km(diameter_km) * 1000.0
+    assert crater_depth.sharpness_ratio(fresh_depth_m, diameter_km) == pytest.approx(1.0)
+
+
+def test_sharpness_ratio_below_one_for_a_shallower_than_fresh_crater():
+    diameter_km = 5.0
+    fresh_depth_m = crater_depth.stoffler_fresh_depth_km(diameter_km) * 1000.0
+    degraded = crater_depth.sharpness_ratio(fresh_depth_m / 2.0, diameter_km)
+    assert degraded == pytest.approx(0.5)
+
+
+def test_sharpness_ratio_propagates_none_depth_to_nan():
+    assert np.isnan(crater_depth.sharpness_ratio(None, 5.0))
+
+
+def test_sharpness_ratio_vectorized_over_arrays():
+    diameters = np.array([1.0, 100.0])
+    depths_m = crater_depth.stoffler_fresh_depth_km(diameters) * 1000.0
+    ratios = crater_depth.sharpness_ratio(depths_m, diameters)
+    assert ratios == pytest.approx([1.0, 1.0])
+
+
 def test_too_close_to_astropedia_pole():
     # major_km=1 -> negligible half-extent, well clear of the 79 deg limit at 78.5 deg.
     assert not crater_depth._too_close_to_astropedia_pole(78.5, major_km=1.0)

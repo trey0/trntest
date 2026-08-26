@@ -134,6 +134,21 @@ def stoffler_fresh_depth_km(diameter_km):
     return np.minimum(simple_km, complex_km)
 
 
+def sharpness_ratio(depth_m, diameter_km):
+    """The actual sharpness grade: measured depth over Stoffler et al. 2006's reference "fresh
+    crater" depth for the same diameter (`stoffler_fresh_depth_km`) -- ~1.0 for a crater as deep as a
+    fresh crater of its size "should" be, well below 1.0 for a degraded one, and above 1.0 for a
+    real but unremarkable crater-to-crater scatter around the reference curve (Stoffler's own
+    relation is a central tendency fit, not an upper bound). `depth_m` (meters, matching
+    `crater_depth_m`'s/`crater_depths_for_footprint`'s own `depth_m` column) is converted to km to
+    match `stoffler_fresh_depth_km`'s own units before dividing -- both this function's inputs and
+    `stoffler_fresh_depth_km` itself are vectorized (`np.minimum`/plain arithmetic under the hood),
+    so `depth_m`/`diameter_km` can be scalars or equal-length arrays/Series alike, and a `None`/`NaN`
+    `depth_m` (an ungraded or doesn't-fit-its-tile crater, see `crater_depth_batch.py`) propagates to
+    a `NaN` sharpness rather than needing to be special-cased here."""
+    return (np.asarray(depth_m, dtype=float) / 1000.0) / stoffler_fresh_depth_km(diameter_km)
+
+
 def _too_close_to_astropedia_pole(lat_deg: float, major_km: float) -> bool:
     """`True` if a crater centered at `lat_deg` with ellipse-fit major axis `major_km` could extend
     past GLD100's real `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` coverage limit -- i.e. its own

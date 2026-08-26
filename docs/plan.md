@@ -421,6 +421,33 @@ short of `populate()` -- no rendering from this notebook yet.
   (deliberately: `stoffler_fresh_depth_km` and the measured-depth precompute are kept independent,
   so a future change to the grade formula itself doesn't require re-running the multi-hour DEM pass)
   or wired into any notebook.
+
+  **Done (2026-08-26): the actual sharpness score, a real review notebook, and the pieces needed to
+  build it.** `crater_depth.sharpness_ratio(depth_m, diameter_km)` -- the user's own chosen formula,
+  measured depth over `stoffler_fresh_depth_km` (units matched, ~1.0 for a crater as deep as a fresh
+  one of its size "should" be). `crater_depth_batch.consolidate_graded_geopackage` now computes and
+  stores it as a `sharpness` column (cheap, safe to recompute on every consolidation, unlike the
+  depth measurement itself). `craters.query_craters_for_raster`'s bbox-deriving logic is factored out
+  as `craters.raster_bbox_deg` (unpadded), shared with a new `crater_depth_batch.grade_footprint` --
+  grades just the tiles touching one candidate's real footprint (`tiles_covering_bbox`, snapped to
+  the same grid `iter_tile_origins` defines) rather than the whole database, for reviewing/validating
+  grading against a single image without the multi-hour full-database cost; writes into the same
+  per-tile CSVs `grade_database`/`grade_database_via_workers` use, so it's fully compatible with a
+  later full run. `notebooks/crater_sharpness_review.py`/`.ipynb` (new, minimal setup matching
+  `hapke_hillshade.ipynb`'s pattern -- reuses `image_generation.ipynb`'s Phase 1-2 but skips
+  `dataset.populate()` entirely, since only `entry.dem_ortho_result` is needed) grades + consolidates
+  the default candidate's footprint, then shows two real results: a sharpness-colored crater overlay
+  on the same hillshade basemap/sparse-dashed style Phase 5B/6B use, and a log-log depth-vs-diameter
+  2D histogram with the Stoffler curve overlaid. **Real, live result**: the bulk of the measured
+  population clusters at or below the reference curve at small diameters -- physically sensible (most
+  real craters in a random sample are somewhat degraded, not freshly formed), a real positive signal
+  for both the depth measurement and the reference formula, not just a working plot. The histogram
+  needed log-log axes/bins after a first linear attempt was genuinely unreadable (one bin near the
+  smallest diameters held the vast majority of craters) -- also the standard way this kind of
+  power-law crater data is presented in the literature, not just a fix for this one plot. The overlay
+  needed `min_major_km` filtering (mirroring Phase 5B/6B's own convention) after the unfiltered
+  population (thousands of small craters over one footprint) made the sparse-dashed ellipses collapse
+  into an unreadable cloud.
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

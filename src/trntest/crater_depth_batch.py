@@ -83,8 +83,12 @@ reuse `craters.query_craters_in_bbox`'s exact same fast `bbox=`-restricted, spat
 pattern directly against "Robbins plus depth" rather than needing to know tiling ever happened.
 GeoPackage, not Parquet, specifically because that spatial-index reuse is worth more here than
 Parquet's columnar/compression advantage would be for the less-frequent whole-database-scan case --
-see the function's own docstring for the full reasoning. A snapshot, not auto-synced -- re-run it
-after grading more tiles."""
+see the function's own docstring for the full reasoning. Also computes and stores the actual
+sharpness grade itself here (`sharpness`, `crater_depth.sharpness_ratio` -- measured depth over
+Stoffler et al. 2006's reference "fresh crater" depth for the same diameter), since that combination
+is cheap and, unlike the depth measurement itself, safe to recompute on every consolidation without
+re-running the multi-hour DEM pass. A snapshot, not auto-synced -- re-run it after grading more
+tiles."""
 
 import math
 import tempfile
@@ -284,6 +288,70 @@ def grade_tile(
     return pd.DataFrame(records)
 
 
+def tiles_covering_bbox(
+    bbox_deg: tuple,
+    tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
+    max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
+) -> list[tuple[float, float]]:
+    """Nominal `(lon_min, lat_min)` tile origins (a subset of what `iter_tile_origins` would yield
+    for the same `tile_size_deg`/`max_abs_lat_deg`) whose nominal bounds intersect `bbox_deg`
+    (`minlon, minlat, maxlon, maxlat`, e.g. `craters.raster_bbox_deg`'s output) -- for grading just
+    enough of the database to cover one footprint (`grade_footprint`) rather than the whole grid.
+    Snaps to the same grid `iter_tile_origins` defines (latitude rows starting exactly at
+    `-max_abs_lat_deg`, not at a multiple of `tile_size_deg` from zero), so a tile this returns is
+    always one `grade_database`/`grade_database_via_workers` would also reach -- same resumability,
+    same output filename, whichever entry point graded it first. Same antimeridian caveat as
+    `craters.raster_bbox_deg`: a `bbox_deg` that straddles the 0/360 seam (`minlon > maxlon`) isn't
+    specially unwrapped here either."""
+    minlon, minlat, maxlon, maxlat = bbox_deg
+    lat_row_first = math.floor((minlat - (-max_abs_lat_deg)) / tile_size_deg)
+    lat_row_last = math.floor((maxlat - (-max_abs_lat_deg)) / tile_size_deg)
+    lon_col_first = math.floor(minlon / tile_size_deg)
+    lon_col_last = math.floor(maxlon / tile_size_deg)
+
+    origins = []
+    for lat_row in range(lat_row_first, lat_row_last + 1):
+        lat_min = -max_abs_lat_deg + lat_row * tile_size_deg
+        if not (-max_abs_lat_deg <= lat_min < max_abs_lat_deg):
+            continue
+        for lon_col in range(lon_col_first, lon_col_last + 1):
+            origins.append(((lon_col * tile_size_deg) % _FULL_LONGITUDE_RANGE_DEG, lat_min))
+    return origins
+
+
+def grade_footprint(
+    raster_path,
+    config: TrntestConfig | None = None,
+    output_dir: Path | None = None,
+    tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
+    padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
+    target_gsd_m: float = DEFAULT_TARGET_GSD_M,
+) -> int:
+    """Grades just the tiles whose nominal bounds intersect `raster_path`'s own real footprint
+    (`craters.raster_bbox_deg`, `tiles_covering_bbox`) -- for reviewing/validating sharpness grading
+    against one candidate image (e.g. `dem_ortho_result.ortho`) without paying the whole-database
+    precompute's cost. Sequential, matching `grade_database`'s own single-process shape -- a
+    footprint's worth of tiles is small enough this doesn't need `grade_database_via_workers`'s real
+    parallelism. Writes into the exact same `output_dir` tile CSVs `grade_database`/
+    `grade_database_via_workers` use (skip-if-exists, same resumability), so a later full-database
+    run doesn't redo this footprint's tiles, and `consolidate_graded_geopackage` picks up whatever's
+    graded here with no special-casing. Returns the number of tiles actually graded this call."""
+    config = config or load_config()
+    output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
+    astropedia_path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
+
+    graded = 0
+    for lon_min, lat_min in tiles_covering_bbox(craters.raster_bbox_deg(raster_path), tile_size_deg):
+        dest = output_dir / f"{tile_id(lon_min, lat_min)}.csv"
+        if dest.exists():
+            continue
+        _grade_and_publish_tile(
+            lon_min, lat_min, config, astropedia_path, tile_size_deg, padded_tile_size_deg, target_gsd_m, dest
+        )
+        graded += 1
+    return graded
+
+
 def grade_database(
     config: TrntestConfig | None = None,
     output_dir: Path | None = None,
@@ -481,6 +549,13 @@ def consolidate_graded_geopackage(
     *was* graded but didn't fit its tile's padded raster (`grade_tile`'s own `None` convention,
     already an accepted ambiguity, not a new one introduced here).
 
+    Also adds `sharpness` (`crater_depth.sharpness_ratio(depth_m, DIAM_CIRC_IMG)`, the actual grade)
+    here rather than leaving every caller to recompute it -- cheap (no DEM read, just arithmetic
+    against columns already in hand) and, unlike `depth_m` itself, not something worth protecting
+    from a multi-hour re-run if the formula ever changes: `NaN` propagates through automatically for
+    any row without a depth, so no extra handling is needed for the same not-yet-graded/didn't-fit
+    rows above.
+
     **This is a snapshot, not kept in sync automatically** -- re-run this after grading more tiles to
     refresh it; nothing in `grade_database`/`grade_database_via_workers` calls this on its own,
     matching this project's existing pattern for other generated-not-auto-synced artifacts (e.g.
@@ -492,6 +567,7 @@ def consolidate_graded_geopackage(
     gpkg_path = craters.ensure_geopackage(config)
     robbins_gdf = geopandas.read_file(gpkg_path)
     joined = robbins_gdf.merge(depth_df, on="CRATER_ID", how="left")
+    joined["sharpness"] = crater_depth.sharpness_ratio(joined["depth_m"], joined["DIAM_CIRC_IMG"])
 
     dest = output_dir / "robbins_with_depth.gpkg"
     with product_registry.atomic_publish(dest) as tmp:

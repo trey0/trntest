@@ -9,7 +9,7 @@ import pytest
 import rasterio
 import rasterio.transform
 
-from trntest import cache, crater_depth_batch, craters, lunaserv, tasks
+from trntest import cache, crater_depth, crater_depth_batch, craters, lunaserv, tasks
 from trntest.config import TrntestConfig
 
 _MOON_RADIUS_M = 1737400.0
@@ -85,6 +85,26 @@ def _write_flat_floor_rim_astropedia_like(
         nodata=nodata,
     ) as dst:
         dst.write(dem, 1)
+
+
+def _write_tiny_geographic_raster(path, bounds_deg):
+    """A minimal, real, valid GeoTIFF covering `bounds_deg` -- no real data, just enough for
+    `craters.raster_bbox_deg` to read back a known footprint (`grade_footprint`'s own tile-selection
+    tests don't need real pixel content)."""
+    minlon, minlat, maxlon, maxlat = bounds_deg
+    transform = rasterio.transform.from_bounds(minlon, minlat, maxlon, maxlat, 2, 2)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype="float32",
+        crs=lunaserv.geographic_crs(_MOON_RADIUS_M),
+        transform=transform,
+    ) as dst:
+        dst.write(np.zeros((2, 2), dtype="float32"), 1)
 
 
 def test_iter_tile_origins_covers_grid():
@@ -176,6 +196,43 @@ def test_grade_tile_grades_fitting_crater_and_excludes_oversized_one(tmp_path):
     assert by_id.loc["00-1-fits", "depth_diameter_ratio"] == pytest.approx(50.0 / 20000.0, rel=0.05)
     assert pd.isna(by_id.loc["00-1-toobig", "depth_m"])
     assert pd.isna(by_id.loc["00-1-toobig", "depth_diameter_ratio"])
+
+
+def test_tiles_covering_bbox_snaps_to_the_iter_tile_origins_grid():
+    origins = crater_depth_batch.tiles_covering_bbox(
+        bbox_deg=(10.4, 0.3, 11.6, 1.8), tile_size_deg=1.0, max_abs_lat_deg=5.0
+    )
+    assert sorted(origins) == [(10.0, 0.0), (10.0, 1.0), (11.0, 0.0), (11.0, 1.0)]
+    # Every returned origin must be one iter_tile_origins would also yield for the same grid --
+    # otherwise grade_footprint could write a tile filename grade_database's own resumability check
+    # would never recognize.
+    all_origins = set(crater_depth_batch.iter_tile_origins(tile_size_deg=1.0, max_abs_lat_deg=5.0))
+    assert set(origins) <= all_origins
+
+
+def test_grade_footprint_grades_touching_tiles_and_skips_already_done_ones(tmp_path):
+    config = _config(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    raster_path = tmp_path / "small.tif"
+    _write_tiny_geographic_raster(raster_path, bounds_deg=(10.2, 0.2, 11.8, 0.8))
+
+    # Pre-mark one of the two touching tiles as already done.
+    (output_dir / f"{crater_depth_batch.tile_id(10.0, 0.0)}.csv").write_text("CRATER_ID\n")
+
+    with (
+        mock.patch.object(cache, "fetch_astropedia_gld100", return_value=tmp_path / "astropedia.tif"),
+        mock.patch.object(
+            crater_depth_batch, "tiles_covering_bbox", return_value=[(10.0, 0.0), (11.0, 0.0)]
+        ) as tiles_mock,
+        mock.patch.object(crater_depth_batch, "_grade_and_publish_tile", return_value="ok") as grade_mock,
+    ):
+        graded = crater_depth_batch.grade_footprint(raster_path, config, output_dir=output_dir, tile_size_deg=1.0)
+
+    assert graded == 1
+    tiles_mock.assert_called_once()
+    grade_mock.assert_called_once()
+    assert grade_mock.call_args[0][0] == 11.0  # the not-already-done tile's lon_min
 
 
 def test_grade_database_is_resumable_and_respects_limit(tmp_path):
@@ -350,3 +407,7 @@ def test_consolidate_graded_geopackage_left_joins_depth_onto_full_robbins_table(
     assert by_id.loc["00-1-graded", "ARC_IMG"] == pytest.approx(0.9)
     assert pd.isna(by_id.loc["00-1-ungraded", "depth_m"])
     assert by_id.loc["00-1-ungraded", "DIAM_CIRC_IMG"] == pytest.approx(3.0)
+
+    expected_sharpness = crater_depth.sharpness_ratio(42.0, 1.5)
+    assert by_id.loc["00-1-graded", "sharpness"] == pytest.approx(expected_sharpness)
+    assert pd.isna(by_id.loc["00-1-ungraded", "sharpness"])

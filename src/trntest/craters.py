@@ -119,34 +119,43 @@ def _ellipse_polygon(
     return shapely.affinity.translate(ellipse, center_x_m, center_y_m)
 
 
+def raster_bbox_deg(raster_path) -> tuple:
+    """`raster_path`'s own real footprint, projected into the crater database's geographic CRS and
+    normalized to this project's 0-360 deg Positive-East convention -- the same "raster's own
+    georeferencing is authoritative" pattern `isis_wac._orthographic_map_pvl`/
+    `lunaserv.result_from_files` already rely on elsewhere, not a new convention. Unpadded; pad the
+    result yourself (`lunaserv.pad_bbox`) if that's wanted -- factored out of `query_craters_for_raster`
+    so a second caller (`crater_depth_batch.grade_footprint`, which needs the *un*padded bbox to pick
+    which tiles to grade, not a query AOI) doesn't have to duplicate this exact
+    `rasterio.warp.transform_bounds` + normalization logic.
+
+    `transform_bounds` returns longitude in the standard -180..180 convention regardless of the
+    destination CRS's own definition -- confirmed empirically (a real AOI centered at 264.757 deg
+    East came back as -95.243) -- but the database's LON_ELLI_IMG/LON_CIRC_IMG columns (and this
+    project's own lon/lat convention throughout lunaserv.py) are 0-360 deg Positive-East. Not
+    unwrapped across the seam here: an AOI that straddles the 0/360 meridian would still come out
+    with minlon > maxlon after this -- a known, unhandled edge case (no camera footprint used by
+    this project currently lands there; see docs/plan.md's open items if this ever needs
+    revisiting)."""
+    with rasterio.open(raster_path) as src:
+        raster_crs, raster_bounds = src.crs, src.bounds
+    geo_crs = lunaserv.geographic_crs(MOON_RADIUS_M)
+    minlon, minlat, maxlon, maxlat = rasterio.warp.transform_bounds(raster_crs, geo_crs, *raster_bounds)
+    return minlon % 360.0, minlat, maxlon % 360.0, maxlat
+
+
 def query_craters_for_raster(
     raster_path, config: TrntestConfig | None = None, padding_fraction: float = _QUERY_BBOX_PADDING_FRACTION
 ) -> geopandas.GeoDataFrame:
     """`query_craters_in_bbox`, but the AOI comes from `raster_path`'s own real georeferencing
-    instead of a bbox the caller has to derive by hand -- the same "raster's own georeferencing is
-    authoritative" pattern `isis_wac._orthographic_map_pvl`/`lunaserv.result_from_files` already
-    rely on elsewhere, not a new convention. `rasterio.warp.transform_bounds` projects the raster's
-    real bounds into the crater database's own geographic CRS, the same "derive the padded bbox from
-    the destination grid's own real extent, not an independently computed one" approach
-    `lunaserv.astropedia_coverage_bbox_deg` already uses (and documents why: two independently-padded
-    bboxes aren't guaranteed to agree). Shared by `crater_overlay_layer` and
+    (`raster_bbox_deg`) instead of a bbox the caller has to derive by hand -- the same "derive the
+    padded bbox from the destination grid's own real extent, not an independently computed one"
+    approach `lunaserv.astropedia_coverage_bbox_deg` already uses (and documents why: two
+    independently-padded bboxes aren't guaranteed to agree). Shared by `crater_overlay_layer` and
     `crater_depth.crater_depths_for_footprint` -- both want "every Robbins crater whose ellipse might
     overlap this raster," just for different downstream uses."""
     config = config or load_config()
-    with rasterio.open(raster_path) as src:
-        raster_crs, raster_bounds = src.crs, src.bounds
-
-    geo_crs = lunaserv.geographic_crs(MOON_RADIUS_M)
-    minlon, minlat, maxlon, maxlat = rasterio.warp.transform_bounds(raster_crs, geo_crs, *raster_bounds)
-    # `transform_bounds` returns longitude in the standard -180..180 convention regardless of the
-    # destination CRS's own definition -- confirmed empirically (a real AOI centered at 264.757 deg
-    # East came back as -95.243) -- but the database's LON_ELLI_IMG/LON_CIRC_IMG columns (and this
-    # project's own lon/lat convention throughout lunaserv.py) are 0-360 deg Positive-East. Not
-    # normalized here: an AOI that straddles the 0/360 meridian would still come out with minlon >
-    # maxlon after this -- a known, unhandled edge case (no camera footprint used by this project
-    # currently lands there; see docs/plan.md's open items if this ever needs revisiting).
-    bbox_deg = (minlon % 360.0, minlat, maxlon % 360.0, maxlat)
-    padded_bbox_deg = lunaserv.pad_bbox(bbox_deg, padding_fraction)
+    padded_bbox_deg = lunaserv.pad_bbox(raster_bbox_deg(raster_path), padding_fraction)
     return query_craters_in_bbox(padded_bbox_deg, config)
 
 
