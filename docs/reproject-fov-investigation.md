@@ -24,8 +24,8 @@ reverted to an isotropic FOV" below.
 
 `crop` (real, ISIS-processed WAC image) and `hillshade` (synthetic `sat_sim` render, textured from
 Lunaserv/Astropedia + a synthetic Hapke hillshade) are the two implemented `TrnTestImage` types
-(`src/trntest/trn_dataset.py`). `reproject` is the reserved-but-unbuilt third one
-(`docs/dataset-plan.md`): still a `sat_sim` render through the *same* synthetic camera as
+(`src/trntest/trn_dataset.py`). `reproject` is the reserved-but-unbuilt third one: still a `sat_sim`
+render through the *same* synthetic camera as
 `hillshade` (so the two are directly, pixel-for-pixel comparable), but textured from the real WAC
 crop's own reflectance (via `isis_wac.run_cam2map_for_crop`, already used for the crop/hillshade
 overlay comparison) instead of a synthetic basemap. The user's framing: "use `sat_sim` but for input
@@ -333,13 +333,19 @@ result: this isn't one image's overfit tuning.
   ortho fetch and crop/hillshade generation for an unrelated product). Fixed by removing the
   `populate()` call entirely, since entry 0 never needed it -- worth remembering as a general trap:
   `populate(limit=N)` on an already-populated entry advances the queue, it doesn't no-op.
-- **Still open: `reproject` isn't wired into any notebook, and only validated on 1 image end-to-end
-  through the real `TrnTestReprojectImage` class** (the FOV fix itself has 4-image coverage; the
-  class wrapping it doesn't yet). Not in `trn_dataset.PRODUCT_TYPES` (`populate()`'s default) --
-  opt-in only. `notebooks/reproject_spike.py` itself is now stale relative to `build_camera()`'s
-  built-in correction (still computes its own separate `_fovfix` camera/tsai) -- not worth updating,
-  since it already did its job (finding and validating the fix); the real implementation lives in
-  `src/trntest/camera.py`/`trn_dataset.py` now, this notebook is exploratory history.
+- **Resolved: `reproject` is now wired into `image_generation.ipynb`** (Phase 8, mirroring Phase 5's
+  A/B geometry checks -- raw quality vs. the basemap, then a `mapproject` overlay -- plus a
+  valid-pixel-fraction print as the direct answer to this investigation's own coverage question).
+  Phase 2's `dataset.truncate`/`populate` calls now pass `product_types=("crop", "hillshade",
+  "reproject")` explicitly to include it -- still opt-in, `trn_dataset.PRODUCT_TYPES` itself is
+  unchanged (just `crop`+`hillshade`). **Still open: only validated on this one entry through the
+  real `TrnTestReprojectImage` class and the flagship notebook** (the FOV fix itself has 4-image
+  coverage; the class/notebook wrapping it doesn't yet) -- dataset-scale validation across the rest
+  of the manifest is a separate follow-up, not done here. `notebooks/reproject_spike.py` itself is
+  now stale relative to `build_camera()`'s built-in correction (still computes its own separate
+  `_fovfix` camera/tsai) -- not worth updating, since it already did its job (finding and validating
+  the fix); the real implementation lives in `src/trntest/camera.py`/`trn_dataset.py` now, this
+  notebook is exploratory history.
 - **Still open: the FOV-corrected `Camera`'s wider ripple effects were caught reactively (via
   re-running `image_generation.ipynb`), not proactively enumerated** -- two real regressions were
   found and fixed this way (`plot_isis_comparison`/`width_km`/`height_km`, `die5_points`'s

@@ -107,7 +107,7 @@ def test_ground_point_at_pixel_raises_and_prints_diagnostic_on_campt_failure(cap
 
 
 def test_run_pipeline_reuses_existing_stitched_cube_without_rerunning_lrowac2isis(tmp_path):
-    config = dataclasses.replace(TrntestConfig(), scratch_dir=tmp_path, edr_product="TESTPRODUCT")
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path, edr_product="TESTPRODUCT")
     out_prefix = isis_wac._spike_dir(config) / "TESTPRODUCT"
     stitched_path = out_prefix.with_name(out_prefix.name + ".vis.cal.stitched.cub")
     stitched_path.write_text("fake cube")

@@ -62,9 +62,14 @@ unaffected and still current.
   extends slightly outside `[-180, 180]` — intentional, not a bug to "fix" by clamping.
 - Layers of interest:
   - `luna_wac_normalized_reflectance` — "LROC WAC 643 nm Normalized Reflectance," a >100,000-image
-    photometric composite. **The ortho layer this project actually fetches**
-    (`config.lunaserv_ortho_layer`), chosen over `luna_wac_global` on image-quality grounds (see
-    "Ortho layer noise" below). Global bbox `-180/-90/180/90`.
+    photometric composite. **No longer the live default ortho source** (see "WAC_EMP PDS4 archive"
+    below) — kept reachable via `ortho_source="lunaserv_wms"` for comparison. Chosen over
+    `luna_wac_global` on image-quality grounds (see "Ortho layer noise" below) when it *was* the
+    default. Global bbox `-180/-90/180/90`. **Confirmed (2026-08-23, docs/history.md's dated entry) to
+    carry a real, uncorrected affine display stretch, not raw reflectance**: `DN/255 = a*reflectance +
+    b` with `a≈5.94-5.98`, `b≈-0.213..-0.214`, measured at two independent real locations (38.8°N and
+    8.7°N, ~900km apart) agreeing to ~0.5% — this is the actual reason for the WAC_EMP-PDS migration
+    below, not just a general "prefer the authoritative source" preference.
   - `luna_wac_global` — "LROC WAC Global 100m/px" visible mosaic, composited from ~15,000 raw WAC
     images (no evident per-pixel outlier rejection). No longer the default ortho source (see below)
     but still a reasonable fallback/reference. Global bbox `-180/-90/180/90`.
@@ -187,6 +192,88 @@ unaffected and still current.
   Phase 15's original tolerance sweep (order-of-magnitude swings in both directions). No change
   needed to `DEM_HEIGHT_ERROR_TOL_M`.
 
+## WAC_EMP PDS4 archive (live default ortho/texture source)
+
+Replaces Lunaserv's WMS-served `luna_wac_normalized_reflectance` layer as `fetch_dem_and_ortho`'s
+default ortho/texture source (`ortho_source="wac_emp_pds"`, `config.wac_emp_base_url`) — see
+`docs/history.md`'s dated entry for why: that WMS layer was confirmed to carry a real, uncorrected
+**affine** display stretch (`DN/255 = a*reflectance + b`, `a≈5.94-5.98`, `b≈-0.213..-0.214`, measured
+at two independent real locations ~900km apart, agreeing to ~0.5%), not raw reflectance and not just a
+harmless constant scale — a real structural bug candidate for `hapke_shade_ortho`'s ratio-based
+relighting, which a nonzero offset doesn't cancel out of algebraically. WAC_EMP's own README already
+names it as this project's own citation for that WMS layer (ASU/LROC's Empirical Photometric Function
+product, Boyd, Robinson & Sato 2012); this switch fetches it at its authoritative PDS4 source instead
+of through Lunaserv's intermediary render, mirroring this project's earlier DEM-source move off
+Lunaserv to Astropedia's flat-file GLD100 for the same class of reason.
+
+- Base URL: `https://pds.mcp.nasa.gov/data/store/img/lunar_reconnaissance_orbiter/pds4/lroc/lro-l-lroc-5-rdr/LROLRC_2001/DATA/MDR/WAC_EMP/`
+  (`config.wac_emp_base_url`) — an S3-backed archive host (`pds-img-archive-prod` bucket, confirmed
+  via its own error/listing XML), reachable both as a plain per-object `GET` (what `cache.
+  fetch_wac_emp_tile` actually does) and, with `?list-type=2&prefix=...&delimiter=/` query params
+  appended to the bucket root, as a real S3 `ListObjectsV2` listing — used live (not guessed) to
+  derive the tile-naming scheme below.
+- **Tile naming, confirmed live via the archive's own real directory listing** (159 keys under
+  `.../WAC_EMP/`, not inferred from one example filename): each tile is
+  `WAC_EMP_<wavelength_nm>NM_E300<N|S><lon_center_deg*10:04d>_<ppd:03d>P.IMG` (`.xml` label sidecar of
+  the same base name also present, unused by this project — GDAL's PDS3 driver reads the `.IMG`
+  file's own attached label directly). `wac_emp_tile_id_for_bbox` builds this string.
+  - **Wavelength**: one of 7 real bands, `321/360/415/566/604/643/689` (nm) — the identical band set
+    ISIS's own Hapke calibration cube already offers (`lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM`).
+    This project defaults to 643nm (`DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM`), matching the
+    wavelength every other real-photometry piece of this codebase already targets.
+  - **Resolution (`ppd`)**: every band is offered at 64 ppd; 643nm *additionally* has a real 304 ppd
+    product (confirmed live: both `WAC_EMP_643NM_E300N1350_064P.IMG` and
+    `WAC_EMP_643NM_E300N1350_304P.IMG` exist) — this project's own default (`ppd=304` in
+    `wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`).
+  - **Tile grid**: the equirect (non-polar) coverage is exactly one 60°-tall latitude band per
+    hemisphere (0-60°N, 0-60°S — center magnitude 30.0°, hence the fixed literal `"E300"` segment
+    every equirect tile ID shares) × 4 lon zones 90° wide each, centered at 45°/135°/225°/315°
+    (Positive-East 0-360° convention: 0-90, 90-180, 180-270, 270-360). Confirmed directly against a
+    real fetched/opened tile: `WAC_EMP_643NM_E300N1350_304P.IMG` is `18240 x 27360` px at 304 ppd
+    (`60*304=18240`, `90*304=27360`, exact) — real coverage 90-180°E, 0-60°N, matching its own ID's
+    `lon_center=135.0`/hemisphere `N` exactly.
+  - **Polar coverage** (60-90° both hemispheres): a real, *separate* tile pair also exists in the same
+    listing (`WAC_EMP_643NM_P900N0000_304P.IMG`/`..._P900S0000_304P.IMG`, 643nm only) — presumably a
+    polar-stereographic projection (`P900` = pole at 90°), but its real format is **unverified and not
+    fetched by this project** (a deliberate scope decision, mirroring `astropedia_coverage_bbox_deg`'s
+    own `ASTROPEDIA_MAX_ABS_LATITUDE_DEG` precedent): `wac_emp_tile_id_for_bbox` raises `ValueError`
+    for any footprint whose padded AOI needs latitude beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0`,
+    rather than guessing at the polar format or silently falling back to the deprecated Lunaserv path.
+  - No multi-tile mosaic in this pass either: an AOI straddling the equator or a 90°-lon zone boundary
+    also raises `ValueError` (same "no silent fallback/mosaic" stance).
+- **File format, confirmed live via `gdalinfo`/`rasterio` on the real 304ppd tile**: IEEE754 float32,
+  real physical reflectance (I/F), a genuine PDS3-attached-label GeoTIFF-equivalent GDAL's own `PDS3`
+  driver reads natively (`Driver: PDS3/PDS3`) — real embedded map-projection keywords (Equidistant
+  Cylindrical/"Equirectangular", real Moon radius) GDAL exposes as a normal `crs`/`transform`, no
+  hand-rolled PROJ4 string or manual byte-offset math needed (unlike this migration's own throwaway
+  diagnostic scripts, which predated confirming this and did the byte-range/PDS3-label math by hand).
+  Every pixel is normalized to a fixed reference photometric geometry (incidence=30°, emission=0°,
+  phase=30°) via an empirical (Boyd et al. 2012) function, not a raw albedo map — see
+  `REFERENCE_INCIDENCE_DEG`'s own module-level comment in `lunaserv.py` for how `hapke_shade_ortho`
+  relights this back out for a real candidate's own geometry.
+- **Size**: the 304ppd 643nm tile is ~1.86 GB (1,996,295,040 bytes, confirmed live) — comfortably
+  within `cache.cached_get`'s normal per-call-unique-temp-file range (the same range
+  `fetch_isis_kernel`'s ~1.65GB CK merges already use), not `fetch_astropedia_gld100`'s special
+  resumable-curl path (that path exists specifically for GLD100's much larger ~10GB single file).
+  `cache.fetch_wac_emp_tile` fetches/caches the whole tile once; `reproject_wac_emp_reflectance_to_local_grid`
+  then does a local windowed read of just the AOI (`window_from_bounds`/`window_transform`, the same
+  pattern `reproject_astropedia_elevation_to_local_grid` uses) — no repeated remote reads.
+- **Numeric-pipeline consequence** (not just a data-source swap): this data has no embedded display
+  stretch, unlike Lunaserv's WMS-served `uint8` DN — `hapke_shade_ortho`'s old `ortho.astype(np.float64)
+  / 255.0` un-scaling step is no longer appropriate (there's no DN to un-scale, the array already *is*
+  reflectance) and was removed; `relit_reflectance = ortho * ratio` operates directly on real physical
+  units. A new, explicit, purely cosmetic `stretch_reflectance_to_uint8` step
+  (`DISPLAY_STRETCH_REFLECTANCE_MIN`/`_MAX`, a fixed linear range, not adaptive) converts the result to
+  a displayable `uint8` image at the very end of the pipeline, decoupled from the physics. `shade_ortho`
+  (the plain-Lambertian fallback) is **unchanged**, deliberately still tied to the old WMS-DN
+  convention — see its own docstring; it isn't meant to be combined with `ortho_source="wac_emp_pds"`.
+- **Deprecated fallback**: `ortho_source="lunaserv_wms"` (`fetch_dem_and_ortho`) keeps the original
+  Lunaserv-WMS ortho path reachable for comparison, unchanged, with its own distinct (suffix-less)
+  `ortho_shaded_filename` so cached files from before this migration stay valid/resumable under their
+  own names. Only numerically coherent with `hapke=False` after this migration (see
+  `fetch_dem_and_ortho`'s own docstring) — its `uint8` DN is not the real reflectance
+  `hapke_shade_ortho` now assumes.
+
 ## Robbins lunar crater database (planned vector overlay data)
 
 - Source: Robbins, S.J. (2019), *JGR Planets*, "A New Global Database of Lunar Impact Craters
@@ -248,6 +335,148 @@ unaffected and still current.
   read-time pushdown (see `docs/plan.md`'s open items for why this matters at ~1.3M rows) requires
   first converting to an indexed format (GeoPackage/FlatGeobuf) once — there's no shipped index to
   reuse, unlike a real GIS format might have.
+
+## Crater depth (Breton et al. 2019 method)
+
+**Purpose: the actual input to grading crater sharpness**, not a standalone validation exercise —
+`ARC_IMG` (see the Robbins database section above) isn't a real freshness proxy and this database
+has no degradation field at all, so this project needed its own depth measurement to build one from.
+Breton et al.'s method was adopted specifically because it's already validated in the literature,
+not derived from scratch.
+
+- Source: Breton, S., Quantin-Nataf, C., Bodin, T., Loizeau, D., Volat, M., Lozac'h, L. (2019),
+  *MethodsX* 6, 2293–2304, "Semi-Automated crater depth measurements", DOI
+  `10.1016/j.mex.2019.08.007`. Depth = the 60th percentile of elevation in a ring around a crater's
+  rim, minus the 3rd percentile of elevation inside it, from a DEM + crater shapefile. The authors'
+  own reference implementation (not part of this repo) is a Tkinter GUI script doing manual
+  per-pixel OGR polygon intersection over a lon/lat GDAL raster to get an area-weighted interior
+  percentile — necessary there since degree-pixels don't all cover the same real ground area.
+- `src/trntest/crater_depth.py` adapts this against this project's own Robbins ellipse
+  polygons (`craters._ellipse_polygon`) and local, **isotropic-meters** DEM
+  (`lunaserv.fetch_dem_and_ortho`) instead: every "inside" pixel already covers the same real area
+  on this grid, so the original's area-weighting machinery is dropped entirely (a provable no-op
+  here, not an approximation), and `rasterio.features.geometry_mask` on a `pixel_size_m *
+  sqrt(2) / 2`-buffered *real* ellipse polygon stands in for the original's manual per-pixel
+  circle-distance test and OGR intersection calls.
+- **DEM source: deliberately GLD100** (`lunaserv`'s live default, ±79 deg latitude coverage), not a
+  genuinely global (pole-to-pole) alternative — two real candidates were found and set aside:
+  - `Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif` — confirmed live (`curl`, its real PDS3 label):
+    hosted at the same `planetarymaps.usgs.gov/mosaic/` → S3 flat-file pattern GLD100 uses (302
+    redirect to `asc-pds-services.s3.us-west-2.amazonaws.com`, HTTP Range-resumable), 256 ppd/
+    118.450588 m/px, **90°N–90°S / -180–180° lon, genuinely global**, Int16 (`LSB_INTEGER`),
+    `SIMPLE_CYLINDRICAL` projection, radius 1737.4 km, ~8.49 GB (confirmed via `curl -I`:
+    8,494,203,833 bytes — smaller than GLD100 despite global coverage, since it's coarser).
+  - The ISIS global lunar shape model this project already caches for the real-WAC pipeline
+    (`isis_wac.ensure_lunar_shape_model`, `base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub`,
+    ~2 GB, zero incremental download) — the older-vintage 128 ppd/~237 m/px LOLA product, also
+    genuinely global (the standard "outside ±60°" polar-coverage product in the literature).
+  - **Both are real LOLA-gridded products with a confirmed real accuracy caveat GLD100 doesn't
+    have**: LOLA ground-track cross-track gaps are ~1–2 km at the equator (up to 4 km), several
+    pixels wide at either resolution above — the gridded product spline-interpolates across them
+    (real value only along tracks), vs. GLD100's WAC-stereo-photogrammetry, which has actual
+    relief data there. This directly matters for depth/sharpness grading: interpolation smooths
+    exactly the small-scale rim relief a sharpness grade needs to detect, worst at low latitude for
+    craters near this database's own `D≥1km` floor (closest in scale to the gap width). Not
+    empirically checked here (e.g. via the same FFT/periodicity method that caught Lunaserv's own
+    DTM striping artifact, see "Astropedia GLD100 flat file" above) — a real follow-up if either
+    global source is picked up later.
+  - **Decision (2026-08-23)**: stay on GLD100, and have `crater_depths_for_footprint` store a
+    `None` depth (kept as a row, not dropped) for any crater whose own extent could reach past
+    `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` (79.0), rather than adopt either global source now.
+    A real, separate future step (precomputing depth for the whole non-polar Robbins database
+    without any new DEM fetch) remains open, not blocked by this — GLD100 is already a single flat
+    file cached locally once. If it's picked up: both candidate files share GLD100's own row-strip
+    (not tiled) TIFF block layout, so a naive independent per-crater windowed read isn't
+    necessarily fine at ~1.3M-crater scale — worth profiling (not guessing) a raster-row-ordered
+    batch read or a one-time local re-tile (`gdal_translate -co TILED=YES`) before assuming either
+    mitigation is actually needed.
+- **Real-data throughput measurement (2026-08-24, `tests/test_crater_depth_gld100_tile.py`,
+  `@pytest.mark.heavy`)**: carved a real 512x512px (~51.2km x 51.2km) tile directly out of the real,
+  cached GLD100 file at (lon=180, lat=0) — GLD100's own central meridian/standard parallel, chosen
+  specifically so `crater_depth_m`'s isotropic-pixel assumption holds exactly (see the test file's
+  own docstring for why this matters away from that point). Found **129 real Robbins craters fully
+  contained in that one tile** (ellipse polygon + `crater_depth_m`'s own half-pixel-diagonal margin,
+  entirely inside the tile's real bounds) — **all 129 (100%) returned a real depth**, no unexpected
+  `None`s. **This 100% figure, and the timing below, are only confirmed valid at the equator** --
+  empirically measured (not just reasoned about) that a crater ellipse polygon built directly in
+  GLD100's raw global Equidistant Cylindrical CRS (what this test and any literal
+  "read-raw-global-tiles-directly" batch approach would do) is compressed east-west by a factor of
+  `cos(latitude)`, not just a small pixel-margin effect: real craters sampled at 30/45/60/78.5 deg
+  latitude drew at ~0.87x/0.71x/0.50x/**0.20x** their true east-west extent. Near GLD100's own ±79
+  deg edge this is severe enough to badly misplace the floor/rim masks, not a rounding error --
+  **any future batch step reading raw global tiles directly would need a per-tile/per-crater local
+  reprojection first, not an optional nicety.** `crater_depth.py`'s actual production path is
+  unaffected -- `crater_depths_for_footprint` is always called against a per-camera local
+  Orthographic DEM (`lunaserv.fetch_dem_and_ortho`), genuinely isotropic near its own center
+  regardless of latitude; this gap is specific to this one heavy test's own raw-global-CRS shortcut.
+  Naive independent per-crater `crater_depth_m` calls (each opening/windowing the same real
+  10GB file fresh — no shared file handle, no caching across calls) measured **mean 19.4 ms / median
+  19.3 ms per crater**. Extrapolated (rough order-of-magnitude only, single equatorial sample,
+  single-threaded, no batching): `sin(79°) × 1,296,796 ≈ 1,272,970` non-polar craters ×
+  19.4 ms ≈ **~6.9 hours** for the whole non-polar database as a naive per-crater loop. A real
+  starting estimate, not a final answer — doesn't yet account for (a) whether depth-quality/`None`
+  rate holds up at latitudes away from the equator (this test's own isotropic-pixel caveat), (b) the
+  row-strip I/O mitigations noted just above (worth measuring, not assuming, before trusting this
+  number holds at full non-uniform latitude coverage), or (c) any parallelism (this project already
+  has a real multi-worker pattern, `TrnTestDataSet.populate_via_workers`/`tasks.huey_parallel`, that
+  a real batch job here could plausibly reuse rather than build fresh).
+- **Whole-database batch precompute, done (2026-08-26, `src/trntest/crater_depth_batch.py`)**: tiled,
+  not a naive independent per-crater loop -- a fixed lon/lat grid (`DEFAULT_TILE_SIZE_DEG = 2.0`,
+  tunable), each tile's DEM reprojected **once** and shared across every crater it owns, rather than
+  the throughput test's own deliberately-naive fresh-open-per-crater measurement above. A crater is
+  *owned* by exactly one tile via its center point falling in that tile's nominal (unpadded) bounds
+  (`craters.query_craters_in_bbox`) -- but the DEM each tile actually reprojects covers a larger,
+  independently-tunable *padded* bbox (`DEFAULT_PADDED_TILE_SIZE_DEG = 3.0`), so a crater near a
+  nominal-tile edge still gets its full extent read from its own tile's raster rather than being
+  truncated. A crater whose real ellipse (plus `crater_depth_m`'s own tiny buffer) doesn't fit even
+  the padded raster gets `depth_m=None` -- both tile sizes are fixed globals, not sized per-crater,
+  a deliberate simplification since this precompute's actual purpose (prioritizing sharper craters
+  for a debug view) doesn't need the rare oversized-crater miss fixed. Confirmed live this needed
+  its own local-Orthographic reprojection per tile (reusing `lunaserv.reproject_astropedia_elevation_to_local_grid`),
+  not a direct window read off the raw global file -- exactly the anisotropy gap the throughput test
+  above already flagged as a real requirement, not an optional nicety.
+  **A real, non-obvious correctness bug caught while building this**: `lunaserv._reproject_raster_to_local_grid`'s
+  own raw output has no `nodata` tag set on the file, even though real gaps are filled with literal
+  `NaN` -- invisible in the existing per-camera pipeline because `lunaserv.fetch_dem` always runs the
+  reprojected DEM through `hole_fill_dem` (`dem_mosaic --hole-fill-length`) before anything reads it,
+  which is also what sets a proper `nodata` tag; the batch tiler initially skipped that step and
+  would have silently leaked `NaN` into `crater_depth_m`'s percentile as if it were real elevation
+  for any DEM gap. Fixed by running every tile's reprojected DEM through the same `hole_fill_dem`
+  step before grading it.
+  **Real measured timing (10 real tiles sampled pole-to-pole, real GLD100 + real Robbins data)
+  reconciles with, and corrects, the naive estimate above**: ~2.2s/tile fixed overhead (mostly the
+  `dem_mosaic` subprocess call) + ~0.014s/crater marginal cost -- the *marginal* per-crater cost is
+  genuinely cheaper than the naive loop's 19.4ms/crater (DEM access is shared within a tile, not
+  reopened per crater), but the fixed per-tile overhead more than offsets that at this tile size,
+  since it's paid once per tile regardless of how many craters that tile owns. Total for the whole
+  grid (14,220 tiles, 1,250,659 craters within GLD100's own ±79 deg coverage, confirmed via a direct
+  query, not estimated): **~13.6 hours single-threaded** -- *slower* than the naive estimate's ~6.9
+  hours, since that number never accounted for a real per-tile subprocess cost at all, only crater
+  count. `grade_database` (sequential) and `grade_database_via_workers` (real `-k process` worker
+  pool, mirroring `trn_dataset.TrnTestDataSet.populate_via_workers`'s established pattern exactly,
+  via a generalized `tasks.start_consumer(huey_module=...)` and this module's own dedicated
+  `huey_crater_depth` instance -- not `tasks.huey_parallel`, which is bound to a different task
+  domain) both implemented; live-validated end to end (6 real tiles, 3 workers, ~1.7x wall-clock
+  speedup at this small a batch size, real resumability confirmed across the sequential/parallel
+  boundary). Output: one small CSV per tile (not one growing file), atomically published, under
+  `default_output_dir` (alongside the other Robbins-derived cache artifacts, keyed in its own
+  directory name by the tuning parameters that determine its content) -- `load_graded_database`
+  concatenates them back for querying. Deliberately stores measured depth only, not a sharpness
+  grade -- combining it with `crater_depth.stoffler_fresh_depth_km` into an actual grade is left to
+  the caller.
+- **Investigated and rejected as a shortcut (2026-08-26)**: a third-party HuggingFace dataset,
+  `huggingface.co/datasets/juliensimon/lunar-craters-robbins`, claims to be this same Robbins
+  database plus a pre-computed `depth_km` column. Direct inspection found it isn't safe to trust:
+  its `crater_id` values don't exist anywhere in this project's own cached Robbins GeoPackage (no
+  usable join key), and matching by position/diameter instead found no real correspondence either --
+  several of its "giant" (400-1,100 km) craters have no remotely similar-sized real crater anywhere
+  near their claimed position in this project's own verified Robbins data, and one row has an
+  outright impossible value (`latitude_deg = -105.383`, `diameter_km = 3411.69`, bigger than the Moon
+  itself). The dataset card also doesn't explain how `depth_km` was actually derived. Not proof of
+  malice, but strong enough evidence of unreliability that this project's own from-scratch
+  `crater_depth_batch.py` pipeline (verifiable against real DEM data, not a black-box third-party
+  column) was kept instead -- recorded here so a future session doesn't re-spend time re-evaluating
+  the same dataset from scratch.
 
 ## ASP `sat_sim`
 
@@ -1069,27 +1298,32 @@ different real candidates), confirmed to hold across a wide line range with no z
 
 ## `TrnTestDataSet` on-disk layout, and the crop ISD sidecar's real accuracy
 
-See `docs/dataset-plan.md` for the full design (class hierarchy, task queue) — this section is just
-the durable, current-state facts about what ends up on disk, kept here alongside this file's other
-concrete-format references.
+See `docs/plan.md`'s `trn_dataset.py`/`tasks.py` architecture rows for the class hierarchy/task
+queue design — this section is just the durable, current-state facts about what ends up on disk,
+kept here alongside this file's other concrete-format references.
 
 **Layout**: `<output_dir>/trn_dataset/` (not `<output_dir>/dataset/`, which is
 `dataset.generate_dataset()`'s own, separate flat per-`product_id` layout — the two don't collide in
 meaning or content) holds `manifest.csv` plus `crop/<edr_product>_crop.{cub,json}`,
 `hillshade/<edr_product>_hillshade.{tif,json}`, an empty reserved `reproject/`, per-entry
 intermediates under `_work/<edr_product>/` (`.tsai`, DEM/ortho tiles, pre-copy render output — kept
-out of `crop`/`hillshade` so those two only ever hold the canonical named pair), and task-queue
-bookkeeping under `.locks/`. Filenames key on `edr_product` (`M1327210646CE` →
+out of `crop`/`hillshade` so those two only ever hold the canonical named pair). Task-queue state
+lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
+databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_workers()`'s real
+worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s
+module docstring. Filenames key on `edr_product` (`M1327210646CE` →
 `crop/M1327210646CE_crop.cub`), matching `isis_wac.py`'s own scratch-dir convention; row lookup
 (`TrnTestDataSet[key]`) keys on `product_id` instead, matching `dataset.generate_dataset()`'s
 existing per-image folder convention — the two are always equal in today's real manifest, so this
 split is currently low-risk, just future-proofing.
 
-**The real WAC pipeline's own raw-EDR scratch** (`config.scratch_dir/isis_wac/<edr_product>/` —
-stitched cube, calibration intermediates) is deliberately *not* duplicated inside a
-`TrnTestDataSet`'s `_work/` — it stays in the shared scratch location, so two different datasets
-referencing the same `edr_product` reuse that real ISIS work (`isis_wac.run_pipeline`/
-`crop_for_camera` are already idempotent) instead of redoing it.
+**The real WAC pipeline's own raw-EDR scratch** (`_work/<edr_product>/isis/` — stitched cube,
+calibration intermediates, `isis_wac._spike_dir`) lives inside each `TrnTestDataSet`'s own
+`_work/`, one distinguished subtree per entry, not a shared cross-dataset scratch location
+(`isis_wac.run_pipeline`/`crop_for_camera` are still idempotent, so re-running against the same
+already-populated entry is still cheap — just no longer shared *across* dataset folders). Was
+`config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path, until `docs/history.md`'s
+Phase 79 entry (2026-08-23) moved it here — see that entry for why.
 
 **`isis_wac.run_isd_generate_for_crop`'s sidecar is accurate, not just informational** — it exists
 specifically so `crop/<edr_product>_crop.json` truthfully describes `crop/<edr_product>_crop.cub`'s

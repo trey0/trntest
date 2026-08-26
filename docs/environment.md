@@ -141,15 +141,47 @@ automatically.
   ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
-- **`isis_wac.run_isd_generate`'s own `-o` write into `scratch/isis_wac/<product>/` is also not
-  concurrency-safe** — same class of issue as the GLD100 race above (a plain overwrite, no
-  uniquely-named-temp-file-then-atomic-rename), confirmed live: two agents both calling
-  `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
-  (`M1327210646CE`) around the same time raced on that file. In the observed case both runs still
-  came out correct (isd_generate's write happened to complete cleanly either way, so it cost one
-  agent a wasted ~4min recompute, not corruption), but a torn/partial read on the losing side is
-  plausible if two agents' calls actually overlap mid-write rather than land sequentially. Worth
-  checking with other active agents before deliberately re-triggering this on a shared product.
+- **`isis_wac.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
+  overwrite, no uniquely-named-temp-file-then-atomic-rename — confirmed live: two agents both
+  calling `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
+  (`M1327210646CE`) around the same time raced on that file (back when it lived at the old, shared
+  `scratch/isis_wac/<product>/` path). In the observed case both runs still came out correct
+  (isd_generate's write happened to complete cleanly either way, so it cost one agent a wasted
+  ~4min recompute, not corruption), but a torn/partial read on the losing side is plausible if two
+  agents' calls actually overlap mid-write rather than land sequentially. **Path changed
+  (2026-08-23, `docs/history.md`'s Phase 79 entry)**: this write now lives under
+  `_work/<entry>/isis/` inside each `TrnTestDataSet`'s own (per-worktree-namespaced) `output/`
+  tree, not the single cross-worktree-shared `scratch/` — so the specific *cross-agent* version of
+  this race (two different worktrees' agents both reaching the same path) is now structurally
+  impossible; the function itself still has no atomic-publish guard (unlike `crop_for_camera`/
+  `run_framestitch`, retrofitted in that same phase), so a same-dataset-folder race is still
+  possible in principle -- though since task granularity moved from `(entry, product_type)` to
+  `entry` (2026-08-24, `docs/history.md`'s dated entry), it can no longer come from two tasks of one
+  `populate_via_workers()` call landing on the same entry (that's now structurally one task); only
+  from two separate, already-unsupported concurrent `populate()`/`populate_via_workers()` calls
+  against the same dataset folder (`docs/batch-generation.md`'s "Not safe to run concurrently with
+  itself") — just not yet a confirmed-live one the way the cross-agent case was.
+- **A `docker compose` invocation can silently miss a worktree's own `docker/.env`, even when the
+  file is present and correct on disk** — confirmed live: an early `scripts/run_notebook.sh` run in
+  a real worktree session wrote a genuine ~19GB duplicate of `cache`/`output`/`scratch` directly
+  inside the worktree checkout itself (`.claude/worktrees/<name>/{cache,output,scratch}`), instead
+  of the shared locations `TRNTEST_HOST_CACHE_DIR`/etc. are supposed to point at — Compose's own
+  implicit `.env` discovery depends on exactly how/where the command was invoked (cwd, whether `-f`
+  is used), not just on the file existing somewhere findable, and silently falls back to
+  `docker-compose.yml`'s own relative-path defaults (correct only for the main, non-worktree
+  checkout) rather than erroring. The exact triggering invocation wasn't conclusively identified
+  after the fact. Fixed structurally, not just documented: `scripts/run_notebook.sh` now passes
+  `--env-file "$REPO_ROOT/docker/.env"` explicitly to every `docker compose` call (conditional on
+  the file existing, since the main checkout has none) rather than relying on implicit discovery —
+  if you invoke `docker compose` some other way in a worktree (not through that script), do the
+  same: pass `--env-file docker/.env` explicitly rather than trusting Compose to find it on its own.
+  If you ever see a populated `cache/`/`output/`/`scratch/` directory sitting inside a worktree
+  checkout itself (`git status` will flag it as untracked, and it won't be small) rather than at the
+  shared `trntest_ws/{cache,output,scratch}` root, that's this bug recurring — safe to delete (it's
+  a duplicate of real data that already lives correctly at the shared location, not unique data),
+  but worth a quick check first that nothing currently running has that specific worktree-local copy
+  actually mounted (`docker inspect <container> --format '{{ range .Mounts }}{{ .Source }} -> {{
+  .Destination }}{{ "\n" }}{{ end }}'`, confirm it points at the shared paths, not the local ones).
 - **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
   when the user asks for it in that turn, and only your own branch.** This is a small team of
   agents working closely with the user, not a large/anonymous one, so the informal "just merge it

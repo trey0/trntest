@@ -36,7 +36,8 @@
 # problem entirely.
 #
 # Those angle rasters use the synthetic camera's own **real, finite position**
-# (`Camera.camera_center_moon_me_m`, via `lunaserv._camera_local_enu_m`), not an idealized
+# (`Camera.camera_center_moon_me_m`, used directly in real MOON_ME coordinates -- see
+# `lunaserv._terrain_photometric_angles`'s own docstring), not an idealized
 # infinitely-distant nadir viewer -- so emission and phase genuinely vary per pixel from actual
 # parallax (each pixel's own real vector to the spacecraft), the same real perspective geometry
 # `sat_sim`'s own synthetic render is posed with, not just local terrain slope. An earlier version
@@ -77,11 +78,18 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # cached file to resume from). `lunaserv.fetch_dem_and_ortho(..., hapke=False)` fetches the same
 # DEM/ortho pair again -- cheap, Lunaserv/Astropedia fetches are independently cached by `cache.py`
 # -- but shades it with the plain Lambertian fallback instead, writing to its own `ortho_shaded.tif`
-# so it doesn't collide with the Hapke file.
+# so it doesn't collide with the Hapke file. Passes `extra_footprint_lonlat_deg=entry.crop_footprint`
+# explicitly, matching `entry.dem_ortho_result`'s own internal call -- without it, this second call's
+# smaller camera-only-footprint AOI silently overwrote the *shared* per-candidate `dem_filled-tile-0.tif`
+# with a differently-sized DEM, corrupting `entry.dem_ortho_result`'s own already-fetched (larger,
+# crop-unioned) ortho's pairing for any later resumer (a real bug caught live -- see docs/history.md's
+# Phase 78 entry).
 
 # %%
 dem_ortho_hapke = entry.dem_ortho_result
-dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(camera, entry.per_image_config, hapke=False)
+dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(
+    camera, entry.per_image_config, extra_footprint_lonlat_deg=entry.crop_footprint, hapke=False
+)
 
 print("Hapke ortho:      ", dem_ortho_hapke.ortho)
 print("Lambertian ortho: ", dem_ortho_lambertian.ortho)

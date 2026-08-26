@@ -66,6 +66,27 @@ def test_fetch_isis_kernel_constructs_expected_url(tmp_path):
     assert dest == cache_root / "isisdata" / "lro" / "kernels" / "ck" / "moc42r_x.bc"
 
 
+def test_wac_emp_rel_path():
+    assert cache.wac_emp_rel_path("WAC_EMP_643NM_E300N1350_304P") == "pds_wac_emp/WAC_EMP_643NM_E300N1350_304P.IMG"
+
+
+def test_fetch_wac_emp_tile_constructs_expected_url(tmp_path):
+    cache_root = tmp_path / "cache"
+    calls = []
+
+    def fake_get(url, stream, timeout, **kwargs):
+        calls.append(url)
+        return _fake_response()
+
+    with mock.patch.object(cache._SESSION, "get", side_effect=fake_get):
+        dest = cache.fetch_wac_emp_tile(
+            "WAC_EMP_643NM_E300N1350_304P", cache_root=cache_root, base_url="https://example.com/wac_emp/"
+        )
+
+    assert calls == ["https://example.com/wac_emp/WAC_EMP_643NM_E300N1350_304P.IMG"]
+    assert dest == cache_root / "pds_wac_emp" / "WAC_EMP_643NM_E300N1350_304P.IMG"
+
+
 def test_robbins_craters_rel_path():
     rel = cache.robbins_craters_rel_path("https://example.com/ckan/dataset/x/resource/y/download/lunar_crater_db")
     assert rel == "robbins_craters/lunar_crater_db.zip"

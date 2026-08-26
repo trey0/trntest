@@ -118,6 +118,20 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
+# Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
+# archive rather than through Lunaserv's WMS render (see `lunaserv.wac_emp_tile_id_for_bbox`/
+# `fetch_wac_emp_reflectance` and `docs/data-sources.md`'s "WAC_EMP PDS4 archive" section) -- Lunaserv's
+# `luna_wac_normalized_reflectance` WMS layer was confirmed (2026-08-23, docs/history.md's dated
+# entry) to carry a real affine display stretch, not raw reflectance, mirroring the same "don't trust
+# Lunaserv WMS rendering" lesson that already moved the DEM source to Astropedia's flat-file GLD100.
+# One base URL covers every real tile this project fetches (the tile's own product ID, resolved per
+# footprint by `wac_emp_tile_id_for_bbox`, is appended directly) -- confirmed live via the archive's
+# own S3 listing, not guessed from a single example filename.
+DEFAULT_WAC_EMP_BASE_URL = (
+    "https://pds.mcp.nasa.gov/data/store/img/lunar_reconnaissance_orbiter/pds4/lroc/"
+    "lro-l-lroc-5-rdr/LROLRC_2001/DATA/MDR/WAC_EMP/"
+)
+
 # Robbins (2019) lunar crater database -- ~1.3-2M craters, distributed by USGS Astropedia's PDS
 # Annex (see docs/data-sources.md's "Robbins crater database" section). This exact URL is a CKAN
 # resource-download route, not the catalog/search page a browser lands on -- confirmed live via
@@ -164,6 +178,7 @@ class TrntestConfig:
     lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see docstring above
     dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see docstring above
     astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
+    wac_emp_base_url: str = DEFAULT_WAC_EMP_BASE_URL
     robbins_craters_url: str = DEFAULT_ROBBINS_CRATERS_URL
     isis_kernel_base_url: str = DEFAULT_ISIS_KERNEL_BASE_URL
     wac_ck_source: str = DEFAULT_WAC_CK_SOURCE  # "isis_resolved" | "naif_metakernel" (deprecated)

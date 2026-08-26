@@ -51,12 +51,14 @@ from pathlib import Path
 import numpy as np
 import pvl
 import rasterio
+import rasterio.warp
 import rasterio.windows
 
-from trntest import cache, render, wac_camera_model
+from trntest import cache, lunaserv, render, wac_camera_model
 from trntest.camera import Camera, FrameTiming
-from trntest.config import TrntestConfig, load_config
+from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
+from trntest.product_registry import atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
 from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
 
@@ -144,7 +146,15 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
 
 
 def _spike_dir(config: TrntestConfig) -> Path:
-    d = config.scratch_dir / "isis_wac" / config.edr_product
+    """`_work/<entry>/isis/` -- the entry-scoped, `isis/`-distinguished tier
+    `docs/history.md`'s Phase 79 entry describes: kept separate from the rest of
+    `_work/<entry>/` specifically so it survives routine pruning that the cheaper stuff doesn't need
+    to (it's the single most expensive thing here to regenerate -- a real multi-subprocess ISIS
+    toolchain run). Moved in from the old, workspace-level `scratch_dir/isis_wac/<edr_product>/` (not
+    per-dataset, keyed by `edr_product` alone) -- the cross-dataset-reuse case that separation used to
+    serve isn't actually load-bearing, since real datasets are non-overlapping in `edr_product` by
+    construction (see that plan's own "Decision" note)."""
+    d = config.output_dir / "isis"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -157,15 +167,36 @@ class Lrowac2IsisResult:
     vis_odd: Path
 
 
+_LROWAC2ISIS_SUFFIXES = (".uv.even.cub", ".vis.even.cub", ".uv.odd.cub", ".vis.odd.cub")
+
+
 def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) -> Lrowac2IsisResult:
+    """`lrowac2isis` writes 4 real output files (`_LROWAC2ISIS_SUFFIXES`) from one `to=<prefix>` call,
+    not atomically on its own. Built under a call-scoped temp subdirectory of `_spike_dir` (same
+    filesystem as the real destination, required for `Path.rename` to stay atomic), then each of the
+    4 outputs is atomically renamed to its real canonical path -- confirmed live to matter: two
+    workers racing on the same entry's raw split previously let a concurrent caller's own
+    idempotency check (`run_pipeline`'s "vis_even/vis_odd both exist" reuse branch) see a
+    partially-written set (some of the 4 outputs present, others not yet)."""
     config = config or load_config()
-    out_prefix = _spike_dir(config) / edr.img_path.stem
-    run_quiet(["lrowac2isis", f"from={edr.img_path}", f"to={out_prefix}"])
+    spike_dir = _spike_dir(config)
+    out_prefix = spike_dir / edr.img_path.stem
+    dests = {suffix: out_prefix.with_name(out_prefix.name + suffix) for suffix in _LROWAC2ISIS_SUFFIXES}
+
+    tmp_dir = Path(tempfile.mkdtemp(dir=spike_dir, prefix=f".{edr.img_path.stem}.tmp."))
+    try:
+        tmp_prefix = tmp_dir / edr.img_path.stem
+        run_quiet(["lrowac2isis", f"from={edr.img_path}", f"to={tmp_prefix}"])
+        for suffix, dest in dests.items():
+            tmp_prefix.with_name(tmp_prefix.name + suffix).rename(dest)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
     return Lrowac2IsisResult(
-        uv_even=out_prefix.with_name(out_prefix.name + ".uv.even.cub"),
-        vis_even=out_prefix.with_name(out_prefix.name + ".vis.even.cub"),
-        uv_odd=out_prefix.with_name(out_prefix.name + ".uv.odd.cub"),
-        vis_odd=out_prefix.with_name(out_prefix.name + ".vis.odd.cub"),
+        uv_even=dests[".uv.even.cub"],
+        vis_even=dests[".vis.even.cub"],
+        uv_odd=dests[".uv.odd.cub"],
+        vis_odd=dests[".vis.odd.cub"],
     )
 
 
@@ -230,16 +261,39 @@ def _parse_ck_kernels_from_label(label_text: str) -> list[str]:
     return [_strip_isis_alias_prefix(entry) for entry in pointing if "/kernels/ck/" in entry]
 
 
+def _is_spiceinit_complete(cub_path: Path) -> bool:
+    """Whether `cub_path`'s label already has `spiceinit`'s own `Kernels.InstrumentPointing` group --
+    the real completion signal `_spiceinit_vis_even_cube` needs. A cube's mere existence on disk does
+    NOT imply this: `run_lrowac2isis`'s own output is real and complete (atomically published) the
+    moment it exists, but not yet spiceinit'd -- confirmed live (not theoretical): a concurrent
+    caller's bare existence check on exactly this window produced a real `KeyError:
+    'InstrumentPointing'` in `_parse_ck_kernels_from_label`."""
+    try:
+        label = pvl.loads(_catlab(cub_path))
+        _ = label["IsisCube"]["Kernels"]["InstrumentPointing"]
+        return True
+    except (KeyError, subprocess.CalledProcessError):
+        return False
+
+
 def _spiceinit_vis_even_cube(config: TrntestConfig) -> Path:
     """The spiceinit'd `vis_even` cube -- needed by `resolve_wac_ck_kernels`, which only needs this
     cube's real, spiceinit-resolved label (pointing/timing/camera model), not calibrated pixel data.
-    Idempotent: reuses the file on disk if it already exists rather than re-running
-    `lrowac2isis`/`spiceinit`, which aren't themselves idempotent (ISIS apps refuse to overwrite an
-    existing `to=` output)."""
+    Reuses the file on disk if it already exists **and is already spiceinit'd**
+    (`_is_spiceinit_complete`) -- checking existence alone isn't sufficient (see that function's own
+    docstring for the real race this closes). `run_lrowac2isis` is itself atomic now (see its own
+    docstring), so this can safely call it again if reached concurrently by another worker -- either
+    a fresh build or a redundant one, both produce equally valid content, and the atomic rename just
+    lets whichever finishes first "win" (a later one's rename harmlessly overwrites it with an
+    equivalent result). `run_spiceinit` itself is not similarly hardened against two workers both
+    reaching it for the exact same physical file at the same moment -- an existing, deliberate design
+    tradeoff in this codebase (`run_pipeline`'s own docstring: "spiceinit... confirmed idempotent...
+    never specially guarded"), not something newly introduced or fixed here; a narrower residual risk
+    than the one this function's own fix closes, left open rather than silently assumed safe."""
     edr = fetch_edr_img(config)
     out_prefix = _spike_dir(config) / edr.img_path.stem
     vis_even_path = out_prefix.with_name(out_prefix.name + ".vis.even.cub")
-    if vis_even_path.exists():
+    if vis_even_path.exists() and _is_spiceinit_complete(vis_even_path):
         return vis_even_path
     ensure_isisdata(config)
     stitch_inputs = run_lrowac2isis(edr, config)
@@ -308,6 +362,7 @@ class FramestitchResult:
     flip: bool  # the FLIP value framestitch was actually run with -- see run_isd_generate's docstring
 
 
+@writes_product("isis_stitched_cube")
 def run_framestitch(
     even: LrowaccalResult,
     odd: LrowaccalResult,
@@ -322,18 +377,25 @@ def run_framestitch(
     matches `framestitch -help`'s own spelling) confirmed against a real built image -- `-help`
     doesn't document `FRAMEHEIGHT`/`NUM_LINES_OVERLAP` beyond their `Null` defaults, so those are
     left unset here (ISIS auto-computes when left `Null`, per its own convention) unless real runs
-    show that's wrong."""
+    show that's wrong.
+
+    `TO=` goes through `atomic_publish_path` -- `run_pipeline` (this function's only caller) already
+    checks the final stitched cube doesn't exist before reaching here, so this never collides with
+    that check; the only change is that a crash mid-`framestitch` now leaves nothing at the real path
+    (temp file cleaned up) instead of a partial cube ISIS's own overwrite-refusal would otherwise
+    leave stuck on the next run."""
     config = config or load_config()
     out_path = even.cub_path.with_name(even.cub_path.stem.replace(".even", "") + ".stitched.cub")
-    run_quiet(
-        [
-            "framestitch",
-            f"EVEN={even.cub_path}",
-            f"ODD={odd.cub_path}",
-            f"TO={out_path}",
-            f"FLIP={'TRUE' if flip else 'FALSE'}",
-        ]
-    )
+    with atomic_publish_path(out_path) as tmp:
+        run_quiet(
+            [
+                "framestitch",
+                f"EVEN={even.cub_path}",
+                f"ODD={odd.cub_path}",
+                f"TO={tmp}",
+                f"FLIP={'TRUE' if flip else 'FALSE'}",
+            ]
+        )
     return FramestitchResult(cub_path=out_path, flip=flip)
 
 
@@ -351,9 +413,10 @@ def run_pipeline(flip: bool, frame_timing: FrameTiming, config: TrntestConfig | 
     directly, no ISIS calls at all; (2) if just `lrowac2isis`'s split already exists (e.g.
     `spice_kernels.fetch_and_furnish`'s default `isis_resolved` CK resolution already ran it as a
     side effect, via `resolve_wac_ck_kernels`/`_spiceinit_vis_even_cube`), reuses those files rather
-    than re-running `lrowac2isis` (confirmed unsafe to call twice -- ISIS apps refuse to overwrite
-    an existing `to=` output; `spiceinit`, unlike `lrowac2isis`, is confirmed idempotent -- safe to
-    re-run on an already-spiceinit'd cube, same result -- so it's never specially guarded here)."""
+    than re-running `lrowac2isis` -- purely an efficiency choice now, not a correctness requirement:
+    `run_lrowac2isis` is atomic (its own docstring), so calling it again is safe, just redundant
+    work. `spiceinit`, unlike the old (pre-atomic) `lrowac2isis`, is confirmed idempotent -- safe to
+    re-run on an already-spiceinit'd cube, same result -- so it's never specially guarded here."""
     config = config or load_config()
     ensure_isisdata(config)
     edr = fetch_edr_img(config)
@@ -555,6 +618,7 @@ class CropResult:
     cub_path: Path
 
 
+@writes_product("isis_crop_cube")
 def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: TrntestConfig | None = None) -> CropResult:
     """A single, real, persisted ISIS crop of `stitched` to `crop_window_for_camera(camera)`'s
     window -- the one "WAC crop" output product both Phase 6A (raw display of `.cub_path` directly)
@@ -578,15 +642,16 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
     window = crop_window_for_camera(camera)
     out_path = stitched.cub_path.with_name(stitched.cub_path.stem + ".crop.cub")
     if not out_path.exists():
-        run_quiet(
-            [
-                "crop",
-                f"from={stitched.cub_path}",
-                f"to={out_path}",
-                f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
-                f"nlines={window.height}",
-            ]
-        )
+        with atomic_publish_path(out_path) as tmp:
+            run_quiet(
+                [
+                    "crop",
+                    f"from={stitched.cub_path}",
+                    f"to={tmp}",
+                    f"line={window.row_off + 1}",  # ISIS LINE is 1-based; Window.row_off is 0-based
+                    f"nlines={window.height}",
+                ]
+            )
     return CropResult(cub_path=out_path)
 
 
@@ -596,8 +661,8 @@ def run_isd_generate_for_crop(
     """Generate a CSM Pushframe ISD for `crop` itself (the actual cropped cube ISIS's own `crop` app
     produced), not the full stitched cube `run_isd_generate` is limited to -- so the resulting JSON's
     own image dimensions/frame count are read from, and correctly reflect, the crop's real size, for
-    `trn_dataset.TrnTestCropImage`'s sidecar (see docs/dataset-plan.md's "Crop sidecar: accurate, not
-    just informational"). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
+    `trn_dataset.TrnTestCropImage`'s sidecar (see `docs/data-sources.md`'s "crop ISD sidecar's real
+    accuracy" section). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
     for actual reprojection** -- like any Pushframe ISD in this codebase, `usgscsm`'s `groundToImage`
     isn't reliable enough for that (see the module docstring); real ground<->image lookups still go
     through `resolve_ground_to_image_model`/`ground_to_image_pixel`, unaffected by any of this. This
@@ -711,6 +776,47 @@ def ground_to_image_pixel(model: GroundToImageModel, lon_deg: float, lat_deg: fl
     label = pvl.loads(result.stdout)
     ground_point = label["GroundPoint"]
     return float(ground_point["Sample"]), float(ground_point["Line"])
+
+
+def campt_photometric_angles(cub_path: Path, lon_deg: float, lat_deg: float) -> tuple[float, float, float] | None:
+    """Real `campt` phase/incidence/emission angles (degrees) at a given ground point, against
+    whichever camera model `cub_path` has attached (`csminit`) -- the ISIS ground-truth counterpart to
+    this project's own hand-rolled `lunaserv._terrain_photometric_angles`, used to validate it (see
+    that function's own docstring and `docs/history.md`'s Phase 71 entry). Mirrors
+    `ground_to_image_pixel`'s exact PVL-single-point-query pattern (same `type=ground`/
+    `allowoutside=false` convention) rather than the `usecoordlist=true` batched flat-file approach
+    `ground_to_image_pixels_batch` uses -- this project's own validation only ever needs a handful of
+    sparse sample points (not a full raster), so the per-call subprocess overhead
+    `ground_to_image_pixels_batch`'s own docstring describes doesn't matter enough here to trade away
+    PVL's more directly-verifiable field names for CSV's. Returns `None` on the same
+    doesn't-project-into-this-cube failure `ground_to_image_pixel` already handles that way.
+
+    `cub_path`'s camera model determines whether these are ellipsoid-based or DEM-aware ("local")
+    angles -- `campt` has no separate `local*` output names the way `phocube` does; it just reports
+    whatever its attached shape model (or lack of one) resolves to. See Phase 71's own investigation
+    (`docs/history.md`) for whether that in fact varies with the attached shape model."""
+    result = subprocess.run(
+        [
+            "campt",
+            f"from={cub_path}",
+            "type=ground",
+            f"latitude={lat_deg}",
+            f"longitude={lon_deg}",
+            "format=pvl",
+            "allowoutside=false",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    ground_point = pvl.loads(result.stdout)["GroundPoint"]
+    return (
+        float(ground_point["Phase"]),
+        float(ground_point["Incidence"]),
+        float(ground_point["Emission"]),
+    )
 
 
 def ground_to_image_pixels_batch(model: GroundToImageModel, lonlat_deg: np.ndarray) -> list[tuple[float, float] | None]:
@@ -883,6 +989,7 @@ def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
     )
 
 
+@writes_product("crop_cam2map")
 def run_cam2map_for_crop(
     crop: CropResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
@@ -941,25 +1048,39 @@ def run_cam2map_for_crop(
     -- confirmed harmless: the output CRS/transform were verified correct (matching
     `dem_ortho_result`'s own projection exactly) despite it, and the process still exits 0."""
     config = config or load_config()
-    map_path = crop.cub_path.with_suffix(".ortho.map")
+    # _work/<entry>/crop/ -- generator-scoped (docs/history.md's Phase 79 entry), even
+    # though this is also reused by TrnTestReprojectImage's own texture-source step: it's the crop's
+    # own mapproject output regardless of which product type ends up consuming it, so it stays under
+    # the crop generator's own subtree rather than the isis/ tier crop.cub_path itself now lives in.
+    out_dir = config.output_dir / "crop"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    map_path = out_dir / (crop.cub_path.stem + ".ortho.map")
     map_path.write_text(_orthographic_map_pvl(dem_ortho_result))
 
-    mapproj_cub = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.cub")
-    run_quiet(
-        [
-            "cam2map",
-            f"from={crop.cub_path}",
-            f"map={map_path}",
-            f"to={mapproj_cub}",
-            "pixres=map",
-            "defaultrange=camera",
-            "warpalgorithm=forwardpatch",
-            "patchsize=1",
-        ]
-    )
+    mapproj_cub = out_dir / (crop.cub_path.stem + "-cam2map.cub")
+    # atomic_publish_path also fixes a real pre-existing gap as a side effect: this function had no
+    # existence guard at all, so a second call for the same crop (e.g. plot_overlay() called twice)
+    # used to hit ISIS's own "to= already exists" refusal on mapproj_cub. cam2map now always writes to
+    # a guaranteed-fresh temp path, and the final rename replaces any prior mapproj_cub atomically (a
+    # plain POSIX rename over an existing destination, unlike ISIS's own to= semantics).
+    with atomic_publish_path(mapproj_cub) as tmp_cub:
+        run_quiet(
+            [
+                "cam2map",
+                f"from={crop.cub_path}",
+                f"map={map_path}",
+                f"to={tmp_cub}",
+                "pixres=map",
+                "defaultrange=camera",
+                "warpalgorithm=forwardpatch",
+                "patchsize=1",
+            ]
+        )
 
-    mapproj_tif = crop.cub_path.with_name(crop.cub_path.stem + "-cam2map.tif")
-    run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(mapproj_tif)])
+    mapproj_tif = out_dir / (crop.cub_path.stem + "-cam2map.tif")
+    with atomic_publish_path(mapproj_tif) as tmp_tif:
+        run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(tmp_tif)])
     return mapproj_tif
 
 
@@ -1132,3 +1253,32 @@ def sample_lunar_dem_radii_batch(lonlat_deg: np.ndarray, config: TrntestConfig |
             "expected exactly one row per point"
         )
     return np.array([float(row["PixelValue"]) for row in rows])
+
+
+def sample_local_dem_patch(
+    center_lon_deg: float, center_lat_deg: float, cellsize_m: float, config: TrntestConfig | None = None
+) -> np.ndarray:
+    """A real 3x3 local elevation patch (meters, relative to `MOON_RADIUS_M`) centered on
+    `(center_lon_deg, center_lat_deg)`, sampled directly from ISIS's own global lunar shape model
+    (`sample_lunar_dem_radii_batch`) at 9 points spaced `cellsize_m` apart in local East/North --
+    built as a real, camera-independent ground-truth `dem` input for
+    `lunaserv._terrain_photometric_angles`'s own gradient stencil, specifically so its output can be
+    compared against ISIS `phocube`'s `LOCALINCIDENCE`/`LOCALEMISSION` backplanes computed from this
+    exact same shape model (rather than this project's own, differently-sourced Astropedia DEM) --
+    see docs/history.md's dated entry for the validation this was built for.
+
+    The 9 sample points are generated by converting a small local-meters grid (centered on the
+    tangent point, i.e. `(center_lon_deg, center_lat_deg)` itself) to lon/lat via the same real
+    forward Orthographic projection `lunaserv.local_orthographic_crs`/`geographic_crs` already define
+    elsewhere in this project -- not a second, independent coordinate-conversion implementation.
+    Row 0 is north (matches `_terrain_photometric_angles`'s own `y_centers` convention: row 0 =
+    north/top), so this patch can be fed to it directly as `dem` with a matching `bbox`."""
+    config = config or load_config()
+    offsets = (-cellsize_m, 0.0, cellsize_m)
+    xs = [dx for _dy in reversed(offsets) for dx in offsets]  # north (max y) row first
+    ys = [dy for dy in reversed(offsets) for _dx in offsets]
+    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    lons, lats = rasterio.warp.transform(ortho_crs, lunaserv.geographic_crs(), xs, ys)
+    lonlat_deg = np.array([(lon % 360.0, lat) for lon, lat in zip(lons, lats, strict=True)])
+    radii = sample_lunar_dem_radii_batch(lonlat_deg, config)
+    return (radii - MOON_RADIUS_M).reshape(3, 3)

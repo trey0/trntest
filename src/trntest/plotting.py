@@ -468,6 +468,15 @@ def plot_render_vs_basemap(
     return fig
 
 
+def _cellsize_m(raster_da) -> float:
+    """Pixel size (meters) from `raster_da`'s own `x` coordinate spacing -- shared by
+    `compute_brightness_matched_diff` and `plot_sfs_comparison`'s own `reindex_like` alignment
+    tolerance (half a pixel, generous enough to absorb real floating-point/rounding differences
+    between two independently-computed windows, tight enough to never match two genuinely different
+    grid cells -- see `compute_brightness_matched_diff`'s own docstring)."""
+    return float(abs(raster_da.x.values[1] - raster_da.x.values[0]))
+
+
 def _open_raster_dataarray(path):
     """`rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs
     (e.g. multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
@@ -688,6 +697,123 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
     # plot_comparison's own docstring describes.
     overlay_vmin, overlay_vmax = base_vmin, base_vmax
     return base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax
+
+
+@dataclasses.dataclass(frozen=True)
+class BrightnessMatchedDiffResult:
+    """`compute_brightness_matched_diff`'s return -- see that function's own docstring."""
+
+    mean_abs_diff: float
+    median_abs_diff: float
+    valid_pixel_count: int
+
+
+def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> BrightnessMatchedDiffResult:
+    """The quantitative counterpart to `plot_overlay`'s visual comparison: a real, reusable
+    "brightness-matched mean|diff|" number between two geo-aligned rasters on the same map grid (e.g.
+    `DemOrthoResult.ortho` vs. a real WAC crop's `isis_wac.run_cam2map_for_crop` output) -- the same
+    metric this project's own investigation notebooks have repeatedly hand-recomputed ad hoc (see
+    docs/history.md's Phase 68/70/71 entries, none of which kept the actual comparison code), each
+    time as a throwaway script with no guarantee of matching any other attempt's exact methodology.
+    Factored out here specifically so future comparisons are reproducible and mutually comparable,
+    not re-derived from scratch each time.
+
+    Reuses `_prep_overlay_rasters`'s exact brightness-matching technique (a single multiplicative
+    scale at the median, not an affine/percentile stretch -- see its own docstring for why) with
+    `fill_overlay_nodata=False`: unlike `plot_overlay`'s display use, a quantitative diff must never
+    include interpolated/filled pixels, only real data.
+
+    `base_raster_path` and `overlay_raster_path` are expected to already share the same map grid
+    (same CRS/pixel size) but not necessarily the same window/extent -- e.g. `base_raster_path` is
+    typically the full padded DEM/ortho fetch AOI while `overlay_raster_path` covers only a real
+    crop's own smaller real footprint. Confirmed live (2026-08-22, docs/history.md's Phase 71 entry):
+    naively diffing the two underlying arrays by raw position raises a shape-mismatch error, or worse,
+    would silently misalign them if the shapes happened to match by coincidence -- both must be
+    aligned by real coordinate first (`reindex_like`), not raw array indexing. `tolerance` is half the
+    base raster's own pixel size, derived from its `x` coordinate spacing -- generous enough to absorb
+    any real floating-point/rounding difference between how each raster's own window was independently
+    computed, tight enough to never accidentally match two genuinely different grid cells."""
+    base, _, overlay_display, *_ = _prep_overlay_rasters(
+        base_raster_path, overlay_raster_path, fill_overlay_nodata=False
+    )
+    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=_cellsize_m(base) / 2.0)
+
+    a = base.values.astype(np.float64)
+    b = overlay_aligned.values.astype(np.float64)
+    valid = np.isfinite(a) & np.isfinite(b)
+    diffs = np.abs(a[valid] - b[valid])
+    return BrightnessMatchedDiffResult(
+        mean_abs_diff=float(np.mean(diffs)) if diffs.size else float("nan"),
+        median_abs_diff=float(np.median(diffs)) if diffs.size else float("nan"),
+        valid_pixel_count=int(valid.sum()),
+    )
+
+
+def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title: str | None = None):
+    """Real WAC crop vs. our own Hapke hillshade vs. Ames Stereo Pipeline `sfs`'s independent
+    forward-render (`sfs_validation.run_sfs_forward_render`), all three on the real WAC panel's own
+    display range and brightness-matched to it via the same single-multiplicative-median-scale
+    technique `_prep_overlay_rasters`/`compute_brightness_matched_diff` use (see either's docstring
+    for why this, not an affine/percentile stretch). `sfs_sim_intensity_path` is expected to already
+    be coverage-masked (`sfs_validation.mask_sfs_uncovered`) -- `sfs`'s own literal-`0.0`
+    "outside camera coverage" convention would otherwise dominate the median and wash out the
+    brightness match entirely, the same failure mode `compute_brightness_matched_diff`'s own
+    docstring warns a mismatched-extent raster can cause."""
+    real = _open_raster_dataarray(real_wac_path)
+    tolerance = _cellsize_m(real) / 2.0
+    ours = _open_raster_dataarray(ours_path).reindex_like(real, method="nearest", tolerance=tolerance)
+    sim = _open_raster_dataarray(sfs_sim_intensity_path).reindex_like(real, method="nearest", tolerance=tolerance)
+
+    real_median = np.nanmedian(real.values)
+    vmax = np.nanpercentile(real.values, 99.5)
+
+    def brightness_matched(overlay):
+        overlay_median = np.nanmedian(overlay.values)
+        scale = real_median / overlay_median if overlay_median and np.isfinite(overlay_median) else 1.0
+        return overlay.values * scale
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+    axes[0].imshow(real.values, cmap="gray", vmin=0, vmax=vmax)
+    axes[0].set_title("Real WAC (cam2map)")
+    axes[1].imshow(brightness_matched(ours), cmap="gray", vmin=0, vmax=vmax)
+    axes[1].set_title("Our Hapke hillshade\n(brightness-matched)")
+    axes[2].imshow(brightness_matched(sim), cmap="gray", vmin=0, vmax=vmax)
+    axes[2].set_title("ASP sfs forward-render\n(brightness-matched)")
+    for ax in axes:
+        ax.axis("off")
+    fig.tight_layout()
+    if title:
+        fig.suptitle(title, y=1.05)
+    return fig
+
+
+def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg: np.ndarray, title: str | None = None):
+    """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check
+    (`sfs_validation.run_sfs_lambertian_incidence`/`incidence_deg_from_lambertian_sim_intensity`):
+    `sfs`'s own independently ray-traced incidence field, `lunaserv.real_geometry_photometric_
+    angles`'s own field, and their difference (degrees) -- both plain arrays, already `NaN` outside
+    real camera coverage (`sfs`'s own -- see `incidence_deg_from_lambertian_sim_intensity`), not
+    raster paths, since both are already in-memory by the time a caller has something to compare."""
+    diff_deg = incidence_sfs_deg - incidence_ours_deg
+    vmin = float(np.nanmin([np.nanmin(incidence_sfs_deg), np.nanmin(incidence_ours_deg)]))
+    vmax = float(np.nanmax([np.nanmax(incidence_sfs_deg), np.nanmax(incidence_ours_deg)]))
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    im0 = axes[0].imshow(incidence_sfs_deg, cmap="viridis", vmin=vmin, vmax=vmax)
+    axes[0].set_title("incidence, from sfs\n(Lambertian-mode inversion)")
+    fig.colorbar(im0, ax=axes[0], fraction=0.046)
+    im1 = axes[1].imshow(incidence_ours_deg, cmap="viridis", vmin=vmin, vmax=vmax)
+    axes[1].set_title("incidence, ours\n(real_geometry_photometric_angles)")
+    fig.colorbar(im1, ax=axes[1], fraction=0.046)
+    im2 = axes[2].imshow(diff_deg, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
+    axes[2].set_title("sfs - ours (deg)")
+    fig.colorbar(im2, ax=axes[2], fraction=0.046)
+    for ax in axes:
+        ax.axis("off")
+    fig.tight_layout()
+    if title:
+        fig.suptitle(title, y=1.05)
+    return fig
 
 
 def _overlay_outline_geoseries(overlay):
@@ -912,6 +1038,83 @@ def _blink_gif_b64(base_frame, overlay_frame, initial_visible: bool, interval_ms
     buf = io.BytesIO()
     frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=interval_ms, loop=0)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def plot_render_toggle(
+    raster_a_path,
+    raster_b_path,
+    rotation_k: int,
+    width_km: float,
+    height_km: float,
+    label_a: str,
+    label_b: str,
+    show_a_first: bool = True,
+    blink_interval_ms: int = 700,
+):
+    """Blink comparator for two renders that already share the exact same pixel grid by construction
+    -- e.g. `hillshade` vs. `reproject`, both `sat_sim` renders through one shared `Camera` (same
+    pose, same corrected FOV, same rotation -- see `camera.solve_corrected_fov`'s docstring). Unlike
+    `plot_overlay_toggle`, this needs no `rioxarray`/geo-registration step at all: `raster_a_path`/
+    `raster_b_path` are read as plain arrays (`read_raster_band`) and rotated north-up with the one
+    shared `rotation_k`, the same technique `plot_render_vs_basemap`'s render panel uses -- no
+    reprojection, since there's nothing to align. No tie-point markers -- unlike the other panels in
+    this notebook, the whole point here is the blink itself; static markers didn't actually help
+    read it and just added clutter (confirmed live).
+
+    Still brightness-matches `raster_b_path` to `raster_a_path`'s own median (the same single-
+    multiplicative technique `plot_isis_comparison`/`plot_overlay` use) -- necessary even though both
+    are `sat_sim` renders, since the two can land on very different absolute DN scales depending on
+    their own texture source (e.g. `reproject`'s real ISIS-calibrated I/F input, ~0.01-0.2, vs.
+    `hillshade`'s synthetic basemap texture).
+
+    Reuses `_blink_gif_b64` directly for the actual GIF encoding (shared 256-color palette, `<img
+    src="data:image/gif;...">`, no `<style>`/anchor links for GitHub's sanitizer to strip -- see
+    `plot_overlay_toggle`'s docstring for why that mechanism specifically) -- only the frame-rendering
+    step differs (plain rotated arrays here vs. geo-registered `rioxarray` panels there).
+
+    Each frame's title shows both labels with a `☑`/`☐` checkbox glyph marking which one is
+    currently showing (`"☑ {label_a} / ☐ {label_b}"`, flipped on the other frame) -- the same
+    stable-width checkbox convention `plot_overlay_toggle` uses (only the two glyphs swap in place;
+    `label_a`/`label_b` themselves never move), generalized from an on/off binary to naming which of
+    two candidates is on screen.
+
+    Returns an `IPython.display.HTML` object -- must be the bare last expression of a cell (no
+    trailing `;`), same requirement as `plot_overlay_toggle`."""
+    data_a = read_raster_band(raster_a_path)
+    data_b = read_raster_band(raster_b_path)
+
+    valid_a = valid_pixel_mask(data_a)
+    valid_b = valid_pixel_mask(data_b)
+    filled_a = _fill_dead_columns_for_display(data_a, valid_a) if valid_a.any() else data_a
+    filled_b = _fill_dead_columns_for_display(data_b, valid_b) if valid_b.any() else data_b
+
+    median_a = np.nanmedian(filled_a[valid_a]) if valid_a.any() else 1.0
+    median_b = np.nanmedian(filled_b[valid_b]) if valid_b.any() else 1.0
+    if median_b and np.isfinite(median_b):
+        filled_b = filled_b * (median_a / median_b)
+
+    vmin, vmax = 0, np.nanpercentile(filled_a, 99.9)
+
+    def _frame(data, title):
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.imshow(np.rot90(data, rotation_k), cmap="gray", vmin=vmin, vmax=vmax, extent=(0, width_km, height_km, 0))
+        ax.set_title(title)
+        ax.set_xlabel("km")
+        ax.set_ylabel("km")
+        fig.tight_layout()
+        width_px, height_px = fig.get_size_inches() * fig.dpi
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return Image.open(buf).convert("RGB"), round(width_px), round(height_px)
+
+    frame_a, width_px, height_px = _frame(filled_a, f"☑ {label_a} / ☐ {label_b}")
+    frame_b, _, _ = _frame(filled_b, f"☐ {label_a} / ☑ {label_b}")
+
+    gif_b64 = _blink_gif_b64(frame_a, frame_b, show_a_first, blink_interval_ms)
+    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
+    return IPython.display.HTML(html)
 
 
 def plot_sun_elevation_vs_edr_count(

@@ -3,9 +3,18 @@
 expensive-to-derive state), and `TrnTestImage` (one product type of one entry -- `entry.crop`/
 `entry.hillshade` -- owning the genuinely shared generate/plot logic once, with small per-type
 subclasses). Replaces `dataset.generate_dataset()`'s flat, all-at-once output layout with something
-that can be populated incrementally/resumably, including across separate `docker compose run`
-workers via the filesystem-based task queue at the bottom of this module. See docs/dataset-plan.md
-for the full design this implements -- start there before changing anything here.
+that can be populated incrementally/resumably, driven by the `trntest.tasks` `huey` task queue (see
+that module's docstring for the full design). See `docs/plan.md`'s `trn_dataset.py`/`tasks.py` rows
+for the current architecture summary and `docs/history.md`'s dated entries for how it got here --
+start there before changing anything here.
+
+**`populate()` no longer supports running several concurrent `docker compose run` invocations
+against the same dataset folder as a way to parallelize** -- the old filesystem lock files that made
+that safe are gone (see "Task queue" below). Only one `populate()` call should run against a given
+dataset folder at a time. For real multi-worker parallel population, use `populate_via_workers()`
+instead (a separate `huey` queue + a real `huey_consumer` subprocess this method manages itself --
+see `trntest.tasks`'s docstring) -- not a substitute for running several `populate()` calls
+concurrently, a different mechanism entirely.
 
 First-pass scope was `crop` + `hillshade` generation only; `reproject` (`TrnTestReprojectImage`,
 `sat_sim` fed by the real WAC crop's own reflectance instead of the Lunaserv/Astropedia basemap,
@@ -13,21 +22,22 @@ through the exact same camera as `hillshade`) is now implemented too, but delibe
 `PRODUCT_TYPES` (`populate()`/`status()`'s default) -- opt-in only (pass
 `product_types=(..., "reproject")` explicitly) until it's wired into a notebook and validated at
 dataset scale, not just the one image `docs/reproject-fov-investigation.md` cross-validated. See
-docs/dataset-plan.md for the original design and docs/reproject-fov-investigation.md for
-`reproject`'s own history.
+docs/reproject-fov-investigation.md for `reproject`'s own history.
 """
 
 import abc
 import functools
-import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
 import pandas as pd
+from huey import Huey
+from huey.api import Result, TaskWrapper
+from huey.exceptions import TaskException
 
 from trntest import camera as camera_module
-from trntest import dataset, isis_wac, lunaserv, orientation, plotting, render, tie_points
+from trntest import dataset, isis_wac, lunaserv, orientation, plotting, render, tasks, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
@@ -77,8 +87,9 @@ class TrnTestEntry:
 
     @functools.cached_property
     def crop_result(self) -> isis_wac.CropResult:
-        """The scratch-dir crop cube (`config.scratch_dir/isis_wac/<edr_product>/...`) -- distinct
-        from `TrnTestCropImage.raster_path`, the dataset-folder copy `crop.generate()` makes of it."""
+        """The private crop cube (`_work/<edr_product>/isis/...`, see `isis_wac._spike_dir`) --
+        distinct from `TrnTestCropImage.raster_path`, the published dataset-folder copy
+        `crop.generate()` makes of it."""
         return isis_wac.crop_for_camera(self.stitched, self.camera, self.per_image_config)
 
     @functools.cached_property
@@ -91,13 +102,17 @@ class TrnTestEntry:
         pure IO) when they already exist on disk, instead of re-fetching from Lunaserv/Astropedia --
         the real resumability win `dataset.populate()`'s second-run-near-instant behavior depends
         on, since a fresh fetch is by far the most expensive part of generating either product type.
-        Looks for `lunaserv.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`'s own filename
-        specifically (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume
-        a stale *other*-mode ortho left over from before either default changed (or from a one-off
-        non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho` below
-        picks up the same defaults itself."""
+        Looks for `lunaserv.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
+        `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
+        (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
+        *other*-mode ortho left over from before any default changed (or from a one-off non-default
+        call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho` below picks up the
+        same defaults itself."""
         ortho_path = self.per_image_config.output_dir / lunaserv.ortho_shaded_filename(
-            lunaserv.DEFAULT_HAPKE_SHADING, lunaserv.DEFAULT_ALONG_TRACK_CORRECTION
+            lunaserv.DEFAULT_HAPKE_SHADING,
+            lunaserv.DEFAULT_ALONG_TRACK_CORRECTION,
+            lunaserv.DEFAULT_REAL_HAPKE_PARAMS,
+            lunaserv.DEFAULT_ORTHO_SOURCE,
         )
         dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
         if ortho_path.exists() and dem_path.exists():
@@ -130,8 +145,9 @@ class TrnTestEntry:
 class TrnTestDataSet:
     """A self-contained dataset folder: `manifest.csv` (the same `dataset.DATASET_COLUMNS` shape
     `dataset.write_manifest`/`read_manifest` already use) plus `crop`/`hillshade`/`reproject`/
-    `_work`/`.locks` subfolders. Iterating/indexing yields `TrnTestEntry` objects; `populate()`
-    drives the filesystem task queue at the bottom of this module until nothing's left claimable."""
+    `_work` subfolders (task-queue state itself lives outside the dataset folder now -- see
+    `trntest.tasks`'s docstring for why). Iterating/indexing yields `TrnTestEntry` objects;
+    `populate()` drives the `trntest.tasks` huey queue until nothing's left `pending`."""
 
     def __init__(self, folder: Path | str, images: pd.DataFrame, config: TrntestConfig):
         self.folder = Path(folder)
@@ -141,11 +157,11 @@ class TrnTestDataSet:
     @classmethod
     def create(cls, folder: Path | str, images: pd.DataFrame, config: TrntestConfig | None = None) -> "TrnTestDataSet":
         """Idempotent: (re)writes `manifest.csv` from `images`, ensures `crop`/`hillshade`/
-        `reproject`/`_work`/`.locks` exist. Never touches already-generated product files -- those
-        live under `crop`/`hillshade`, untouched by this call."""
+        `reproject`/`_work` exist. Never touches already-generated product files -- those live
+        under `crop`/`hillshade`, untouched by this call."""
         config = config or load_config()
         folder = Path(folder)
-        for sub in ("crop", "hillshade", "reproject", "_work", ".locks"):
+        for sub in ("crop", "hillshade", "reproject", "_work"):
             (folder / sub).mkdir(parents=True, exist_ok=True)
         dataset.write_manifest(images, folder / "manifest.csv")
         return cls(folder, images, config)
@@ -184,53 +200,88 @@ class TrnTestDataSet:
         retry_failed: bool = False,
         limit: int | None = None,
     ) -> None:
-        """Drives the task queue (manifest rows x `product_types`) sequentially, entry by entry:
-        for each entry, `claim_task -> image.generate() -> mark_done/mark_failed` for every still-
-        `pending` product type. Stays sequential in-process on purpose: `claim_task` is already safe
-        across separate OS processes with zero extra code (multiple `docker compose run` invocations
-        against the same folder is the real "workers" story here), consistent with this project's
-        existing rule that SPICE/spiceypy state is process-global and unsafe across concurrent calls
-        within one process -- see docs/dataset-plan.md's "Task queue" section. One row's failure
-        doesn't stop the rest (`mark_failed`, not raised) -- a batch of real network/ISIS calls is
-        expected to have occasional real failures.
+        """Drives the `trntest.tasks` huey queue sequentially, entry by entry: for each entry with
+        any still-`pending` product type, enqueues one `tasks.generate_product` task covering its
+        own pending subset of `product_types` (see `tasks._generate_entry`'s own docstring for why
+        task granularity is per-entry, not per `(entry, product_type)`) and blocks on its result
+        before moving on. `huey`'s default `immediate=True` (see `trntest.tasks`'s docstring) means
+        this executes synchronously in this process, same sequential shape as before -- consistent
+        with this project's existing rule that SPICE/spiceypy state is process-global and unsafe
+        across concurrent calls within one process. One entry's failure doesn't stop the rest
+        (`TaskException` is caught, not raised) -- a batch of real network/ISIS calls is expected to
+        have occasional real failures.
 
-        `limit`, if given, stops this call after it has done genuinely new work (claimed at least
-        one task) on `limit` distinct entries -- an entry this call finds already fully done, fully
-        in-progress (claimed by another worker), or fully failed doesn't claim anything and so
-        doesn't count against it. Meant for splitting a large dataset's population across multiple
-        separate worker invocations: run `populate(limit=N)` repeatedly (from this process or a
-        fresh one against the same folder) until `status()` shows nothing `pending` -- each call
-        picks up wherever the last one left off, via the same on-disk task-queue state."""
+        `limit`, if given, stops this call after it has done genuinely new work on `limit` distinct
+        entries -- an entry this call finds already fully done or fully failed doesn't count against
+        it. Meant for splitting a large dataset's population across multiple separate calls: run
+        `populate(limit=N)` repeatedly (from this process or a fresh one against the same folder)
+        until `status()` shows nothing `pending` -- each call picks up wherever the last one left
+        off, via `task_state`'s same disk-plus-huey-result check. Unlike before this module's huey
+        migration, this is **not** safe to run from more than one process concurrently against the
+        same dataset folder -- see this module's own docstring."""
         if retry_failed:
             for entry in self:
-                for product_type in product_types:
-                    if task_state(entry, product_type) == "failed":
-                        _error_path(self.folder, entry.product_id, product_type).unlink(missing_ok=True)
+                if any(task_state(entry, pt) == "failed" for pt in product_types):
+                    _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)
 
-        entries_done = 0
-        for entry in self:
-            if limit is not None and entries_done >= limit:
-                return
-            touched = False
-            for product_type in product_types:
-                if task_state(entry, product_type) != "pending":
-                    continue
-                if not claim_task(self, entry.product_id, product_type):
-                    continue  # another worker claimed it first
-                touched = True
-                image = entry.images_by_type[product_type]
-                try:
-                    image.generate()
-                except Exception as exc:  # noqa: BLE001 -- one bad task shouldn't abort the whole batch
-                    mark_failed(self, entry.product_id, product_type, exc)
-                else:
-                    mark_done(self, entry.product_id, product_type)
-            if touched:
-                entries_done += 1
+        # huey's immediate=True (trntest.tasks's docstring) means each task already ran, synchronously,
+        # by the time huey.enqueue() returns inside _enqueue_pending -- so waiting on every Result only
+        # after collecting them all is equivalent to waiting right after each one, not a behavior change.
+        for result in _enqueue_pending(self, product_types, limit, tasks.huey, tasks.generate_product):
+            _await_result(result)
 
-    def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES) -> pd.DataFrame:
+    def populate_via_workers(
+        self,
+        product_types: tuple[str, ...] = PRODUCT_TYPES,
+        retry_failed: bool = False,
+        limit: int | None = None,
+        workers: int = 4,
+    ) -> None:
+        """`populate()`'s real multi-worker equivalent: same `product_types`/`retry_failed`/`limit`
+        semantics (see `populate()`'s own docstring -- `limit` still counts distinct entries with
+        genuinely new pending work, not completions), but routed through `trntest.tasks.huey_parallel`
+        instead of the `immediate=True` default queue, so the actual `image.generate()` calls run in
+        `workers` separate `-k process` worker processes rather than sequentially in this one. This
+        call still blocks until the whole batch finishes -- from the caller's side, a drop-in
+        replacement for `populate()`, just backed by real parallelism instead of one process.
+
+        Manages its own `huey_consumer` subprocess for the duration of this call (`tasks.
+        start_consumer`/`stop_consumer`) -- no separate terminal/process to set up first. If this
+        call is interrupted (an exception, Ctrl-C) partway through, the consumer subprocess is still
+        torn down (`finally`), but any tasks it had already claimed keep running in their own worker
+        processes until they finish -- huey's own `SIGTERM` handling, not this method's; check
+        `status(huey_instance=tasks.huey_parallel)` and re-run to pick up whatever's still pending.
+
+        Uses `tasks.huey_parallel`'s own separate queue/result store -- a task's `failed` state
+        recorded here is invisible to a plain `status()` call (which only checks `tasks.huey`) unless
+        you pass `huey_instance=tasks.huey_parallel` explicitly; `done` is unaffected either way
+        (always disk-based). Safe to run concurrently with `populate()` itself (different queues,
+        different sqlite files) but, like `populate()`, only one `populate_via_workers()` call should
+        run against a given dataset folder at a time -- nothing here re-adds the old cross-process
+        claim safety, it just moves where the single caller's own parallelism comes from."""
+        if retry_failed:
+            for entry in self:
+                if any(task_state(entry, pt, huey_instance=tasks.huey_parallel) == "failed" for pt in product_types):
+                    _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
+
+        results = _enqueue_pending(self, product_types, limit, tasks.huey_parallel, tasks.generate_product_parallel)
+        if not results:
+            return
+
+        consumer = tasks.start_consumer(workers)
+        try:
+            for result in results:
+                _await_result(result)
+        finally:
+            tasks.stop_consumer(consumer)
+
+    def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
+        """`huey_instance`: which queue's stored results to check for `failed` -- `tasks.huey`
+        (`populate()`'s queue, the default) or `tasks.huey_parallel` (`populate_via_workers()`'s).
+        `done` is unaffected either way (always disk-based)."""
         rows = [
-            {"product_id": entry.product_id, **{pt: task_state(entry, pt) for pt in product_types}} for entry in self
+            {"product_id": entry.product_id, **{pt: task_state(entry, pt, huey_instance) for pt in product_types}}
+            for entry in self
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
 
@@ -251,15 +302,24 @@ class TrnTestDataSet:
         Leaves `_work/<edr_product>/` intermediates (DEM/ortho, `.tsai`) alone -- regeneration reuses
         those where still valid (see `TrnTestEntry.dem_ortho_result`'s own resume-from-files check);
         delete `dataset.folder / "_work" / <edr_product>` yourself first if you also want those
-        re-fetched from scratch."""
+        re-fetched from scratch. Clears stored results from *both* `tasks.huey` and
+        `tasks.huey_parallel` -- a task's most recent attempt could have gone through either
+        `populate()` or `populate_via_workers()`, and this should revert to `pending` for both
+        regardless of which one last touched it.
+
+        The stored huey result cleared is the whole *entry's* (task granularity is per-entry, not
+        per `(entry, product_type)` -- see `tasks._generate_entry`'s own docstring), even if
+        `product_types` only names a subset -- harmless: a product type left off `product_types`
+        keeps its own real file untouched, so its own `task_state()` still reports correctly via
+        `image.exists()` regardless of whether the entry's shared stored result got cleared."""
         target_entries = list(self) if entries is None else entries if isinstance(entries, list) else [entries]
         for entry in target_entries:
             for product_type in product_types:
                 image = entry.images_by_type[product_type]
                 image.raster_path.unlink(missing_ok=True)
                 image.sidecar_json_path.unlink(missing_ok=True)
-                clear_lock(self, entry.product_id, product_type)
-                _error_path(self.folder, entry.product_id, product_type).unlink(missing_ok=True)
+            _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)
+            _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 
 
 class TrnTestImage(abc.ABC):
@@ -344,8 +404,8 @@ class TrnTestImage(abc.ABC):
         )
 
     def plot_overlay(self, title: str | None = None, layers: list[plotting.OverlayLayer] | None = None):
-        """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay`
-        docs/dataset-plan.md's own pseudocode names -- the notebook this replaces already switched
+        """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay` -- the
+        notebook this replaces already switched
         to the auto-blinking-GIF toggle version (see its own docstring) before this class existed,
         and reverting that UX improvement here would be a real regression, not a neutral relocation.
         Returns an `IPython.display.HTML` object -- callers must not add a trailing `;` in a
@@ -423,7 +483,7 @@ class TrnTestHillshadeImage(TrnTestImage):
     sidecar. "Hillshade base map data reprojected using sat_sim" is a literal description of what
     `render.run_sat_sim` already produces (the hillshade gets baked into the ortho *before* sat_sim
     ever runs -- see `lunaserv.despeckle_and_shade_ortho`), so this is a pure relocation, not new
-    pipeline logic -- see docs/dataset-plan.md."""
+    pipeline logic."""
 
     @property
     def raster_path(self) -> Path:
@@ -465,13 +525,18 @@ class TrnTestHillshadeImage(TrnTestImage):
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
 
     def _mapprojected_path(self) -> Path:
-        # _work/, not hillshade/ -- same "don't spill mapproject's own intermediates into the
-        # canonical named pair's folder" reasoning as TrnTestCropImage's own override.
+        # _work/<entry>/<generator>/, not the canonical hillshade/reproject/ folder itself -- same
+        # "don't spill mapproject's own intermediates into the published pair's folder" reasoning as
+        # TrnTestCropImage's own override. self.raster_path.parent.name ("hillshade"/"reproject")
+        # already names this image's own generator -- reused here instead of a second, separate
+        # per-subclass constant (this project's own generator-scoped `_work/` tier, `docs/history.md`'s
+        # Phase 79 entry).
         # camera_type="csm" (the default) against self.sidecar_json_path is safe: camera.
         # solve_corrected_fov is isotropic (fu == fv), so cam_gen's CSM Frame conversion of our own
         # .tsai has no anisotropy to lose -- see docs/reproject-fov-investigation.md for the
         # anisotropic version this once was and why it was reverted.
-        out_path = self.entry.per_image_config.output_dir / (self.raster_path.stem + "-mapproj.tif")
+        out_dir = self.entry.per_image_config.output_dir / self.raster_path.parent.name
+        out_path = out_dir / (self.raster_path.stem + "-mapproj.tif")
         return render.run_mapproject_image(
             self.raster_path, self.sidecar_json_path, out_path, self.entry.dem_ortho_result, self.entry.per_image_config
         )
@@ -484,7 +549,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
     `sat_sim` but for input data use the RDR of our WAC crop essentially."
 
     Subclasses `TrnTestHillshadeImage`, not `TrnTestImage` directly, since it goes through the exact
-    same sat_sim-render-then-mapproject shape (per docs/dataset-plan.md's own note) -- only the
+    same sat_sim-render-then-mapproject shape -- only the
     `--ortho` texture source differs, so `raster_path`/`sidecar_json_path`/`render_label`/
     `_generate_impl` are the only overrides needed; `width_km`/`height_km`/`footprint_lonlat_deg`/
     `rotation_k`/`tie_point_px_key`/`_mapprojected_path` are all inherited unchanged (dynamic
@@ -528,74 +593,90 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
 
 
-# -- Task queue: filesystem-only, no persisted job DB -- task list is always manifest rows x
-# implemented product types, state always derived from what's actually on disk (dataset-plan.md's
-# "Task queue" section). `.locks/<product_id>_<product_type>.lock`/`.error` are the only new files
-# this introduces; `done` is just `image.exists()`, no separate bookkeeping needed for it.
+# -- Task queue: backed by trntest.tasks's huey instances, no filesystem lock/error files of our
+# own anymore -- task list is one task per manifest row (entry), each covering every requested
+# product type for it (see tasks._generate_entry's own docstring for why); `done` is still just
+# `image.exists()`, per product type, `failed` is whatever the given huey instance's own
+# sqlite-backed result store says for that entry's deterministic id (see trntest.tasks.task_id).
+# See that module's docstring for the full design and why there's no
+# more `in_progress` state or manual crash-recovery step (a killed process just leaves nothing
+# behind to clean up -- the next populate*() call re-enqueues based on disk state alone).
 
 
-def _lock_path(dataset_folder: Path, product_id: str, product_type: str) -> Path:
-    return dataset_folder / ".locks" / f"{product_id}_{product_type}.lock"
+def task_state(entry: TrnTestEntry, product_type: str, huey_instance: Huey = tasks.huey) -> str:
+    """`done` (checked first, so a manually-fixed-up product file always wins regardless of any
+    stored huey result) | `failed` | `pending`. `huey_instance`: `tasks.huey` (the default,
+    `populate()`'s queue) or `tasks.huey_parallel` (`populate_via_workers()`'s) -- the two queues
+    are independent, so a task's `failed` state under one is invisible under the other.
 
-
-def _error_path(dataset_folder: Path, product_id: str, product_type: str) -> Path:
-    return dataset_folder / ".locks" / f"{product_id}_{product_type}.error"
-
-
-def task_state(entry: TrnTestEntry, product_type: str) -> str:
-    """`done` (checked first, so a manually-fixed-up product file always wins regardless of
-    leftover lock/error bookkeeping) | `failed` | `in_progress` | `pending`."""
+    The stored huey result this falls back to is keyed per *entry*, not per `(entry, product_type)`
+    (see `tasks._generate_entry`'s own docstring for why task granularity is entry-level) -- so if
+    one product type in a task failed while another succeeded, both share the same stored result.
+    This still reports each product type correctly: the succeeded one's `exists()` check above
+    already returns `done` before this fallback is ever reached, and the failed one correctly falls
+    through to it -- just less precise than before about attributing a shared `failed` signal to a
+    *specific* product type when more than one in the same task didn't complete."""
     if entry.images_by_type[product_type].exists():
         return "done"
-    if _error_path(entry.dataset_folder, entry.product_id, product_type).exists():
+    tid = tasks.task_id(str(entry.dataset_folder), entry.product_id)
+    try:
+        huey_instance.result(tid, preserve=True)
+    except TaskException:
         return "failed"
-    if _lock_path(entry.dataset_folder, entry.product_id, product_type).exists():
-        return "in_progress"
     return "pending"
 
 
-def claim_task(dataset_obj: TrnTestDataSet, product_id: str, product_type: str) -> bool:
-    """Atomically claims one task by creating its lock file (`os.O_CREAT | os.O_EXCL` -- the
-    filesystem itself arbitrates a race between separate processes; only one caller ever sees this
-    return `True` for a given task). Returns `False` if already claimed (by this or another
-    worker)."""
-    lock_path = _lock_path(dataset_obj.folder, product_id, product_type)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+def _clear_stored_result(dataset_folder: Path, product_id: str, huey_instance: Huey) -> None:
+    """Pops (discards) an entry's stored task result from `huey_instance`, if any, so it's no longer
+    reported `failed` there -- used by `retry_failed=True` and `truncate()`. No-op if the task never
+    ran (on this instance) or was already cleared."""
+    tid = tasks.task_id(str(dataset_folder), product_id)
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
-    os.close(fd)
-    return True
+        huey_instance.result(tid, preserve=False)
+    except TaskException:
+        pass
 
 
-def mark_done(dataset_obj: TrnTestDataSet, product_id: str, product_type: str) -> None:
-    _lock_path(dataset_obj.folder, product_id, product_type).unlink(missing_ok=True)
-    _error_path(dataset_obj.folder, product_id, product_type).unlink(missing_ok=True)
-
-
-def mark_failed(dataset_obj: TrnTestDataSet, product_id: str, product_type: str, exc: Exception) -> None:
-    _error_path(dataset_obj.folder, product_id, product_type).write_text(str(exc))
-    _lock_path(dataset_obj.folder, product_id, product_type).unlink(missing_ok=True)
-
-
-def claim_next_task(
-    dataset_obj: TrnTestDataSet, product_types: tuple[str, ...] = PRODUCT_TYPES
-) -> tuple[str, str] | None:
-    """First `(product_id, product_type)` still `pending`, in manifest x `product_types` order, that
-    this call successfully claims -- skips (rather than blocks on) a task another worker claims
-    first between this call's own state check and its claim attempt."""
+def _enqueue_pending(
+    dataset_obj: "TrnTestDataSet",
+    product_types: tuple[str, ...],
+    limit: int | None,
+    huey_instance: Huey,
+    task_fn: TaskWrapper,
+) -> list[Result]:
+    """Shared by `populate()`/`populate_via_workers()`: enqueues one task per entry with any
+    still-`pending` product type, covering exactly that entry's own pending subset of
+    `product_types` (not necessarily all of them -- an already-`done`/`failed` type for this entry
+    is left out, matching this function's own pre-entry-level-task behavior; `retry_failed=True`
+    clears a `failed` entry first so its own task gets rebuilt covering it again). Stops after
+    `limit` distinct entries with genuinely new pending work (same counting rule both methods' own
+    docstrings describe). Returns the enqueued `Result` handles without waiting on any of them --
+    that's the caller's own job, since `populate()` and `populate_via_workers()` want to wait
+    differently (the former inherently already has, by the time this returns -- see its own comment;
+    the latter only after its consumer subprocess is up)."""
+    results = []
+    entries_done = 0
     for entry in dataset_obj:
-        for product_type in product_types:
-            if task_state(entry, product_type) != "pending":
-                continue
-            if claim_task(dataset_obj, entry.product_id, product_type):
-                return entry.product_id, product_type
-    return None
+        if limit is not None and entries_done >= limit:
+            break
+        pending_types = tuple(pt for pt in product_types if task_state(entry, pt, huey_instance) == "pending")
+        if not pending_types:
+            continue
+        task = task_fn.s(entry, pending_types)
+        task.id = tasks.task_id(str(dataset_obj.folder), entry.product_id)
+        results.append(huey_instance.enqueue(task))
+        entries_done += 1
+    return results
 
 
-def clear_lock(dataset_obj: TrnTestDataSet, product_id: str, product_type: str) -> None:
-    """Manual crash recovery: a worker that died mid-task leaves a `.lock` file with nothing to ever
-    clear it (`in_progress` forever) -- remove it by hand once you've confirmed no worker actually
-    still holds it, and the task reverts to `pending`."""
-    _lock_path(dataset_obj.folder, product_id, product_type).unlink(missing_ok=True)
+def _await_result(result: Result) -> None:
+    """`preserve=True`: a plain `.get()` pops the stored result on read, which would erase a
+    failure's record before `task_state()` ever gets a chance to report it -- confirmed empirically.
+    Successes stay preserved too (harmless; `task_state()` never queries huey for the `done` case,
+    disk existence wins first). `TaskException` is caught, not raised -- one bad task shouldn't abort
+    the whole batch; a batch of real network/ISIS calls is expected to have occasional real
+    failures."""
+    try:
+        result.get(blocking=True, preserve=True)
+    except TaskException:
+        pass
