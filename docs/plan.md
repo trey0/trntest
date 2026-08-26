@@ -373,6 +373,24 @@ short of `populate()` -- no rendering from this notebook yet.
   help verify, so the current notebook uses a sparse dashed line (`linestyle=(0, (1, 6))`) in a
   light, warm color (`#ffddbb`) instead of fading `alpha`/`linewidth` (which made alignment *harder*
   to judge, not easier).
+- **New (2026-08-23): `src/trntest/crater_depth.py`** — first step toward grading crater sharpness
+  (`ARC_IMG`, per the entry just above, isn't a real freshness proxy; this database has no
+  degradation field at all). A simplified reimplementation of Breton et al. 2019's depth method
+  (60th-percentile rim-ring elevation minus 3rd-percentile interior elevation, off a DEM + crater
+  polygon) against this project's own local GLD100 DEM and Robbins ellipse polygons — the original
+  authors' own reference script's per-pixel area-weighting collapses to a plain `np.percentile` on
+  this project's isotropic-meters grid, where every "inside" pixel already covers the same real
+  area. `crater_depths_for_footprint` stores a `None` depth (kept as a row, not dropped) for any
+  crater too close to GLD100's own ±79 deg coverage limit, rather than switching to a coarser,
+  interpolation-artifact-prone global DEM just for polar coverage — see
+  `docs/data-sources.md`'s "Crater depth (Breton et al. 2019 method)" section for the full
+  DEM-source comparison. Module + synthetic-fixture tests (`tests/test_crater_depth.py`) plus one
+  real-data throughput test against a live GLD100 tile (`tests/test_crater_depth_gld100_tile.py`,
+  `@pytest.mark.heavy`) — 129/129 real, fully-contained craters in a real equatorial 512x512px tile
+  got a valid depth, ~19.4ms mean per crater, extrapolating to a rough ~6.9 hour single-threaded
+  estimate for the whole non-polar database (see `docs/data-sources.md` for the full caveats on that
+  number). Not yet wired into `image_generation.ipynb` or related to an actual sharpness grade; both
+  are real next steps.
 - **Resolved**: `select_tie_points`'s die5 point-selection footprint's high drop rate under
   `resolve_crop_pixels` (2-3 of 5 points on real candidates, the real camera not seeing them at all).
   Root cause was two-layered: (1) `crop_footprint_corners` was still the deprecated SPICE

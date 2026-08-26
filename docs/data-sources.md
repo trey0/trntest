@@ -336,6 +336,91 @@ Lunaserv to Astropedia's flat-file GLD100 for the same class of reason.
   first converting to an indexed format (GeoPackage/FlatGeobuf) once — there's no shipped index to
   reuse, unlike a real GIS format might have.
 
+## Crater depth (Breton et al. 2019 method)
+
+**Purpose: the actual input to grading crater sharpness**, not a standalone validation exercise —
+`ARC_IMG` (see the Robbins database section above) isn't a real freshness proxy and this database
+has no degradation field at all, so this project needed its own depth measurement to build one from.
+Breton et al.'s method was adopted specifically because it's already validated in the literature,
+not derived from scratch.
+
+- Source: Breton, S., Quantin-Nataf, C., Bodin, T., Loizeau, D., Volat, M., Lozac'h, L. (2019),
+  *MethodsX* 6, 2293–2304, "Semi-Automated crater depth measurements", DOI
+  `10.1016/j.mex.2019.08.007`. Depth = the 60th percentile of elevation in a ring around a crater's
+  rim, minus the 3rd percentile of elevation inside it, from a DEM + crater shapefile. The authors'
+  own reference implementation (not part of this repo) is a Tkinter GUI script doing manual
+  per-pixel OGR polygon intersection over a lon/lat GDAL raster to get an area-weighted interior
+  percentile — necessary there since degree-pixels don't all cover the same real ground area.
+- `src/trntest/crater_depth.py` adapts this against this project's own Robbins ellipse
+  polygons (`craters._ellipse_polygon`) and local, **isotropic-meters** DEM
+  (`lunaserv.fetch_dem_and_ortho`) instead: every "inside" pixel already covers the same real area
+  on this grid, so the original's area-weighting machinery is dropped entirely (a provable no-op
+  here, not an approximation), and `rasterio.features.geometry_mask` on a `pixel_size_m *
+  sqrt(2) / 2`-buffered *real* ellipse polygon stands in for the original's manual per-pixel
+  circle-distance test and OGR intersection calls.
+- **DEM source: deliberately GLD100** (`lunaserv`'s live default, ±79 deg latitude coverage), not a
+  genuinely global (pole-to-pole) alternative — two real candidates were found and set aside:
+  - `Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif` — confirmed live (`curl`, its real PDS3 label):
+    hosted at the same `planetarymaps.usgs.gov/mosaic/` → S3 flat-file pattern GLD100 uses (302
+    redirect to `asc-pds-services.s3.us-west-2.amazonaws.com`, HTTP Range-resumable), 256 ppd/
+    118.450588 m/px, **90°N–90°S / -180–180° lon, genuinely global**, Int16 (`LSB_INTEGER`),
+    `SIMPLE_CYLINDRICAL` projection, radius 1737.4 km, ~8.49 GB (confirmed via `curl -I`:
+    8,494,203,833 bytes — smaller than GLD100 despite global coverage, since it's coarser).
+  - The ISIS global lunar shape model this project already caches for the real-WAC pipeline
+    (`isis_wac.ensure_lunar_shape_model`, `base/dems/ldem_128ppd_Mar2011_clon180_radius_pad.cub`,
+    ~2 GB, zero incremental download) — the older-vintage 128 ppd/~237 m/px LOLA product, also
+    genuinely global (the standard "outside ±60°" polar-coverage product in the literature).
+  - **Both are real LOLA-gridded products with a confirmed real accuracy caveat GLD100 doesn't
+    have**: LOLA ground-track cross-track gaps are ~1–2 km at the equator (up to 4 km), several
+    pixels wide at either resolution above — the gridded product spline-interpolates across them
+    (real value only along tracks), vs. GLD100's WAC-stereo-photogrammetry, which has actual
+    relief data there. This directly matters for depth/sharpness grading: interpolation smooths
+    exactly the small-scale rim relief a sharpness grade needs to detect, worst at low latitude for
+    craters near this database's own `D≥1km` floor (closest in scale to the gap width). Not
+    empirically checked here (e.g. via the same FFT/periodicity method that caught Lunaserv's own
+    DTM striping artifact, see "Astropedia GLD100 flat file" above) — a real follow-up if either
+    global source is picked up later.
+  - **Decision (2026-08-23)**: stay on GLD100, and have `crater_depths_for_footprint` store a
+    `None` depth (kept as a row, not dropped) for any crater whose own extent could reach past
+    `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` (79.0), rather than adopt either global source now.
+    A real, separate future step (precomputing depth for the whole non-polar Robbins database
+    without any new DEM fetch) remains open, not blocked by this — GLD100 is already a single flat
+    file cached locally once. If it's picked up: both candidate files share GLD100's own row-strip
+    (not tiled) TIFF block layout, so a naive independent per-crater windowed read isn't
+    necessarily fine at ~1.3M-crater scale — worth profiling (not guessing) a raster-row-ordered
+    batch read or a one-time local re-tile (`gdal_translate -co TILED=YES`) before assuming either
+    mitigation is actually needed.
+- **Real-data throughput measurement (2026-08-24, `tests/test_crater_depth_gld100_tile.py`,
+  `@pytest.mark.heavy`)**: carved a real 512x512px (~51.2km x 51.2km) tile directly out of the real,
+  cached GLD100 file at (lon=180, lat=0) — GLD100's own central meridian/standard parallel, chosen
+  specifically so `crater_depth_m`'s isotropic-pixel assumption holds exactly (see the test file's
+  own docstring for why this matters away from that point). Found **129 real Robbins craters fully
+  contained in that one tile** (ellipse polygon + `crater_depth_m`'s own half-pixel-diagonal margin,
+  entirely inside the tile's real bounds) — **all 129 (100%) returned a real depth**, no unexpected
+  `None`s. **This 100% figure, and the timing below, are only confirmed valid at the equator** --
+  empirically measured (not just reasoned about) that a crater ellipse polygon built directly in
+  GLD100's raw global Equidistant Cylindrical CRS (what this test and any literal
+  "read-raw-global-tiles-directly" batch approach would do) is compressed east-west by a factor of
+  `cos(latitude)`, not just a small pixel-margin effect: real craters sampled at 30/45/60/78.5 deg
+  latitude drew at ~0.87x/0.71x/0.50x/**0.20x** their true east-west extent. Near GLD100's own ±79
+  deg edge this is severe enough to badly misplace the floor/rim masks, not a rounding error --
+  **any future batch step reading raw global tiles directly would need a per-tile/per-crater local
+  reprojection first, not an optional nicety.** `crater_depth.py`'s actual production path is
+  unaffected -- `crater_depths_for_footprint` is always called against a per-camera local
+  Orthographic DEM (`lunaserv.fetch_dem_and_ortho`), genuinely isotropic near its own center
+  regardless of latitude; this gap is specific to this one heavy test's own raw-global-CRS shortcut.
+  Naive independent per-crater `crater_depth_m` calls (each opening/windowing the same real
+  10GB file fresh — no shared file handle, no caching across calls) measured **mean 19.4 ms / median
+  19.3 ms per crater**. Extrapolated (rough order-of-magnitude only, single equatorial sample,
+  single-threaded, no batching): `sin(79°) × 1,296,796 ≈ 1,272,970` non-polar craters ×
+  19.4 ms ≈ **~6.9 hours** for the whole non-polar database as a naive per-crater loop. A real
+  starting estimate, not a final answer — doesn't yet account for (a) whether depth-quality/`None`
+  rate holds up at latitudes away from the equator (this test's own isotropic-pixel caveat), (b) the
+  row-strip I/O mitigations noted just above (worth measuring, not assuming, before trusting this
+  number holds at full non-uniform latitude coverage), or (c) any parallelism (this project already
+  has a real multi-worker pattern, `TrnTestDataSet.populate_via_workers`/`tasks.huey_parallel`, that
+  a real batch job here could plausibly reuse rather than build fresh).
+
 ## ASP `sat_sim`
 
 - Docs: https://stereopipeline.readthedocs.io/en/latest/tools/sat_sim.html
