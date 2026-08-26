@@ -89,6 +89,24 @@ def _fake_generate_impl_failing_crop_for(edr_product: str):
     return impl
 
 
+@pytest.fixture(autouse=True)
+def _flush_huey_before_test():
+    """Every test below shares `tasks.huey`/`tasks.huey_parallel` -- module-level singletons backed
+    by sqlite files under `output_dir` (see `trntest.tasks`'s own docstring), which in this project's
+    Docker Compose setup is bind-mounted to a *host-persistent* directory that outlives any one
+    `docker compose run`. A test's own `tmp_path` is not similarly isolated across separate runs:
+    pytest numbers it deterministically per test function (`.../pytest-0/test_foo0`, restarting from
+    0 in every fresh container), so `tasks.task_id()` (keyed on `str(tmp_path)`, or on `tmp_path.name`
+    for the real-subprocess tests below) can collide with a stale stored result left behind by an
+    earlier, separate invocation of this exact same test -- confirmed live: re-running
+    `test_populate_marks_failed_and_continues` standalone a few times in a row started failing on a
+    fresh `populate()` call until `.huey/` was cleared by hand. Flushing (clears queue/schedule/
+    results/counters, cheap even on an empty db) before every test closes that gap without needing to
+    rebind the `@huey.task()`-decorated functions to a fresh instance per test."""
+    tasks.huey.flush()
+    tasks.huey_parallel.flush()
+
+
 # -- TrnTestDataSet.create()/open() --------------------------------------------------------------
 
 
