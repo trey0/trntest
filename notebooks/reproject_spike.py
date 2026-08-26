@@ -18,7 +18,7 @@
 #
 # `crop` (the real, ISIS-processed WAC image) and `hillshade` (a synthetic `sat_sim` render, textured
 # from Lunaserv/Astropedia + a synthetic Hapke hillshade) are the two implemented `TrnTestImage`
-# types. `reproject` is the reserved-but-unbuilt third one (`docs/dataset-plan.md`): still a
+# types. `reproject` is the reserved-but-unbuilt third one: still a
 # `sat_sim` render through the *same* synthetic camera as `hillshade` -- so the two are directly,
 # pixel-for-pixel comparable -- but textured from the real WAC crop's own reflectance instead of a
 # synthetic basemap. The open question before building the real `TrnTestReprojectImage` class: does

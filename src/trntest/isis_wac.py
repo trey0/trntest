@@ -147,7 +147,7 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
 
 def _spike_dir(config: TrntestConfig) -> Path:
     """`_work/<entry>/isis/` -- the entry-scoped, `isis/`-distinguished tier
-    `docs/intermediate-product-plan.md`'s Phase 3 describes: kept separate from the rest of
+    `docs/history.md`'s Phase 79 entry describes: kept separate from the rest of
     `_work/<entry>/` specifically so it survives routine pruning that the cheaper stuff doesn't need
     to (it's the single most expensive thing here to regenerate -- a real multi-subprocess ISIS
     toolchain run). Moved in from the old, workspace-level `scratch_dir/isis_wac/<edr_product>/` (not
@@ -167,15 +167,36 @@ class Lrowac2IsisResult:
     vis_odd: Path
 
 
+_LROWAC2ISIS_SUFFIXES = (".uv.even.cub", ".vis.even.cub", ".uv.odd.cub", ".vis.odd.cub")
+
+
 def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) -> Lrowac2IsisResult:
+    """`lrowac2isis` writes 4 real output files (`_LROWAC2ISIS_SUFFIXES`) from one `to=<prefix>` call,
+    not atomically on its own. Built under a call-scoped temp subdirectory of `_spike_dir` (same
+    filesystem as the real destination, required for `Path.rename` to stay atomic), then each of the
+    4 outputs is atomically renamed to its real canonical path -- confirmed live to matter: two
+    workers racing on the same entry's raw split previously let a concurrent caller's own
+    idempotency check (`run_pipeline`'s "vis_even/vis_odd both exist" reuse branch) see a
+    partially-written set (some of the 4 outputs present, others not yet)."""
     config = config or load_config()
-    out_prefix = _spike_dir(config) / edr.img_path.stem
-    run_quiet(["lrowac2isis", f"from={edr.img_path}", f"to={out_prefix}"])
+    spike_dir = _spike_dir(config)
+    out_prefix = spike_dir / edr.img_path.stem
+    dests = {suffix: out_prefix.with_name(out_prefix.name + suffix) for suffix in _LROWAC2ISIS_SUFFIXES}
+
+    tmp_dir = Path(tempfile.mkdtemp(dir=spike_dir, prefix=f".{edr.img_path.stem}.tmp."))
+    try:
+        tmp_prefix = tmp_dir / edr.img_path.stem
+        run_quiet(["lrowac2isis", f"from={edr.img_path}", f"to={tmp_prefix}"])
+        for suffix, dest in dests.items():
+            tmp_prefix.with_name(tmp_prefix.name + suffix).rename(dest)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
     return Lrowac2IsisResult(
-        uv_even=out_prefix.with_name(out_prefix.name + ".uv.even.cub"),
-        vis_even=out_prefix.with_name(out_prefix.name + ".vis.even.cub"),
-        uv_odd=out_prefix.with_name(out_prefix.name + ".uv.odd.cub"),
-        vis_odd=out_prefix.with_name(out_prefix.name + ".vis.odd.cub"),
+        uv_even=dests[".uv.even.cub"],
+        vis_even=dests[".vis.even.cub"],
+        uv_odd=dests[".uv.odd.cub"],
+        vis_odd=dests[".vis.odd.cub"],
     )
 
 
@@ -240,16 +261,39 @@ def _parse_ck_kernels_from_label(label_text: str) -> list[str]:
     return [_strip_isis_alias_prefix(entry) for entry in pointing if "/kernels/ck/" in entry]
 
 
+def _is_spiceinit_complete(cub_path: Path) -> bool:
+    """Whether `cub_path`'s label already has `spiceinit`'s own `Kernels.InstrumentPointing` group --
+    the real completion signal `_spiceinit_vis_even_cube` needs. A cube's mere existence on disk does
+    NOT imply this: `run_lrowac2isis`'s own output is real and complete (atomically published) the
+    moment it exists, but not yet spiceinit'd -- confirmed live (not theoretical): a concurrent
+    caller's bare existence check on exactly this window produced a real `KeyError:
+    'InstrumentPointing'` in `_parse_ck_kernels_from_label`."""
+    try:
+        label = pvl.loads(_catlab(cub_path))
+        _ = label["IsisCube"]["Kernels"]["InstrumentPointing"]
+        return True
+    except (KeyError, subprocess.CalledProcessError):
+        return False
+
+
 def _spiceinit_vis_even_cube(config: TrntestConfig) -> Path:
     """The spiceinit'd `vis_even` cube -- needed by `resolve_wac_ck_kernels`, which only needs this
     cube's real, spiceinit-resolved label (pointing/timing/camera model), not calibrated pixel data.
-    Idempotent: reuses the file on disk if it already exists rather than re-running
-    `lrowac2isis`/`spiceinit`, which aren't themselves idempotent (ISIS apps refuse to overwrite an
-    existing `to=` output)."""
+    Reuses the file on disk if it already exists **and is already spiceinit'd**
+    (`_is_spiceinit_complete`) -- checking existence alone isn't sufficient (see that function's own
+    docstring for the real race this closes). `run_lrowac2isis` is itself atomic now (see its own
+    docstring), so this can safely call it again if reached concurrently by another worker -- either
+    a fresh build or a redundant one, both produce equally valid content, and the atomic rename just
+    lets whichever finishes first "win" (a later one's rename harmlessly overwrites it with an
+    equivalent result). `run_spiceinit` itself is not similarly hardened against two workers both
+    reaching it for the exact same physical file at the same moment -- an existing, deliberate design
+    tradeoff in this codebase (`run_pipeline`'s own docstring: "spiceinit... confirmed idempotent...
+    never specially guarded"), not something newly introduced or fixed here; a narrower residual risk
+    than the one this function's own fix closes, left open rather than silently assumed safe."""
     edr = fetch_edr_img(config)
     out_prefix = _spike_dir(config) / edr.img_path.stem
     vis_even_path = out_prefix.with_name(out_prefix.name + ".vis.even.cub")
-    if vis_even_path.exists():
+    if vis_even_path.exists() and _is_spiceinit_complete(vis_even_path):
         return vis_even_path
     ensure_isisdata(config)
     stitch_inputs = run_lrowac2isis(edr, config)
@@ -369,9 +413,10 @@ def run_pipeline(flip: bool, frame_timing: FrameTiming, config: TrntestConfig | 
     directly, no ISIS calls at all; (2) if just `lrowac2isis`'s split already exists (e.g.
     `spice_kernels.fetch_and_furnish`'s default `isis_resolved` CK resolution already ran it as a
     side effect, via `resolve_wac_ck_kernels`/`_spiceinit_vis_even_cube`), reuses those files rather
-    than re-running `lrowac2isis` (confirmed unsafe to call twice -- ISIS apps refuse to overwrite
-    an existing `to=` output; `spiceinit`, unlike `lrowac2isis`, is confirmed idempotent -- safe to
-    re-run on an already-spiceinit'd cube, same result -- so it's never specially guarded here)."""
+    than re-running `lrowac2isis` -- purely an efficiency choice now, not a correctness requirement:
+    `run_lrowac2isis` is atomic (its own docstring), so calling it again is safe, just redundant
+    work. `spiceinit`, unlike the old (pre-atomic) `lrowac2isis`, is confirmed idempotent -- safe to
+    re-run on an already-spiceinit'd cube, same result -- so it's never specially guarded here."""
     config = config or load_config()
     ensure_isisdata(config)
     edr = fetch_edr_img(config)
@@ -616,8 +661,8 @@ def run_isd_generate_for_crop(
     """Generate a CSM Pushframe ISD for `crop` itself (the actual cropped cube ISIS's own `crop` app
     produced), not the full stitched cube `run_isd_generate` is limited to -- so the resulting JSON's
     own image dimensions/frame count are read from, and correctly reflect, the crop's real size, for
-    `trn_dataset.TrnTestCropImage`'s sidecar (see docs/dataset-plan.md's "Crop sidecar: accurate, not
-    just informational"). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
+    `trn_dataset.TrnTestCropImage`'s sidecar (see `docs/data-sources.md`'s "crop ISD sidecar's real
+    accuracy" section). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
     for actual reprojection** -- like any Pushframe ISD in this codebase, `usgscsm`'s `groundToImage`
     isn't reliable enough for that (see the module docstring); real ground<->image lookups still go
     through `resolve_ground_to_image_model`/`ground_to_image_pixel`, unaffected by any of this. This
@@ -931,7 +976,7 @@ def run_cam2map_for_crop(
     -- confirmed harmless: the output CRS/transform were verified correct (matching
     `dem_ortho_result`'s own projection exactly) despite it, and the process still exits 0."""
     config = config or load_config()
-    # _work/<entry>/crop/ -- generator-scoped (docs/intermediate-product-plan.md's Phase 3), even
+    # _work/<entry>/crop/ -- generator-scoped (docs/history.md's Phase 79 entry), even
     # though this is also reused by TrnTestReprojectImage's own texture-source step: it's the crop's
     # own mapproject output regardless of which product type ends up consuming it, so it stays under
     # the crop generator's own subtree rather than the isis/ tier crop.cub_path itself now lives in.

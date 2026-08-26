@@ -14,7 +14,7 @@ import spiceypy as spice
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
-from trntest.product_registry import writes_product
+from trntest.product_registry import atomic_publish_path, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 
@@ -43,11 +43,11 @@ DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 @writes_product("sat_sim_render")
 def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None) -> RenderResult:
-    """Not retrofit with `atomic_publish`/`atomic_publish_path` (docs/intermediate-product-plan.md's
-    Phase 2) -- `sat_sim`/`cam_gen`'s own `-o <prefix>` convention appends its own suffix to whatever
-    prefix they're given (`<prefix>-<camera_stem>.tif`/`.json`, not the exact literal path), which
-    doesn't fit either helper's single-exact-path contract without extra bookkeeping this pass didn't
-    take on -- registered here (`writes_product`) for legibility regardless."""
+    """`sat_sim`'s own `-o <prefix>` convention appends its own fixed `-<camera_stem>.tif` suffix to
+    whatever prefix it's given (`<camera_stem>` comes from the camera-list file's own contents, not
+    from the given prefix) -- `atomic_publish_prefix` fits this (see its own docstring), unlike
+    `atomic_publish_path`'s exact-final-path contract. `cam_gen`'s own `-o`, by contrast, does take an
+    exact path, so its own write goes through plain `atomic_publish_path`."""
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,49 +56,49 @@ def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: Trntes
 
     render_dir = config.output_dir / "render"
     render_dir.mkdir(parents=True, exist_ok=True)
-    render_prefix = render_dir / "run"
-
-    run_quiet(
-        [
-            "sat_sim",
-            "--dem",
-            str(dem_ortho_result.dem),
-            "--ortho",
-            str(dem_ortho_result.ortho),
-            "--camera-list",
-            str(camera_list_path),
-            "--image-size",
-            str(config.image_size),
-            str(config.image_size),
-            "--dem-height-error-tol",
-            str(DEM_HEIGHT_ERROR_TOL_M),
-            "-o",
-            str(render_prefix),
-        ]
-    )
-
     camera_stem = Path(camera.tsai_path).stem
     rendered_tif = render_dir / f"run-{camera_stem}.tif"
-    csm_json = render_dir / f"run-{camera_stem}.json"
 
+    with atomic_publish_prefix(rendered_tif, f"-{camera_stem}.tif") as tmp_prefix:
+        run_quiet(
+            [
+                "sat_sim",
+                "--dem",
+                str(dem_ortho_result.dem),
+                "--ortho",
+                str(dem_ortho_result.ortho),
+                "--camera-list",
+                str(camera_list_path),
+                "--image-size",
+                str(config.image_size),
+                str(config.image_size),
+                "--dem-height-error-tol",
+                str(DEM_HEIGHT_ERROR_TOL_M),
+                "-o",
+                str(tmp_prefix),
+            ]
+        )
+
+    csm_json = render_dir / f"run-{camera_stem}.json"
     # --save-as-csm only applies to cameras sat_sim itself generates, not ones passed via
     # --camera-list -- convert the rendered image's exact camera to a CSM Frame model-state JSON
     # ("ISD sidecar") with cam_gen instead. --refine-intrinsics none keeps the pose/intrinsics exact
     # (no re-solving), so this is purely a format conversion of our already-computed SPICE pose.
-    run_quiet(
-        [
-            "cam_gen",
-            str(rendered_tif),
-            "--input-camera",
-            str(camera.tsai_path),
-            "--camera-type",
-            "pinhole",
-            "--refine-intrinsics",
-            "none",
-            "-o",
-            str(csm_json),
-        ]
-    )
+    with atomic_publish_path(csm_json) as tmp_json:
+        run_quiet(
+            [
+                "cam_gen",
+                str(rendered_tif),
+                "--input-camera",
+                str(camera.tsai_path),
+                "--camera-type",
+                "pinhole",
+                "--refine-intrinsics",
+                "none",
+                "-o",
+                str(tmp_json),
+            ]
+        )
     return RenderResult(rendered_tif=rendered_tif, csm_json=csm_json, camera_list=camera_list_path)
 
 

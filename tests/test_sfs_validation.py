@@ -10,7 +10,7 @@ from trntest.config import TrntestConfig
 
 
 def test_sfs_validation_dir_lands_under_work_entry_sfs_validation(tmp_path):
-    # docs/intermediate-product-plan.md's Phase 3: generator-scoped _work/<entry>/sfs_validation/.
+    # docs/history.md's Phase 79 entry: generator-scoped _work/<entry>/sfs_validation/.
     config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path / "_work" / "SOMEPRODUCT")
     d = sfs_validation._sfs_validation_dir(config)
     assert d == tmp_path / "_work" / "SOMEPRODUCT" / "sfs_validation"

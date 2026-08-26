@@ -24,8 +24,8 @@ reverted to an isotropic FOV" below.
 
 `crop` (real, ISIS-processed WAC image) and `hillshade` (synthetic `sat_sim` render, textured from
 Lunaserv/Astropedia + a synthetic Hapke hillshade) are the two implemented `TrnTestImage` types
-(`src/trntest/trn_dataset.py`). `reproject` is the reserved-but-unbuilt third one
-(`docs/dataset-plan.md`): still a `sat_sim` render through the *same* synthetic camera as
+(`src/trntest/trn_dataset.py`). `reproject` is the reserved-but-unbuilt third one: still a `sat_sim`
+render through the *same* synthetic camera as
 `hillshade` (so the two are directly, pixel-for-pixel comparable), but textured from the real WAC
 crop's own reflectance (via `isis_wac.run_cam2map_for_crop`, already used for the crop/hillshade
 overlay comparison) instead of a synthetic basemap. The user's framing: "use `sat_sim` but for input

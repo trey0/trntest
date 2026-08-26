@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from _fake_worker_task import FailingWorkerTask, FakeWorkerTask
+from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import TaskException
 
 from trntest import tasks, trn_dataset
@@ -17,7 +17,7 @@ def _minimal_manifest(product_ids: list[str]) -> pd.DataFrame:
     """A manifest DataFrame with just enough columns for the task-queue/class-hierarchy tests below
     -- none of which touch `TrnTestEntry.per_image_config`/`camera`/etc. (no real SPICE/ASP/ISIS), so
     a full `dataset.DATASET_COLUMNS` row isn't needed. `edr_product == product_id`, matching how
-    today's real manifest always has them equal (see docs/dataset-plan.md's "On-disk layout" section)."""
+    today's real manifest always has them equal (see docs/data-sources.md's "on-disk layout" section)."""
     return pd.DataFrame({"product_id": product_ids, "edr_product": product_ids})
 
 
@@ -87,6 +87,24 @@ def _fake_generate_impl_failing_crop_for(edr_product: str):
         _fake_generate_impl(image)
 
     return impl
+
+
+@pytest.fixture(autouse=True)
+def _flush_huey_before_test():
+    """Every test below shares `tasks.huey`/`tasks.huey_parallel` -- module-level singletons backed
+    by sqlite files under `output_dir` (see `trntest.tasks`'s own docstring), which in this project's
+    Docker Compose setup is bind-mounted to a *host-persistent* directory that outlives any one
+    `docker compose run`. A test's own `tmp_path` is not similarly isolated across separate runs:
+    pytest numbers it deterministically per test function (`.../pytest-0/test_foo0`, restarting from
+    0 in every fresh container), so `tasks.task_id()` (keyed on `str(tmp_path)`, or on `tmp_path.name`
+    for the real-subprocess tests below) can collide with a stale stored result left behind by an
+    earlier, separate invocation of this exact same test -- confirmed live: re-running
+    `test_populate_marks_failed_and_continues` standalone a few times in a row started failing on a
+    fresh `populate()` call until `.huey/` was cleared by hand. Flushing (clears queue/schedule/
+    results/counters, cheap even on an empty db) before every test closes that gap without needing to
+    rebind the `@huey.task()`-decorated functions to a fresh instance per test."""
+    tasks.huey.flush()
+    tasks.huey_parallel.flush()
 
 
 # -- TrnTestDataSet.create()/open() --------------------------------------------------------------
@@ -163,7 +181,7 @@ def test_crop_and_hillshade_path_naming(tmp_path):
 
 
 def test_hillshade_and_reproject_mapprojected_path_are_generator_scoped(tmp_path, monkeypatch):
-    # docs/intermediate-product-plan.md's Phase 3: _work/<entry>/<generator>/<label>, not a flat
+    # docs/history.md's Phase 79 entry: _work/<entry>/<generator>/<label>, not a flat
     # _work/<entry>/<label> -- hillshade and reproject must land in their own separate subfolders
     # even though they share this same inherited _mapprojected_path implementation.
     folder = tmp_path / "ds"
@@ -274,7 +292,7 @@ def test_failed_task_state_survives_a_fresh_process(tmp_path, monkeypatch):
     ds.populate(product_types=("crop",))
     assert trn_dataset.task_state(ds[0], "crop") == "failed"
 
-    tid = tasks.task_id(str(ds.folder), "P1", "crop")
+    tid = tasks.task_id(str(ds.folder), "P1")
     probe = (
         "from trntest import tasks\n"
         "from huey.exceptions import TaskException\n"
@@ -569,7 +587,7 @@ def test_start_stop_consumer_lifecycle(tmp_path):
 
 def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
     marker_path = tmp_path / "marker.txt"
-    task = tasks.generate_product_parallel.s(FakeWorkerTask(str(marker_path)))
+    task = tasks.generate_product_parallel.s(FakeWorkerEntry(str(marker_path)), ("fake",))
     task.id = f"test-real-consumer-success-{tmp_path.name}"
     result = tasks.huey_parallel.enqueue(task)
 
@@ -580,11 +598,11 @@ def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
         tasks.stop_consumer(consumer)
 
     assert marker_path.read_text() == "done"
-    assert str(value) == str(marker_path)
+    assert str(value["fake"]) == str(marker_path)
 
 
 def test_generate_product_parallel_failure_visible_via_huey_parallel_result(tmp_path):
-    task = tasks.generate_product_parallel.s(FailingWorkerTask())
+    task = tasks.generate_product_parallel.s(FailingWorkerEntry(), ("fake",))
     task.id = f"test-real-consumer-failure-{tmp_path.name}"
     result = tasks.huey_parallel.enqueue(task)
 

@@ -149,14 +149,18 @@ automatically.
   (isd_generate's write happened to complete cleanly either way, so it cost one agent a wasted
   ~4min recompute, not corruption), but a torn/partial read on the losing side is plausible if two
   agents' calls actually overlap mid-write rather than land sequentially. **Path changed
-  (2026-08-23, `docs/intermediate-product-plan.md`'s Phase 3)**: this write now lives under
+  (2026-08-23, `docs/history.md`'s Phase 79 entry)**: this write now lives under
   `_work/<entry>/isis/` inside each `TrnTestDataSet`'s own (per-worktree-namespaced) `output/`
   tree, not the single cross-worktree-shared `scratch/` — so the specific *cross-agent* version of
   this race (two different worktrees' agents both reaching the same path) is now structurally
   impossible; the function itself still has no atomic-publish guard (unlike `crop_for_camera`/
   `run_framestitch`, retrofitted in that same phase), so a same-dataset-folder race is still
-  possible in principle (e.g. two `populate_via_workers()` tasks against the same entry) — just
-  not yet a confirmed-live one the way the cross-agent case was.
+  possible in principle -- though since task granularity moved from `(entry, product_type)` to
+  `entry` (2026-08-24, `docs/history.md`'s dated entry), it can no longer come from two tasks of one
+  `populate_via_workers()` call landing on the same entry (that's now structurally one task); only
+  from two separate, already-unsupported concurrent `populate()`/`populate_via_workers()` calls
+  against the same dataset folder (`docs/batch-generation.md`'s "Not safe to run concurrently with
+  itself") — just not yet a confirmed-live one the way the cross-agent case was.
 - **A `docker compose` invocation can silently miss a worktree's own `docker/.env`, even when the
   file is present and correct on disk** — confirmed live: an early `scripts/run_notebook.sh` run in
   a real worktree session wrote a genuine ~19GB duplicate of `cache`/`output`/`scratch` directly

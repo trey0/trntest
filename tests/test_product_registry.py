@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from trntest import isis_wac, lunaserv, product_registry, render
@@ -93,6 +95,49 @@ def test_atomic_publish_path_cleans_up_temp_output_on_exception(tmp_path):
     assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
 
 
+def test_atomic_publish_prefix_writes_via_the_tools_own_suffix_then_renames_to_dest(tmp_path):
+    dest = tmp_path / "dem_filled-tile-0.tif"
+
+    with product_registry.atomic_publish_prefix(dest, "-tile-0.tif") as tmp_prefix:
+        assert not Path(str(tmp_prefix) + "-tile-0.tif").exists()
+        # Mirrors what dem_mosaic itself does: append its own fixed suffix to the given prefix.
+        Path(str(tmp_prefix) + "-tile-0.tif").write_text("hole-filled dem")
+        assert not dest.exists()
+
+    assert dest.read_text() == "hole-filled dem"
+
+
+def test_atomic_publish_prefix_leaves_no_temp_output_after_success(tmp_path):
+    dest = tmp_path / "run-cam.tif"
+
+    with product_registry.atomic_publish_prefix(dest, "-cam.tif") as tmp_prefix:
+        Path(str(tmp_prefix) + "-cam.tif").write_text("rendered")
+
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
+
+
+def test_atomic_publish_prefix_cleans_up_temp_output_on_exception(tmp_path):
+    dest = tmp_path / "dem_filled-tile-0.tif"
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with product_registry.atomic_publish_prefix(dest, "-tile-0.tif") as tmp_prefix:
+            Path(str(tmp_prefix) + "-tile-0.tif").write_text("partial")
+            raise RuntimeError("boom")
+
+    assert not dest.exists()
+    assert list(dest.parent.glob(f"{dest.stem}.tmp.*")) == []
+
+
+def test_atomic_publish_prefix_cleans_up_on_exception_even_if_tool_never_wrote_anything(tmp_path):
+    dest = tmp_path / "dem_filled-tile-0.tif"
+
+    with pytest.raises(RuntimeError, match="subprocess failed"):
+        with product_registry.atomic_publish_prefix(dest, "-tile-0.tif"):
+            raise RuntimeError("subprocess failed")
+
+    assert not dest.exists()
+
+
 def test_writes_product_registers_and_returns_function_unchanged():
     def my_writer():
         return "wrote"
@@ -179,7 +224,7 @@ def test_deleters_of_returns_empty_list_for_unregistered_label():
 
 
 def test_real_pipeline_writers_are_registered():
-    # docs/intermediate-product-plan.md's Phase 4: the real writer functions decorated so far are
+    # docs/history.md's Phase 79 entry: the real writer functions decorated so far are
     # legibly registered under their own label -- importing the modules is enough to trigger
     # registration (decorators run at module-import/definition time).
     assert product_registry.writer_of("dem_filled") is lunaserv.fetch_dem

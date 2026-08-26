@@ -4525,7 +4525,133 @@ Not retrofit with atomic publishing: `hole_fill_dem` (`dem_mosaic`'s own `-o <pr
 
 **Not done in this pass**: the DEM filename-collision gap (above). Extending `@writes_product`/`@reads_product` and `atomic_publish` to the dataset's *published* final outputs (`TrnTestImage.raster_path`/`sidecar_json_path` -- `crop/`/`hillshade`/`reproject/`) -- flagged by the user during planning as a real gap in the discipline doc's own "non-final intermediates only" scope, audited directly (no current code reads a sibling's *published* copy rather than its private scratch state, so no live bug today, but the invariant is unenforced) and deliberately left as a distinct, not-yet-scheduled follow-up rather than folded in unannounced. The four notebooks Phase 78 already left stale (`along_track_correction`/`real_hapke_params`/`reproject_spike`/`pose_alignment_spike`) are still stale. `hole_fill_dem`/`run_sat_sim`'s atomic-publish gaps (above).
 
-## Phase 80 (2026-08-26) — Crater sharpness grading: `stoffler_fresh_depth_km`, the tiled whole-database `crater_depth_batch.py` precompute, and its real multi-worker path
+## Phase 80 (2026-08-23) — Closed the remaining Phase 4 atomic-publish gaps; found and fixed two more real concurrent-worker races the same day's Phase 79 validation hadn't actually exercised
+
+Same session, continuing directly from Phase 79. The user asked which loose end to pick up next; picking between the DEM-filename-collision gap and finishing the DEM/ortho concurrency validation, this session flagged a real observation: Phase 79's own `populate_via_workers()` validation used `product_types=("crop", "hillshade")`, but `crop` never touches `entry.dem_ortho_result` (only `hillshade`/`reproject` do) -- so it never actually had two workers concurrently calling `lunaserv.fetch_dem`/`fetch_and_shade_ortho` for the same entry, despite `entry.dem_ortho_result`'s exposure being the *other* motivating example in the plan's own opening paragraph, alongside the ISIS-scratch race Phase 79 did fix and validate. The user agreed to close that gap.
+
+**New `product_registry.atomic_publish_prefix`**: for ASP/ISIS tools that take an output *prefix*, not an exact path, and append their own fixed suffix to it (`dem_mosaic`'s `<prefix>-tile-0.tif`, `sat_sim`'s `<prefix>-<camera_stem>.tif`) -- neither fit `atomic_publish_path`'s exact-final-path contract, the reason both were left un-retrofit in Phase 79. Applied to `lunaserv.hole_fill_dem` and `render.run_sat_sim` (whose `cam_gen` step, an exact-path `-o`, uses plain `atomic_publish_path` instead).
+
+**Real bug #1, found by the first `product_types=("hillshade", "reproject"), workers=2` validation run**: `lunaserv._hapke_reflectance` wrote fixed-name scratch cubes (`hapke_from.cub` etc.) directly to `config.output_dir` -- shared across the whole entry, not scoped to one call. Two workers computing the same entry's `hillshade` and `reproject` concurrently both reach this function and raced on those cubes, confirmed live (`**I/O ERROR** Failed to write blob`). Fixed with a call-scoped `tempfile.TemporaryDirectory()` -- exactly what Phase 2's own plan specified for this function but never actually implemented. Also dropped the now-fully-unused `config` parameter from `_hapke_reflectance`/`reference_hapke_reflectance`.
+
+**Real bug #2, found by the same validation run after fixing bug #1**: a *different*, unrelated race in `camera.build_camera`'s own CK-kernel-resolution path (`isis_wac.resolve_wac_ck_kernels`/`_spiceinit_vis_even_cube`), hit because `crop`/`hillshade`/`reproject` all build a camera, not just the DEM/ortho path. `_spiceinit_vis_even_cube`'s idempotency check (`vis_even_path.exists()`) treated a file's mere existence as "fully processed," but `run_lrowac2isis`'s raw output becomes visible the moment `lrowac2isis` finishes, before `spiceinit` has run on it -- a concurrent worker landing in that window got back a not-yet-spiceinit'd cube and crashed reading its absent `InstrumentPointing` label (`KeyError`, confirmed live, twice, with two different fresh manifest rows before the fix). A second, related exposure: `run_lrowac2isis` itself writes 4 real output files from one subprocess call, not atomically, so `run_pipeline`'s own "`vis_even` and `vis_odd` both exist" reuse check could also observe a partially-written set. Fixed both: `run_lrowac2isis` now builds under a call-scoped temp subdirectory of `_spike_dir` (same filesystem, required for atomic rename) and publishes all 4 outputs via individual atomic renames; `_spiceinit_vis_even_cube`'s reuse check now verifies actual completion (`Kernels.InstrumentPointing` present, a new `_is_spiceinit_complete` helper) instead of bare existence. **Not fixed, documented instead**: two workers both calling `run_spiceinit` on the exact same physical file at the same moment remains a narrower, unconfirmed theoretical risk -- an existing, deliberate design tradeoff already in this codebase's history (`run_pipeline`'s own docstring: `spiceinit` is idempotent to rerun serially, "never specially guarded"), not something this fix set out to redesign.
+
+**Verified**: fast suite green throughout (22 new tests across `test_product_registry.py`/`test_isis_wac_dem.py`, only the same pre-existing unrelated worker-subprocess flake), the same 5 heavy tests pass against real ISIS/network after each fix, and the `("hillshade", "reproject"), workers=2` validation -- which failed with two different real bugs, twice, against three different pairs of fresh manifest rows -- finally completes cleanly on genuinely fresh entries, with the consumer log confirming real overlap (same-entry tasks starting 7ms apart, running 50-80s concurrently). Two commits on a new branch, `feature/dem-ortho-atomic-race-fix`, off `main` (Phase 79's branch was already merged and pushed).
+
+**Not done in this pass**: the DEM filename-collision gap is still open (unchanged from Phase 79). The narrower two-workers-spiceinit-the-same-file risk noted above is left open, not fixed. Phase 6 (published-output registry coverage) remains not-yet-scheduled.
+
+## Phase 81 (2026-08-24) — Moved task granularity from `(entry, product_type)` to `entry`
+
+Follow-on to Phases 79-80's atomic-publish work, same week: those phases made two of the same
+entry's product types landing on two different `-k process` workers *safe* (atomic publishing
+converges on an equivalent result instead of tearing a file), but didn't address the other real cost
+of that granularity -- `functools.cached_property` only memoizes within one process, so `hillshade`
+and `reproject` of the same entry, landing on two different workers, each independently,
+redundantly rebuilt the same real SPICE/ISIS/DEM state for that entry (`entry.camera`/
+`entry.dem_ortho_result`). Confirmed live as a real, measurable wall-clock cost, not just a
+theoretical inefficiency, in a `("hillshade", "reproject")` batch.
+
+**Fix**: `tasks.py`'s `_generate` (took one `TrnTestImage`) replaced by `_generate_entry(entry,
+product_types)` -- one huey task per *entry*, covering every requested-and-still-pending product
+type for it, each attempted independently within the task (one's failure doesn't block the others).
+A new `EntryGenerationError` carries every product type's exception (`{product_type: Exception}`),
+raised only after all types in the task were attempted, so a task with one real failure and one real
+success doesn't lose or misreport the success. `tasks.task_id(dataset_folder, product_id)` drops its
+`product_type` parameter -- one deterministic id per entry, not per `(entry, product_type)`.
+
+`trn_dataset.py` updated to match: `task_state()`'s stored-huey-result fallback and
+`_clear_stored_result()` are now keyed per entry; `_enqueue_pending()` builds each entry's own
+pending-product-type subset and enqueues one task covering it (`task_fn.s(entry, pending_types)`,
+not `task_fn.s(image)` per type); `populate()`/`populate_via_workers()`'s `retry_failed` clearing and
+`truncate()`'s stored-result clearing collapsed from a per-product-type loop to one per-entry call.
+`task_state()`'s own `image.exists()`-first precedence means per-product-type `done`/`pending`
+reporting stays exactly correct despite the underlying stored result now being entry-level -- the
+real, accepted tradeoff is coarser `failed`-attribution when more than one product type in the same
+task didn't complete (can't tell from the stored result alone which of the task's several types
+failed, only that at least one did).
+
+**Real side effect, not just a performance win**: this also structurally eliminates the specific
+same-entry-cross-worker race Phases 79-80's atomic-publish fixes made *safe* -- two of one entry's
+product types can no longer land on two different workers at all now, since they're always in the
+same task. `docs/batch-generation.md`'s "Mixing product types across concurrent workers" and
+`docs/environment.md`'s `run_isd_generate` same-dataset-folder-race note both updated to reflect
+this. The atomic-publish work itself stays valuable regardless -- for genuine cross-entry write
+collisions and crash/partial-write safety, not just this now-eliminated race.
+
+**Verified**: fast suite green (only the same pre-existing unrelated worker-subprocess flake), plus
+a direct manual repro confirming a `crop` failure doesn't block `hillshade`'s own success within one
+entry's task. `docs/plan.md` (`tasks.py`/`trn_dataset.py` rows) and `docs/batch-generation.md`
+updated to describe the new granularity. (`docs/dataset-plan.md`/`docs/intermediate-product-plan.md`
+themselves were removed in a same-day follow-up -- see Phase 82.)
+
+## Phase 82 (2026-08-24) — Removed the superseded `dataset-plan.md`/`intermediate-product-plan.md` design docs and swept their references
+
+Same-day follow-up to Phase 81. Both docs were fully-implemented, historical planning documents --
+`dataset-plan.md`'s design (`TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage`, the original filesystem
+task queue) had long since been superseded in practice by `docs/plan.md`'s own architecture table
+and the `huey` migration (Phase 66); `intermediate-product-plan.md`'s Phases 1-5 were fully
+implemented and validated by Phase 79. Neither was in `AGENTS.md`'s list of docs kept current, and
+both were carrying stale internal claims of their own (`dataset-plan.md`'s "Status: designed, not
+yet implemented" header, in particular, hadn't been true for many phases). `git rm` both.
+
+**Swept the ~30 references to them** across `src/trntest/` (`trn_dataset.py`, `tasks.py`,
+`product_registry.py`, `sfs_validation.py`, `isis_wac.py`, `lunaserv.py`), `tests/`
+(`test_product_registry.py`, `test_isis_wac_dem.py`, `test_sfs_validation.py`,
+`test_trn_dataset.py`), `docs/` (`plan.md`, `data-sources.md`, `batch-generation.md`,
+`environment.md`, `reproject-fov-investigation.md`, `report-plan.md`), and the notebook markdown
+cells in `image_generation.py`/`select_datasets.py`/`reproject_spike.py` -- each redirected to
+whichever current doc actually carries that fact now (mostly `docs/plan.md`'s architecture table,
+`docs/data-sources.md`'s on-disk-layout section, or a specific `docs/history.md` phase entry in
+place of the removed doc's own internal phase numbering, since that numbering no longer resolves to
+anything). `docs/history.md`'s own narrative mentions of both files (there are many, e.g. Phase
+66/79's own entries) were deliberately left as-is -- they're accurate historical statements about
+what existed at the time, consistent with this file's own framing as a narrative log, not a
+currently-synced reference.
+
+**Notebooks**: `image_generation.py`/`select_datasets.py` had their markdown-cell prose updated the
+same way, then each was re-run via `scripts/run_notebook.sh` to keep its `.ipynb` pair in sync
+(structural-sync is part of `trntest-lint`) -- real re-execution, not just a text edit, since these
+are jupytext-paired notebooks with committed, executed output. Both completed cleanly.
+`reproject_spike.py`'s own re-run hit a real, already-documented, pre-existing gap instead --
+`docs/plan.md`'s own open items already flag this notebook (along with
+`along_track_correction`/`real_hapke_params`/`pose_alignment_spike`) as not regenerated since Phase
+78's `ortho_source="wac_emp_pds"` default change, and its candidate row's footprint (latitude
+51-60 deg) exceeds WAC_EMP's 60 deg equirect coverage under that default -- unrelated to this
+phase's doc sweep. Rather than force a real pipeline fix or leave a half-executed notebook
+committed (papermill's incremental `--request-save-on-cell-execute` had already written a
+partial run with the raised exception baked in as a cell output before failing), the partial
+`.ipynb` was discarded (`git checkout --`) and `jupytext --sync` used instead to update just the
+one changed markdown cell's text in the `.ipynb`, leaving its existing (already-stale, already-known)
+outputs/execution counts untouched -- keeps structural sync (what `trntest-lint` actually checks)
+without pretending the notebook's own real output freshness gap is resolved.
+
+**Also found and fixed a real, separate bug in Phase 81 itself, unrelated to the doc sweep**:
+`tests/test_trn_dataset.py::test_generate_product_parallel_runs_in_a_real_worker_subprocess`
+asserted `str(value) == str(marker_path)`, but `_generate_entry` (Phase 81) always returns
+`{product_type: raster_path}`, not a bare path -- confirmed via `git show` that this assertion was
+never updated when Phase 81's own commit changed the call to pass `("fake",)`, so it's been failing
+deterministically since that commit, not something this phase's edits caused. Fixed to
+`str(value["fake"]) == str(marker_path)`.
+
+**A second, real but separate finding, not fixed here**: verifying the above turned up that this
+project's fast suite can fail on a *second* consecutive `docker compose run --rm demo pytest`
+invocation against the same worktree -- `tasks.py`'s module-level `huey`/`huey_parallel` instances
+are keyed to `load_config().output_dir`, which is bind-mounted to this worktree's real,
+host-persistent `output/` directory (survives across ephemeral container runs), while pytest's
+`tmp_path` naming is deterministic per test function in a fresh container. A test that intentionally
+records an entry-level "failed" result (`test_populate_marks_failed_and_continues`) leaves that
+record behind under a task id a later invocation's `tmp_path` reproduces exactly, and since Phase
+81 moved to one shared stored result per *entry*, that stale record now taints every product type
+sharing that entry's task id, not just the one that actually failed -- `_enqueue_pending()` sees
+nothing "pending" and never re-enqueues, so a product type that would otherwise succeed fresh never
+gets attempted. Confirmed directly: `rm -rf output/<worktree>/.huey` before a run makes the whole
+fast suite pass cleanly every time; without it, a second consecutive run reliably fails two tests.
+Flagged as a follow-up task (not fixed in this phase -- a real test-isolation fix, out of scope for
+a docs-focused change) rather than silently worked around.
+
+**Verified**: `trntest-lint` clean (source/tests/notebooks); fast suite green (323 passed) with
+`.huey` cleared immediately beforehand, per the finding above.
+
+## Phase 83 (2026-08-26) — Crater sharpness grading: `stoffler_fresh_depth_km`, the tiled whole-database `crater_depth_batch.py` precompute, and its real multi-worker path
 
 Continuation of the `crater_depth.py` work from two sessions ago (see that entry's own dated addition in `docs/plan.md`) -- picked up in a fresh session that first had to work out *where* the prior work actually was. The session opened confused: `docs/plan.md` had no reference to `crater_depth.py` on the branch it started on, because that branch (`claude/crater-sharpness-grading-de0582`) turned out to be a disconnected sibling worktree with unrelated commits -- the real, uncommitted work was sitting in a different sibling worktree (`-dad2c9`) that a separate Claude Desktop session had left mid-task. Found via `EnterWorktree` once the mismatch was diagnosed (checking every branch's committed history first, which came up empty, before realizing the work was *uncommitted* and thus invisible to any commit-history search); the first real step was just running the existing tests to confirm the prior session's own recorded pass rate still held, then committing that work as its own clean commit before starting anything new.
 
@@ -4547,7 +4673,7 @@ Continuation of the `crater_depth.py` work from two sessions ago (see that entry
 
 **Flagged, not fixed in this pass**: the pre-existing worker-subprocess test flake (a `spawn_task` chip was raised for it, redundant with Phase 79's own prior note but still unresolved) -- root cause still not nailed down beyond "stale/leftover state across repeated runs against the same persistent `.huey/` directory," which could be the ordering issue between `test_start_stop_consumer_lifecycle` and the failing test, the cross-run persistence issue, or both.
 
-## Phase 81 (2026-08-26) — The actual sharpness score, `consolidate_graded_geopackage`'s join, and a real review notebook
+## Phase 84 (2026-08-26) — The actual sharpness score, `consolidate_graded_geopackage`'s join, and a real review notebook
 
 Direct continuation of Phase 80, same session. Two design conversations with the user first, each landing on a concrete choice: (1) whether to build a final post-processing step that joins measured depth onto the main Robbins database, once its likely scale was measured (full depth-only table ~180MB as CSV, ~10-20MB as Parquet; the joined "fat" table well under the source GeoPackage's 374MB) -- yes, and (2) GeoPackage over Parquet for that joined artifact specifically, since the user confirmed per-footprint queries are the more common case and GeoPackage lets every existing bbox-query function (`craters.query_craters_in_bbox` and everything built on it) work against it unchanged, reusing the real spatial index rather than a lean-but-index-less Parquet file. `crater_depth_batch.consolidate_graded_geopackage` implements this: left-joins `load_graded_database`'s combined depth table onto the full Robbins `GeoDataFrame` by `CRATER_ID`, atomically publishes it as its own GeoPackage. A snapshot, not auto-synced.
 
