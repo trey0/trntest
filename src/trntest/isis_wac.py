@@ -3,7 +3,7 @@
 alternative to `wac.py`'s manual framelet-stacking, then (`crop_for_camera`/`run_cam2map_for_crop`)
 reprojects the cropped result onto the map via ISIS's own *native* Pushframe camera model and
 `cam2map` -- not ALE's CSM ISD + ASP's `mapproject`, which `render.py` uses for the synthetic
-render. See docs/data-sources.md's "ISIS3/CSM spike" section and docs/history.md's Phases 12/19/24
+render. See docs/external-tools.md's "ISIS Pushframe pipeline" section and docs/history.md's Phases 12/19/24
 for the full backstory, and the dated entry documenting *why* the CSM path was abandoned for this
 specific use: `usgscsm`'s `UsgsAstroPushFrameSensorModel::groundToImage` (the function ASP's
 `mapproject` calls once per output pixel, via `CsmModel::point_to_pixel`) does an unbracketed
@@ -27,8 +27,8 @@ web=yes` furnishes that `spice_kernels.py` didn't fetch. `resolve_wac_ck_kernels
 to fix exactly that -- asking a real `spiceinit` run directly rather than reimplementing kernel
 selection -- but direct re-verification against real `campt` output at several points found **no**
 discrepancy is actually reproducible, with or without that kernel (it turns out to have zero effect
-on this project's own SPICE pointing computation regardless -- see `docs/data-sources.md`'s "ISIS's
-own LRO kernel database" section for the full story). Kept as the live default anyway for its own
+on this project's own SPICE pointing computation regardless -- see
+`docs/data-sources/spice-kernels-isis.md` for the full story). Kept as the live default anyway for its own
 independent value (matches ISIS's real kernel resolution by construction); the original ~11-13km
 number's true cause was never identified, most plausibly conflated with the `WARPALGORITHM` striping
 bug documented just below. See docs/history.md's Phase 27 for the full investigation.
@@ -68,7 +68,7 @@ _BASE_KERNEL_INCLUDE = "{kernels/lsk/**,kernels/pck/**,kernels/sclk/**,kernels/f
 def ensure_isisdata(config: TrntestConfig | None = None) -> None:
     """Lazily fetch the ISIS reference data this pipeline needs, if not already present.
 
-    Corrected from an earlier assumption (see docs/data-sources.md's "ISIS3/CSM spike" section for
+    Corrected from an earlier assumption (see docs/external-tools.md's "ISIS Pushframe pipeline" section for
     the original claim, now corrected below): `downloadIsisData base $ISISDATA --no-kernels` does
     NOT shrink `base` to near-zero -- `--no-kernels` only excludes the ck/ek/fk/ik/iak/lsk/mk/pck/
     sclk/spk/tspk/dsk kernel subdirs, and `base`'s ~20GB is dominated by `dems/` (global shape
@@ -579,7 +579,7 @@ def run_mapproject(
     render's own mapproject step uses, so both land on the exact same DEM grid (`--ref-map`).
 
     **Must be run against the stitched (interleaved) cube -- `stitched`, not a lone even/odd parity
-    in isolation.** Confirmed empirically (see docs/data-sources.md's "ISIS3/CSM spike" section):
+    in isolation.** Confirmed empirically (see docs/external-tools.md's "ISIS Pushframe pipeline" section):
     WAC only writes real pixel data to alternating nominal frame slots (each parity cube is ~50%
     populated, strictly alternating -- not a same-frame split like interlaced video fields, as might
     be assumed from the name). Mapprojecting one parity alone leaves `mapproject` to resample across
@@ -661,8 +661,8 @@ def run_isd_generate_for_crop(
     """Generate a CSM Pushframe ISD for `crop` itself (the actual cropped cube ISIS's own `crop` app
     produced), not the full stitched cube `run_isd_generate` is limited to -- so the resulting JSON's
     own image dimensions/frame count are read from, and correctly reflect, the crop's real size, for
-    `trn_dataset.TrnTestCropImage`'s sidecar (see `docs/data-sources.md`'s "crop ISD sidecar's real
-    accuracy" section). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
+    `trn_dataset.TrnTestCropImage`'s sidecar (see `docs/external-tools.md`'s "The crop ISD sidecar's
+    real accuracy" section). **Not a substitute for `run_isd_generate`'s full-cube ISD, and not usable
     for actual reprojection** -- like any Pushframe ISD in this codebase, `usgscsm`'s `groundToImage`
     isn't reliable enough for that (see the module docstring); real ground<->image lookups still go
     through `resolve_ground_to_image_model`/`ground_to_image_pixel`, unaffected by any of this. This
@@ -671,7 +671,7 @@ def run_isd_generate_for_crop(
 
     ISIS's `crop` app (even with its default `PROPSPICE=true`) does not re-anchor a Pushframe cube's
     per-line pointing cache to the crop's new first line -- confirmed empirically (see
-    docs/data-sources.md's "`isd_generate -i` on an ISIS-`crop`ped Pushframe cube" entry): a naive
+    docs/external-tools.md's "`isd_generate -i` on an ISIS-`crop`ped Pushframe cube" entry): a naive
     `isd_generate -i` against `crop.cub_path` produces a wrong-but-plausible-looking ISD whose
     `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` and
     `instrument_pointing.ck_table_start_time`/`ck_table_end_time` all read as if the crop still

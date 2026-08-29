@@ -231,7 +231,7 @@ def find_framelet_and_project(
        also lands in range. **Real overlap confirmed to actually occur for this product** (live
        Docker validation: adjacent framelets' `within_framelet_line` advances by ~9.9 lines per
        framelet step, not the full `FRAMELET_HEIGHT`=14 -- a ~4-line/~29% real overlap, matching
-       `docs/data-sources.md`'s independent note, from the `usgscsm` bug investigation, that
+       `docs/external-tools.md`'s independent note, from the `usgscsm` bug investigation, that
        adjacent Pushframe exposures have real ground-coverage overlap). When more than one framelet
        validly contains the point, picks whichever puts the point closer to that framelet's own
        center line (the user's own proposed tiebreak) -- deliberately *not* keyed to the bisection's

@@ -17,7 +17,7 @@ axes have different native GSD) but is square in real km, matching the synthetic
 Frames are always read off disk in strict acquisition-time order (a PDS archival guarantee), but
 which real-world direction that "forward in time" runs, expressed against WAC's fixed sample-axis
 convention, is **pass-dependent** (see `camera.boresight_rotation_k`'s docstring and
-docs/data-sources.md, "Pass-dependent sensor axis convention") -- the resulting mosaic's chirality
+docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention") -- the resulting mosaic's chirality
 can come out mirrored, not just rotated, relative to the synthetic image. `fetch_vis_mosaic`
 corrects for this by reversing the along-track frame order (`camera_pose.reverse_crop_along_track`)
 whenever needed.
@@ -58,7 +58,7 @@ def fetch_vis_mosaic(
     `camera_pose` (the already-built synthetic `Camera` for this same product/pose) determines
     whether frames must be stacked in *reverse* along-track order
     (`camera_pose.reverse_crop_along_track`): a real, pass-dependent mirror -- see that property's
-    docstring and docs/data-sources.md, "Pass-dependent sensor axis convention" -- not
+    docstring and docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention" -- not
     optional/cosmetic, so this is a required argument, not a config knob."""
     config = config or load_config()
     if start_frame is None:

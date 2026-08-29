@@ -589,7 +589,7 @@ def wac_emp_tile_id_for_bbox(
     `fetch_dem_and_ortho`), for one real `wavelength_nm`/`ppd` combination.
 
     Real product ID format, confirmed live via the archive's own S3 bucket listing (not guessed from
-    one example filename -- see docs/data-sources.md's "WAC_EMP PDS4 archive" section for the full
+    one example filename -- see docs/data-sources/wac-emp-pds4.md for the full
     listing/derivation): `WAC_EMP_<wavelength_nm>NM_E300<N|S><lon_center_deg*10:04d>_<ppd:03d>P`.
     `wavelength_nm` must be one of the real archive's 7 bands (matches
     `_HAPKE_CALIBRATION_WAVELENGTHS_NM`, the same real bands ISIS's own calibration cube offers,
@@ -623,7 +623,7 @@ def wac_emp_tile_id_for_bbox(
             "-- the polar-stereographic tile set beyond this isn't fetched by this project (unverified "
             "format, see wac_emp_tile_id_for_bbox's own docstring); the deprecated Lunaserv-WMS ortho "
             "path (fetch_dem_and_ortho(..., ortho_source='lunaserv_wms')) has no such limit but carries "
-            "a confirmed, uncorrected affine display stretch -- see docs/data-sources.md."
+            "a confirmed, uncorrected affine display stretch -- see docs/data-sources/lunaserv-wms.md."
         )
     if minlat < 0.0 < maxlat:
         raise ValueError(
@@ -767,7 +767,7 @@ def shade_ortho(
     the render look washed out relative to real WAC imagery) -- terrain facing away from the sun
     should be able to render genuinely dark, not floored at ~50% gray. This is still just local
     per-facet (Lambertian) shading, not real cast-shadow occlusion from other terrain, which remains
-    out of scope (see docs/data-sources.md)."""
+    out of scope (see docs/external-tools.md's ASP `sat_sim` section)."""
     light = LightSource(azdeg=azimuth_deg, altdeg=elevation_deg)
     hillshade = light.hillshade(dem.astype(np.float64), dx=cellsize_m, dy=cellsize_m)
     ortho_norm = ortho.astype(np.float64) / 255.0
@@ -1481,7 +1481,7 @@ def fetch_dem(
     print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
     # Live default DEM source: USGS Astropedia's flat-file GLD100, not Lunaserv's WMS -- see
-    # docs/data-sources.md's "Astropedia GLD100 flat file" section and docs/history.md's dated entry.
+    # docs/data-sources/astropedia-gld100.md and docs/history.md's dated entry.
     # `fetch_dem_astropedia` ensures the whole ~10GB file is downloaded/cached locally once (raises if
     # this camera's footprint needs data outside the file's real +-79 deg latitude coverage -- no
     # silent fallback to the deprecated Lunaserv-native path), then

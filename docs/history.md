@@ -4744,3 +4744,44 @@ entirely around that now-stale "ephemeral VPS, archive/restore" framing) and at 
 `docs/data-sources.md` are also affected -- the user chose to defer that fuller rewrite rather than
 do it in this pass, so only `AGENTS.md`'s own doc-index blurb for `docs/environment.md` was patched
 with a note flagging the staleness, not a rewrite. `docs/environment.md`'s real rewrite is still owed.
+
+## Phase 87 (2026-08-29) — Split `docs/data-sources.md` (1506 lines) into an index-pattern doc family
+
+Same session, continuing the docs-style effort. `docs/data-sources.md` had grown into a single file
+mixing three genuinely different kinds of content: external *data* facts (endpoints, formats,
+coverage), external *tool/library* behavior (ASP, ISIS, `usgscsm`, LightGlue -- not data, but the same
+kind of "don't re-derive this" reference), and pure internal architecture/algorithm notes that had
+nothing to do with external dependencies at all. Discussed with the user across several turns before
+touching anything: agreed the file was a real index-pattern candidate, then worked out where each of
+its 19 sections actually belonged (a few turned out to be split-worthy themselves, mixing two of the
+three kinds in one section) before executing.
+
+**Result**: `docs/data-sources.md` itself shrank from 1506 lines to a 25-line index -- one table
+(data type / source / example uses / rationale, the shape the user proposed) linking out to 7 new
+per-source files under `docs/data-sources/` (`lunaserv-wms.md`, `astropedia-gld100.md`,
+`wac-emp-pds4.md`, `robbins-craters.md`, `spice-kernels-naif.md`, `spice-kernels-isis.md`,
+`lroc-wac-edr-cdr.md`). A new `docs/external-tools.md` (529 lines) collects the tool-behavior half:
+ASP `sat_sim`/`mapproject`, the whole ISIS Pushframe `cam2map`/`mapproject` pipeline (install
+gotchas through the even/odd-parity-is-temporal-not-spatial root cause), the `usgscsm`
+`groundToImage` bug, the crop ISD sidecar's accuracy investigation, LightGlue, and both `campt`
+gotcha sections. Three new plan.md-family docs took the pure-architecture material: `docs/crater-
+grading.md` (Breton et al. depth method + the whole-database batch precompute -- kept out of
+`docs/batch-generation.md` since it's a genuinely different worker-pool subsystem, a different
+dataset), `docs/image-pipeline.md` (crop sizing/pose epoch/tie points + the WAC-VIS boresight
+finding, which turned out to literally be that section's own appendix already), and `docs/dataset-
+selection.md` (the LRO maneuver-detection algorithm). `TrnTestDataSet`'s on-disk layout facts were
+folded into `docs/intermediate-product-discipline.md` instead of getting a new file, as a concrete
+worked example of that doc's own principles.
+
+**Cross-reference cleanup, the unglamorous but necessary part**: every doc/code comment that named a
+specific `docs/data-sources.md` section by heading (not just a bare "see docs/data-sources.md")
+pointed at a heading that no longer existed there once this landed. Fixed ~12 in `docs/plan.md` and
+~30 in `src/trntest/*.py` (`isis_wac.py`, `lunaserv.py`, `camera.py`, `craters.py`, `config.py`, and
+others) plus a few in `docs/caching.md`, all mechanically redirected to the correct new file --
+verified after the fact via a script confirming every markdown link in `docs/` resolves to a real
+file, and that every touched `.py` file still parses. Bare, unnamed `docs/data-sources.md` pointers
+were left alone (still resolve fine through the new index) rather than over-editing `plan.md`, which
+the user has separately flagged as its own future index-pattern candidate. `docs/history.md`'s own
+existing citations into the old section names were deliberately left untouched too -- they describe
+the past accurately as of when they were written and were never meant to track current doc
+structure.

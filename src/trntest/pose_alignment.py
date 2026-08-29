@@ -281,7 +281,7 @@ def match_features(
 def _lightglue_models() -> tuple[lightglue.DISK, lightglue.LightGlue]:
     """Constructs (and, via `functools.cache`, memoizes process-wide) the DISK extractor + LightGlue
     matcher -- both load real pretrained weights over the network on first use (see
-    docs/data-sources.md's "LightGlue tie-point matching" section), so this avoids
+    docs/external-tools.md's "LightGlue tie-point matching" section), so this avoids
     re-downloading/re-initializing them on every `match_features_lightglue` call within one process.
 
     DISK, not SuperPoint (LightGlue's more commonly-used pairing): SuperPoint's inference code and

@@ -14,7 +14,7 @@ does that conversion.
 `isis_wac.ground_to_image_pixels_batch` (a real `campt` ground-to-image query) has a scattered ~38%
 failure rate specifically for WAC's Pushframe sensor (`PushFrameCameraGroundMap::GetLocalNormal`
 landing outside the correct framelet, a known upstream ISIS bug, DOI-USGS/ISIS3#4256, not an
-edge-of-crop artifact -- see `docs/data-sources.md`'s dated entry) -- the same underlying bug class
+edge-of-crop artifact -- see `docs/external-tools.md`'s campt failure-rate section) -- the same underlying bug class
 that made `jigsaw` itself unusable for this camera (see `docs/wac-jigsaw-investigation.md`).
 `resolve_control_points` uses `wac_camera_model.find_framelet_and_project` instead (matching
 `tie_points.resolve_crop_pixels`'s own precedent), which sidesteps the bug with a real 2D containment

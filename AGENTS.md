@@ -8,9 +8,13 @@ coding exercise — the user is an experienced developer but new to Claude Code.
 the system does and how `src/trntest/` is organized, kept up to date as work progresses (not just
 this file). Then, as needed:
 
-- `docs/data-sources.md` — current, stable facts: endpoint URLs, WMS layer names/formats, ASP
-  `sat_sim`/`.tsai` details, NAIF SPICE archive layout, LROC WAC EDR/CDR access, and known gotchas.
-  Consult before re-deriving any of this from scratch; update it when a concrete choice changes.
+- `docs/data-sources.md` — a thin index (one table) into `docs/data-sources/`'s per-source files:
+  endpoint URLs, WMS layer names/formats, NAIF SPICE archive layout, LROC WAC EDR/CDR access, and
+  known gotchas for each. Consult before re-deriving any of this from scratch; update the relevant
+  file when a concrete choice changes. `docs/external-tools.md` covers the same kind of thing for
+  external tools/libraries (ASP, ISIS, `usgscsm`, LightGlue) rather than data. `docs/image-pipeline.md`,
+  `docs/dataset-selection.md`, and `docs/crater-grading.md` hold architecture/algorithm detail that
+  used to live in `data-sources.md` but isn't about external data at all.
 - `docs/caching.md` — why and how external data (SPICE kernels, WMS tiles) is cached locally
   instead of re-fetched; follow this pattern in any new fetch code.
 - `docs/intermediate-product-discipline.md` — principles for naming, storing, and sharing generated

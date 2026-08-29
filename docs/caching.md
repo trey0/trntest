@@ -26,7 +26,7 @@ cache/
 ```
 
 `isisdata/` is ISIS3's own reference data, fetched by `isis_wac.ensure_isisdata()` (see
-`docs/data-sources.md`'s "ISIS3/CSM spike" section). Fully re-fetchable and safe to prune before
+`docs/external-tools.md`'s "ISIS Pushframe pipeline" section). Fully re-fetchable and safe to prune before
 archiving, like the other trees. `--no-kernels` keeps the one-time download to ~5GB instead of ~30GB,
 since `spiceinit web=yes` covers the pointing/position role the full `base` download would otherwise
 serve.
@@ -87,8 +87,7 @@ not just no *new* downloads.
 
 `spice_kernels.py`'s live-default WAC CK source isn't the NAIF metakernel above —
 `select_isis_wac_ck_kernels`/`isis_wac.resolve_wac_ck_kernels` ask a real ISIS `spiceinit web=yes`
-run what it furnishes (see `docs/data-sources.md`'s "ISIS's own LRO kernel database" section for
-why). Two caching layers:
+run what it furnishes (see `docs/data-sources/spice-kernels-isis.md` for why). Two caching layers:
 
 - **The kernel files** (`cache.fetch_isis_kernel`) come from USGS's S3 bucket (`asc-isisdata`),
   cached under `isisdata/lro/kernels/ck/...` — the same relative layout `$ISISDATA/lro/...` uses, so
@@ -113,9 +112,9 @@ re-running any script/notebook cell for the same ROI hits the local cache, not t
 ## Astropedia GLD100 caching — a real exception to "just a sliver"
 
 Unlike everything above, `cache.fetch_astropedia_gld100` downloads and caches the entire ~10GB flat
-file, not a per-request sliver (see `docs/data-sources.md`'s "Astropedia GLD100 flat file" section
-for why — it isn't a Cloud-Optimized GeoTIFF, so a windowed remote read pulls full-width row strips,
-too slow to repeat per-camera).
+file, not a per-request sliver (see `docs/data-sources/astropedia-gld100.md` for why — it isn't a
+Cloud-Optimized GeoTIFF, so a windowed remote read pulls full-width row strips, too slow to repeat
+per-camera).
 
 Not built on `cached_get` — a stable partial-file path with `curl -C -`-based resume, and the
 partial file is kept (not deleted) on failure so a retry resumes from the interrupted byte offset
@@ -123,7 +122,7 @@ rather than starting over. See `cache.fetch_astropedia_gld100`'s own docstring f
 
 ## LightGlue/DISK pretrained-weight caching
 
-`pose_alignment.match_features_lightglue` (`docs/data-sources.md`'s "LightGlue tie-point matching"
+`pose_alignment.match_features_lightglue` (`docs/external-tools.md`'s "LightGlue tie-point matching"
 section) loads two pretrained-weight files on first use — LightGlue's own weights (via
 `torch.hub.load_state_dict_from_url`) and DISK's extractor weights (via
 `kornia.feature.DISK.from_pretrained`, also routing through `torch.hub`) — tens of MB total, not an

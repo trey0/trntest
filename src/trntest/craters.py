@@ -1,7 +1,7 @@
 """Robbins (2019) lunar crater database: fetch/cache (`cache.fetch_robbins_craters`), one-time
 conversion to a spatially-indexed GeoPackage for fast per-camera AOI queries, and ellipse-polygon
-construction for `plotting.OverlayLayer`. See `docs/data-sources.md`'s "Robbins lunar crater
-database" section for the source URL/format/units/schema facts this module encodes.
+construction for `plotting.OverlayLayer`. See `docs/data-sources/robbins-craters.md` for the
+source URL/format/units/schema facts this module encodes.
 """
 
 import zipfile

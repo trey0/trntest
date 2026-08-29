@@ -54,7 +54,7 @@ DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 # Reference/regression-test WAC EDR/CDR product -- not the live default image (that's the
 # checked-in dataset_manifest.csv, frozen output of the now-removed catalog-driven selection
 # notebook, see docs/history.md); this is a known-good fallback/test fixture for
-# TrntestConfig()'s built-in defaults. See docs/data-sources.md, "Reference/regression-test EDR
+# TrntestConfig()'s built-in defaults. See docs/data-sources/lroc-wac-edr-cdr.md, "Reference/regression-test EDR
 # products".
 DEFAULT_EDR_VOLUME = "LROLRC_0041C"
 DEFAULT_EDR_SUBDIR = "ESM4"
@@ -115,15 +115,15 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # `/vsicurl/` read pulls full-width row strips rather than a small tile (~64s for one small AOI in
 # testing) -- `cache.fetch_astropedia_gld100` downloads and caches the whole file locally once
 # instead (resumable via `curl -C -`), after which local windowed reads are fast. See
-# `docs/data-sources.md`'s "Astropedia GLD100 flat file" section and `docs/history.md`'s dated entry.
+# `docs/data-sources/astropedia-gld100.md`.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
 # Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
 # archive rather than through Lunaserv's WMS render (see `lunaserv.wac_emp_tile_id_for_bbox`/
-# `fetch_wac_emp_reflectance` and `docs/data-sources.md`'s "WAC_EMP PDS4 archive" section) -- Lunaserv's
-# `luna_wac_normalized_reflectance` WMS layer was confirmed (2026-08-23, docs/history.md's dated
-# entry) to carry a real affine display stretch, not raw reflectance, mirroring the same "don't trust
-# Lunaserv WMS rendering" lesson that already moved the DEM source to Astropedia's flat-file GLD100.
+# `fetch_wac_emp_reflectance` and `docs/data-sources/wac-emp-pds4.md`) -- Lunaserv's
+# `luna_wac_normalized_reflectance` WMS layer was confirmed to carry a real affine display stretch,
+# not raw reflectance, mirroring the same "don't trust Lunaserv WMS rendering" lesson that already
+# moved the DEM source to Astropedia's flat-file GLD100.
 # One base URL covers every real tile this project fetches (the tile's own product ID, resolved per
 # footprint by `wac_emp_tile_id_for_bbox`, is appended directly) -- confirmed live via the archive's
 # own S3 listing, not guessed from a single example filename.
@@ -133,7 +133,7 @@ DEFAULT_WAC_EMP_BASE_URL = (
 )
 
 # Robbins (2019) lunar crater database -- ~1.3-2M craters, distributed by USGS Astropedia's PDS
-# Annex (see docs/data-sources.md's "Robbins crater database" section). This exact URL is a CKAN
+# Annex (see docs/data-sources/robbins-craters.md). This exact URL is a CKAN
 # resource-download route, not the catalog/search page a browser lands on -- confirmed live via
 # `curl` (200, `Content-Type: application/zip`, ~92MB); the search-page/details-page URLs that
 # search engines index for this dataset (e.g. `search/map/moon_crater_database_v1_robbins`) 404 on

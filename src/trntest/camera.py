@@ -39,7 +39,7 @@ PDS_NS = {
 # hardware property -- LRO's WAC is body-fixed (no gimbal) and undergoes periodic 180-degree yaw
 # flips that rotate the whole instrument frame, including which raw axis "forward in time" projects
 # onto -- so `boresight_rotation_k` below measures it fresh via real SPICE trajectory data for every
-# pose, instead of assuming a constant. See docs/data-sources.md ("Pass-dependent sensor axis
+# pose, instead of assuming a constant. See docs/data-sources/lroc-wac-edr-cdr.md ("Pass-dependent sensor axis
 # convention") and docs/history.md (Phase 9) for why this isn't just a fixed hardware property.
 _FORWARD_TIME_K = 1  # forward_step_me_km projects to -X_raw
 _REVERSED_TIME_K = 3  # forward_step_me_km projects to +X_raw -- also Camera.reverse_crop_along_track
@@ -106,7 +106,7 @@ class Camera:
         reference product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in
         reverse along-track order (and `tie_points`/`orientation` must correspondingly flip their
         row/up-direction conventions) for the crop's pixel-space chirality to keep matching the
-        synthetic image's -- see docs/data-sources.md, "Pass-dependent sensor axis convention": a
+        synthetic image's -- see docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention": a
         genuine, pass-dependent mirror, not just a rotation."""
         return self.boresight_rotation_k == _REVERSED_TIME_K
 
@@ -268,7 +268,7 @@ def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int =
     boresight's ground point at `frame_index + n` minus at `frame_index`, smoothed over `n` frames.
     Measured fresh from real SPICE trajectory data rather than assumed from a fixed raw-camera axis,
     since that direction is genuinely pass/yaw-state-dependent (see `boresight_rotation_k`'s
-    docstring and docs/data-sources.md, "Pass-dependent sensor axis convention"). Used both for
+    docstring and docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention"). Used both for
     `km_per_frame`'s magnitude and for `boresight_rotation_k`'s (and
     `orientation.compute_display_rotations`'s) direction."""
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))

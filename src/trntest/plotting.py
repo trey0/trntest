@@ -213,7 +213,7 @@ def plot_comparison(
     display_mosaic = np.full_like(vis_mosaic, low_fill)  # fill missing edge columns with the low end
     display_mosaic[valid_mask] = scaled_valid
 
-    # Both panels cover the same real square ground area (see docs/data-sources.md, "Current
+    # Both panels cover the same real square ground area (see docs/image-pipeline.md, "Current
     # image-pipeline algorithm"), but at different native pixel resolution per axis -- plot in real
     # km (not raw pixel index) so both display as square and are directly, visually comparable.
     # Also apply the north-up rotation computed above
@@ -256,7 +256,7 @@ def _fill_dead_columns_for_display(band: np.ndarray, valid: np.ndarray) -> np.nd
     correction marks genuinely *missing* pixels at a small, fixed, deterministic set of detector
     columns on each VIS framelet's first line (confirmed empirically: the exact same 56 columns
     recur, unchanged, at every 14-line framelet boundary across a full cube -- see
-    docs/data-sources.md's ISIS3/CSM spike section) -- narrow (1-3 columns), within otherwise real,
+    docs/external-tools.md's "ISIS Pushframe pipeline" section) -- narrow (1-3 columns), within otherwise real,
     locally-smooth rows, so a simple per-row linear fill across each gap is a reasonable, standard
     dead-pixel-column interpolation. `np.interp` also handles the edge case (`column 0` has no left
     neighbor -- always dead, see the same docs section) by clamping to the nearest valid value
@@ -388,7 +388,7 @@ def plot_render_vs_basemap(
     `render_array` is passed through `_fill_dead_columns_for_display` before display, same as
     `plot_isis_comparison`'s real panel -- a no-op for the synthetic render (no dead pixels to begin
     with), but necessary for the real WAC crop: without it, the ~1% framelet-boundary dead-pixel
-    pattern (see docs/data-sources.md's ISIS3/CSM spike section) shows up as visible speckle.
+    pattern (see docs/external-tools.md's "ISIS Pushframe pipeline" section) shows up as visible speckle.
 
     `footprint_lonlat_deg` is the render's own real ground footprint (corners + center, matching
     `Camera.footprint_lonlat_deg`'s shape) -- `Camera.footprint_lonlat_deg` itself for the synthetic

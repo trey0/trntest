@@ -317,7 +317,7 @@ result: this isn't one image's overfit tuning.
   `isis_wac.ground_to_image_pixel`. Live-validated: all 5 die5 points resolve again on
   `M1327210646CE`. See `docs/wac-jigsaw-investigation.md` for the full bug investigation.
 - **A related but separate architectural point from the user, not acted on**: the existing boresight
-  correction (`camera.build_camera()`'s `look_at_rotation` re-aiming, `docs/data-sources.md`'s
+  correction (`camera.build_camera()`'s `look_at_rotation` re-aiming, `docs/image-pipeline.md`'s
   "WAC-VIS's real boresight isn't `spice.pxform`'s `[0,0,1]`") was modeled as a *rotation* of the
   whole camera frame. The user's own observation, prompted by this investigation: "viewing the
   boresight correction as a rotation was not quite right. It was always going to be more correct to

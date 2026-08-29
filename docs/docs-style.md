@@ -56,6 +56,11 @@ actually mislead or cost a reader real time. One idea per sentence: don't stack 
 clauses onto one sentence with em dashes. If a sentence needs more than one dash-set aside, it's
 probably two sentences.
 
+Watch for "real"/"genuine"/"actual" used as a bare intensifier ("a real bug", "genuine temporal
+alternation", "an actual gotcha") rather than to distinguish from something specific (a placeholder,
+an estimate, an assumption) — one repo-wide file was found with 150+ uses of "real" this way. If
+there's nothing concrete it's being contrasted against, cut the word.
+
 ## One source of truth per fact
 
 The same fact (a path, a policy, a rationale) showing up in multiple docs is a bug, not redundancy

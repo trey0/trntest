@@ -19,9 +19,8 @@ in for the original's manual per-pixel circle-distance test and OGR intersection
 Deliberately scoped to GLD100 (`lunaserv`'s live default DEM source, ±79 deg latitude coverage) --
 `crater_depths_for_footprint` stores a `None` depth for any crater whose own extent could reach
 past that latitude, rather than reading from a different, coarser, interpolation-artifact-prone
-global DEM just to cover the poles too. See `docs/data-sources.md`'s "Crater depth (Breton et al.
-2019 method)" section for the full rationale, including the global-DEM alternatives considered and
-set aside."""
+global DEM just to cover the poles too. See `docs/crater-grading.md` for the full rationale,
+including the global-DEM alternatives considered and set aside."""
 
 import math
 

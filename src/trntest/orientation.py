@@ -62,7 +62,7 @@ def best_k_for_north_up(right_orig: np.ndarray, up_orig: np.ndarray, north: np.n
 
 def rotate_pixel_coords(col: float, row: float, k: int, height: int, width: int) -> tuple:
     """Where (col, row) in an original height x width array lands after `np.rot90(arr, k)`.
-    Verified numerically against `np.rot90` directly (see docs/data-sources.md)."""
+    Verified numerically against `np.rot90` directly (see docs/image-pipeline.md)."""
     k = k % 4
     h, w = height, width
     for _ in range(k):
