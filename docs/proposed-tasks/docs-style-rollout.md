@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (10 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (11 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -147,6 +147,16 @@ truth per fact, thin index files, sensible file naming.
   `data-sources.md` split; restated the fact directly instead. Cut "real"/"actual" filler
   throughout. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
   file). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/pose_alignment.py` (515 -> 514 lines, all 3 `docs/history.md` citations removed):
+  `native_wac_gsd_m`'s/`downsample_to_gsd`'s/`fit_similarity_correction`'s large docstrings trimmed
+  to interface + RST fields, rationale moved to body comment blocks. Fixed a stale
+  `docs/data-sources.md` reference in `_lightglue_models`' docstring -- `docs/external-tools.md`'s
+  "LightGlue tie-point matching" section already carries the DISK-vs-SuperPoint licensing rationale
+  in full, so this now cross-references it instead of restating a compressed duplicate. Cut
+  "real"/"genuine" filler, while keeping this project's established "real-WAC" compound term (real
+  WAC instrument pipeline vs. the synthetic render pipeline) and other genuinely contrastive uses
+  intact. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file).
+  No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -154,15 +164,14 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 8
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 7
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py` done, see Completed
-above). Rough priority order (citation count, then size, as a proxy for how much chatty/historical
-material likely needs trimming):
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`
+done, see Completed above). Rough priority order (citation count, then size, as a proxy for how
+much chatty/historical material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `pose_alignment.py` | 3 | 515 |
 | `trn_dataset.py` | 2 | 682 |
 | `tie_points.py` | 2 | 491 |
 | `spice_kernels.py` | 2 | 345 |
@@ -181,7 +190,8 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`pose_alignment.py` is next (3 citations, the current top of the table).
+`trn_dataset.py` is next (tied at 2 citations with 4 others; picked first among the tie, largest
+of them by line count).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
