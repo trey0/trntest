@@ -28,6 +28,9 @@ truth per fact, thin index files, sensible file naming.
   `docs/dataset-selection.md` — new, assembled from the same already-reworked material.
 - `docs/proposed-tasks/` convention established (this doc lives under it); `report-plan.md` and
   `corrected-overlay-cam2map-plan.md` moved there.
+- `docs/batch-generation.md` — full brevity/voice pass (`docs/history.md` refs removed; the
+  "mixing product types" narrative condensed from a 3-phase investigation trail down to the current
+  task-granularity model and why the race it describes is now structurally impossible).
 - `AGENTS.md` — doc index kept current through all of the above.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
@@ -72,9 +75,10 @@ near the code it explains (or cut it), fix "real"-as-filler and em-dash sentence
   not started. Cross-references into it were kept accurate, but its prose/length weren't addressed.
 - `docs/environment.md` — its "ephemeral VPS, archive/restore" framing is confirmed stale (the VPS
   data store now persists across sessions); a full rewrite is owed, deferred so far.
-- `docs/batch-generation.md`, `README.md`, `docs/reproject-fov-investigation.md`,
-  `docs/wac-jigsaw-investigation.md`, `docs/proposed-tasks/*.md` — not reviewed against
-  `docs/docs-style.md` at all yet (the two investigation docs only got mechanical link fixes).
+- `README.md`, `docs/reproject-fov-investigation.md`, `docs/wac-jigsaw-investigation.md`,
+  `docs/proposed-tasks/report-plan.md`, `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` —
+  not reviewed against `docs/docs-style.md` at all yet (the two investigation docs only got
+  mechanical link fixes).
 
 ## If resuming
 

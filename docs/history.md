@@ -4821,3 +4821,18 @@ docstrings in `src/trntest/*.py`, has barely been touched. `grep -rc "docs/histo
 src/trntest/*.py` found 18 files still citing it, `lunaserv.py` worst by far (41 citations, 1663
 lines) -- recorded as a priority table in the new plan doc, with `docs/plan.md`/`docs/environment.md`
 /`docs/batch-generation.md`/the two investigation docs also flagged as not yet given a style pass.
+
+## Phase 89 (2026-08-29) — `docs/batch-generation.md`'s style pass, working straight down the priority list
+
+Same session, continuing directly from the Phase 88 status doc's own "if resuming" list -- asked to
+just continue to the next file. `docs/batch-generation.md` had the same two problems as the docs
+already fixed: 6 `docs/history.md` citations, and one section ("mixing product types across
+concurrent workers") that had grown into a full 3-phase investigation trail (a race found, fixed,
+then made structurally impossible by a later task-granularity change) when the *current* fact is
+simple -- task granularity is per-entry now, so that specific race can't happen at all, and atomic
+publishing covers what's left (genuine cross-entry collisions, crash safety). Condensed that section
+down to the current model instead of the history of getting there; kept every other gotcha
+(cold-cache concurrent fetch races, orphaned consumer processes on a hard kill, where the consumer
+log lives) as-is, since those were already tight single-paragraph callouts, not narrative. 179 -> 142
+lines, zero `docs/history.md` citations. Updated `docs/proposed-tasks/docs-style-rollout.md` to
+reflect it.

@@ -81,62 +81,25 @@ bug — see `tasks.py`'s module docstring for why the two queues can't be merged
 call should run against a given dataset folder at a time (running one of each simultaneously is
 fine — separate queues — but two `populate_via_workers()` calls, or two `populate()` calls, against
 the *same* folder at once are not). The old filesystem lock files that made concurrent
-`docker compose run` workers safe are gone as of the `huey` migration
-(`docs/history.md`'s dated entry) — `populate_via_workers()`'s own worker pool is the supported way
-to get real parallelism now, not multiple top-level calls.
+`docker compose run` workers safe are gone as of the `huey` migration —
+`populate_via_workers()`'s own worker pool is the supported way to get real parallelism now, not
+multiple top-level calls.
 
-**Mixing one entry's product types across concurrent workers is no longer a correctness
-requirement (2026-08-23, `docs/history.md`'s Phase 79 entry).** This used to be the
-sharpest, most likely-to-actually-happen edge case here: `crop`, `hillshade`, and `reproject` for
-the *same* manifest entry all depend on `TrnTestEntry.camera`, which calls `isis_wac.run_pipeline`
-against that entry's own ISIS working directory — a shared write path two concurrent workers could
-land on at the same time, each independently re-deriving `entry.camera`/`entry.dem_ortho_result`.
-The intermediate-product access-discipline work closed this structurally, not just in this one
-spot: that shared ISIS state moved from a workspace-level `scratch_dir/isis_wac/<edr_product>/`
-into the entry's own `_work/<entry>/isis/` tier, and its real writers
-(`isis_wac.crop_for_camera`/`run_framestitch`, plus `lunaserv.fetch_dem`/`fetch_and_shade_ortho`)
-now publish atomically (`product_registry.atomic_publish_path`/`atomic_publish` — write to a
-uniquely-named temp path, then atomic rename) — two workers racing on the same label now converge
-on an equivalent, complete result rather than tearing a partial file or hitting ISIS's own
-overwrite-refusal mid-write.
+**Task granularity is per-entry, not per-`(entry, product_type)`.** One `huey` task covers every
+requested, still-pending product type for a given entry, run sequentially within that single
+task/process; `populate_via_workers(workers=N)` parallelizes across *entries* only. This makes a
+same-entry cross-worker race on shared state (`entry.camera`/`entry.dem_ortho_result`, both
+`functools.cached_property`, backed by `isis_wac.run_pipeline`'s shared ISIS working directory)
+structurally impossible, not just handled — and as a side benefit, that shared state is computed
+once per entry and reused across its product types instead of rebuilt per worker. Real writers
+(`isis_wac.crop_for_camera`/`run_framestitch`, `lunaserv.fetch_dem`/`fetch_and_shade_ortho`) also
+publish atomically (`product_registry.atomic_publish_path`/`atomic_publish`) — this remains valuable
+for genuine cross-entry write collisions and crash/partial-write safety, independent of the
+now-eliminated same-entry race.
 
-**Since then (2026-08-24), this scenario can no longer happen at all, not just safely — task
-granularity moved from `(entry, product_type)` to `entry` (`docs/history.md`'s dated entry).** One
-`huey` task now covers every requested, still-pending product type for a given entry, run
-sequentially within that single task/process; `populate_via_workers(workers=N)` parallelizes across
-*entries* only. Two of the same entry's product types landing on two different workers at the same
-moment — the scenario the atomic-publish work above made safe — is now structurally impossible in
-addition to being safe, and as a real side benefit `entry.camera`/`entry.dem_ortho_result` (both
-`functools.cached_property`) are computed once per entry and reused across its product types
-instead of being redundantly rebuilt once per worker that used to land on it.
-
-**Live-validated** (2026-08-23): two never-before-generated manifest rows,
-`populate_via_workers(product_types=("crop", "hillshade"), workers=2)`, product types *not*
-sequenced. The consumer log confirms real concurrency, not just luck — one entry's own `crop` and
-`hillshade` tasks started 27ms apart on two separate worker processes and ran overlapping for the
-next 27-40s — and both product types for both entries came out `done`, no errors. See
-`docs/history.md`'s dated entry for the full run.
-
-**A follow-up validation the same day found this first run hadn't actually covered
-`entry.dem_ortho_result`'s own concurrency** (`crop` never touches it — only `hillshade`/`reproject`
-do): `populate_via_workers(product_types=("hillshade", "reproject"), workers=2)` against fresh rows
-initially failed, twice, with two different real races (a shared Hapke-shading scratch-cube
-collision, then a separate camera-building/CK-kernel-resolution race) — both fixed
-(`docs/history.md`'s Phase 80 entry), after which the same call completed cleanly with confirmed
-concurrent execution (7ms apart, 50-80s overlap). `reproject` is still opt-in (not in
-`PRODUCT_TYPES`), but is now validated safe to mix with `hillshade` under concurrent workers too.
-
-Both validations above describe the pre-2026-08-24 `(entry, product_type)` task granularity —
-`crop`/`hillshade`/`reproject` of the *same* entry landing on two different workers, the specific
-thing being exercised, can no longer happen at all post-granularity-change (see above). The
-atomic-publish fixes these validations confirmed remain valuable regardless — for genuine
-cross-entry write collisions and crash/partial-write safety, not just this now-eliminated race.
-
-Sequencing by product type (below) is now a pure throughput choice, not a safety requirement — it
-no longer protects against a same-entry cross-worker race (structurally impossible now, see above),
-just against many *different* entries' tasks all cold-fetching the same not-yet-cached external
-resource around the same time (see "Cold-cache concurrent fetch races" below). A
-mixed-`product_types` call like the validated one above is not expected to race either way:
+Sequencing by product type is therefore a pure throughput choice now, not a safety requirement — it
+protects against many *different* entries' tasks all cold-fetching the same not-yet-cached external
+resource at once (see "Cold-cache concurrent fetch races" below), nothing else:
 
 ```python
 dataset.populate_via_workers(product_types=("crop",), workers=4)
@@ -176,4 +139,4 @@ prior run's failure.
 This was live-validated against real manifest entries (not just fakes) — two never-before-generated
 rows from `notebooks/dataset_manifest.csv`, `populate_via_workers(limit=2, workers=2)`, both crop
 cubes and hillshade renders completed correctly via real SPICE/ISIS/ASP calls across two separate
-worker processes in 53.4s total. See `docs/history.md`'s dated entry for the full trail.
+worker processes in 53.4s total.
