@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (4 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (5 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -84,6 +84,13 @@ truth per fact, thin index files, sensible file naming.
   matching the "trivial/local, can skip" carve-out. Apply this same pass to every file as it's
   reworked going forward, not just retroactively to these 4. Verified with `trntest-lint` (all
   four files clean); the 3 non-`plotting.py` diffs are pure additions, no logic touched.
+- `src/trntest/sfs_validation.py` — full pass (324 -> 371 lines), including the missing-docstring
+  check from the item above (all functions/classes already had one). Cross-checked against
+  `docs/plan.md`'s current status first (a peer session flagged a possibly-stale "still-open
+  regression" claim in the *notebook* counterpart, `notebooks/sfs_validation.py` — a different
+  file); this module's own docstrings didn't have that problem, nothing to correct. All 4
+  `docs/history.md` citations removed. Verified with `trntest-lint` (`ruff format`/`ruff
+  check`/`mypy` all clean on this file). No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -91,14 +98,13 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 14
-files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py` done, see
-Completed above). Rough priority order (citation count, then size, as a proxy for how much
-chatty/historical material likely needs trimming):
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 13
+files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
+`sfs_validation.py` done, see Completed above). Rough priority order (citation count, then size, as
+a proxy for how much chatty/historical material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `sfs_validation.py` | 4 | 324 |
 | `config.py` | 4 | 263 |
 | `camera.py` | 4 | 608 |
 | `cache.py` | 4 | 287 |
@@ -123,8 +129,7 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`sfs_validation.py` is next (tied at 4 citations with `config.py`/`camera.py`/`cache.py`; picked first
-among the tie).
+`config.py` is next (tied at 4 citations with `camera.py`/`cache.py`; picked first among the tie).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -140,7 +145,7 @@ among the tie).
 
 1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
    other sessions may have touched these files since.
-2. Work one file at a time; `sfs_validation.py` next. Re-verify with `trntest-lint` and, if a docstring
+2. Work one file at a time; `config.py` next. Re-verify with `trntest-lint` and, if a docstring
    change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
    notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
    `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
