@@ -25,45 +25,29 @@ cache/
   torch/hub/checkpoints/...   (LightGlue/DISK pretrained weights -- see below)
 ```
 
-`isisdata/` is a fourth tree, alongside the three above: ISIS3's own reference data, fetched by
-`isis_wac.ensure_isisdata()` for the ISIS/CSM WAC reprojection spike (see
+`isisdata/` is ISIS3's own reference data, fetched by `isis_wac.ensure_isisdata()` (see
 `docs/data-sources.md`'s "ISIS3/CSM spike" section). Fully re-fetchable and safe to prune before
-archiving, same as the other three -- `downloadIsisData ... --no-kernels` keeps the real one-time
-download to ~5GB (not the ~30GB a plain, un-flagged `downloadIsisData` would pull), since
-`spiceinit web=yes` covers the pointing/position role the larger, un-flagged `base` download would
-otherwise be needed for.
+archiving, like the other trees. `--no-kernels` keeps the one-time download to ~5GB instead of ~30GB,
+since `spiceinit web=yes` covers the pointing/position role the full `base` download would otherwise
+serve.
 
 Fetch helpers (`src/trntest/cache.py`) check "does this local mirrored path already exist" before
 making any network request; if present, skip the request entirely.
 
-## Retry/backoff/pacing policy, and failing loudly on a systemic fetch problem
+## Retry/backoff/pacing policy
 
-`cache.cached_get` (the fetch path behind everything above except the Astropedia flat file, see
-below) retries a failed real request up to a small, fixed number of attempts (short exponential
-backoff, capped) before giving up -- not infinite/silent retrying, and not the old
-skip-on-first-failure behavior either. A 429 specifically honors the server's own `Retry-After` if
-it's short enough to wait out inline; a longer one (or a missing/malformed header) fails immediately
-rather than blocking for however long the server asks. Every real request (never a cache hit) is also
-paced by a small fixed delay, and all real requests in one process share one `requests.Session`
-(connection keep-alive) rather than a fresh connection per call.
+`cache.cached_get` (the fetch path behind everything except the Astropedia flat file, below) retries
+a failed request a small, fixed number of times with capped exponential backoff. A 429 honors the
+server's own `Retry-After` if it's short enough to wait out inline; a longer or malformed header
+fails immediately instead of blocking indefinitely. Every real request (never a cache hit) is paced
+by a small fixed delay, and all requests in one process share one `requests.Session`.
 
-Once attempts are exhausted, `cached_get` raises `cache.FetchError`, not the raw underlying
-exception -- deliberately a distinct type so a caller sweeping many items in a loop (e.g.
-`dataset._evaluate_illuminated_candidates`'s per-candidate catalog sweep,
-`dataset.generate_dataset`'s per-image batch) can tell "this fetch is systemically broken" apart from
-an ordinary per-item problem and let it propagate to abort the whole operation, rather than logging
-"skipping" and immediately firing the next of possibly hundreds of further requests at a server
-that's already refusing them. That distinction exists because of a real incident, not a hypothetical:
-a from-cold `select_dataset(max_search_days=7)` sweep made ~1600 sequential, unpaced requests to the
-same PDS host with no backoff at all, and once the server started responding 429, the old
-catch-any-exception-and-continue loop kept right on firing -- 1354 more 429s in the same run -- into
-what turned out to be a full 1-hour, IP-scoped ban (confirmed via the response's own `Retry-After:
-3600` header). See `docs/history.md`'s dated entry for the full incident and the fix.
-
-Same underlying preference as the `spiceinit` case below (no silent retry loop, fail promptly instead)
--- extended here to *bounded* retries plus pacing/backoff, since the failure mode observed was a
-genuinely unpaced burst tripping a rate limiter, not a single flaky call; the "signal failure on the
-whole operation" half of that direction is unchanged.
+Once attempts are exhausted, `cached_get` raises `cache.FetchError` rather than the raw exception, so
+a caller sweeping many items in a loop (`dataset._evaluate_illuminated_candidates`,
+`dataset.generate_dataset`) can tell a systemic failure apart from an ordinary per-item one and abort
+the whole operation instead of firing hundreds more requests at a server that's already refusing
+them -- the failure mode that motivated this: an unpaced ~1600-request sweep against PDS triggered a
+1-hour IP ban after the old catch-and-continue loop kept firing through the first 429.
 
 ## SPICE kernel selection (avoid over-pulling)
 
@@ -83,55 +67,43 @@ CK (pointing) kernels dominate a year's data volume. Process:
 
 For the demo's chosen 2019-11-30 timestamp, selecting only the `lrosc`/`lrolc` CK flavors (out of
 five) for one 10-day chunk, plus the always-needed kernels, downloaded **~585 MB** total —
-`spice_kernels.py`'s `select_kernels_for()` handles this. Note the single `lrosc` (spacecraft
-bus reconstructed attitude) file for just that 10-day window is itself ~529 MB; the CK format
-apparently samples at high angular rate. Skipping `lrodv`/`lrohg`/`lrosa` (still avoids ~4-5x more
-CK volume) and never touching kernels outside the target date range is what keeps this tractable at
-all — pulling a full year's CK data across all five flavors would be tens of GB.
+`spice_kernels.py`'s `select_kernels_for()` handles this. The single `lrosc` (spacecraft bus
+reconstructed attitude) file for that 10-day window is itself ~529 MB — CK format apparently samples
+at high angular rate. Skipping `lrodv`/`lrohg`/`lrosa` and staying within the target date range keeps
+this tractable — a full year across all five CK flavors would be tens of GB.
 
 ## "Latest metakernel" resolution caching
 
-Step 1 above ("download the one metakernel covering the year...") first has to ask NAIF *which*
-metakernel is current for that year -- `extras/mk/` holds one versioned file per year
-(`lro_2019_v06.tm`, etc.), and "latest" is a live directory listing, not a specific cacheable file,
-so `cache.cached_get`'s usual "does this local path already exist" check doesn't apply to it
-directly. `spice_kernels.latest_metakernel_url()` used to just re-request that listing on every
-call (in-process-memoized only, via `functools.cache` -- so still once per process, e.g. once per
-`docker compose run`, even with every actual kernel file already on disk). Now persisted instead,
-the same shape as the WAC CK resolution cache just below: written to
-`naif_latest_metakernel/<year>.txt` after the first successful resolution, read from there on every
-subsequent call for that year. Deliberately never invalidated -- a year's "latest" version is fixed
-once kernels selected from it are already cached locally, so re-checking on every run would defeat
-the point. This closes the last network dependency `image_generation.ipynb` had left once genuinely
-warmed up: the notebook can now run with no network access at all, not just "no *new* downloads."
+Step 1 above first has to ask NAIF *which* metakernel is current for the target year — `extras/mk/`
+holds one versioned file per year (`lro_2019_v06.tm`, etc.), and "latest" is a live directory
+listing, not a cacheable path, so `cached_get`'s usual existence check doesn't apply.
+`spice_kernels.latest_metakernel_url()` persists this resolution instead: written to
+`naif_latest_metakernel/<year>.txt` after the first successful lookup, read from there afterward.
+Deliberately never invalidated — a year's "latest" version is fixed once its kernels are cached
+locally. This is what lets a warmed-up `image_generation.ipynb` run with no network access at all,
+not just no *new* downloads.
 
 ## WAC CK (pointing) kernel caching -- a different remote host, and a resolution-result cache
 
-`spice_kernels.py`'s live-default WAC CK source isn't the NAIF metakernel above at all --
+`spice_kernels.py`'s live-default WAC CK source isn't the NAIF metakernel above —
 `select_isis_wac_ck_kernels`/`isis_wac.resolve_wac_ck_kernels` ask a real ISIS `spiceinit web=yes`
-run what it furnishes (see `docs/data-sources.md`'s "ISIS's own LRO kernel database" section for the
-full why). Two caching layers, both new:
+run what it furnishes (see `docs/data-sources.md`'s "ISIS's own LRO kernel database" section for
+why). Two caching layers:
 
-- **The actual kernel files** (`cache.fetch_isis_kernel`) come from USGS's own S3 bucket
-  (`asc-isisdata`), not NAIF -- cached under `isisdata/lro/kernels/ck/...`, deliberately the *same*
-  relative layout `$ISISDATA/lro/...` itself uses (not a new independent subtree), so a file cached
-  here already sits where a future local, non-web `spiceinit` run or a fuller `downloadIsisData lro`
-  fetch would expect to find it. `isis_wac.ensure_isisdata()`'s own `--include` filter deliberately
-  excludes `kernels/ck/` -- this is a narrow, additive exception living alongside it. Sizes are
-  comparable to (sometimes larger than) the NAIF `lrosc`/`lrolc` chunks above -- one `moc42r_*.bc`
-  30-day merge is ~1.7GB -- but `cached_get`'s existing streaming download handles this fine, no
-  special resumable-curl treatment needed (unlike the Astropedia case below).
-- **The resolution itself** -- *which* kernel filename(s) apply to this project's target
-  product/date -- is a separate, much smaller cache: `isis_ck_resolution/<edr_product>.json`, a tiny
-  JSON list of `kernels/ck/<filename>` paths, written after the first successful `spiceinit`
-  run and read (short-circuiting the whole `ensure_isisdata → fetch_edr_img → run_lrowac2isis →
-  run_spiceinit → catlab → parse` chain) on every subsequent call. This is deliberate, explicit
-  resilience: once resolved for this project's one fixed demo product, no code path needs to reach
-  the live `spiceinit` web service again -- only the plain HTTPS kernel-file download above matters
-  for ongoing runs, confirmed live (a second resolution call after the network path to the web
-  service is blocked still succeeds from cache). No retry/backoff around the `spiceinit` call itself
-  -- a cold-cache failure surfaces immediately rather than looping silently, per explicit user
-  direction ("I'd rather have a relatively prompt exception and manually retry later").
+- **The kernel files** (`cache.fetch_isis_kernel`) come from USGS's S3 bucket (`asc-isisdata`),
+  cached under `isisdata/lro/kernels/ck/...` — the same relative layout `$ISISDATA/lro/...` uses, so
+  a file cached here already sits where a future local `spiceinit` or full `downloadIsisData lro`
+  fetch would expect it. `isis_wac.ensure_isisdata()`'s `--include` filter excludes `kernels/ck/`;
+  this is that exception. Sizes rival the NAIF chunks above (one `moc42r_*.bc` 30-day merge is
+  ~1.7GB) but need no special resumable-download handling.
+- **The resolution** — which kernel filename(s) apply to a given product/date — is cached
+  separately and much smaller: `isis_ck_resolution/<edr_product>.json`, written after the first
+  successful `spiceinit` run and read on every later call, short-circuiting the `ensure_isisdata →
+  fetch_edr_img → run_lrowac2isis → run_spiceinit → catlab → parse` chain. Once resolved for a
+  product, no code path needs to reach the live `spiceinit` web service again — only the plain HTTPS
+  kernel-file download above matters afterward. No retry/backoff around the `spiceinit` call itself:
+  a cold-cache failure surfaces immediately, per explicit user direction ("I'd rather have a
+  relatively prompt exception and manually retry later").
 
 ## Lunaserv WMS caching
 
@@ -140,37 +112,22 @@ re-running any script/notebook cell for the same ROI hits the local cache, not t
 
 ## Astropedia GLD100 caching — a real exception to "just a sliver"
 
-Unlike everything above, `cache.fetch_astropedia_gld100` downloads and caches **the entire ~10GB
-flat file**, not a per-request sliver (see `docs/data-sources.md`'s "Astropedia GLD100 flat file"
-section for why: the file isn't a Cloud-Optimized GeoTIFF, so a remote windowed read pulls full-width
-row strips rather than a small tile — confirmed too slow to repeat per-camera). This is a genuinely
-different caching shape than the rest of this project, worth calling out explicitly:
+Unlike everything above, `cache.fetch_astropedia_gld100` downloads and caches the entire ~10GB flat
+file, not a per-request sliver (see `docs/data-sources.md`'s "Astropedia GLD100 flat file" section
+for why — it isn't a Cloud-Optimized GeoTIFF, so a windowed remote read pulls full-width row strips,
+too slow to repeat per-camera).
 
-- **Not built on `cached_get`** — a stable (not per-call-unique) partial-file path, `curl -C -`-based
-  resume, and *not* deleting the partial file on failure (the opposite of `cached_get`'s behavior) —
-  see `cache.fetch_astropedia_gld100`'s own docstring for the full reasoning. Confirmed empirically:
-  interrupting a real download mid-transfer and re-running resumes from the exact byte offset, not
-  from zero.
-- **Archive/restore cost**: per `docs/environment.md`, `archive.sh` tars the *entire* `trntest_ws`
-  directory including `cache/` — this one file adds ~10GB to that tarball (and the scp transfer time
-  that implies) unless deliberately deleted before archiving. The previous largest single cache
-  component (`isisdata/`) was ~5GB spread across many small files; this is double that in one file.
-  Not a blocker — the download itself is a real, if one-time, cost regardless of whether it's
-  archived or re-fetched fresh each session — but genuinely worth knowing before running `archive.sh`
-  without thinking about it, unlike the rest of this project's cache contents, which are small enough
-  not to matter either way.
+Not built on `cached_get` — a stable partial-file path with `curl -C -`-based resume, and the
+partial file is kept (not deleted) on failure so a retry resumes from the interrupted byte offset
+rather than starting over. See `cache.fetch_astropedia_gld100`'s own docstring for the mechanics.
 
 ## LightGlue/DISK pretrained-weight caching
 
-`src/trntest/pose_alignment.py`'s `match_features_lightglue` (see `docs/data-sources.md`'s
-"LightGlue tie-point matching" section) loads two real pretrained-weight files on first use — the
-LightGlue matcher's own weights (fetched from a `github.com/cvg/LightGlue` release via
-`torch.hub.load_state_dict_from_url`) and DISK's extractor weights (fetched via
-`kornia.feature.DISK.from_pretrained`, which also routes through `torch.hub` internally) — tens of
-MB total, not a "one whole big file" case like Astropedia above. Both follow `torch.hub`'s own
-caching convention (a stable path keyed by filename, skipped on a second call), not
-`cache.cached_get` — this project doesn't own that fetch code, unlike everything above. `docker/
-Dockerfile` sets `TORCH_HOME=/workspace/cache/torch` so that cache lands under this project's own
-shared `cache/` (survives container rebuilds, same as everything else here) instead of torch's own
-default `~/.cache/torch`, which would live inside the container and be silently re-fetched on every
-rebuild otherwise.
+`pose_alignment.match_features_lightglue` (`docs/data-sources.md`'s "LightGlue tie-point matching"
+section) loads two pretrained-weight files on first use — LightGlue's own weights (via
+`torch.hub.load_state_dict_from_url`) and DISK's extractor weights (via
+`kornia.feature.DISK.from_pretrained`, also routing through `torch.hub`) — tens of MB total, not an
+Astropedia-sized case. Both follow `torch.hub`'s own caching convention, not `cache.cached_get` —
+this project doesn't own that fetch code. `docker/Dockerfile` sets `TORCH_HOME=/workspace/cache/torch`
+so this lands under the project's shared `cache/` (survives rebuilds) instead of torch's default
+`~/.cache/torch`, which would be silently re-fetched every rebuild.

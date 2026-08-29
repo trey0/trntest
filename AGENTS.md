@@ -31,12 +31,13 @@ this file). Then, as needed:
 - `old_notebooks/` — archived, frozen investigation notebooks (real executed `.ipynb` output kept,
   not re-run or kept in sync going forward — see its own `README.md`). Useful when a `docs/history.md`
   entry references one and you want the actual plots/reasoning trail, not just the narrative summary.
-- `docs/environment.md` — the ephemeral VPS/archive-restore workflow this repo is developed under:
-  what survives a teardown, why spike/experimental source (`src/scratch/`) and large file output
-  (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must be kept in separate locations, and
-  (see its "Multi-agent worktrees" section) how concurrent Claude Code worktree agents share the
-  outer `trntest_ws` workspace safely, merge into `origin/main`, and message each other directly to
-  stay in sync.
+- `docs/environment.md` — this repo's VPS dev environment: why spike/experimental source
+  (`src/scratch/`) and large file output (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must
+  be kept in separate locations, and (see its "Multi-agent worktrees" section) how concurrent Claude
+  Code worktree agents share the outer `trntest_ws` workspace safely, merge into `origin/main`, and
+  message each other directly to stay in sync. **Note:** the file's own "ephemeral VPS,
+  archive/restore" framing is stale as of 2026-08-29 — the main data store now persists across
+  sessions, `archive.sh`/`restore.sh` are no longer used — pending a fuller rewrite.
 
 ## Working conventions for this repo
 

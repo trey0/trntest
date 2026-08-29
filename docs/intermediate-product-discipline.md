@@ -15,41 +15,38 @@ files should be named, stored, and shared across code paths — not an implement
      comparison). Identified by label plus whatever parameters/variant actually determine content,
      baked into the identity itself.
 
-2. **Exactly one code path writes any given label.** This should be an auditable, ideally
-   cheaply-checkable fact (e.g. discoverable by inspection or a lightweight registry), not something
-   that has to be re-derived by reading every caller. A function that legitimately needs to produce
-   variants of a label still owns the whole family — the constraint is one *owner*, not one *file*.
+2. **Exactly one code path writes any given label.** This should be auditable, ideally cheaply —
+   discoverable by inspection or a lightweight registry, not re-derived by reading every caller. A
+   function that legitimately produces variants of a label still owns the whole family: one *owner*,
+   not one *file*.
 
 3. **Storage is hierarchical, per-scope, and prunable without tracking individual files.**
-   Intermediate files that aren't part of a dataset's final output live under one disposable subtree,
-   with the path hierarchy itself encoding scope directly — no separate manifest of "which files
-   belong to this entry" needs to be maintained in code:
+   Intermediate files that aren't part of a dataset's final output live under one disposable subtree.
+   The path hierarchy encodes scope directly, so no separate manifest of "which files belong to this
+   entry" is needed:
    ```
    <dataset>/_tmp/<entry>/<label>               # entry-scoped (shared across generators)
    <dataset>/_tmp/<entry>/<generator>/<label>   # generator-scoped
    ```
-   Pruning is then just deletion at the right level — the whole `_tmp/` subtree, one entry's own
-   subtree, or one entry+generator's own subtree — and the directory a label lives under is itself
-   the record of whether it's shared (category from principle 1) or generator-specific.
+   Pruning is then deletion at the right level: the whole `_tmp/` subtree, or one entry's or one
+   entry+generator's own subtree. The directory a label lives under already records whether it's
+   shared (principle 1) or generator-specific.
 
 4. **Published artifacts are immutable, and become visible atomically.** A writer produces its
-   output at a uniquely-named temporary location and only exposes it at its canonical identity via
-   an atomic rename, once complete. Nothing is ever edited in place after publication — a change in
-   what should be produced means a new identity (per principle 1), not a mutation of an existing one.
-   Together with atomicity, this makes ordinary write/read races and write/write races safe by
-   construction: a reader either doesn't see an artifact yet or sees a complete one, never a partial
-   one, and two writers racing to produce the same label converge on an equivalent, still-valid
-   result rather than a torn file.
+   output at a uniquely-named temporary location and only exposes it at its canonical identity via an
+   atomic rename, once complete. Nothing is edited in place after publication; a change in what
+   should be produced means a new identity (principle 1), not a mutation. This makes write/read and
+   write/write races safe by construction: a reader either sees no artifact yet or a complete one,
+   never a partial one, and two writers racing the same label converge on an equivalent result, not a
+   torn file.
 
 5. **Each artifact has a declared access mode per task: writer, reader, or (optionally) deleter.**
-   At any point, an artifact is touched by either one writer alone, any number of concurrent readers,
-   or one deleter alone — never a mix. Because of principle 4, enforcing "writer completes before
-   any reader starts" is mostly a performance concern (avoiding redundant regeneration), not a
-   correctness one. Deletion doesn't get that same protection for free — removing a file out from
-   under an active reader is a real hazard regardless of atomicity — so deletion, if ever
-   implemented, is the one mode that genuinely needs "no active readers remain" before it can run.
-   Deleters are not something this project currently plans to implement; this principle just defines
-   what their contract would have to be if one existed.
+   At any point it's touched by one writer alone, any number of concurrent readers, or one deleter
+   alone — never a mix. Principle 4 makes "writer completes before any reader starts" mostly a
+   performance concern, not a correctness one. Deletion doesn't get that protection for free —
+   removing a file out from under an active reader is a real hazard — so deletion is the one mode
+   that needs "no active readers remain" before it can run. Not implemented yet; this just states
+   what its contract would need to be.
 
 6. **No locks.** Stale locks are a known, real source of confusing-to-diagnose failures. Rely on
    atomicity, immutability, and single-writer auditing instead of runtime mutual exclusion to keep

@@ -4709,3 +4709,38 @@ the root cause directly: write like a taciturn developer, not a chatty one -- th
 is a voice problem, not just an absence of pruning. Indexed in `AGENTS.md` alongside the other
 `docs/*.md` files. This phase only adds the guide; applying it across the existing codebase is
 follow-up work.
+
+## Phase 86 (2026-08-29) — First two docs-style edit passes, and three more style rules from doing them
+
+Same session as Phase 85, continued. Applied the new style guide for real, on two candidate files,
+rather than leaving it untested:
+
+- `docs/intermediate-product-discipline.md` first -- chosen as a stable, unlikely-to-collide file,
+  but turned out to already be fairly disciplined prose; the edit mostly split long em-dash-stacked
+  sentences into shorter ones, with only a modest net line reduction. The user found this
+  underwhelming and asked for a second candidate more likely to have real bloat to cut.
+- `docs/caching.md` next -- a much better hit: a full incident narrative (trimmed to one clause with
+  the concrete number), a `docs/history.md` citation (removed, the underlying fact stated directly
+  instead, per Phase 85's new rule), "confirmed empirically"/"deliberate, explicit resilience"
+  flourishes, and stale before/after historical framing ("used to... now persisted instead") that
+  doesn't matter for current behavior. Cut from 177 to well under 150 lines with no facts lost.
+
+Reviewing both passes, the user proposed three more rules, added to `docs/docs-style.md`: **one
+source of truth per fact** (prune duplicated facts to wherever the reader who needs them is most
+likely to look, not just wherever they were first written; a cross-reference, if one's needed, must
+resolve in one hop, not "see this 1000-line file"); **keep index files thin** (`AGENTS.md`/
+`docs/plan.md` should hold only enough to tell a reader whether they need to go read the real thing,
+since nearly every session pays their read cost -- real content that accumulates there should move
+to the file it points to); and **file naming** (a filename is often the only thing a reader sees
+before opening it -- name for current content, not the task/phase that produced it, and rename on
+drift).
+
+**A real stale-fact catch during review, unrelated to the style pass itself**: reviewing
+`docs/caching.md`'s edit, the user flagged its "Archive/restore cost" paragraph (Astropedia GLD100's
+~10GB archive-tarball impact) as obsolete -- the VPS's main `trntest_ws` data store is no longer torn
+down and archived/restored between sessions the way `docs/environment.md` describes; `archive.sh`/
+`restore.sh` are no longer used. Removed that paragraph outright. `docs/environment.md` (built
+entirely around that now-stale "ephemeral VPS, archive/restore" framing) and at least one reference in
+`docs/data-sources.md` are also affected -- the user chose to defer that fuller rewrite rather than
+do it in this pass, so only `AGENTS.md`'s own doc-index blurb for `docs/environment.md` was patched
+with a note flagging the staleness, not a rewrite. `docs/environment.md`'s real rewrite is still owed.

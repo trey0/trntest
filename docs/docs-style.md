@@ -52,10 +52,35 @@ docstrings in this repo lean heavily toward the chatty end — full justificatio
 parentheticals inside parentheticals. That voice is why they grew this long in the first place, not
 just an absence of pruning. When writing or editing a docstring, comment, or doc, default to the
 shortest version that's still correct and complete, and only add a sentence back if its absence would
-actually mislead or cost a reader real time.
+actually mislead or cost a reader real time. One idea per sentence: don't stack several qualifying
+clauses onto one sentence with em dashes. If a sentence needs more than one dash-set aside, it's
+probably two sentences.
+
+## One source of truth per fact
+
+The same fact (a path, a policy, a rationale) showing up in multiple docs is a bug, not redundancy
+for safety — a reader who doesn't need it now still has to read past it, and the copies will drift.
+When you notice a fact duplicated, prune it down to one place: the file the reader who actually needs
+it is most likely to open, not just wherever it was first written. If a fact genuinely needs to be
+findable from more than one entry point, replace the extra copies with a cross-reference rather than
+restating it — and make sure that reference resolves in one hop (a specific file, or a named section
+in one), not "see `docs/data-sources.md`" with no further hint, forcing a scan of a 1000+ line file.
+
+## Keep index files thin
+
+`AGENTS.md` and `docs/plan.md` exist so an agent can tell which files it actually needs to read
+before reading them — their entire value is being cheap to read in full, since nearly every session
+pays that cost. They should hold only enough about each topic to tell a reader whether they need to
+go read the real thing, not the thing itself. If you notice one accumulating actual content — a
+fact, a rationale, a procedure, more than a sentence of "why" — move it out to the file that topic
+already points to (or a new one) and leave behind just the pointer.
+
+## File naming
+
+A doc's filename is often the only thing a reader sees before deciding whether to open it — name it
+for what it currently contains, not the task or phase that produced it. If a file's name and its
+content have drifted apart, rename it.
 
 ## General
 
-- Don't duplicate documentation that already exists elsewhere in the repo; link to it once instead of
-  restating it in every place it's relevant.
 - Prefer deleting over hedging. A doc that's wrong or out of date is worse than no doc.
