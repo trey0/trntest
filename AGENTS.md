@@ -21,6 +21,9 @@ this file). Then, as needed:
   via `TrnTestDataSet.populate_via_workers()` (a real multi-worker pool, not `populate()`'s
   sequential default), and the concrete races/gotchas to watch out for when running one. Read this
   before running or advising on a large generator batch job.
+- `docs/docs-style.md` — how to write docs and docstrings in this repo (brevity, what a docstring is
+  and isn't for, why nothing should cite `docs/history.md`). Follow this when writing or editing any
+  doc or docstring.
 - `docs/history.md` — the phase-by-phase development narrative (what was tried, what broke, how
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above

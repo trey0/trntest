@@ -4688,3 +4688,24 @@ Direct continuation of Phase 80, same session. Two design conversations with the
 **Tests**: 4 new `sharpness_ratio` tests (matches the reference depth exactly at ratio 1.0, scales correctly, `None` propagation, vectorization), a real join test for `consolidate_graded_geopackage` (one graded + one ungraded crater, confirms no duplicate/suffixed columns and correct `NaN` handling), `tiles_covering_bbox`/`grade_footprint` tests (grid-snapping correctness, real touching-tiles selection with resumability). `trntest-lint` clean throughout; full 343-test suite green (`.huey/` cleared first, per Phase 80's own finding).
 
 **Not done in this pass**: the notebook/`consolidate_graded_geopackage`/`grade_footprint` are not yet committed as of this entry -- held for the user's own review in Jupyter Lab first, per this repo's standing convention for notebook-output changes.
+
+## Phase 85 (2026-08-29) — `docs/docs-style.md`: a style guide for docs and docstrings
+
+The user flagged two long-standing problems: docstrings across the codebase (`lunaserv.py` worst of
+all) had grown into implementation walkthroughs and dated justification trails rather than interface
+definitions, and nearly every doc/docstring in the repo cites `docs/history.md`'s "dated entries" --
+a scavenger hunt through a 4000+ line narrative log that `AGENTS.md` already says shouldn't be
+required reading. `grep`ping the repo confirmed the scale: 50+ `docs/history.md` references in
+`lunaserv.py` alone, plus `dataset.py`, `camera.py`, `plotting.py`, `data-sources.md`, and others.
+
+`docs/docs-style.md` (touchstone: [Google's docguide best
+practices](https://google.github.io/styleguide/docguide/best_practices.html)) now states: a
+docstring defines the interface (summary, args, returns, exceptions), not the implementation, not
+the development history, and not a sharp edge that should just be fixed instead; overflow material
+belongs in a comment near the code it explains (inside the function body for implementation detail,
+above it for whole-function rationale), an overview/tutorial doc, or nowhere; and nothing outside
+`docs/history.md` itself should cite it. A "Voice" section, prompted by the user's own framing, names
+the root cause directly: write like a taciturn developer, not a chatty one -- the existing verbosity
+is a voice problem, not just an absence of pruning. Indexed in `AGENTS.md` alongside the other
+`docs/*.md` files. This phase only adds the guide; applying it across the existing codebase is
+follow-up work.
