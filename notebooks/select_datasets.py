@@ -14,17 +14,15 @@
 # ---
 
 # %% [markdown]
-# # Dataset selection v2: which orbits/epochs make good TRN-OD test data?
+# # Dataset selection: which orbits/epochs make good TRN-OD test data?
 #
-# **Exploratory, early-stage** -- not wired into the demo pipeline. `dataset_manifest.csv` (the
-# demo's frozen image selection, see `../docs/history.md`'s dated entry for the notebook that used
-# to regenerate it) is untouched, so the existing demo keeps working unchanged while this one
-# develops independently.
+# Picks *orbits*, not single images -- which multi-day spans of consecutive orbits make good,
+# maneuver-free test data for TRN-based orbit determination. A different scope than
+# `image_generation.py`'s single-EDR demo (a selected dataset here has 100+ entries), so the two
+# don't share a dataset folder or wire together; `dataset_manifest.csv` is untouched.
 #
-# The near-term goal here isn't picking one image -- it's building intuition about which *orbits*
-# (and which *time periods*) are good candidates for a TRN-based orbit-determination test dataset,
-# where consecutive images need to be maneuver-free in between (see `docs/data-sources.md`'s "LRO
-# maneuver detection" section and `src/trntest/maneuver_detection.py`).
+# Consecutive images in a selected span need to be maneuver-free in between (see
+# `docs/data-sources.md`'s "LRO maneuver detection" section and `src/trntest/maneuver_detection.py`).
 #
 # The actual selection logic lives in `src/trntest/dataset_selection.py` (orbit-level statistics,
 # candidate enumeration, the greedy diversity-selection algorithm) and `src/trntest/plotting.py`
@@ -80,12 +78,6 @@ orbits_df = dataset_selection.find_orbits(PERIOD_START, PERIOD_END, config)
 orbits_df.head()
 
 # %% [markdown]
-# ## Maneuver flag (4)
-
-# %%
-orbits_df = dataset_selection.add_maneuver_flags(orbits_df, PERIOD_START, PERIOD_END, config)
-
-# %% [markdown]
 # ## Acceptable EDR count per orbit (3)
 
 # %%
@@ -93,6 +85,12 @@ orbits_df = dataset_selection.add_acceptable_edr_counts(
     orbits_df, PERIOD_START, PERIOD_END, config, MIN_SUN_ELEVATION_DEG, MAX_EMISSION_ANGLE_DEG
 )
 orbits_df["acceptable_edr_count"].describe()
+
+# %% [markdown]
+# ## Maneuver flag (4)
+
+# %%
+orbits_df = dataset_selection.add_maneuver_flags(orbits_df, PERIOD_START, PERIOD_END, config)
 
 # %% [markdown]
 # ## Sun elevation vs. acceptable EDR count
@@ -146,14 +144,13 @@ plotting.plot_illuminated_node_scatter(orbits_df, PERIOD_START, PERIOD_END, sele
 # ## Resolving one selected dataset into an image list
 #
 # `selected_datasets` is orbit-level -- a start/end UTC window, no images yet. `dataset_selection.
-# resolve_orbit_sequence` turns exactly one selected row into a real, `TrnTestDataSet`-ready images
-# table (`dataset.DATASET_COLUMNS`) -- the same real per-candidate EDR-label fetch + SPICE pose
+# resolve_orbit_sequence` turns exactly one selected row into a `TrnTestDataSet`-ready images table
+# (`dataset.DATASET_COLUMNS`) -- the same per-candidate EDR-label fetch + SPICE pose
 # `dataset.images_for_window` always uses, just windowed to this one selected span, and only after a
 # cheap catalog-metadata pre-filter narrows the raw candidate list first.
 #
-# Deliberately resolves only `selected_datasets.iloc[0]`, not all `N_DATASETS` picks -- same
-# "iterate fast on one thing, not everything" discipline this project has followed throughout (see
-# `docs/history.md`); resolving the rest is a `for` loop away once this one is validated.
+# Resolves only `selected_datasets.iloc[0]` here, not all `N_DATASETS` picks -- resolving the rest
+# is a `for` loop away.
 
 # %%
 orbit_sequence = selected_datasets.iloc[0]
@@ -169,10 +166,9 @@ images
 # notebook.
 #
 # Uses its own `orbit_sequence_dataset` folder, separate from `image_generation.py`'s
-# `trn_dataset` -- this v2 pipeline is still exploratory (see this notebook's intro), not yet the
-# demo's canonical dataset. Also writes `orbit_sequence.csv` alongside `manifest.csv`: the one
-# selected-orbit-window row this dataset's images were resolved from, kept for debugging/provenance
-# per the design in `docs/plan.md`.
+# `trn_dataset` -- a different dataset, at a different scale. Also writes `orbit_sequence.csv`
+# alongside `manifest.csv`: the one selected-orbit-window row this dataset's images were resolved
+# from, kept for debugging/provenance per the design in `docs/plan.md`.
 
 # %%
 dataset_folder = config.output_dir / "orbit_sequence_dataset"
