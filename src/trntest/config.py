@@ -1,15 +1,6 @@
 """Project-specific configuration: service endpoints, cache/output paths, and the specific LROC
-EDR/CDR products this demo targets. Defaults match the values this repo has always used; override
-via a TOML file (see `load_config`) or the `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR` env vars.
-
-Field naming note: `edr_*`/`cdr_*` fields keep their literal PDS terminology since they're exact
-identifiers into the PDS archive's own EDR/CDR product catalog (cross-reference
-`docs/data-sources.md` or the PDS site itself) -- this is a different, more detail-oriented audience
-than someone just calling `camera.fetch_frame_timing()`/`wac.fetch_vis_mosaic()`. EDR ("Experiment
-Data Record") and CDR ("Calibrated Data Record") are two different processing levels of the *same*
-LROC acquisition: `fetch_frame_timing()` reads only the EDR product's metadata label (frame timing),
-never its pixel data; the actual image pixel data used for visual comparison comes entirely from the
-CDR counterpart via `wac.fetch_vis_mosaic()`.
+EDR/CDR products this demo targets. Override via a TOML file (see `load_config`) or the
+`TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR` env vars.
 """
 
 import dataclasses
@@ -31,20 +22,16 @@ DEFAULT_SCRATCH_DIR = Path("/workspace/scratch")
 
 DEFAULT_NAIF_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/"
 DEFAULT_LUNASERV_BASE_URL = "https://wms.im-ldi.com/lunaserv/lunaserv_stage?"
-# `IAU2000:30166` is Lunaserv's per-request-parametrized local Orthographic CRS (real Moon radius
-# 1,737,400 m, confirmed via a live GetMap + gdalinfo check -- see docs/data-sources.md) --
-# `{c_lon}`/`{c_lat}` are filled in per camera footprint (`lunaserv.fetch_dem_and_ortho`) with that
-# footprint's own center, so the fetched DEM/ortho tile has genuinely isotropic meter pixels
-# everywhere. Replaced the previously-used native unprojected geographic grid (`IAU2000:30100`),
-# whose degree-pixels are anisotropic away from the equator -- see `lunaserv.fetch_dem_and_ortho`'s
-# docstring for why that anisotropy matters (ASP `mapproject --ref-map` doesn't preserve it).
+# Lunaserv's per-request-parametrized local Orthographic CRS -- `{c_lon}`/`{c_lat}` are filled in
+# per camera footprint (`lunaserv.fetch_dem_and_ortho`) with that footprint's own center, giving
+# isotropic meter pixels everywhere. Replaces the native unprojected geographic grid
+# (`IAU2000:30100`), whose degree-pixels are anisotropic away from the equator. See
+# docs/data-sources/lunaserv-wms.md.
 DEFAULT_LUNASERV_SRS_TEMPLATE = "IAU2000:30166,9001,{c_lon:.6f},{c_lat:.6f}"
-# "LROC WAC 643 nm Normalized Reflectance" -- a >100,000-image photometric composite, not the raw
-# ~15,000-image "luna_wac_global" mosaic -- chosen for having ~4x fewer isolated single-pixel
-# outliers at comparable resolution (see docs/data-sources.md). sat_sim does no illumination
-# modeling of its own (pure geometric reprojection of whatever's in the ortho -- see
-# docs/data-sources.md), so lunaserv.fetch_dem_and_ortho blends a real-sun-lit hillshade onto this
-# layer rather than relying on any shading baked into the source imagery.
+# "LROC WAC 643 nm Normalized Reflectance" -- `config.lunaserv_ortho_layer` only, for the deprecated
+# `ortho_source="lunaserv_wms"` fallback path (the live default ortho source is WAC_EMP's own PDS4
+# archive, see `DEFAULT_WAC_EMP_BASE_URL` below). See docs/data-sources/lunaserv-wms.md for why this
+# layer over the alternatives Lunaserv offers.
 DEFAULT_LUNASERV_ORTHO_LAYER = "luna_wac_normalized_reflectance"
 DEFAULT_LROC_BASE_URL = "https://pds.lroc.im-ldi.com/data/"
 DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
@@ -52,10 +39,9 @@ DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
 DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 
 # Reference/regression-test WAC EDR/CDR product -- not the live default image (that's the
-# checked-in dataset_manifest.csv, frozen output of the now-removed catalog-driven selection
-# notebook, see docs/history.md); this is a known-good fallback/test fixture for
-# TrntestConfig()'s built-in defaults. See docs/data-sources/lroc-wac-edr-cdr.md, "Reference/regression-test EDR
-# products".
+# checked-in, frozen `dataset_manifest.csv`; see docs/environment.md's "Multi-agent worktrees"
+# section); this is a known-good fallback/test fixture for TrntestConfig()'s built-in defaults. See
+# docs/data-sources/lroc-wac-edr-cdr.md, "Reference/regression-test EDR products".
 DEFAULT_EDR_VOLUME = "LROLRC_0041C"
 DEFAULT_EDR_SUBDIR = "ESM4"
 DEFAULT_EDR_DOY = "2019334"
@@ -63,10 +49,9 @@ DEFAULT_EDR_PRODUCT = "M1329714703CE"
 DEFAULT_CDR_VOLUME = "LROLRC_1041C"
 DEFAULT_CDR_PRODUCT = "M1329714703CC"
 
-# Frame index (0-based) within the product's `nframes` framelets to pose the camera at, for the
-# reference product above -- chosen to land in sunlit terrain, not the shadowed start of the swath
-# (see docs/history.md, Phase 2). dataset.generate_dataset() overrides this per-image on the live,
-# catalog-driven path.
+# Frame index (0-based) within the reference product's `nframes` framelets to pose the camera at --
+# chosen to land in sunlit terrain, not the shadowed start of the swath. `dataset.generate_dataset()`
+# overrides this per-image on the live, catalog-driven path.
 DEFAULT_TARGET_FRAME_INDEX = 440
 DEFAULT_IMAGE_SIZE = 256
 
@@ -91,74 +76,55 @@ DEFAULT_DEM_TARGET_GSD_M = 100.0
 DEFAULT_DEM_PADDING_FRACTION = 0.3
 
 # Deprecated -- Lunaserv's native, unprojected geographic grid for the Moon. Only used by
-# `lunaserv.fetch_dem_native`/`lunaserv.reproject_dem_to_local_grid` (the pre-Astropedia DEM path,
-# kept for reference/comparison, no longer called by `fetch_dem_and_ortho`'s default path -- see
-# `docs/history.md`'s dated entry). Superseded because a second, axis-aligned crosshatch artifact
-# was confirmed baked into Lunaserv's own native DTM tile itself (FFT-confirmed, present regardless
-# of requested ppd/CRS/resampling kernel) -- not fixable client-side, since Lunaserv exposes no
-# resampling control (confirmed via several vendor GetMap parameter probes, all ignored) and no
-# backing-store metadata. `dem_native_ppd`/`lunaserv_dem_srs` remain valid config for that deprecated
-# path specifically, not for the live default (`astropedia_gld100_url` below).
+# `lunaserv.fetch_dem_native`/`lunaserv.reproject_dem_to_local_grid`, the pre-Astropedia DEM path
+# kept for reference/comparison; no longer called by `fetch_dem_and_ortho`'s default path.
+# Superseded by an unfixable crosshatch artifact baked into Lunaserv's own native DTM tile -- see
+# docs/data-sources/lunaserv-wms.md. `dem_native_ppd`/`lunaserv_dem_srs` are valid config for this
+# deprecated path only, not for the live default (`astropedia_gld100_url` below).
 DEFAULT_LUNASERV_DEM_SRS = "IAU2000:30100"
-# Confirmed empirically (FFT/periodicity analysis of a live resolution sweep, and independently by
-# `luna_wac_dtm_numeric_meters_absolute`'s own `GetCapabilities` abstract, which states "available
-# at 128 ppd in the same tiled format as the GLD100"): this is the real native resolution ceiling
-# of Lunaserv's global numeric DTM layer, regardless of which CRS a request uses.
+# Lunaserv's global numeric DTM layer's native resolution ceiling, regardless of requested CRS --
+# deprecated path only (see `lunaserv_dem_srs` above). See docs/data-sources/lunaserv-wms.md.
 DEFAULT_DEM_NATIVE_PPD = 128.0
 
 # Live default DEM source: USGS Astropedia's flat-file GLD100 distribution, not Lunaserv's WMS.
-# Confirmed empirically (`gdalinfo` + a live windowed pull + the same FFT/periodicity diagnostic that
-# found Lunaserv's artifact): a genuine 100.0 m/px, Int16, Equidistant Cylindrical (lon_0=180)
-# GeoTIFF, 79 deg N to 79 deg S coverage (`gdalinfo`'s own corner coordinates: 79d0'6.57" both ways),
-# ~10 GB. Shows none of Lunaserv's artifact at the frequencies it was confirmed elevated at. Not a
-# Cloud-Optimized GeoTIFF (`Block=109165x1` -- row-strip, not 2D-tiled), so a remote windowed
-# `/vsicurl/` read pulls full-width row strips rather than a small tile (~64s for one small AOI in
-# testing) -- `cache.fetch_astropedia_gld100` downloads and caches the whole file locally once
-# instead (resumable via `curl -C -`), after which local windowed reads are fast. See
-# `docs/data-sources/astropedia-gld100.md`.
+# 100.0 m/px, Int16, Equidistant Cylindrical (lon_0=180) GeoTIFF, 79 deg N to 79 deg S coverage,
+# ~10 GB. Not a Cloud-Optimized GeoTIFF (row-strip, not 2D-tiled), so `cache.fetch_astropedia_gld100`
+# downloads and caches the whole file locally once rather than reading it with remote windowed
+# reads. See docs/data-sources/astropedia-gld100.md.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
 # Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
-# archive rather than through Lunaserv's WMS render (see `lunaserv.wac_emp_tile_id_for_bbox`/
-# `fetch_wac_emp_reflectance` and `docs/data-sources/wac-emp-pds4.md`) -- Lunaserv's
-# `luna_wac_normalized_reflectance` WMS layer was confirmed to carry a real affine display stretch,
-# not raw reflectance, mirroring the same "don't trust Lunaserv WMS rendering" lesson that already
-# moved the DEM source to Astropedia's flat-file GLD100.
-# One base URL covers every real tile this project fetches (the tile's own product ID, resolved per
-# footprint by `wac_emp_tile_id_for_bbox`, is appended directly) -- confirmed live via the archive's
-# own S3 listing, not guessed from a single example filename.
+# archive (`lunaserv.wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
+# Lunaserv's WMS render, which carries an uncorrected affine display stretch. One base URL covers
+# every tile: the tile's own product ID, resolved per footprint, is appended directly. See
+# docs/data-sources/wac-emp-pds4.md.
 DEFAULT_WAC_EMP_BASE_URL = (
     "https://pds.mcp.nasa.gov/data/store/img/lunar_reconnaissance_orbiter/pds4/lroc/"
     "lro-l-lroc-5-rdr/LROLRC_2001/DATA/MDR/WAC_EMP/"
 )
 
-# Robbins (2019) lunar crater database -- ~1.3-2M craters, distributed by USGS Astropedia's PDS
-# Annex (see docs/data-sources/robbins-craters.md). This exact URL is a CKAN
-# resource-download route, not the catalog/search page a browser lands on -- confirmed live via
-# `curl` (200, `Content-Type: application/zip`, ~92MB); the search-page/details-page URLs that
-# search engines index for this dataset (e.g. `search/map/moon_crater_database_v1_robbins`) 404 on
-# the live site as of this writing, a real USGS-side site reorganization unrelated to any
-# bot-protection -- see `docs/plan.md`'s open items for the full investigation trail. Found by
-# manually navigating the current live catalog page's own download link, not guessed.
+# Robbins (2019) lunar crater database -- ~1.3M craters (D>=1km), distributed by USGS Astropedia's
+# PDS Annex. This exact URL is a CKAN resource-download route, not the catalog/search page a
+# browser lands on -- the indexed search-page URLs 404 due to a USGS-side site reorganization,
+# unrelated to bot-protection. See docs/data-sources/robbins-craters.md.
 DEFAULT_ROBBINS_CRATERS_URL = (
     "https://astrogeology.usgs.gov/ckan/dataset/f89f5478-b69a-486c-b9b5-30d7b0c5ad2b/"
     "resource/c4f25cc2-4f8a-4207-a845-5e176da3ac5a/download/lunar_crater_database_robbins_2018"
 )
 
-# USGS's own S3-hosted LRO ISIS kernel-db tree -- the same source ISIS's own `spiceinit web=yes` (and
-# local, non-web spiceinit) draws from for LRO. Confirmed live: LRO's `rclone` remote
-# (`/opt/conda/envs/isis/etc/isis/rclone.conf`'s `[lro]` alias) has no `naif:` union, unlike
-# Dawn/Cassini/TGO -- LRO's ISIS kernel tree isn't proxied from NAIF at all, it's this bucket
-# directly, anonymously readable over plain HTTPS. See docs/data-sources.md for the full derivation.
+# USGS's own S3-hosted LRO ISIS kernel-db tree -- the same source ISIS's own `spiceinit` (web or
+# local) draws from for LRO, not proxied from NAIF. Anonymously readable over plain HTTPS. See
+# docs/data-sources/spice-kernels-isis.md.
 DEFAULT_ISIS_KERNEL_BASE_URL = "https://asc-isisdata.s3.us-west-2.amazonaws.com/usgs_data/lro/"
 
 # Which source resolves the WAC CK (pointing) kernel(s): "isis_resolved" (live default -- see
-# spice_kernels.select_isis_wac_ck_kernels) asks a real ISIS `spiceinit web=yes` run what it actually
-# furnishes, fixing a confirmed ~11-13km pointing discrepancy vs. the deprecated
-# "naif_metakernel" path (spice_kernels.select_naif_wac_ck_kernels, kept for reference/comparison --
-# see docs/history.md's dated entry). Not a silent fallback -- "isis_resolved" raises loudly if it
-# can't resolve a kernel for the target date, rather than risk reintroducing the discrepancy this
-# fixes.
+# `spice_kernels.select_isis_wac_ck_kernels`) asks a real ISIS `spiceinit web=yes` run what it
+# furnishes; "naif_metakernel" (`spice_kernels.select_naif_wac_ck_kernels`) resolves via NAIF's own
+# metakernel and is kept for comparison. Direct verification found no measurable pointing
+# difference between the two -- "isis_resolved" is the default because it matches ISIS's own kernel
+# resolution by construction, not because it fixes a known discrepancy. Not a silent fallback: it
+# raises if it can't resolve a kernel for the target date. See
+# docs/data-sources/spice-kernels-isis.md.
 DEFAULT_WAC_CK_SOURCE = "isis_resolved"
 
 
@@ -175,8 +141,8 @@ class TrntestConfig:
     lunaserv_base_url: str = DEFAULT_LUNASERV_BASE_URL
     lunaserv_srs_template: str = DEFAULT_LUNASERV_SRS_TEMPLATE
     lunaserv_ortho_layer: str = DEFAULT_LUNASERV_ORTHO_LAYER
-    lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see docstring above
-    dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see docstring above
+    lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see comment above
+    dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see comment above
     astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
     wac_emp_base_url: str = DEFAULT_WAC_EMP_BASE_URL
     robbins_craters_url: str = DEFAULT_ROBBINS_CRATERS_URL
@@ -187,6 +153,13 @@ class TrntestConfig:
     lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET
     ode_base_url: str = DEFAULT_ODE_BASE_URL
 
+    # `edr_*`/`cdr_*` field names keep their literal PDS terminology -- exact identifiers into the
+    # PDS archive's own EDR/CDR catalog (docs/data-sources/lroc-wac-edr-cdr.md), for a more
+    # detail-oriented audience than a caller of `camera.fetch_frame_timing()`/`wac.fetch_vis_mosaic()`.
+    # EDR ("Experiment Data Record") and CDR ("Calibrated Data Record") are two processing levels of
+    # the same LROC acquisition: `fetch_frame_timing()` reads only the EDR product's metadata label
+    # (frame timing); the pixel data used for visual comparison comes from the CDR counterpart via
+    # `wac.fetch_vis_mosaic()`.
     edr_volume: str = DEFAULT_EDR_VOLUME
     edr_subdir: str = DEFAULT_EDR_SUBDIR
     edr_doy: str = DEFAULT_EDR_DOY
@@ -206,6 +179,7 @@ _PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")
 
 
 def _resolve_config_file_path(path: str | Path | None) -> Path | None:
+    """Resolve which config file `load_config` should read, per its own documented precedence order."""
     if path is not None:
         return Path(path)
     env_path = os.environ.get(CONFIG_PATH_ENV_VAR)
@@ -218,6 +192,10 @@ def _resolve_config_file_path(path: str | Path | None) -> Path | None:
 
 
 def _validate_keys(raw: dict, base: TrntestConfig) -> None:
+    """Check that every key in `raw` is a `TrntestConfig` field.
+
+    :raises ValueError: If `raw` has a key that isn't a `TrntestConfig` field.
+    """
     known = {f.name for f in dataclasses.fields(base)}
     unknown = set(raw) - known
     if unknown:
@@ -225,10 +203,12 @@ def _validate_keys(raw: dict, base: TrntestConfig) -> None:
 
 
 def _coerce_path_fields(raw: dict) -> dict:
+    """Convert `_PATH_FIELDS` values in `raw` from `str` to `Path`."""
     return {k: (Path(v) if k in _PATH_FIELDS else v) for k, v in raw.items()}
 
 
 def _apply_env_overrides(config: TrntestConfig) -> TrntestConfig:
+    """Apply the `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR`/`TRNTEST_SCRATCH_DIR` env var overrides."""
     if CACHE_ROOT_ENV_VAR in os.environ:
         config = dataclasses.replace(config, cache_root=Path(os.environ[CACHE_ROOT_ENV_VAR]))
     if OUTPUT_DIR_ENV_VAR in os.environ:
