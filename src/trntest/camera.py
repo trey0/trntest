@@ -3,10 +3,11 @@ of a chosen LROC WAC EDR framelet -- so a small synthetic image rendered from th
 approximates the FOV of that part of the real swath.
 
 `config.target_frame_index` is the START of the along-track crop; the actual pose epoch is that
-crop's own temporal midpoint (see `build_camera`). Its default (440) is only meaningful for this
-repo's original single-demo product -- the live default path, `trntest.dataset.images_for_window`/
-`generate_dataset`, sets it per-product instead, anchored at each product's own temporal midpoint
-and filtered by illumination there. See docs/history.md (Phase 2) for how 440 was originally chosen.
+crop's own temporal midpoint (see `build_camera`). Its default (440, see
+`config.DEFAULT_TARGET_FRAME_INDEX`) is only meaningful for this repo's original single-demo
+product -- the live default path, `trntest.dataset.images_for_window`/`generate_dataset`, sets it
+per-product instead, anchored at each product's own temporal midpoint and filtered by illumination
+there.
 """
 
 import dataclasses
@@ -30,27 +31,31 @@ PDS_NS = {
 # frame makes the synthetic image's px (column) align with the raw frame's +Y and py (row) align
 # with -X; rotation_about_boresight(3) instead aligns px with -Y and py with +X. These are the only
 # two boresight rotations that put px on cross-track and py on along-track -- matching both WAC's
-# and NAC's real archived-image layout (samples/columns = cross-track, lines/rows = along-track;
-# see docs/data-sources.md for why this isn't actually a WAC-vs-NAC choice, both agree).
+# and NAC's archived-image layout (samples/columns = cross-track, lines/rows = along-track; see
+# docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention" -- both instruments
+# agree, this isn't a WAC-vs-NAC choice).
 #
-# Between k=1 and k=3: pick whichever makes +py increase in the same temporal sense as the real
-# archived WAC image's row axis (rows increase forward in time, by construction of how
-# wac.fetch_vis_mosaic stacks frames). This is genuinely pass/yaw-state-dependent, not a fixed
-# hardware property -- LRO's WAC is body-fixed (no gimbal) and undergoes periodic 180-degree yaw
-# flips that rotate the whole instrument frame, including which raw axis "forward in time" projects
-# onto -- so `boresight_rotation_k` below measures it fresh via real SPICE trajectory data for every
-# pose, instead of assuming a constant. See docs/data-sources/lroc-wac-edr-cdr.md ("Pass-dependent sensor axis
-# convention") and docs/history.md (Phase 9) for why this isn't just a fixed hardware property.
+# Between k=1 and k=3: pick whichever makes +py increase in the same temporal sense as the archived
+# WAC image's row axis (rows increase forward in time, by construction of how
+# wac.fetch_vis_mosaic stacks frames). This is pass/yaw-state-dependent, not a fixed hardware
+# property -- LRO's WAC is body-fixed (no gimbal) and undergoes periodic 180-degree yaw flips that
+# rotate the whole instrument frame, including which raw axis "forward in time" projects onto -- so
+# `boresight_rotation_k` below measures it fresh from SPICE trajectory data for every pose, instead
+# of assuming a constant.
 _FORWARD_TIME_K = 1  # forward_step_me_km projects to -X_raw
 _REVERSED_TIME_K = 3  # forward_step_me_km projects to +X_raw -- also Camera.reverse_crop_along_track
 
 
 def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.ndarray) -> int:
-    """Pick k in {1, 3} (see module comment above) so that +py increases in the same temporal sense
-    as `forward_step_me_km` -- the real, empirically-measured "forward in time" ground-track
-    direction (MOON_ME, from `ground_track_step_km`) at this pose. k=1 sends py to -X_raw, so it's
-    correct when `forward_step_me_km` projects to negative X in the raw camera frame; k=3 (py=+X_raw)
-    is correct when it projects positive."""
+    """Pick k in {1, 3} (see the axis-convention comment above) so +py increases in the same
+    temporal sense as `forward_step_me_km`.
+
+    :param r_cam_to_me_raw: Raw (pre-relabel) camera-to-MOON_ME rotation.
+    :param forward_step_me_km: "Forward in time" ground-track direction (MOON_ME), from
+        `ground_track_step_km`, at this pose.
+    :returns: `1` if `forward_step_me_km` projects to negative X in the raw camera frame
+        (`rotation_about_boresight(1)` sends py to -X_raw); `3` if it projects positive.
+    """
     forward_cam = r_cam_to_me_raw.T @ forward_step_me_km
     return _FORWARD_TIME_K if forward_cam[0] < 0 else _REVERSED_TIME_K
 
@@ -59,9 +64,9 @@ def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.nda
 class FrameTiming:
     """Per-frame acquisition timing, parsed from the EDR product's PDS4 label (start time,
     spacecraft clock, interframe delay, frame count) -- see `fetch_frame_timing`. This is the only
-    role EDR data plays anywhere in this pipeline; no EDR pixel data is ever read. The actual image
-    pixel data used for visual comparison against the synthetic render comes entirely from the CDR
-    counterpart of the same acquisition -- see `trntest.wac.fetch_vis_mosaic`."""
+    role EDR data plays in this pipeline; no EDR pixel data is read. Pixel data for visual
+    comparison against the synthetic render comes from the CDR counterpart of the same acquisition
+    -- see `trntest.wac.fetch_vis_mosaic`."""
 
     start_time: datetime
     sclk_start: str
@@ -77,12 +82,11 @@ class Camera:
     center_frame_index: float
     camera_center_moon_me_m: list
     camera_along_track_direction_moon_me: list  # unit vector, MOON_ME frame, not a velocity -- the
-    # sensor's own real along-track (py) axis, pre-twist X per the sensor-model axis convention
-    # comment near this module's top (cross-track/px is the *other* pre-twist axis, cross(z, x), not
-    # this). Used by `lunaserv._terrain_photometric_angles`'s `along_track_correction`; confirmed via
-    # real ISIS `campt` ground truth to track real per-pixel phase far better than the spacecraft's
-    # raw orbital velocity direction did (an earlier version of this field) -- see docs/history.md's
-    # dated entry.
+    # sensor's own along-track (py) axis, pre-twist X per the sensor-model axis convention comment
+    # near this module's top (cross-track/px is the *other* pre-twist axis, cross(z, x), not this).
+    # Used by `lunaserv._terrain_photometric_angles`'s `along_track_correction`; tracks per-pixel
+    # phase against ISIS `campt` ground truth far better than the spacecraft's raw orbital velocity
+    # direction did (an earlier version of this field).
     r_cam_to_me: list
     boresight_rotation_k: int
     slant_range_km: float
@@ -101,13 +105,13 @@ class Camera:
 
     @property
     def reverse_crop_along_track(self) -> bool:
-        """True when this pass's real "forward in time" ground-track direction is dominant +X in
-        the raw WAC-VIS camera frame (see `boresight_rotation_k`) -- opposite of the original
-        reference product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in
-        reverse along-track order (and `tie_points`/`orientation` must correspondingly flip their
-        row/up-direction conventions) for the crop's pixel-space chirality to keep matching the
-        synthetic image's -- see docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention": a
-        genuine, pass-dependent mirror, not just a rotation."""
+        """True when this pass's "forward in time" ground-track direction is dominant +X in the raw
+        WAC-VIS camera frame (see `boresight_rotation_k`) -- opposite of the original reference
+        product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in reverse
+        along-track order (and `tie_points`/`orientation` must correspondingly flip their row/up-
+        direction conventions) for the crop's pixel-space chirality to keep matching the synthetic
+        image's -- see docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis
+        convention": a pass-dependent mirror, not just a rotation."""
         return self.boresight_rotation_k == _REVERSED_TIME_K
 
 
@@ -223,11 +227,11 @@ def ground_chord_km(p1_km: np.ndarray, p2_km: np.ndarray) -> float:
 
 
 def footprint_width_height_km(footprint_lonlat_deg: dict, moon_radius_km: float) -> tuple[float, float]:
-    """Real ground (cross-track width, along-track height) of a 4-corner footprint
+    """Ground (cross-track width, along-track height) of a 4-corner footprint
     (`footprint_lonlat_deg`, e.g. `Camera.footprint_lonlat_deg`), each averaged over its two edges
-    -- a real ground-chord measurement of the *actual* footprint, unlike `cross_track_width_km`
-    (crop-window-derived, describes the real WAC crop's own extent, not necessarily the synthetic
-    render's -- see `solve_corrected_fov`'s docstring for why those two now genuinely differ)."""
+    -- a ground-chord measurement of the footprint, unlike `cross_track_width_km` (crop-window-
+    derived, describes the WAC crop's own extent, not necessarily the synthetic render's -- see
+    `solve_corrected_fov`'s docstring for why those two can differ)."""
 
     def ground_km(name: str) -> np.ndarray:
         lon, lat = footprint_lonlat_deg[name]
@@ -242,6 +246,7 @@ def footprint_width_height_km(footprint_lonlat_deg: dict, moon_radius_km: float)
 
 
 def boresight_ground_point_km(c_km: np.ndarray, r_cam_to_me: np.ndarray) -> np.ndarray:
+    """Ground point (MOON_ME, km) where the camera's boresight (+Z) ray hits the Moon."""
     boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
     t = ray_sphere_intersect_range(c_km, boresight_me)
     assert t is not None, "camera boresight does not intersect the Moon -- pose is not looking at it"
@@ -249,8 +254,8 @@ def boresight_ground_point_km(c_km: np.ndarray, r_cam_to_me: np.ndarray) -> np.n
 
 
 def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_rad: float) -> float:
-    """Real cross-track ground width at this exact pose: ray-trace the +/- half-angle rays along
-    the camera's x (cross-track) axis to the Moon's surface and return the distance between them."""
+    """Cross-track ground width at this exact pose: ray-trace the +/- half-angle rays along the
+    camera's x (cross-track) axis to the Moon's surface and return the distance between them."""
     left_me = r_cam_to_me @ np.array([-np.sin(half_angle_rad), 0.0, np.cos(half_angle_rad)])
     right_me = r_cam_to_me @ np.array([np.sin(half_angle_rad), 0.0, np.cos(half_angle_rad)])
     t_left = ray_sphere_intersect_range(c_km, left_me)
@@ -264,11 +269,11 @@ def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_r
 
 
 def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int = 10) -> np.ndarray:
-    """Real "forward in time" ground-track step vector (MOON_ME, km, not normalized): the
+    """The "forward in time" ground-track step vector (MOON_ME, km, not normalized): the
     boresight's ground point at `frame_index + n` minus at `frame_index`, smoothed over `n` frames.
-    Measured fresh from real SPICE trajectory data rather than assumed from a fixed raw-camera axis,
-    since that direction is genuinely pass/yaw-state-dependent (see `boresight_rotation_k`'s
-    docstring and docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention"). Used both for
+    Measured fresh from SPICE trajectory data rather than assumed from a fixed raw-camera axis,
+    since that direction is pass/yaw-state-dependent (see `boresight_rotation_k`'s docstring and
+    docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention"). Used both for
     `km_per_frame`'s magnitude and for `boresight_rotation_k`'s (and
     `orientation.compute_display_rotations`'s) direction."""
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))
@@ -279,17 +284,17 @@ def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int =
 
 
 def km_per_frame(frame_timing: FrameTiming, frame_index: int, n: int = 10) -> float:
-    """Real ground advance per framelet, smoothed over `n` frames."""
+    """Ground advance per framelet, smoothed over `n` frames."""
     return ground_chord_km(np.zeros(3), ground_track_step_km(frame_timing, frame_index, n)) / n
 
 
 def compute_n_frames_for_square_crop(
     frame_timing: FrameTiming, frame_index: int | None = None, config: TrntestConfig | None = None
 ) -> dict:
-    """How many consecutive frames of the real WAC CDR (full 704-sample width) are needed so the
-    along-track distance covered matches the real cross-track swath width -- i.e. a square crop
-    of real ground, per the demo's objective (see docs/plan.md). Self-contained: furnishes SPICE
-    kernels and computes the pose itself, so callers only need a FrameTiming."""
+    """How many consecutive frames of the WAC CDR (full 704-sample width) are needed so the
+    along-track distance covered matches the cross-track swath width -- a square crop, per the
+    demo's objective (see docs/plan.md). Self-contained: furnishes SPICE kernels and computes the
+    pose itself, so callers only need a FrameTiming."""
     config = config or load_config()
     if frame_index is None:
         frame_index = config.target_frame_index
@@ -308,6 +313,7 @@ def compute_n_frames_for_square_crop(
 
 
 def pixel_ray_cam(px: float, py: float, fu: float, fv: float, cu: float, cv: float) -> np.ndarray:
+    """Unit ray direction (camera frame) for pixel `(px, py)` under this pinhole model."""
     v = np.array([(px - cu) / fu, (py - cv) / fv, 1.0])
     return v / np.linalg.norm(v)
 
@@ -343,23 +349,22 @@ def footprint_lonlat(
     return out
 
 
-# Empirically tuned shrink factors for `solve_corrected_fov` below -- tuned on one real image
+# Empirically tuned shrink factors for `solve_corrected_fov` below -- tuned on one image
 # (M1327210646CE), then cross-validated unchanged against 3 more spanning 38.5N to -67.5S, all
-# reaching ~100% valid-pixel coverage. Deliberately conservative past an exact geometric fit, per
-# the project owner's own call: real terrain (vs. this ray-trace's idealized sphere) varies actual
-# coverage some, so a little arbitrary margin traded for reliability is fine, not something to solve
-# away with a more exact model. See docs/reproject-fov-investigation.md for the full derivation.
-FOV_CROSS_TRACK_SCALE = 0.93  # shrinks the cross-track half-angle -- closes a real corner-coupling overshoot
+# reaching ~100% valid-pixel coverage. Deliberately conservative past an exact geometric fit:
+# terrain (vs. this ray-trace's idealized sphere) varies coverage some, so a little margin traded
+# for reliability is fine, not something to solve away with a more exact model. See
+# docs/reproject-fov-investigation.md for the full derivation.
+FOV_CROSS_TRACK_SCALE = 0.93  # shrinks the cross-track half-angle -- closes a corner-coupling overshoot
 FOV_ALONG_TRACK_MARGIN = 0.93  # extra shrink on the along-track solve targets -- terrain-variation safety margin
 
 
 def _corner_ground_km(
     c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_u: float, half_angle_v: float, sign_u: float, sign_v: float
 ) -> np.ndarray:
-    """Real ground point of an image corner ray -- cross-track and along-track angular offsets
-    applied together (matching `pixel_ray_cam`'s own ray formula), not solved independently per
-    axis -- see `solve_corrected_fov`'s docstring for why that distinction is the actual root cause
-    this function's caller works around."""
+    """Ground point of an image corner ray -- cross-track and along-track angular offsets applied
+    together (matching `pixel_ray_cam`'s own ray formula), not solved independently per axis -- see
+    `solve_corrected_fov`'s docstring for why that distinction matters."""
     direction_cam = np.array([sign_u * np.tan(half_angle_u), sign_v * np.tan(half_angle_v), 1.0])
     direction_cam = direction_cam / np.linalg.norm(direction_cam)
     direction_me = r_cam_to_me @ direction_cam
@@ -376,44 +381,54 @@ def solve_corrected_fov(
     crop_footprint_lonlat: dict,
     config: TrntestConfig,
 ) -> tuple[float, float, float, float]:
-    """Solve a corrected, isotropic `(f, f, cu, cv)` whose rendered FOV stays inside the real WAC
-    crop's own footprint (`crop_footprint_lonlat`, `tie_points.crop_footprint_corners_for_camera` --
-    real ISIS `campt` ground truth, not a SPICE approximation), fixing a real bug where the naive
-    symmetric `fu=fv` FOV overshoots the real crop -- confirmed two coupled causes: (1) the
-    along-track FOV was calibrated to a flat, non-perspective target
-    (`n_frames_for_square_crop * km_per_frame`) but rendered through a real perspective
-    (ray-sphere-intersection) projection; (2) even after fixing that alone, the far corners stayed
-    elongated *cross-track* too, because a corner ray combines both angular offsets at once, and the
-    more oblique that combined angle is, the farther out *both* ground components land.
+    """Solve a corrected, isotropic `(f, f, cu, cv)` whose rendered FOV stays inside the WAC crop's
+    own footprint.
 
-    The cross-track and along-track half-angles are still solved independently (`FOV_CROSS_TRACK_SCALE`
-    shrinks the cross-track one; the along-track pair is solved by ray-tracing the actual corner,
-    `_corner_ground_km`, not a per-axis approximation), each producing its own candidate focal
-    length -- but **the two are then collapsed to a single shared, isotropic `f = max(...)` of the
-    two**, applied to both axes, rather than kept as separate `fu`/`fv` (an earlier version of this
-    function did exactly that). Using the larger (narrower-FOV, more conservative) of the two only
-    tightens whichever axis wasn't already the binding constraint -- it can't reopen the coverage
-    gap on either axis, since each was already independently solved to just fit. `cv` is re-derived
-    against this shared `f` (not the original along-track-only value) to keep the near edge exactly
-    on its target. `cu` is left untouched (`image_size / 2.0`).
-
-    **Why isotropic, given a real anisotropic (`fu`!=`fv`) fix once existed and worked**: an
-    anisotropic pinhole solved the FOV-fit problem with a slightly larger footprint (the two
-    independently-solved values are both used, not just the larger one), but converting it to a CSM
-    Frame model-state JSON (`cam_gen`, `render.py`) turned out to cost three real bugs along the way
-    (`cam_gen` silently averaging `fu`/`fv` into one isotropic `m_focalLength`; `tie_points.
-    die5_points`'s bbox-midpoint anchoring breaking once the footprint became asymmetric; and a
-    small, never-fully-explained ~1-8px constant residual between `mapproject -t csm` and
-    `-t pinhole` that persisted even after the `m_focalLength` bug was fixed, confirmed live to be
-    invariant to how the anisotropy is encoded across the CSM state's fields -- i.e. not our
-    encoding choice, some deeper `usgscsm` quirk with anisotropic Frame models with no available
-    source to chase further). Given the anisotropy was only ever a nice-to-have (more of the crop's
-    real margin used), not a requirement, and every downstream CSM/ISIS consumer of this data
-    defaults to expecting an isotropic pinhole, reverting to isotropic trades a few percent of
-    cross-track footprint (confirmed live: ~4-6% smaller cross-track extent, ~100% coverage
-    unaffected -- along-track was already the binding constraint on every real candidate tested) for
-    dropping all three bug classes at the source. See docs/reproject-fov-investigation.md for the
-    full history, including the anisotropic fix's own derivation and the residual investigation."""
+    :param c_km: Camera center (MOON_ME, km).
+    :param r_cam_to_me: Camera-to-MOON_ME rotation.
+    :param along_track_axis_me: Camera's along-track (py) axis, MOON_ME frame.
+    :param cross_track_axis_me: Camera's cross-track (px) axis, MOON_ME frame.
+    :param crop_footprint_lonlat: The WAC crop's own footprint corners (lon/lat deg), from
+        `tie_points.crop_footprint_corners_for_camera` (ISIS `campt` ground truth, not a SPICE
+        approximation).
+    :param config: Project config (`image_size`, `wac_vis_color_fov_deg`).
+    :returns: `(fu, fv, cu, cv)` with `fu == fv` (isotropic) -- see comment below for why.
+    """
+    # Fixes a bug where the naive symmetric `fu=fv` FOV overshoots the WAC crop -- two coupled
+    # causes: (1) the along-track FOV was calibrated to a flat, non-perspective target
+    # (`n_frames_for_square_crop * km_per_frame`) but rendered through a perspective
+    # (ray-sphere-intersection) projection; (2) even after fixing that alone, the far corners stayed
+    # elongated *cross-track* too, because a corner ray combines both angular offsets at once, and
+    # the more oblique that combined angle is, the farther out both ground components land.
+    #
+    # The cross-track and along-track half-angles are still solved independently
+    # (`FOV_CROSS_TRACK_SCALE` shrinks the cross-track one; the along-track pair is solved by
+    # ray-tracing the actual corner, `_corner_ground_km`, not a per-axis approximation), each
+    # producing its own candidate focal length -- but the two are then collapsed to a single shared,
+    # isotropic `f = max(...)` of the two, applied to both axes, rather than kept as separate
+    # `fu`/`fv` (an earlier version of this function did exactly that). Using the larger
+    # (narrower-FOV, more conservative) of the two only tightens whichever axis wasn't already the
+    # binding constraint -- it can't reopen the coverage gap on either axis, since each was already
+    # independently solved to just fit. `cv` is re-derived against this shared `f` (not the original
+    # along-track-only value) to keep the near edge exactly on its target. `cu` is left untouched
+    # (`image_size / 2.0`).
+    #
+    # Why isotropic, given an anisotropic (`fu`!=`fv`) fix once existed and worked: it solved the
+    # FOV-fit problem with a slightly larger footprint (the two independently-solved values both
+    # used, not just the larger one), but converting it to a CSM Frame model-state JSON (`cam_gen`,
+    # `render.py`) cost three bugs along the way (`cam_gen` silently averaging `fu`/`fv` into one
+    # isotropic `m_focalLength`; `tie_points.die5_points`'s bbox-midpoint anchoring breaking once the
+    # footprint became asymmetric; and a small, never-fully-explained ~1-8px constant residual
+    # between `mapproject -t csm` and `-t pinhole` that persisted even after the `m_focalLength` bug
+    # was fixed, invariant to how the anisotropy is encoded across the CSM state's fields -- some
+    # deeper `usgscsm` quirk with anisotropic Frame models, with no source available to chase
+    # further). The anisotropy was only ever a nice-to-have (more of the crop's margin used), not a
+    # requirement, and every downstream CSM/ISIS consumer of this data defaults to expecting an
+    # isotropic pinhole, so reverting to isotropic trades a few percent of cross-track footprint
+    # (~4-6% smaller cross-track extent, ~100% coverage unaffected -- along-track was already the
+    # binding constraint on every candidate tested) for dropping all three bug classes at the
+    # source. See docs/reproject-fov-investigation.md for the full history, including the
+    # anisotropic fix's own derivation and the residual investigation.
     cu = config.image_size / 2.0
     boresight_ground_km = boresight_ground_point_km(c_km, r_cam_to_me)
 
@@ -457,6 +472,7 @@ def solve_corrected_fov(
 
 
 def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
+    """Write an ASP VERSION_4 Pinhole `.tsai` camera file."""
     lines = [
         "VERSION_4",
         "PINHOLE",
@@ -477,38 +493,43 @@ def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
 
 
 def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Path | None = None) -> Camera:
-    """Fetch the target frame's timing, pose the camera from real SPICE trajectory data, and write
-    the resulting `.tsai` Pinhole camera file.
+    """Fetch the target frame's timing, pose the camera from SPICE trajectory data, and write the
+    resulting `.tsai` Pinhole camera file.
 
-    **Boresight re-aiming**: the raw SPICE pose (`camera_pose_moon_me`, boresight = the nominal
-    `LRO_LROCWAC_VIS` frame's Z axis) is *not* used directly as the synthetic camera's final
-    attitude -- confirmed live (see docs/history.md's dated entry) that `[0, 0, 1]` in that frame is
-    measurably not WAC-VIS's real optical boresight (a roughly constant ~5-6 degree real angular
-    offset, persisting across a wide line range and two very different candidates -- i.e. not a
-    timing/line-selection error, and not fixable by a constant rotation correction either: a
-    Wahba-fit cross-check confirmed the *attitude* -- the full rotation matrix -- is already exactly
-    correct, so no rotation exists that's both consistent with that and changes where `[0,0,1]`
-    points without being a no-op). So instead: run the real WAC pipeline (`isis_wac.run_pipeline`,
-    idempotent -- shares its output with Phase 6's own explicit call for the same product, no
-    duplicated ISIS work) to get a real, camera-model-aware stitched cube, query ISIS's own real
-    camera model (`isis_wac.ground_point_at_pixel`) for the real ground point at the crop's own true
-    center pixel (`center_frame_index * VIS_BLOCK_HEIGHT` -- exactly `isis_wac.crop_window_for_camera`'s
-    own window-center line, so this matches wherever the eventual displayed crop actually centers,
-    regardless of `flip`/`camera.reverse_crop_along_track` -- window *boundaries* are computed the
-    same translation-based way regardless of flip; flip only reorders *content* within them), and
-    re-aims the boresight at that real target via `look_at_rotation`. A real, meaningful cost
-    (~10-20s, the `lrowaccal`+`framestitch` steps `spice_kernels.fetch_and_furnish`'s default kernel
-    resolution doesn't already pay for) traded for actual accuracy -- see the dated entry for the
-    full investigation and why a hand-tuned constant-tilt "fix" doesn't work.
-
-    **FOV correction**: `solve_corrected_fov` (see its own docstring) then shrinks the naive
-    symmetric `fu=fv` FOV so the render stays inside the real WAC crop's own footprint -- reuses the
-    same stitched cube's real crop (`tie_points.crop_footprint_corners_for_camera`, one more cheap,
-    idempotent ISIS `crop` call) as its ground truth. Applied here, not only for the not-yet-built
-    `reproject` product type, so `hillshade` and a future `reproject` share byte-identical
-    `(fu, fv, cu, cv)` -- deliberate, for pixel-grid-identical SSIM/diff-style comparison between
-    them later; `crop` (the real image) is unaffected, naturally larger, and doesn't need FOV
-    parity with the other two. See docs/reproject-fov-investigation.md."""
+    :param config: Project config; defaults to `load_config()`.
+    :param output_tsai_path: Where to write the `.tsai` file; defaults to
+        `config.output_dir/camera_frame<target_frame_index>.tsai`.
+    :returns: The resulting `Camera`.
+    """
+    # Boresight re-aiming: the raw SPICE pose (`camera_pose_moon_me`, boresight = the nominal
+    # `LRO_LROCWAC_VIS` frame's Z axis) is not used directly as the synthetic camera's final
+    # attitude -- `[0, 0, 1]` in that frame is measurably not WAC-VIS's optical boresight (a roughly
+    # constant ~5-6 degree angular offset, persisting across a wide line range and two very
+    # different candidates -- not a timing/line-selection error, and not fixable by a constant
+    # rotation correction either: a Wahba-fit cross-check confirms the attitude -- the full rotation
+    # matrix -- is already correct, so no rotation exists that's both consistent with that and
+    # changes where `[0,0,1]` points without being a no-op). So instead: run the WAC pipeline
+    # (`isis_wac.run_pipeline`, idempotent -- shares its output with Phase 6's own explicit call for
+    # the same product, no duplicated ISIS work) to get a camera-model-aware stitched cube, query
+    # ISIS's own camera model (`isis_wac.ground_point_at_pixel`) for the ground point at the crop's
+    # own true center pixel (`center_frame_index * VIS_BLOCK_HEIGHT` -- exactly
+    # `isis_wac.crop_window_for_camera`'s own window-center line, so this matches wherever the
+    # eventual displayed crop actually centers, regardless of `flip`/`camera.reverse_crop_along_track`
+    # -- window *boundaries* are computed the same translation-based way regardless of flip; flip
+    # only reorders *content* within them), and re-aims the boresight at that target via
+    # `look_at_rotation`. A meaningful cost (~10-20s, the `lrowaccal`+`framestitch` steps
+    # `spice_kernels.fetch_and_furnish`'s default kernel resolution doesn't already pay for) traded
+    # for accuracy -- a hand-tuned constant-tilt "fix" doesn't work, since the offset isn't a
+    # constant rotation correction (see above).
+    #
+    # FOV correction: `solve_corrected_fov` (see its own docstring) then shrinks the naive symmetric
+    # `fu=fv` FOV so the render stays inside the WAC crop's own footprint -- reuses the same
+    # stitched cube's crop (`tie_points.crop_footprint_corners_for_camera`, one more cheap,
+    # idempotent ISIS `crop` call) as its ground truth. Applied here, not only for the not-yet-built
+    # `reproject` product type, so `hillshade` and a future `reproject` share byte-identical
+    # `(fu, fv, cu, cv)` -- deliberate, for pixel-grid-identical SSIM/diff-style comparison between
+    # them later; `crop` (the real image) is unaffected, naturally larger, and doesn't need FOV
+    # parity with the other two. See docs/reproject-fov-investigation.md.
     config = config or load_config()
     frame_timing = fetch_frame_timing(config)
     spice_kernels.fetch_and_furnish(frame_timing.start_time, config)
