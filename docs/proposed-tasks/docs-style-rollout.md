@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (6 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (7 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -107,6 +107,18 @@ truth per fact, thin index files, sensible file naming.
   as if still live, but WAC_EMP's PDS4 archive is now the default ortho source and Lunaserv WMS is
   fallback-only. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
   file). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/camera.py` (608 -> 629 lines, all 4 `docs/history.md` citations removed): `docs/
+  history.md` citations replaced with the fact stated directly or a cross-reference to
+  `docs/data-sources/lroc-wac-edr-cdr.md`/`docs/reproject-fov-investigation.md`.
+  `solve_corrected_fov`'s and `build_camera`'s large docstrings (the two most `docs/history.md`
+  citations landed in) trimmed to interface + RST fields, with their rationale/investigation trails
+  moved to plain comment blocks as the first lines of the function body, per the convention already
+  used in `lunaserv.py`/`isis_wac.py`. Added docstrings to 3 previously-undocumented functions
+  (`boresight_ground_point_km`, `pixel_ray_cam`, `write_tsai`). Cut "real"/"genuine"/"actual" bare
+  intensifiers, but kept the many *legitimately* contrastive uses of "real" — this file's whole
+  point is real SPICE/ISIS measurements vs. the synthetic render, so most instances were a real
+  contrast, not filler. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on
+  this file). No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -114,14 +126,14 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 12
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 11
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py` done, see Completed above). Rough priority order (citation count,
-then size, as a proxy for how much chatty/historical material likely needs trimming):
+`sfs_validation.py`/`config.py`/`camera.py` done, see Completed above). Rough priority order
+(citation count, then size, as a proxy for how much chatty/historical material likely needs
+trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `camera.py` | 4 | 608 |
 | `cache.py` | 4 | 287 |
 | `tasks.py` | 3 | 194 |
 | `render.py` | 3 | 204 |
@@ -144,7 +156,7 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`camera.py` is next (tied at 4 citations with `cache.py`; picked first among the tie).
+`cache.py` is next (4 citations, the current top of the table).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
