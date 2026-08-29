@@ -15,6 +15,10 @@ this file). Then, as needed:
   external tools/libraries (ASP, ISIS, `usgscsm`, LightGlue) rather than data. `docs/image-pipeline.md`,
   `docs/dataset-selection.md`, and `docs/crater-grading.md` hold architecture/algorithm detail that
   used to live in `data-sources.md` but isn't about external data at all.
+- `docs/generators.md` — the canonical reference for the three TRN test image generators
+  (`hillshade`/`crop`/`reproject`): a thin index table (data sources, processing steps, purpose)
+  into `docs/generators/`'s per-generator files. `notebooks/image_generation.py` sources its own
+  intro table from this; keep them in sync when either changes.
 - `docs/caching.md` — why and how external data (SPICE kernels, WMS tiles) is cached locally
   instead of re-fetched; follow this pattern in any new fetch code.
 - `docs/intermediate-product-discipline.md` — principles for naming, storing, and sharing generated
