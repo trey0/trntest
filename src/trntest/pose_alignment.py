@@ -9,8 +9,8 @@ for the full research trail this module is the result of, including why the two 
 approaches don't apply here: ASP's own `bundle_adjust`/`pc_align`/`image_align` route corrects
 cameras via ASP's `mapproject`, which is the CSM/Pushframe path already abandoned elsewhere in this
 project for a confirmed severe bug; and ISIS's own `jigsaw` + `findfeatures` (the architecturally
-"right" tool, real USGS-documented practice for single-image space resection against a basemap) hits
-a real, unresolved blocker where its control-point-construction step discards every match regardless
+"right" tool, USGS-documented practice for single-image space resection against a basemap) hits an
+unresolved blocker where its control-point-construction step discards every match regardless
 of `TARGET=`/`GEOMTYPE=` settings, likely because the basemap here is a plain GDAL-exported GeoTIFF,
 not something ISIS itself map-projected.
 
@@ -18,15 +18,14 @@ This module works entirely in 2D image/map space instead, sidestepping both: mat
 map-projected, same-CRS rasters directly (no camera model, no ISIS control network), fit a 2D
 correction, and apply it to the source raster's own affine transform. **Validated, but not wired
 into the main pipeline**: direct user visual inspection of the homography-corrected blink overlay
-confirmed the correspondences this module finds are real, not RANSAC accepting noise (see
-`docs/history.md`'s dated entries) -- concluded as the deliberate stopping point for this 2D
-approach, with the next real step being a proper projection-informed (camera-model) alignment
-rather than further refinement here, so this stays a standalone tool, not wired into
-`image_generation.py`'s main pipeline. `notebooks/pose_alignment_spike.py` exercises this module
-end-to-end against the current default dataset candidate.
+confirmed the correspondences this module finds are real matches, not RANSAC accepting noise --
+concluded as the deliberate stopping point for this 2D approach, with the next step being a proper
+projection-informed (camera-model) alignment rather than further refinement here, so this stays a
+standalone tool, not wired into `image_generation.py`'s main pipeline. `notebooks/pose_alignment_spike.py`
+exercises this module end-to-end against the current default dataset candidate.
 
 Requires `opencv-python-headless` for SIFT/RANSAC (`cv2`) -- not needed anywhere else in this
-project, added as a real dependency specifically for this module."""
+project, added as a dependency specifically for this module."""
 
 import functools
 from pathlib import Path
@@ -86,8 +85,8 @@ def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fract
     """Crops `reference_path` (e.g. the basemap ortho, typically much larger than the area actually
     being compared) down to `footprint_source_path`'s own real valid-data bounding box, padded by
     `pad_fraction` (via `lunaserv.pad_bbox`, reused rather than reinvented -- same "pad generously"
-    convention this project already uses for WMS fetch AOIs). Matching the two rasters' real extent
-    like this matters for feature matching specifically: an unmatched, much-larger reference frame
+    convention this project already uses for WMS fetch AOIs). Matching the two rasters' extent like
+    this matters for feature matching specifically: an unmatched, much-larger reference frame
     gives OpenCV's matcher a far larger, mostly-irrelevant search space to false-match against,
     confirmed empirically to hurt match quality, not just waste compute."""
     with rasterio.open(footprint_source_path) as src:
@@ -114,21 +113,25 @@ def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fract
 
 
 def native_wac_gsd_m(camera) -> float:
-    """Estimates the WAC crop's own real native ground sample distance -- i.e. before
+    """Estimates the WAC crop's own native ground sample distance -- i.e. before
     `isis_wac.run_cam2map_for_crop`'s `PIXRES=map` forces its output onto the basemap's ~100 m/px
-    working grid (see that function's docstring) -- directly from `camera`'s already-ray-traced
-    cross-track/along-track ground geometry (`Camera.cross_track_width_km`/`km_per_frame`, computed
-    by `camera.compute_n_frames_for_square_crop`), rather than an extra ISIS `cam2map PIXRES=camera`
-    probe call. WAC is a pushframe sensor with genuinely anisotropic native resolution -- 704
-    cross-track samples vs. 14 along-track TDI lines per VIS framelet, covering different real
-    ground extents -- so this returns the *coarser* of the two axes: downsampling the map-projected
-    (isotropic) product any finer than that would still be interpolating detail that was never
-    actually resolved in that direction. Confirmed against a direct measurement (`cam2map
-    PIXRES=camera`, no map override) on this project's current default candidate: this function
-    returns 211 m/px (cross-track; along-track was 151 m/px) vs. ISIS's own camera model reporting
-    184 m/px for the same crop -- same order of magnitude and, being the coarser estimate, on the
-    conservative side for choosing a downsample target, not a substitute for the exact figure if one
-    is ever needed elsewhere."""
+    working grid (see that function's docstring).
+
+    :param camera: A `Camera` with `cross_track_width_km`/`km_per_frame` already computed (see
+        `camera.compute_n_frames_for_square_crop`).
+    :returns: The coarser of the cross-track/along-track native GSD estimates, in meters/pixel.
+    """
+    # Computed directly from `camera`'s already-ray-traced ground geometry rather than an extra
+    # ISIS `cam2map PIXRES=camera` probe call. WAC is a pushframe sensor with anisotropic native
+    # resolution -- 704 cross-track samples vs. 14 along-track TDI lines per VIS framelet, covering
+    # different ground extents -- so this returns the *coarser* of the two axes: downsampling the
+    # map-projected (isotropic) product any finer than that would still be interpolating detail that
+    # was never actually resolved in that direction. Confirmed against a direct measurement
+    # (`cam2map PIXRES=camera`, no map override) on this project's current default candidate: this
+    # function returns 211 m/px (cross-track; along-track was 151 m/px) vs. ISIS's own camera model
+    # reporting 184 m/px for the same crop -- same order of magnitude and, being the coarser
+    # estimate, on the conservative side for choosing a downsample target, not a substitute for the
+    # exact figure if one is ever needed elsewhere.
     cross_track_gsd_m = camera.cross_track_width_km * 1000.0 / 704.0
     along_track_gsd_m = camera.km_per_frame * 1000.0 / 14.0
     return max(cross_track_gsd_m, along_track_gsd_m)
@@ -141,21 +144,21 @@ def downsample_to_gsd(
     resampling: rasterio.warp.Resampling = rasterio.warp.Resampling.average,
 ) -> Path:
     """Resamples `raster_path` (band 1) onto a coarser grid at `target_gsd_m` m/px, same CRS and
-    origin -- used to bring a map-projected product's pixel grid back down toward its own real
-    native resolution (see `native_wac_gsd_m`) before feature matching, instead of matching SIFT
-    keypoints on a grid that's been interpolated finer than the sensor actually resolved (confirmed,
-    via a direct `cam2map PIXRES=camera` probe, to be a real ~1.8x linear oversampling on this
-    project's own default candidate -- see `docs/history.md`'s dated entry).
+    origin -- used to bring a map-projected product's pixel grid back down toward its own native
+    resolution (see `native_wac_gsd_m`) before feature matching, instead of matching SIFT keypoints
+    on a grid that's been interpolated finer than the sensor actually resolved (confirmed, via a
+    direct `cam2map PIXRES=camera` probe, to be a ~1.8x linear oversampling on this project's own
+    default candidate).
 
-    `resampling=Resampling.average` (not the default nearest/bilinear) is the deliberate choice for
-    genuinely *shrinking* real imagery -- it approximates what a coarser-GSD sensor would actually
-    have integrated over each output pixel, rather than just picking or blending between a few
-    existing samples the way nearest/bilinear do. This is a real accuracy difference for downsampling
-    specifically (unlike `apply_correction`'s bilinear resample, which resamples at essentially the
-    same scale, where the choice matters far less).
-
-    Raises `ValueError` if `target_gsd_m` isn't actually coarser than the source's own resolution --
-    this function downsamples, it doesn't upsample."""
+    :raises ValueError: If `target_gsd_m` isn't actually coarser than the source's own resolution --
+        this function downsamples, it doesn't upsample.
+    """
+    # `resampling=Resampling.average` (not the default nearest/bilinear) is the deliberate choice
+    # for genuinely *shrinking* imagery -- it approximates what a coarser-GSD sensor would actually
+    # have integrated over each output pixel, rather than just picking or blending between a few
+    # existing samples the way nearest/bilinear do. This matters for downsampling specifically
+    # (unlike `apply_correction`'s bilinear resample, which resamples at essentially the same scale,
+    # where the choice matters far less).
     with rasterio.open(raster_path) as src:
         src_res = src.res[0]
         if target_gsd_m <= src_res:
@@ -168,8 +171,8 @@ def downsample_to_gsd(
         data = src.read(1)
         # `_ISIS_FLOAT_NODATA` is only a valid fallback for float rasters (e.g. `wac_path`'s
         # calibrated I/F cube) -- the basemap ortho this function is also used on
-        # (`lunaserv.despeckle_and_shade_ortho`'s output) is `uint8` with no real nodata concept, and
-        # that huge-magnitude sentinel isn't representable in its dtype at all (confirmed live: GDAL
+        # (`lunaserv.despeckle_and_shade_ortho`'s output) is `uint8` with no nodata concept, and that
+        # huge-magnitude sentinel isn't representable in its dtype at all (confirmed live: GDAL
         # raises rather than silently truncating it).
         nodata = src.nodata
         if nodata is None and np.issubdtype(data.dtype, np.floating):
@@ -198,8 +201,8 @@ def downsample_to_gsd(
 def _sobel_edges(image: np.ndarray, valid: np.ndarray) -> np.ndarray:
     """Sobel gradient-magnitude, percentile-normalized over valid pixels only (see
     `to_uint8_for_matching` for why: normalizing over the whole array lets a large invalid/padding
-    region's own sharp valid/invalid boundary dominate the stretch and wash out real content
-    contrast) -- confirmed empirically necessary here: without masking, WAC keypoint counts came out
+    region's own sharp valid/invalid boundary dominate the stretch and wash out content contrast) --
+    confirmed empirically necessary here: without masking, WAC keypoint counts came out
     an order of magnitude lower (848 vs. 40000+) due to exactly this. Matches `findfeatures`'
     `FILTER=SOBEL` option, used for the same reason: the WAC crop and the basemap are different
     sensors/processing pipelines with different tone curves, and edge/gradient content is far more
@@ -225,7 +228,7 @@ def match_features(
     Sobel-filtered versions of each (see `_sobel_edges`), a mutual (both-directions) Lowe's ratio
     test, and two RANSAC geometric-consistency passes (homography, then epipolar/fundamental
     matrix) -- the same pipeline ISIS's own `findfeatures` uses internally (confirmed by matching its
-    reported match counts closely: 47 vs. its own 46 on the same real image pair), reimplemented
+    reported match counts closely: 47 vs. its own 46 on the same image pair), reimplemented
     directly in OpenCV because `findfeatures` doesn't expose raw matched pixel coordinates, only
     summary counts, and (separately, see the module docstring) its own control-point-construction
     step doesn't work with this project's plain-GeoTIFF basemap regardless.
@@ -280,13 +283,9 @@ def match_features(
 @functools.cache
 def _lightglue_models() -> tuple[lightglue.DISK, lightglue.LightGlue]:
     """Constructs (and, via `functools.cache`, memoizes process-wide) the DISK extractor + LightGlue
-    matcher -- both load real pretrained weights over the network on first use (see
-    docs/external-tools.md's "LightGlue tie-point matching" section), so this avoids
-    re-downloading/re-initializing them on every `match_features_lightglue` call within one process.
-
-    DISK, not SuperPoint (LightGlue's more commonly-used pairing): SuperPoint's inference code and
-    pretrained weights carry a proprietary-style notice, not a standard permissive license -- see
-    docs/data-sources.md for the full reasoning behind this choice."""
+    matcher, so this avoids re-downloading/re-initializing them on every `match_features_lightglue`
+    call within one process. See docs/external-tools.md's "LightGlue tie-point matching" section for
+    the pretrained-weight fetch/caching and why DISK, not SuperPoint, is the extractor used."""
     return lightglue.DISK(max_num_keypoints=2048).eval(), lightglue.LightGlue(features="disk").eval()
 
 
@@ -355,28 +354,28 @@ def fit_similarity_correction(
 ) -> tuple[affine.Affine, np.ndarray, np.ndarray]:
     """Fits a similarity transform (translation + rotation + uniform scale -- 4 degrees of freedom,
     via `cv2.estimateAffinePartial2D`'s own internal RANSAC) that maps `from_points_map` onto
-    `to_points_map`, both real map-coordinate arrays (see `pixel_points_to_map`). Similarity, not a
-    full 8-DOF homography (`match_features`'s own internal RANSAC passes use homography/epipolar
-    models, appropriate *there* for match verification, not for this fit): deliberately the
-    *simplest* plausible correction model to start from, not asserted as the physically "correct"
-    one -- a real camera pose error has 6 degrees of freedom before even accounting for this being a
-    pushframe sensor's extended-exposure capture (potentially more, if pose drifts during the
-    exposure), and the mapping from those onto a 2D map-space distortion isn't simple or
-    one-to-one, so there's no first-principles case that similarity (or any fixed DOF count) is
-    exactly right. Start simple for interpretability; escalate to a richer model (`fit_affine_correction`,
-    `fit_homography_correction`) only if there are enough independent, well-distributed tie points to
-    support it without just overfitting noise -- an empirical question, not one this function decides
-    (Phase 53's native-resolution downsampling raised the default candidate's inlier count from 53 to
-    91, motivating the first real attempt at those richer models -- see `docs/history.md`'s dated
-    entry for what that comparison found).
+    `to_points_map`, both map-coordinate arrays (see `pixel_points_to_map`).
 
-    Returns `(correction, inlier_mask, residuals_m)`: `correction` is an `affine.Affine` mapping
-    `from_points_map`-space coordinates onto the fitted `to_points_map`-space location (apply it to
-    a raster's own transform via `apply_correction`); `inlier_mask` marks which input points RANSAC
-    accepted; `residuals_m` is each point's real distance (meters, or whatever unit the input map
-    coordinates are in) from where the fitted transform predicts it should land, for *all* input
-    points including outliers (so callers can inspect how bad the rejected points really are, not
-    just how good the accepted ones are)."""
+    :returns: `(correction, inlier_mask, residuals_m)` -- `correction` is an `affine.Affine` mapping
+        `from_points_map`-space coordinates onto the fitted `to_points_map`-space location (apply it
+        to a raster's own transform via `apply_correction`); `inlier_mask` marks which input points
+        RANSAC accepted; `residuals_m` is each point's distance (meters, or whatever unit the input
+        map coordinates are in) from where the fitted transform predicts it should land, for *all*
+        input points including outliers (so callers can inspect how bad the rejected points are, not
+        just how good the accepted ones are).
+    """
+    # Similarity, not a full 8-DOF homography (`match_features`'s own internal RANSAC passes use
+    # homography/epipolar models, appropriate *there* for match verification, not for this fit):
+    # deliberately the *simplest* plausible correction model to start from, not asserted as the
+    # physically "correct" one -- a camera pose error has 6 degrees of freedom before even
+    # accounting for this being a pushframe sensor's extended-exposure capture (potentially more, if
+    # pose drifts during the exposure), and the mapping from those onto a 2D map-space distortion
+    # isn't simple or one-to-one, so there's no first-principles case that similarity (or any fixed
+    # DOF count) is exactly right. Start simple for interpretability; escalate to a richer model
+    # (`fit_affine_correction`, `fit_homography_correction`) only if there are enough independent,
+    # well-distributed tie points to support it without just overfitting noise -- an empirical
+    # question, not one this function decides (native-resolution downsampling raised the default
+    # candidate's inlier count from 53 to 91, motivating the first attempt at those richer models).
     src = from_points_map.astype("float32")
     dst = to_points_map.astype("float32")
     matrix, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_threshold_m)
@@ -432,14 +431,14 @@ def fit_homography_correction(
 
 
 def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Path:
-    """Applies `correction` (from `fit_similarity_correction`) to `src_raster_path`'s own real
+    """Applies `correction` (from `fit_similarity_correction`) to `src_raster_path`'s own
     georeferencing and resamples it back onto its own original pixel grid -- so the output drops
     into `plotting.plot_overlay`/`plot_overlay_toggle` exactly like the uncorrected raster did, no
     further plumbing changes needed. Composes `correction` with the source's existing transform
     (`correction * src_transform`, i.e. "first go from pixel to the original, possibly-wrong map
     position, then apply the fitted correction") and resamples via `rasterio.warp.reproject`, not a
     bare metadata edit: a metadata-only fix would be valid for a translation-only correction (the
-    pixel grid stays rectilinear), but a real fitted rotation/scale component would leave the raster's
+    pixel grid stays rectilinear), but a fitted rotation/scale component would leave the raster's
     own affine transform non-rectilinear in a way `plotting.py`'s `rioxarray`/`xarray`-based display
     path isn't set up to handle (it assumes a plain north-up grid throughout this project, matching
     every other raster this pipeline produces) -- reprojecting onto the original grid keeps that
@@ -472,7 +471,7 @@ def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Pa
 
 
 def apply_homography_correction(src_raster_path, homography: np.ndarray, out_path) -> Path:
-    """Applies `homography` (from `fit_homography_correction`) to `src_raster_path`'s own real
+    """Applies `homography` (from `fit_homography_correction`) to `src_raster_path`'s own
     georeferencing and resamples back onto its original pixel grid -- the homography counterpart to
     `apply_correction` (which only handles `affine.Affine` corrections, since it composes two affines
     directly). A homography can't be composed with a raster's affine transform that way, and
