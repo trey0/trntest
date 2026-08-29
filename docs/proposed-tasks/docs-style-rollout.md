@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (7 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (8 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -119,6 +119,17 @@ truth per fact, thin index files, sensible file naming.
   point is real SPICE/ISIS measurements vs. the synthetic render, so most instances were a real
   contrast, not filler. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on
   this file). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/cache.py` (287 -> 294 lines, all 4 `docs/history.md` citations removed): pacing/429
+  rationale (`_REQUEST_PACING_SECONDS`, `FetchError`) now cross-references `docs/caching.md`'s
+  "Retry/backoff/pacing policy" section (already carries the full incident narrative) instead of
+  restating it with a Phase citation. Updated 4 stale `docs/data-sources.md` references to the
+  specific post-split files. Added docstrings to 6 previously-undocumented thin wrapper functions
+  for consistency with their already-documented siblings, plus moved `FetchError`'s rationale to a
+  trailing class-body comment. **Also fixed a stale reference**: `cached_get`'s docstring named
+  `select_dataset()` as the function whose sweep exposed a temp-file race, but that function was
+  removed (`dataset_selection.py` already notes this); reworded to describe the sweep generically.
+  Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file). No code
+  logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -126,15 +137,14 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 11
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 10
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py` done, see Completed above). Rough priority order
-(citation count, then size, as a proxy for how much chatty/historical material likely needs
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py` done, see Completed above). Rough priority
+order (citation count, then size, as a proxy for how much chatty/historical material likely needs
 trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `cache.py` | 4 | 287 |
 | `tasks.py` | 3 | 194 |
 | `render.py` | 3 | 204 |
 | `pose_alignment.py` | 3 | 515 |
@@ -156,7 +166,8 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`cache.py` is next (4 citations, the current top of the table).
+`tasks.py` is next (tied at 3 citations with `render.py`/`pose_alignment.py`; picked first among
+the tie).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
