@@ -14,21 +14,13 @@
 # ---
 
 # %% [markdown]
-# # ISIS/CSM real-WAC reprojection spike: even/odd framestitch investigation
+# # WAC EDR to `framestitch`: a step-by-step ISIS pipeline walkthrough
 #
-# **Scope: this notebook stops after `framestitch`.** `isd_generate`/`mapproject`/`sat_sim` are
-# explicitly out of scope here -- they're future work once the even/odd-combination step below is
-# understood. This notebook exists to make each intermediate step's image directly visible inline
-# (previous progress on this was badly slowed by not being able to see intermediate steps), not to
-# reproduce the full reprojection pipeline.
-#
-# Background: a prior spike (docs-only, see `../docs/data-sources.md`'s "ISIS3/CSM spike" section
-# and `../docs/history.md`'s Phase 12) got a real WAC swath reprojected onto the DEM via a genuine
-# ISIS3/CSM camera model end to end, but hit an unresolved blocker -- severe periodic striping at
-# framelet boundaries in `mapproject`'s output, confirmed structural/geometric, not an
-# illumination/AOI artifact. The working hypothesis is that the bug is introduced at the
-# `framestitch` step (combining the "even"/"odd" parity cubes into one), so this notebook steps
-# through exactly that far, with an image displayed after each step.
+# Walks through ISIS3's EDR-to-`framestitch` pipeline for one real WAC product, with each
+# intermediate cube displayed inline. Stops after `framestitch` -- reprojection is
+# `isis_wac.run_cam2map_for_crop`'s job, not covered here. See
+# `../docs/data-sources/lroc-wac-edr-cdr.md` for what the framelet-boundary striping visible in the
+# stitched cube actually is.
 
 # %%
 import numpy as np
@@ -41,13 +33,11 @@ config = trntest.load_config()
 print(f"edr_product={config.edr_product} edr_volume={config.edr_volume} target_frame_index={config.target_frame_index}")
 
 # %% [markdown]
-# This is `config.py`'s zero-argument default product (`M1329714703CE`, the same one the *first*
-# run of the prior spike used) -- no `dataclasses.replace` needed to target it. Its
-# `camera.boresight_rotation_k` is `+1` (non-mirrored pass), and the prior spike directly confirmed
-# `flip=false` is the visually-correct `framestitch` value for this product (the reverse, `flip=true`,
-# produced scrambled/banded garbage) -- see `docs/data-sources.md`. Hardcoded below rather than
-# recomputed, since recomputing it would mean furnishing SPICE kernels this notebook otherwise
-# doesn't need at all.
+# This is `config.py`'s zero-argument default product (`M1329714703CE`) -- no `dataclasses.replace`
+# needed to target it. Its `camera.boresight_rotation_k` is `+1` (non-mirrored pass); `flip=false`
+# is the visually-correct `framestitch` value for this product (the reverse, `flip=true`, produces
+# scrambled/banded garbage). Hardcoded below rather than recomputed, since recomputing it would mean
+# furnishing SPICE kernels this notebook otherwise doesn't need at all.
 
 # %%
 FLIP = False
@@ -72,17 +62,15 @@ edr
 #
 # Splits the EDR into 4 cubes. The VIS cubes come out already band-separated (5 ISIS cube bands,
 # one per VIS filter) -- no manual byte-offset extraction needed, unlike `wac.py`'s approach against
-# the raw CDR. Only the VIS cubes matter for this investigation; the UV cubes are never touched
-# below.
+# the raw CDR. Only the VIS cubes matter here; the UV cubes are never touched below.
 
 # %%
 split = isis_wac.run_lrowac2isis(edr, config)
 split
 
 # %% [markdown]
-# Raw split cubes, band 1 -- also doubles as the empirical check that `rasterio`/GDAL reads `.cub`
-# files directly (the prior spike found this true of ASP's own bundled GDAL; confirming it holds
-# here too).
+# Raw split cubes, band 1 -- also confirms `rasterio`/GDAL reads `.cub` files directly (via ASP's
+# own bundled GDAL).
 
 # %%
 _ = plotting.plot_raster(split.vis_even)
@@ -93,8 +81,8 @@ _ = plotting.plot_raster(split.vis_odd)
 # %% [markdown]
 # ## Step 2: `spiceinit web=yes` -- attach real SPICE geometry, zero local kernels required
 #
-# Edits each cube's label in place (no new file, no re-display needed) -- confirmed in the prior
-# spike to work for WAC (not just NAC) with zero local kernel files fetched.
+# Edits each cube's label in place (no new file, no re-display needed) -- works for WAC (not just
+# NAC) with zero local kernel files fetched.
 
 # %%
 even_spice = isis_wac.run_spiceinit(split.vis_even, config)
@@ -108,20 +96,9 @@ even_cal = isis_wac.run_lrowaccal(even_spice, config)
 odd_cal = isis_wac.run_lrowaccal(odd_spice, config)
 
 # %% [markdown]
-# Calibrated even/odd cubes -- a visual baseline immediately before stitching, so any artifact that
-# shows up only *after* `framestitch` below can be attributed to the stitch itself rather than
-# something upstream.
-
-# %%
-_ = plotting.plot_raster(even_cal.cub_path)
-
-# %%
-_ = plotting.plot_raster(odd_cal.cub_path)
-
-# %% [markdown]
 # ## Step 4: `framestitch` -- combine even + odd
 #
-# This is the step under suspicion. `flip=False` per the hardcoded value above.
+# Combines the even/odd parity cubes into one. `flip=False` per the hardcoded value above.
 
 # %%
 stitched = isis_wac.run_framestitch(even_cal, odd_cal, flip=FLIP, config=config)
@@ -136,8 +113,7 @@ _ = plotting.plot_raster(stitched.cub_path)
 # The exact framelet period in *this* (post-`lrowac2isis`) cube's own line coordinates isn't
 # established -- the raw CDR's 78-lines/frame figure (`wac.LINES_PER_FRAME`) describes the
 # *pre*-TDI-extraction byte layout `wac.py` reads directly, not this already-TDI-processed ISIS
-# cube. Rather than guess a line range (the swath's early lines are the shadowed start the main
-# demo's own selection logic learned to avoid -- see `docs/history.md` Phase 2), pick the
+# cube. Rather than guess a line range (the swath's early lines tend to be shadowed), pick the
 # window with real signal data-drivenly: read the whole band, find the `WINDOW_HEIGHT`-line span
 # with the highest mean value (a cheap proxy for "not near-empty/shadowed"), and crop there.
 
@@ -155,8 +131,3 @@ print(f"selected line window (peak mean signal): {line_start}:{line_end} of {ful
 
 window = rasterio.windows.Window(col_off=0, row_off=line_start, width=704, height=WINDOW_HEIGHT)
 _ = plotting.plot_raster(stitched.cub_path, window=window)
-
-# %% [markdown]
-# ## Observations
-#
-# _(space to record what the seam actually looks like once this notebook has been run for real)_
