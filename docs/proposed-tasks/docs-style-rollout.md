@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (5 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (6 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -91,6 +91,22 @@ truth per fact, thin index files, sensible file naming.
   file); this module's own docstrings didn't have that problem, nothing to correct. All 4
   `docs/history.md` citations removed. Verified with `trntest-lint` (`ruff format`/`ruff
   check`/`mypy` all clean on this file). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/config.py` (263 -> 244 lines, all 4 `docs/history.md` citations removed): mostly
+  module-level constant comments rather than function docstrings, so the main work was cutting
+  duplication against the already-reworked `docs/data-sources/*.md` files (each constant's comment
+  now states the essential fact plus a one-hop cross-reference, not the full investigation trail)
+  and fixing "real"/"genuine" filler. Added docstrings to the 4 previously-undocumented private
+  helpers (`_resolve_config_file_path`, `_validate_keys`, `_coerce_path_fields`,
+  `_apply_env_overrides`). Moved the module docstring's `edr_*`/`cdr_*` field-naming rationale to a
+  comment above those fields in `TrntestConfig` itself, per the module-docstring rule. **Also
+  corrected two facts that had gone stale independent of style**: `DEFAULT_WAC_CK_SOURCE`'s comment
+  still claimed `"isis_resolved"` fixes a confirmed ~11-13km pointing discrepancy, but
+  `docs/data-sources/spice-kernels-isis.md` (and `spice_kernels.py`) already record that this was
+  never reproduced — the default is kept for matching ISIS's own kernel resolution by construction,
+  not for fixing a known bug; `DEFAULT_LUNASERV_ORTHO_LAYER`'s comment described the Lunaserv layer
+  as if still live, but WAC_EMP's PDS4 archive is now the default ortho source and Lunaserv WMS is
+  fallback-only. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
+  file). No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -98,14 +114,13 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 13
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 12
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py` done, see Completed above). Rough priority order (citation count, then size, as
-a proxy for how much chatty/historical material likely needs trimming):
+`sfs_validation.py`/`config.py` done, see Completed above). Rough priority order (citation count,
+then size, as a proxy for how much chatty/historical material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `config.py` | 4 | 263 |
 | `camera.py` | 4 | 608 |
 | `cache.py` | 4 | 287 |
 | `tasks.py` | 3 | 194 |
@@ -129,7 +144,7 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`config.py` is next (tied at 4 citations with `camera.py`/`cache.py`; picked first among the tie).
+`camera.py` is next (tied at 4 citations with `cache.py`; picked first among the tie).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
