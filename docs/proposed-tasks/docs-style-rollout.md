@@ -1,9 +1,9 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments just started (1 of 18
-files).** The original problem was docstrings, not just standalone docs — `docs/docs-style.md`
-covers both, but so far the actual editing has gone almost entirely into `docs/*.md`. The in-code
-half is the bigger remaining job.
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (2 of 18 files).**
+The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
+so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
+remaining job.
 
 ## Goal
 
@@ -42,7 +42,23 @@ truth per fact, thin index files, sensible file naming.
   first lines of the function body, so it stays out of `help()`/`.__doc__`. `docs/docs-style.md`
   itself updated with this refined rule first. Verified with `trntest-lint` both rounds (`ruff
   format`/`ruff check`/`mypy` all clean on this file). No code logic touched either round, so no
-  notebook re-run was needed.
+  notebook re-run was needed. User feedback on this file's round 2: "fantastic" — a clear win despite
+  the line-count growth.
+- `src/trntest/isis_wac.py` — full pass (1284 -> 1404 lines), applying the refined convention
+  directly in one pass (no round 2 needed, now that the convention itself is settled): all 12
+  `docs/history.md` citations removed, every docstring cut to minimal + RST fields, rationale/caveats
+  moved to trailing comment blocks. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy`
+  all clean on this file). No code logic touched, so no notebook re-run was needed.
+- **Round 3 (both files), per user feedback: module docstrings get the same treatment.** A module
+  docstring states minimally what the file is for; material that doesn't fit moves to a trailing
+  comment below it (mirroring the function pattern) *or*, preferably, to the specific function/class
+  it's actually about, if there is one — more discoverable there than as general module framing.
+  `docs/docs-style.md` updated with this rule first. Applied to both files: `isis_wac.py`'s module
+  docstring trimmed (the CSM/`usgscsm` rationale — genuinely shared context multiple functions already
+  point back to — moved to a trailing comment; the VIS/UV-cubes fact relocated to `Lrowac2IsisResult`,
+  where the unused `uv_even`/`uv_odd` fields actually live); `lunaserv.py`'s module docstring trimmed
+  (a `sat_sim`-illumination rationale that duplicated `shade_ortho`'s own trailing comment, cut per
+  "one source of truth"). Verified with `trntest-lint` on both files.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -50,13 +66,13 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 17
-files still cite `docs/history.md` (`lunaserv.py` done, see Completed above). Rough priority order
-(citation count, then size, as a proxy for how much chatty/historical material likely needs trimming):
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 16
+files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py` done, see Completed above). Rough
+priority order (citation count, then size, as a proxy for how much chatty/historical material likely
+needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `isis_wac.py` | 12 | 1284 |
 | `dataset.py` | 6 | 427 |
 | `plotting.py` | 5 | 1257 |
 | `sfs_validation.py` | 4 | 324 |
@@ -75,11 +91,13 @@ files still cite `docs/history.md` (`lunaserv.py` done, see Completed above). Ro
 | `_lint.py` | 1 | 230 |
 
 For each: remove `docs/history.md` citations (state the load-bearing fact directly, or cut it), trim
-docstrings to genuinely minimal (what the function does, plus RST `:param:`/`:returns:`/`:raises:`
-fields where they clarify — see `docs/docs-style.md`'s current wording), move rationale/caveats/open
-items to a plain comment block as the first lines of the function body (not above the `def`, so it
-stays out of `help()`), fix "real"-as-filler and em-dash sentence-stacking. `isis_wac.py` is next —
-worst offender remaining by a wide margin.
+docstrings (function/class *and* the module docstring itself) to genuinely minimal (what it does,
+plus RST `:param:`/`:returns:`/`:raises:` fields where they clarify — see `docs/docs-style.md`'s
+current wording), move rationale/caveats/open items to a plain comment block as the first lines of
+the function body (not above the `def`, so it stays out of `help()`) — or, for module-docstring
+material about one specific function/class, relocate it there instead of a module-level comment, per
+`docs/docs-style.md`'s current wording — fix "real"-as-filler and em-dash sentence-stacking.
+`dataset.py` is next — worst offender remaining.
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -95,7 +113,7 @@ worst offender remaining by a wide margin.
 
 1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
    other sessions may have touched these files since.
-2. Work one file at a time; `isis_wac.py` next. Re-verify with `trntest-lint` and, if a docstring
+2. Work one file at a time; `dataset.py` next. Re-verify with `trntest-lint` and, if a docstring
    change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
    notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
    `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.

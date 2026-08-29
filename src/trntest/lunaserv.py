@@ -1,10 +1,10 @@
 """Fetch DEM + ortho imagery for the ground footprint computed by `camera.build_camera`, and prep both
 for `sat_sim`: the DEM as elevation (not raw radius) and hole-filled, the ortho despeckled and blended
-with a sun-lit hillshade (`sat_sim` applies no illumination model of its own, so any relief in the
-synthetic render has to already be in this ortho). Live defaults: Astropedia's GLD100 DEM
-(`fetch_dem_astropedia`) and WAC_EMP's PDS4 reflectance ortho (`fetch_wac_emp_reflectance`); Lunaserv
-WMS (`fetch_dem_native`, `ortho_source="lunaserv_wms"`) is a deprecated fallback kept for comparison.
-See docs/data-sources.md and docs/caching.md.
+with a sun-lit hillshade (see `shade_ortho`'s own trailing comment for why the hillshade has to be
+baked in here). Live defaults: Astropedia's GLD100 DEM (`fetch_dem_astropedia`) and WAC_EMP's PDS4
+reflectance ortho (`fetch_wac_emp_reflectance`); Lunaserv WMS (`fetch_dem_native`,
+`ortho_source="lunaserv_wms"`) is a deprecated fallback kept for comparison. See docs/data-sources.md
+and docs/caching.md.
 """
 
 import dataclasses

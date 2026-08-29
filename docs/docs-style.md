@@ -43,6 +43,14 @@ functions — it belongs in one of these instead:
 - **Nowhere.** Most of the time, this is the right answer. Before relocating verbatim, ask whether
   the material would be missed if it were deleted outright. A lot of it won't be.
 
+**This applies to module docstrings too.** A module docstring states minimally what the file is for —
+not how its pieces work internally, not the history of why they're shaped that way. When relocating
+material out of a module docstring, don't default to a module-level trailing comment; ask first
+whether it's actually about one specific function/class, in which case it belongs there instead (more
+discoverable, read exactly when it's relevant). Reserve a module-level trailing comment for material
+that's genuinely shared context several functions rely on — e.g. a fact multiple functions'
+docstrings already point back to via "see the module docstring."
+
 ## No references to `docs/history.md` from anywhere else
 
 `docs/history.md` is a narrative development log — background reading, not a reference. Nothing
