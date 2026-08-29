@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (9 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (10 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -140,6 +140,13 @@ truth per fact, thin index files, sensible file naming.
   docstrings, kept only in the latter (the function that actually crosses the process boundary this
   is about). Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
   file). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/render.py` (204 -> 207 lines, all 3 `docs/history.md` citations removed):
+  `patch_sun_position`'s docstring (the one with 2 of the 3 citations) trimmed to interface +
+  params, rationale moved to a body comment block. Also fixed a stale `docs/data-sources.md`
+  citation in `run_mapproject`'s docstring -- that content no longer lives there after the
+  `data-sources.md` split; restated the fact directly instead. Cut "real"/"actual" filler
+  throughout. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
+  file). No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -147,15 +154,14 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 9
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 8
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py` done, see Completed above). Rough
-priority order (citation count, then size, as a proxy for how much chatty/historical material
-likely needs trimming):
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py` done, see Completed
+above). Rough priority order (citation count, then size, as a proxy for how much chatty/historical
+material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `render.py` | 3 | 204 |
 | `pose_alignment.py` | 3 | 515 |
 | `trn_dataset.py` | 2 | 682 |
 | `tie_points.py` | 2 | 491 |
@@ -175,7 +181,7 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`render.py` is next (tied at 3 citations with `pose_alignment.py`; picked first among the tie).
+`pose_alignment.py` is next (3 citations, the current top of the table).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
