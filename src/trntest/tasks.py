@@ -1,42 +1,11 @@
-"""The `huey` (sqlite-backed) task queues `trn_dataset.py`'s `TrnTestDataSet.populate()`/
-`populate_via_workers()` drive. Replaces this project's old filesystem lock/error files with
-`huey`'s own well-tested queue/result machinery -- see `docs/history.md`'s Phase 66 entry for the
-migration and why.
+"""The `huey` (sqlite-backed) task queue that `trn_dataset.py`'s `TrnTestDataSet.populate()`/
+`populate_via_workers()` drive, replacing this project's old filesystem lock/error files with
+huey's own queue/result machinery.
 
-Two separate `Huey` instances, each with its own sqlite file under `<output_dir>/.huey/` and its
-own thin task wrapper around the shared `_generate_entry` helper -- not one, because huey fixes a
-`Huey` instance's `immediate` mode at construction time, and the two real use cases need opposite
-values. One task per *entry* (covering every requested product type for it, not one task per
-`(entry, product_type)`) -- see `_generate_entry`'s own docstring for why:
-
-- `huey` (`tasks.db`, `immediate=True`): what `populate()` drives, unchanged since this module's
-  first version. Executes synchronously in the calling process the moment a task is enqueued -- no
-  separate consumer process needed, matching `populate()`'s original single-call,
-  blocks-until-done behavior exactly. `immediate_use_memory=False` is required alongside it:
-  huey's own default silently switches immediate mode to in-memory storage, which would make a
-  task's failure invisible to a `status()` call from a *different* process (confirmed empirically
-  -- see `docs/history.md`'s Phase 66 entry) -- the real sqlite file must stay authoritative so a fresh
-  `docker compose run` can still see a prior failure, the same property the old `.error` files had.
-- `huey_parallel` (`tasks_parallel.db`, `immediate=False`): what `populate_via_workers()` drives.
-  huey's `Consumer` class refuses to start against an `immediate=True` instance (confirmed via its
-  own source -- raises `ConfigurationError`), and isn't safely embeddable in a background thread
-  either (it registers OS signal handlers, which only works on a process's main thread) -- so real
-  worker-pool execution needs a genuinely separate OS process. `populate_via_workers()` enqueues
-  into this instance, then spawns/manages a real `huey_consumer trntest.tasks.huey_parallel -w N -k
-  process` subprocess (`-k process`, not thread/greenlet, to preserve this project's existing rule
-  that spiceypy's process-global state is unsafe to share *within* one process -- each worker
-  process still only runs one task at a time, sequentially, same as `populate()`'s own single
-  process always has) via `start_consumer`/`stop_consumer` below, and tears it down once the batch
-  drains. First use against a cold cache still carries this project's usual documented risk of
-  concurrent workers racing on the same not-yet-cached fetch (see docs/environment.md's "Other
-  sharp edges" section) -- more likely here than in single-agent use, since multiple worker
-  *processes* are now deliberately fetching in parallel; safest against an already-warmed cache.
-
-One instance of each per worktree's `output_dir` (not per-dataset-folder): `@huey.task()`/
-`@huey_parallel.task()` bind to fixed module-level instances, so `dataset_folder` is a task
-*argument* rather than part of either queue's own identity. `output_dir` is already this project's
-per-worktree isolation boundary (see docs/environment.md's "Multi-agent worktrees" section), so
-concurrent agents' queues stay separate the same way their dataset folders already do.
+Two separate `Huey` instances, each with its own sqlite file under `<output_dir>/.huey/` (see the
+comments by each below for why two, not one). One task per *entry* (covering every requested
+product type for it, not one task per `(entry, product_type)`) -- see `_generate_entry`'s own
+docstring for why.
 """
 
 import subprocess
@@ -49,7 +18,36 @@ _config = load_config()
 _huey_dir = _config.output_dir / ".huey"
 _huey_dir.mkdir(parents=True, exist_ok=True)  # SqliteHuey does not create its own parent dir
 
+# One instance of each per worktree's `output_dir` (not per-dataset-folder): `@huey.task()`/
+# `@huey_parallel.task()` bind to fixed module-level instances, so `dataset_folder` is a task
+# *argument* rather than part of either queue's own identity. `output_dir` is already this
+# project's per-worktree isolation boundary (see docs/environment.md's "Multi-agent worktrees"
+# section), so concurrent agents' queues stay separate the same way their dataset folders already
+# do.
+#
+# `huey` (`tasks.db`, `immediate=True`): what `populate()` drives, unchanged since this module's
+# first version. Executes synchronously in the calling process the moment a task is enqueued -- no
+# separate consumer process needed, matching `populate()`'s original single-call, blocks-until-done
+# behavior exactly. `immediate_use_memory=False` is required alongside it: huey's own default
+# silently switches immediate mode to in-memory storage, which would make a task's failure invisible
+# to a `status()` call from a different process -- the sqlite file must stay authoritative so a
+# fresh `docker compose run` can still see a prior failure, the same property the old `.error` files
+# had.
 huey = SqliteHuey(filename=str(_huey_dir / "tasks.db"), immediate=True, immediate_use_memory=False)
+# `huey_parallel` (`tasks_parallel.db`, `immediate=False`): what `populate_via_workers()` drives.
+# huey's `Consumer` class refuses to start against an `immediate=True` instance (confirmed via its
+# own source -- raises `ConfigurationError`), and isn't safely embeddable in a background thread
+# either (it registers OS signal handlers, which only works on a process's main thread) -- so
+# worker-pool execution needs a separate OS process. `populate_via_workers()` enqueues into this
+# instance, then spawns/manages a `huey_consumer trntest.tasks.huey_parallel -w N -k process`
+# subprocess (`-k process`, not thread/greenlet, to preserve this project's existing rule that
+# spiceypy's process-global state is unsafe to share *within* one process -- each worker process
+# still only runs one task at a time, sequentially, same as `populate()`'s own single process always
+# has) via `start_consumer`/`stop_consumer` below, and tears it down once the batch drains. First use
+# against a cold cache still carries this project's usual documented risk of concurrent workers
+# racing on the same not-yet-cached fetch (see docs/environment.md's "Other sharp edges" section) --
+# more likely here than in single-agent use, since multiple worker processes are now deliberately
+# fetching in parallel; safest against an already-warmed cache.
 huey_parallel = SqliteHuey(filename=str(_huey_dir / "tasks_parallel.db"), immediate=False)
 
 _CONSUMER_LOG_PATH = _huey_dir / "consumer.log"
@@ -77,41 +75,40 @@ class EntryGenerationError(Exception):
 
 
 def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
-    """Shared body for both `generate_product`/`generate_product_parallel` below -- one task per
-    *entry*, covering every product type in `product_types` for it, not one task per
-    `(entry, product_type)` as this module originally had. That finer granularity meant two
-    product types of the same entry (e.g. `hillshade` and `reproject`, both needing
-    `entry.camera`/`entry.dem_ortho_result`) could land on two different `-k process` worker
-    processes at once -- `functools.cached_property` only memoizes within one process, so each
-    worker independently, redundantly rebuilt the same real SPICE/ISIS/DEM state for that entry
-    (confirmed live: a real `("hillshade", "reproject")` batch cost noticeably more wall-clock than
-    it needed to, see `docs/history.md`'s dated entry). Bundling every requested product type for
-    one entry into a single task restores `populate()`'s own natural single-process sharing (the
-    same `entry` object's cached properties, reused across product types) while still parallelizing
-    across *entries* under `populate_via_workers()`.
+    """Shared body for `generate_product`/`generate_product_parallel` below: generate every product
+    type in `product_types` for `entry` within a single task.
 
-    Takes the real `TrnTestEntry` object rather than plain, picklable `(dataset_folder, product_id)`
-    args and re-deriving it via `TrnTestDataSet.open()`, even though `generate_product_parallel`
-    (unlike `generate_product`) does cross a real process boundary to a `-k process` worker
-    subprocess: re-opening from disk here would force every caller -- including fast, disk-free
-    unit tests that never call `TrnTestDataSet.create()` -- to round-trip a real `manifest.csv` just
-    to run a fake `generate()`. See `generate_product_parallel`'s own docstring for why passing the
-    object directly is confirmed empirically safe across that process boundary, not just assumed.
-
-    Each product type is attempted independently -- one's exception is caught, not left to abort the
-    rest, matching this module's existing "one bad task shouldn't abort the whole batch" tolerance
-    (see `trn_dataset.populate()`'s own docstring), just applied within one entry's own task instead
-    of only across entries. If any failed, raises `EntryGenerationError` (carrying all of them) only
-    *after* every product type has been attempted -- so a `crop` success isn't lost just because
-    `hillshade` also happened to fail in the same task; `trn_dataset.task_state()`'s own
-    `image.exists()`-first check still reports each product type's real state correctly regardless
-    of this shared, entry-level failure signal (see that function's own docstring).
-
-    Must return a non-`None` value on success -- confirmed empirically: huey's own `_execute` only
-    calls `put_result` for a successful task when `task_value is not None` (or `store_none=True`,
-    not set for either instance here), so a bare `None` return never gets stored at all, and a
-    blocking `result.get()` then polls forever for a result that will never arrive. Returns
-    `{product_type: raster_path}` for every product type that succeeded."""
+    :param entry: A `TrnTestEntry` (not a picklable `(dataset_folder, product_id)` pair -- see
+        `generate_product_parallel`'s own docstring for why the object itself is passed).
+    :param product_types: Product types to generate for this entry.
+    :returns: `{product_type: raster_path}` for every product type that succeeded.
+    :raises EntryGenerationError: If any product type failed, once every product type has been
+        attempted -- see comment below.
+    """
+    # One task per *entry* (not one per `(entry, product_type)`, this module's original
+    # granularity): two product types of the same entry (e.g. `hillshade` and `reproject`, both
+    # needing `entry.camera`/`entry.dem_ortho_result`) could land on two different `-k process`
+    # worker processes at once under the old granularity -- `functools.cached_property` only
+    # memoizes within one process, so each worker independently, redundantly rebuilt the same
+    # SPICE/ISIS/DEM state for that entry (a `("hillshade", "reproject")` batch cost noticeably more
+    # wall-clock than it needed to). Bundling every requested product type for one entry into a
+    # single task restores `populate()`'s own natural single-process sharing (the same `entry`
+    # object's cached properties, reused across product types) while still parallelizing across
+    # *entries* under `populate_via_workers()`.
+    #
+    # Each product type is attempted independently -- one's exception is caught, not left to abort
+    # the rest, matching this module's existing "one bad task shouldn't abort the whole batch"
+    # tolerance (see `trn_dataset.populate()`'s own docstring), just applied within one entry's own
+    # task instead of only across entries. `EntryGenerationError` (carrying every failure) is raised
+    # only *after* every product type has been attempted -- so a `crop` success isn't lost just
+    # because `hillshade` also failed in the same task; `trn_dataset.task_state()`'s own
+    # `image.exists()`-first check still reports each product type's state correctly regardless of
+    # this shared, entry-level failure signal (see that function's own docstring).
+    #
+    # Must return a non-`None` value on success: huey's own `_execute` only calls `put_result` for a
+    # successful task when `task_value is not None` (or `store_none=True`, not set for either
+    # instance here), so a bare `None` return never gets stored at all, and a blocking `result.get()`
+    # then polls forever for a result that will never arrive.
     results = {}
     errors = {}
     for product_type in product_types:
@@ -139,22 +136,25 @@ def generate_product(entry, product_types: tuple[str, ...]) -> dict:
 @huey_parallel.task()
 def generate_product_parallel(entry, product_types: tuple[str, ...]) -> dict:
     """Same as `generate_product`, bound to `huey_parallel` instead -- what `populate_via_workers`
-    enqueues. Takes the real `TrnTestEntry` object, not picklable primitive args, same as
-    `generate_product`: confirmed empirically (a plain object, not just simple types, round-trips
-    fine as a task argument even under a real `-k process` worker subprocess -- huey's own
-    serializer handles it) rather than assumed, since unlike `generate_product` this one **does**
-    cross a real process boundary. `TrnTestEntry` pickles cleanly as long as no
-    `functools.cached_property` already computed on it holds something unpicklable (SPICE objects
-    are never cached directly on `entry` today, only derived plain data, so this holds in practice;
-    revisit if that ever changes) -- true at enqueue time regardless, since nothing's been computed
-    on a freshly-enqueued entry yet."""
+    enqueues.
+
+    Takes the `TrnTestEntry` object itself, not picklable primitive args re-derived via
+    `TrnTestDataSet.open()` -- re-opening from disk would force every caller, including fast,
+    disk-free unit tests that never call `TrnTestDataSet.create()`, to round-trip a `manifest.csv`
+    just to run a fake `generate()`. Unlike `generate_product`, this one does cross a process
+    boundary to a `-k process` worker subprocess: confirmed the object round-trips fine as a task
+    argument there (huey's own serializer handles it), not just assumed. `TrnTestEntry` pickles
+    cleanly as long as no `functools.cached_property` already computed on it holds something
+    unpicklable (SPICE objects are never cached directly on `entry` today, only derived plain data,
+    so this holds in practice; revisit if that ever changes) -- true at enqueue time regardless,
+    since nothing's been computed on a freshly-enqueued entry yet."""
     return _generate_entry(entry, product_types)
 
 
 def start_consumer(
     workers: int, huey_module: str = "trntest.tasks.huey_parallel", env: dict[str, str] | None = None
 ) -> subprocess.Popen:
-    """Starts a real `huey_consumer` OS process against `huey_module`'s queue (default:
+    """Starts a `huey_consumer` OS process against `huey_module`'s queue (default:
     `huey_parallel` above) -- `-k process` worker processes, not threads (see this module's own
     docstring for why). Output is redirected to `<output_dir>/.huey/consumer.log` rather than left
     to flood the caller's own stdout, matching this project's `subprocess_utils.run_quiet`
@@ -171,7 +171,7 @@ def start_consumer(
 
     `env`, if given, replaces (not merges into) the subprocess's environment -- `None` (the default)
     inherits the calling process's own environment unchanged, same as plain `subprocess.Popen`.
-    Exists for `tests/test_trn_dataset.py`'s own real-subprocess consumer test, which needs a task
+    Exists for `tests/test_trn_dataset.py`'s own subprocess consumer test, which needs a task
     argument importable from a fresh process without the whole `trntest` package's SPICE/ASP/ISIS
     dependencies -- not expected to matter for real callers."""
     with open(_CONSUMER_LOG_PATH, "w") as log_file:
