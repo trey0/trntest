@@ -1095,7 +1095,7 @@ def _table_extra_label(label_text: str, table_name: str) -> pvl.PVLModule:
     cube's full `catlab` PVL text, in the shape `csv2table`'s own `label=` parameter expects.
     Round-tripping a Table via `tabledump`/`csv2table` *without* this metadata silently drops it --
     confirmed live to produce a real, systematic ~0.08deg pointing error, not just precision loss
-    (see docs/corrected-overlay-cam2map-plan.md)."""
+    (see docs/proposed-tasks/corrected-overlay-cam2map-plan.md)."""
     label = pvl.loads(label_text)
     tables = [obj for obj in label.getlist("Table") if obj.get("Name") == table_name]
     if len(tables) != 1:
@@ -1111,7 +1111,7 @@ def apply_pose_correction_to_crop(
     its cached `InstrumentPointing` Table's single `ConstantRotation` matrix (the -85621->-85620,
     camera-to-spacecraft-bus, time-*independent* rotation) -- so ISIS's own `cam2map`
     (`run_cam2map_for_crop`, unmodified) picks up the corrected pose automatically, with no new
-    hand-rolled warp/resampling code. See `docs/corrected-overlay-cam2map-plan.md` for the full
+    hand-rolled warp/resampling code. See `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` for the full
     background this implements.
 
     Only the rotation is injected here -- `correction.delta_position_m` is deliberately not applied

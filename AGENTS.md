@@ -28,6 +28,11 @@ this file). Then, as needed:
 - `docs/docs-style.md` — how to write docs and docstrings in this repo (brevity, what a docstring is
   and isn't for, why nothing should cite `docs/history.md`). Follow this when writing or editing any
   doc or docstring.
+- `docs/proposed-tasks/` — forward-looking plans for not-yet-finished work (e.g.
+  `report-plan.md`), as opposed to the reference docs elsewhere in `docs/` that describe current
+  state. Put a new plan doc here instead of loose in `docs/`; when the work finishes, fold its
+  content into the relevant current-state doc (or `docs/history.md`) and delete the plan, per its
+  own usual "once resumed/done, delete or fold in" closing note.
 - `docs/history.md` — the phase-by-phase development narrative (what was tried, what broke, how
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above

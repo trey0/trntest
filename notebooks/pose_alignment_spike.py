@@ -649,7 +649,7 @@ results_df
 #
 # `isis_wac.apply_pose_correction_to_crop` bakes `fit_lg.correction` into a *copy* of the crop cube's
 # cached `InstrumentPointing` (patching only its single, time-independent `ConstantRotation` matrix
-# -- see that function's own docstring and `docs/corrected-overlay-cam2map-plan.md` for the full
+# -- see that function's own docstring and `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` for the full
 # mechanism), so ISIS's own already-validated `cam2map` (`run_cam2map_for_crop`, completely
 # unmodified) picks up the corrected pose automatically. **Table row 10** (the LightGlue-based fit --
 # see its own markdown above for why that's the one this notebook's overlay is built from; SIFT's own

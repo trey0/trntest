@@ -204,7 +204,7 @@ tested so far.
    rotation. The corrected pose is baked into a copy of the crop cube via
    `isis_wac.apply_pose_correction_to_crop` (patches the cached `InstrumentPointing` Table's
    `ConstantRotation` via `tabledump`/`csv2table` -- see `docs/data-sources.md`'s own entry on this
-   mechanism and its real gotchas, and `docs/corrected-overlay-cam2map-plan.md` for the full
+   mechanism and its real gotchas, and `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` for the full
    implementation trail) so the existing, unmodified `cam2map`/`plotting.plot_overlay_toggle` path
    reprojects and displays it, wired into `notebooks/pose_alignment_spike.py` and reviewed live by
    the user. **Real result, not a full win**: the fit only closes ~24% of the real gap (~813m ->

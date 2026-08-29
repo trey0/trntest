@@ -1,5 +1,5 @@
 """Per-entry report helpers -- keeps notebooks/report_template.py's cells to one-liners.
-See docs/report-plan.md."""
+See docs/proposed-tasks/report-plan.md."""
 
 import re
 

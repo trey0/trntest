@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Substitute `{{ name }}` placeholders in a jupytext `.py:percent` template and write the result.
-See docs/report-plan.md and scripts/generate_report.sh, the only caller.
+See docs/proposed-tasks/report-plan.md and scripts/generate_report.sh, the only caller.
 
 Usage: render_report_template.py <template.py> <output.py> key=value [key=value ...]
 """

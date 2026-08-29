@@ -4785,3 +4785,39 @@ the user has separately flagged as its own future index-pattern candidate. `docs
 existing citations into the old section names were deliberately left untouched too -- they describe
 the past accurately as of when they were written and were never meant to track current doc
 structure.
+
+## Phase 88 (2026-08-29) — `docs/proposed-tasks/` convention, and a status doc for the docs-rework effort itself
+
+Same session, continuing directly. The user wanted a new convention: forward-looking plan docs
+(as opposed to the current-state reference docs everywhere else in `docs/`) live under a dedicated
+`docs/proposed-tasks/` folder, not loose in `docs/`. Asked to check for existing candidates first
+rather than just being told which to move.
+
+**Survey, then two judgment calls confirmed with the user**: of the four `-plan`/`-investigation`
+named docs, `docs/report-plan.md` was a clean match (an explicit, still-incomplete design doc,
+still cited from `docs/plan.md`'s own open items). `docs/corrected-overlay-cam2map-plan.md` was
+ambiguous -- self-describes as a resumable implementation plan, but no longer referenced from
+`docs/plan.md`'s current status text (that area was resolved a different way, a DEM shape-model
+fix rather than the `ConstantRotation` cube patch this plan describes) -- still referenced from
+`docs/wac-jigsaw-investigation.md`/`isis_wac.py`/`notebooks/pose_alignment_spike.py` though, so not
+orphaned. User's call: move it anyway, as-is, and let a future reader judge whether to pick it up.
+`docs/reproject-fov-investigation.md`/`docs/wac-jigsaw-investigation.md` were judged *not* matches
+despite their names -- both are investigation records of already-merged work, now cited from
+`docs/plan.md`'s architecture rows as background, not forward plans -- left where they are.
+
+Moved both files (`git mv`), fixed every incoming reference (`docs/plan.md`,
+`docs/wac-jigsaw-investigation.md`, `isis_wac.py`, `src/trntest/report.py`,
+`scripts/render_report_template.py`, `notebooks/pose_alignment_spike.py` -- including its paired
+`.ipynb`, via `jupytext --sync` rather than a full re-run, since it was a one-line text change with
+no output to regenerate). Documented the convention itself as a new `AGENTS.md` doc-index bullet,
+per the user's own preference for where.
+
+**Then asked to document the docs-rework effort itself** as a proposed-task plan
+(`docs/proposed-tasks/docs-style-rollout.md`), explicitly required to list which files already have
+the rework done. Surveying honestly turned up a real gap: nearly all of the actual editing so far
+went into `docs/*.md` (the style guide itself, `caching.md`, `intermediate-product-discipline.md`,
+the `data-sources.md` split and its 4 new spinoffs) -- the *original* complaint, verbose/chatty
+docstrings in `src/trntest/*.py`, has barely been touched. `grep -rc "docs/history.md"
+src/trntest/*.py` found 18 files still citing it, `lunaserv.py` worst by far (41 citations, 1663
+lines) -- recorded as a priority table in the new plan doc, with `docs/plan.md`/`docs/environment.md`
+/`docs/batch-generation.md`/the two investigation docs also flagged as not yet given a style pass.
