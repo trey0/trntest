@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (8 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (9 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -130,6 +130,16 @@ truth per fact, thin index files, sensible file naming.
   removed (`dataset_selection.py` already notes this); reworded to describe the sweep generically.
   Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file). No code
   logic touched, so no notebook re-run was needed.
+- `src/trntest/tasks.py` (194 lines, unchanged -- pure reorganization, all 3 `docs/history.md`
+  citations removed): moved the module docstring's per-instance (`huey` vs. `huey_parallel`)
+  rationale to trailing comments right above each `SqliteHuey()` assignment, since that's what the
+  rationale is actually about, per the module-docstring relocation rule. `_generate_entry`'s
+  docstring trimmed to interface + RST fields, rationale moved to a body comment block. Also
+  consolidated duplicated "why the `TrnTestEntry` object is passed instead of picklable primitives"
+  rationale that had drifted into both `_generate_entry`'s and `generate_product_parallel`'s
+  docstrings, kept only in the latter (the function that actually crosses the process boundary this
+  is about). Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this
+  file). No code logic touched, so no notebook re-run was needed.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -137,15 +147,14 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 10
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 9
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py` done, see Completed above). Rough priority
-order (citation count, then size, as a proxy for how much chatty/historical material likely needs
-trimming):
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py` done, see Completed above). Rough
+priority order (citation count, then size, as a proxy for how much chatty/historical material
+likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `tasks.py` | 3 | 194 |
 | `render.py` | 3 | 204 |
 | `pose_alignment.py` | 3 | 515 |
 | `trn_dataset.py` | 2 | 682 |
@@ -166,8 +175,7 @@ material about one specific function/class, relocate it there instead of a modul
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`tasks.py` is next (tied at 3 citations with `render.py`/`pose_alignment.py`; picked first among
-the tie).
+`render.py` is next (tied at 3 citations with `pose_alignment.py`; picked first among the tie).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
