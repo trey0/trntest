@@ -55,12 +55,19 @@ def valid_pixel_mask(data: np.ndarray) -> np.ndarray:
 
 def read_raster_band(path, band: int = 1, window: rasterio.windows.Window | None = None) -> np.ndarray:
     """Read one band of any raster GDAL can open by path (GeoTIFF, ISIS `.cub`, ...), optionally
-    windowed to a crop. Shared by `plot_raster` and any notebook code that needs the raw array
-    directly (e.g. picking a crop window from real data), so both get the same warning suppression.
+    windowed to a crop.
 
-    Two non-actionable, rasterio-internal warnings suppressed narrowly here (not module-wide):
-    `NotGeoreferencedWarning` is expected for ISIS `.cub`s at this pipeline stage (no geotransform
-    yet, not a bug), and the numpy-shape `DeprecationWarning` is from inside rasterio's own code."""
+    :param path: Raster file path.
+    :param band: Band index (1-based).
+    :param window: Optional crop window.
+    :returns: The band as an array.
+    """
+    # Shared by `plot_raster` and any notebook code that needs the raw array directly (e.g. picking a
+    # crop window from data), so both get the same warning suppression.
+    #
+    # Two non-actionable, rasterio-internal warnings suppressed narrowly here (not module-wide):
+    # `NotGeoreferencedWarning` is expected for ISIS `.cub`s at this pipeline stage (no geotransform
+    # yet, not a bug), and the numpy-shape `DeprecationWarning` is from inside rasterio's own code.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", rasterio.errors.NotGeoreferencedWarning)
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -76,14 +83,24 @@ def plot_raster(
     stretch: bool = True,
 ):
     """Display one band of any raster GDAL can open by path (GeoTIFF, ISIS `.cub`, ...), optionally
-    windowed to a crop. Generic on purpose -- not ISIS-specific -- so it's reusable wherever a
-    notebook just needs to look at a raster file.
+    windowed to a crop.
 
-    `stretch=True` (default) contrast-stretches to the data's own 2nd/98th percentile, excluding
-    both non-finite pixels and huge-magnitude fill-value sentinels (ISIS's NULL/LOW/HIGH special
-    pixels are finite but ~+-3.4e38, similar in spirit to `wac.MISSING_CONSTANT` -- `np.isfinite`
-    alone doesn't catch them) -- calibrated I/F values are small floats near zero, so leaving them
-    in wrecks the stretch (and, upstream, any `mean`/`sum` reduction can silently overflow)."""
+    :param path: Raster file path.
+    :param band: Band index (1-based).
+    :param window: Optional crop window.
+    :param cmap: Matplotlib colormap name.
+    :param stretch: Contrast-stretch to the data's own 2nd/98th percentile (excluding non-finite
+        pixels and huge-magnitude fill-value sentinels).
+    :returns: The `Figure`.
+    """
+    # Generic on purpose -- not ISIS-specific -- so it's reusable wherever a notebook just needs to
+    # look at a raster file.
+    #
+    # `stretch=True`'s percentile calculation excludes fill-value sentinels (ISIS's NULL/LOW/HIGH
+    # special pixels are finite but ~+-3.4e38, similar in spirit to `wac.MISSING_CONSTANT` --
+    # `np.isfinite` alone doesn't catch them): calibrated I/F values are small floats near zero, so
+    # leaving them in wrecks the stretch (and, upstream, any `mean`/`sum` reduction can silently
+    # overflow).
     data = read_raster_band(path, band=band, window=window)
 
     valid = valid_pixel_mask(data)
@@ -106,20 +123,21 @@ def plot_raster(
 
 
 def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
-    """Left: the Lunaserv ortho mosaic with the SPICE-derived camera's ground footprint (the 4
-    corner rays' Moon intersections, connected into a closed quad, plus a center marker) overlaid,
-    to visually confirm the pose lands where expected. Right: the GLD100 DEM (elevation). Both share
-    one figure (previously two separate plots/cells -- merged since the right panel's DEM tile is
-    exactly the left panel's own AOI, no information lost by combining them) and the same km-scaled
-    Easting/Northing axes.
+    """Left: the Lunaserv ortho mosaic with the SPICE-derived camera's ground footprint overlaid, to
+    visually confirm the pose lands where expected. Right: the GLD100 DEM (elevation). Both share one
+    figure and the same km-scaled Easting/Northing axes.
 
-    The footprint overlay reprojects `camera.footprint_lonlat_deg` (plain geographic lon/lat) into
-    the ortho's own local Orthographic CRS via `geopandas`/`pyproj` (one `.to_crs()` call), then
-    plots both in real georeferenced coordinates -- not a previous version's manual
-    `rasterio.transform.rowcol(ortho_transform, lon, lat)`, which passed raw lon/lat *degrees*
-    straight in as if they were already the ortho's own local-CRS *meters*, collapsing every point
-    near the map's center once the ortho switched from a native lon/lat grid to a local per-camera
-    CRS (see docs/history.md's dated entry)."""
+    :param dem_ortho_result: DEM/ortho pair to display.
+    :param camera: Camera whose footprint to overlay on the ortho panel.
+    :returns: The `Figure`.
+    """
+    # The footprint overlay (the 4 corner rays' Moon intersections, connected into a closed quad,
+    # plus a center marker) reprojects `camera.footprint_lonlat_deg` (plain geographic lon/lat) into
+    # the ortho's own local Orthographic CRS via `geopandas`/`pyproj` (one `.to_crs()` call), then
+    # plots both in georeferenced coordinates -- not a manual `rasterio.transform.rowcol(ortho_
+    # transform, lon, lat)`, which would pass raw lon/lat degrees straight in as if they were already
+    # the ortho's own local-CRS meters, collapsing every point near the map's center once the ortho
+    # switched from a native lon/lat grid to a local per-camera CRS.
     with rasterio.open(dem_ortho_result.ortho) as src:
         ortho = src.read(1)
         ortho_crs = src.crs
@@ -163,6 +181,11 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
 
 
 def plot_synthetic_render(rendered_tif_path):
+    """Display the synthetic `sat_sim` render.
+
+    :param rendered_tif_path: Rendered GeoTIFF path.
+    :returns: The `Figure`.
+    """
     synthetic = read_raster_band(rendered_tif_path)
 
     fig = plt.figure(figsize=(5, 5))
@@ -174,9 +197,20 @@ def plot_synthetic_render(rendered_tif_path):
 
 
 def _plot_tie_point_marker(ax, name, px, py, k_rotation, height, width, width_km, height_km):
-    """Rotate (for north-up display) + scale to real km + plot one tie-point marker. Shared by
-    `plot_comparison` and `plot_isis_comparison` -- same math either way, just different
-    height/width (px and km) per panel."""
+    """Rotate (for north-up display) + scale to km + plot one tie-point marker.
+
+    :param ax: Axes to plot on.
+    :param name: Tie-point position name (a `MARKER_STYLES` key).
+    :param px: Raw pixel x.
+    :param py: Raw pixel y.
+    :param k_rotation: `np.rot90` rotation count for north-up display.
+    :param height: Image height, pixels (pre-rotation).
+    :param width: Image width, pixels (pre-rotation).
+    :param width_km: Displayed image width, km.
+    :param height_km: Displayed image height, km.
+    """
+    # Shared by `plot_comparison` and `plot_isis_comparison` -- same math either way, just different
+    # height/width (px and km) per panel.
     style = MARKER_STYLES[name]
     px_r, py_r = orientation.rotate_pixel_coords(px, py, k_rotation, height, width)
     ax.plot(
@@ -196,6 +230,17 @@ def plot_comparison(
     rotations: DisplayRotations,
     rendered_tif_path,
 ):
+    """Synthetic render next to the real WAC CDR mosaic (`wac.py`'s band-separated stack), north-up
+    and km-scaled, brightness-matched to the synthetic panel.
+
+    :param camera: Camera whose pose drove the synthetic render and crop sizing.
+    :param tie_point_results: From `session.select_tie_points` + tie-point resolution
+        (`{"synthetic_px", "crop_px"}` per tie-point name).
+    :param vis_mosaic: The WAC CDR mosaic array, `wac.MISSING_CONSTANT` where invalid.
+    :param rotations: North-up display rotations for each panel.
+    :param rendered_tif_path: Synthetic render GeoTIFF path.
+    :returns: The `Figure`.
+    """
     synthetic = read_raster_band(rendered_tif_path)
 
     valid_mask = vis_mosaic != wac.MISSING_CONSTANT
@@ -251,16 +296,22 @@ def plot_comparison(
 
 def _fill_dead_columns_for_display(band: np.ndarray, valid: np.ndarray) -> np.ndarray:
     """Row-wise linear interpolation across invalid (no-data) pixels, for display only -- doesn't
-    touch the real calibrated data used anywhere else. Unlike `lunaserv.despeckle()` (a randomly-
-    scattered-outlier filter over otherwise-present values), ISIS's `lrowaccal` "SpecialPixels"
-    correction marks genuinely *missing* pixels at a small, fixed, deterministic set of detector
-    columns on each VIS framelet's first line (confirmed empirically: the exact same 56 columns
-    recur, unchanged, at every 14-line framelet boundary across a full cube -- see
-    docs/external-tools.md's "ISIS Pushframe pipeline" section) -- narrow (1-3 columns), within otherwise real,
-    locally-smooth rows, so a simple per-row linear fill across each gap is a reasonable, standard
-    dead-pixel-column interpolation. `np.interp` also handles the edge case (`column 0` has no left
-    neighbor -- always dead, see the same docs section) by clamping to the nearest valid value
-    rather than extrapolating."""
+    touch the calibrated data used anywhere else.
+
+    :param band: Input band.
+    :param valid: Boolean mask, same shape as `band`, `True` where valid.
+    :returns: `band` with invalid pixels filled by per-row linear interpolation (or `NaN`, for a row
+        with no valid pixel to interpolate from).
+    """
+    # Unlike `lunaserv.despeckle()` (a randomly-scattered-outlier filter over otherwise-present
+    # values), ISIS's `lrowaccal` "SpecialPixels" correction marks genuinely missing pixels at a
+    # small, fixed, deterministic set of detector columns on each VIS framelet's first line (the same
+    # 56 columns recur, unchanged, at every 14-line framelet boundary across a full cube -- see
+    # docs/external-tools.md's "ISIS Pushframe pipeline" section) -- narrow (1-3 columns), within
+    # otherwise smooth rows, so a simple per-row linear fill across each gap is a reasonable, standard
+    # dead-pixel-column interpolation. `np.interp` also handles the edge case (`column 0` has no left
+    # neighbor -- always dead, see the same docs section) by clamping to the nearest valid value
+    # rather than extrapolating.
     filled = band.copy()
     cols = np.arange(band.shape[1])
     for row in range(band.shape[0]):
@@ -285,41 +336,44 @@ def plot_isis_comparison(
     rotations: DisplayRotations,
     window: rasterio.windows.Window | None = None,
 ):
-    """Synthetic render next to a same-real-footprint crop of the ISIS-processed WAC image
-    (`isis_wac.crop_for_camera`) -- an ad hoc real-km/north-up comparison, tie-pointed the same way
-    `plot_comparison`'s wac.py version is (see below), not true pixel-for-pixel geo-registration;
-    for that, see `plot_overlay`'s `cam2map`-based overlay of this same ISIS-processed cube
-    (`isis_wac.run_cam2map_for_crop`) instead. `window` is optional -- `stitched_cub_path` is typically
-    already `isis_wac.crop_for_camera`'s real, standalone crop cube (no further windowing needed);
-    pass a `rasterio.windows.Window` only if handed the full, uncropped stitched cube instead.
+    """Synthetic render next to a same-footprint crop of the ISIS-processed WAC image
+    (`isis_wac.crop_for_camera`) -- an ad hoc km/north-up comparison, not true pixel-for-pixel
+    geo-registration; for that, see `plot_overlay`'s `cam2map`-based overlay of this same
+    ISIS-processed cube (`isis_wac.run_cam2map_for_crop`) instead.
 
-    Applies the same north-up display rotation and real-km extent scaling `plot_comparison` already
-    uses, for the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent
-    rotation to display north-up, and WAC's along-track/cross-track pixel GSDs differ (the crop's
-    along-track axis is oversampled relative to cross-track -- see `crop_window_for_camera`), so a
-    plain 1:1 pixel `imshow` visibly stretches/compresses it. `rotations.k_crop` -- computed
-    purely from real SPICE geometry (`camera`/`frame_timing`), never from `wac.py`'s own pixel
-    array -- applies equally well here: the ISIS cube shares `wac.py`'s exact line/sample
-    convention (confirmed in `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking
-    order and `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
-    `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
-
-    `tie_point_results` (from `session.select_tie_points` + `tie_points.resolve_crop_pixels`,
-    already computed by Phase 6) are reused as-is, not recomputed -- `tie_points.py`'s "crop_px" is
-    a real ISIS `campt` ground-to-image query against `stitched_cub_path` itself (see that module's
-    docstring), so its row/col origin already matches this exact cube with no transformation needed.
-
-    A tie point the real camera doesn't see (see `tie_points.resolve_crop_pixels`'s docstring) is
-    simply absent from `tie_point_results` -- this function draws whatever's present, no special
-    handling needed for a missing point.
-
-    Brightness-matches the real panel to the synthetic one via the same single-multiplicative-
-    median-scale technique `plot_comparison` uses (see its docstring for the full rationale) -- not
-    an affine/percentile stretch, which would independently renormalize each panel's own contrast
-    and hide any real relative-brightness difference between them. Necessary here for the same
-    reason: the ISIS cube (`real`, calibrated I/F, ~0.01-0.2) and the synthetic render (`synthetic`,
-    a rendered-texture brightness value, ~0-255) are on entirely different numeric scales, not just
-    different units of the same thing."""
+    :param camera: Camera whose pose drove both the synthetic render and the crop window.
+    :param tie_point_results: From `session.select_tie_points` + `tie_points.resolve_crop_pixels`
+        (`{"synthetic_px", "crop_px"}` per tie-point name); reused as-is, not recomputed.
+    :param rendered_tif_path: Synthetic render GeoTIFF path.
+    :param stitched_cub_path: ISIS-processed WAC cube path.
+    :param rotations: North-up display rotations for each panel.
+    :param window: Optional crop window into `stitched_cub_path`, if it's the full, uncropped
+        stitched cube rather than an already-cropped one (`isis_wac.crop_for_camera`'s own output
+        needs no further windowing).
+    :returns: The `Figure`.
+    """
+    # Applies the same north-up display rotation and km extent scaling `plot_comparison` uses, for
+    # the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent rotation
+    # to display north-up, and WAC's along-track/cross-track pixel GSDs differ (the crop's
+    # along-track axis is oversampled relative to cross-track -- see `crop_window_for_camera`), so a
+    # plain 1:1 pixel `imshow` visibly stretches/compresses it. `rotations.k_crop` -- computed purely
+    # from SPICE geometry (`camera`/`frame_timing`), never from `wac.py`'s own pixel array -- applies
+    # equally well here: the ISIS cube shares `wac.py`'s exact line/sample convention (confirmed in
+    # `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking order and
+    # `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
+    # `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
+    #
+    # `tie_points.py`'s "crop_px" is a `campt` ground-to-image query against `stitched_cub_path`
+    # itself (see that module's docstring), so its row/col origin already matches this exact cube
+    # with no transformation needed. A tie point the camera doesn't see (see
+    # `tie_points.resolve_crop_pixels`'s docstring) is simply absent from `tie_point_results` -- this
+    # function draws whatever's present, no special handling needed for a missing point.
+    #
+    # Brightness-matches the real panel to the synthetic one via the same single-multiplicative-
+    # median-scale technique `plot_comparison` uses (see its docstring for the full rationale) --
+    # necessary here for the same reason: the ISIS cube (calibrated I/F, ~0.01-0.2) and the synthetic
+    # render (a rendered-texture brightness value, ~0-255) are on entirely different numeric scales,
+    # not just different units of the same thing.
     synthetic = read_raster_band(rendered_tif_path)
     real = read_raster_band(stitched_cub_path, window=window)
     valid = valid_pixel_mask(real)
@@ -378,38 +432,48 @@ def plot_render_vs_basemap(
     tie_point_results: dict | None = None,
     render_px_key: str = "synthetic_px",
 ):
-    """Raw, north-up-rotated, real-km-scaled side-by-side of a render's own unprojected pixels
-    (`render_array` -- genuine sensor/render image quality, not a resampled reprojection) against a
-    plain pixel crop of the hillshade basemap (`base_raster_path`, e.g. `DemOrthoResult.ortho`)
-    covering the same real ground footprint. This is the "A"-style geometry check: a quick ad hoc
-    quality/rough-alignment look -- for true pixel-for-pixel geo-registration against the same
-    basemap, see `plot_overlay`'s "B"-style `mapproject`-based overlay instead.
+    """North-up, km-scaled side-by-side of a render's own unprojected pixels against a plain pixel
+    crop of the hillshade basemap covering the same ground footprint.
 
-    `render_array` is passed through `_fill_dead_columns_for_display` before display, same as
-    `plot_isis_comparison`'s real panel -- a no-op for the synthetic render (no dead pixels to begin
-    with), but necessary for the real WAC crop: without it, the ~1% framelet-boundary dead-pixel
-    pattern (see docs/external-tools.md's "ISIS Pushframe pipeline" section) shows up as visible speckle.
-
-    `footprint_lonlat_deg` is the render's own real ground footprint (corners + center, matching
-    `Camera.footprint_lonlat_deg`'s shape) -- `Camera.footprint_lonlat_deg` itself for the synthetic
-    render, `tie_points.crop_footprint_corners()` for the real WAC crop (its own independently
-    ray-traced footprint, not assumed identical to the synthetic camera's). `lunaserv.footprint_bbox_local_m`
-    (already used to size the original WMS fetch -- see its docstring) converts the corners to the
-    basemap's own local Orthographic CRS (centered on this same footprint's own center, see
-    `lunaserv.fetch_dem_and_ortho`) to find the matching pixel window -- a plain windowed read, no
-    resampling. Unlike the render (fixed sensor-pixel axes, needing a pass-dependent rotation for
-    north-up display), the basemap crop needs no rotation: the local Orthographic CRS is already
-    north-referenced by construction (+Y = north).
-
-    `tie_point_results` (from `session.select_tie_points` + `tie_points.resolve_crop_pixels` for the
-    real crop's `"crop_px"`, see `plot_comparison`/
-    `plot_isis_comparison`'s identical dict shape) marks the same 5 ground points on both panels, if
-    given. On the render panel, `render_px_key` selects which of each point's two pre-computed pixel
-    coordinates applies (`"synthetic_px"` or `"crop_px"`) -- same technique `plot_comparison`/
-    `plot_isis_comparison` already use. On the basemap panel, each point's real `"lonlat"` is
-    projected directly into the crop's own local-CRS offset (`lunaserv.orthographic_xy_m`, same
-    center as the crop itself) -- no pixel coordinates needed there, since that panel is a plain,
-    unrotated crop of an already-georeferenced raster."""
+    :param render_array: The render's own pixels, unprojected (genuine sensor/render image quality,
+        not a resampled reprojection).
+    :param rotation_k: North-up display rotation for the render panel.
+    :param render_width_km: Displayed render width, km.
+    :param render_height_km: Displayed render height, km.
+    :param footprint_lonlat_deg: The render's own ground footprint (corners + center, matching
+        `Camera.footprint_lonlat_deg`'s shape) -- `Camera.footprint_lonlat_deg` itself for the
+        synthetic render, `tie_points.crop_footprint_corners()` for the WAC crop.
+    :param base_raster_path: Basemap raster to crop (e.g. `DemOrthoResult.ortho`).
+    :param title: Figure title.
+    :param render_label: Render panel title.
+    :param tie_point_results: From `session.select_tie_points` + `tie_points.resolve_crop_pixels`;
+        marks the same tie points on both panels if given.
+    :param render_px_key: Which of each tie point's two pre-computed pixel coordinates to use on the
+        render panel (`"synthetic_px"` or `"crop_px"`).
+    :returns: The `Figure`.
+    """
+    # This is the "A"-style geometry check: a quick ad hoc quality/rough-alignment look -- for true
+    # pixel-for-pixel geo-registration against the same basemap, see `plot_overlay`'s "B"-style
+    # `mapproject`-based overlay instead.
+    #
+    # `render_array` is passed through `_fill_dead_columns_for_display` before display, same as
+    # `plot_isis_comparison`'s real panel -- a no-op for the synthetic render (no dead pixels to
+    # begin with), but necessary for the WAC crop: without it, the ~1% framelet-boundary dead-pixel
+    # pattern (see docs/external-tools.md's "ISIS Pushframe pipeline" section) shows up as visible
+    # speckle.
+    #
+    # `lunaserv.footprint_bbox_local_m` (already used to size the original WMS fetch -- see its
+    # docstring) converts `footprint_lonlat_deg`'s corners to the basemap's own local Orthographic
+    # CRS (centered on this same footprint's own center, see `lunaserv.fetch_dem_and_ortho`) to find
+    # the matching pixel window -- a plain windowed read, no resampling. Unlike the render (fixed
+    # sensor-pixel axes, needing a pass-dependent rotation for north-up display), the basemap crop
+    # needs no rotation: the local Orthographic CRS is already north-referenced by construction (+Y =
+    # north).
+    #
+    # On the basemap panel, each tie point's `"lonlat"` is projected directly into the crop's own
+    # local-CRS offset (`lunaserv.orthographic_xy_m`, same center as the crop itself) -- no pixel
+    # coordinates needed there, since that panel is a plain, unrotated crop of an already-georeferenced
+    # raster.
     center_lon, center_lat = footprint_lonlat_deg["center"]
     minx, miny, maxx, maxy = lunaserv.footprint_bbox_local_m(footprint_lonlat_deg, center_lon, center_lat)
 
@@ -469,38 +533,52 @@ def plot_render_vs_basemap(
 
 
 def _cellsize_m(raster_da) -> float:
-    """Pixel size (meters) from `raster_da`'s own `x` coordinate spacing -- shared by
-    `compute_brightness_matched_diff` and `plot_sfs_comparison`'s own `reindex_like` alignment
-    tolerance (half a pixel, generous enough to absorb real floating-point/rounding differences
-    between two independently-computed windows, tight enough to never match two genuinely different
-    grid cells -- see `compute_brightness_matched_diff`'s own docstring)."""
+    """Pixel size, meters, from `raster_da`'s own `x` coordinate spacing.
+
+    :param raster_da: A `rioxarray`-opened `DataArray`.
+    :returns: Pixel size, meters.
+    """
+    # Shared by `compute_brightness_matched_diff` and `plot_sfs_comparison`'s own `reindex_like`
+    # alignment tolerance (half a pixel, generous enough to absorb floating-point/rounding
+    # differences between two independently-computed windows, tight enough to never match two
+    # genuinely different grid cells -- see `compute_brightness_matched_diff`'s own docstring).
     return float(abs(raster_da.x.values[1] - raster_da.x.values[0]))
 
 
 def _open_raster_dataarray(path):
-    """`rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs
-    (e.g. multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
-    yields a `DataArray` -- assert that so mypy can narrow it, rather than a `# type: ignore`.
-    `masked=True` converts nodata to real NaN based on the file's own embedded `nodata` tag --
-    necessary because `mapproject`'s nodata convention depends on its *input* format: a synthetic
-    render (plain GeoTIFF source) comes out as real NaN already, but an ISIS `.cub` source (e.g. the
-    real-WAC overlay) carries ISIS's own huge-magnitude NULL sentinel (~-3.4e38) straight through
-    into the output, with a `nodata` tag set to match -- confirmed empirically: without `masked=True`
-    here, that sentinel dominates `plot.imshow`'s automatic vmin/vmax and washes the real 0.01-0.13
-    I/F signal out to a uniform flat gray."""
+    """Open `path` as a single-band `xarray.DataArray` via `rioxarray`.
+
+    :param path: Raster file path.
+    :returns: The opened `DataArray`, `masked=True` so nodata reads as `NaN`.
+    """
+    # `rioxarray.open_rasterio` is typed to return a `Dataset`/`list[Dataset]` for some inputs (e.g.
+    # multi-file), but a single-band single-file GeoTIFF (this project's only use so far) always
+    # yields a `DataArray` -- assert that so mypy can narrow it, rather than a `# type: ignore`.
+    #
+    # `masked=True` converts nodata to NaN based on the file's own embedded `nodata` tag -- necessary
+    # because `mapproject`'s nodata convention depends on its input format: a synthetic render (plain
+    # GeoTIFF source) comes out as NaN already, but an ISIS `.cub` source (e.g. the WAC overlay)
+    # carries ISIS's own huge-magnitude NULL sentinel (~-3.4e38) straight through into the output,
+    # with a `nodata` tag set to match. Without `masked=True`, that sentinel dominates
+    # `plot.imshow`'s automatic vmin/vmax and washes the 0.01-0.13 I/F signal out to a uniform flat
+    # gray.
     opened = rioxarray.open_rasterio(path, masked=True)
     assert isinstance(opened, xarray.DataArray)
     return opened.squeeze()
 
 
 def _valid_data_outline(raster_da):
-    """The real-image (non-NaN) footprint of `raster_da` as a single Shapely geometry in the
-    raster's own real (already-georeferenced) coordinates -- e.g. `run_mapproject`'s output is
-    NaN outside the actual reprojected camera footprint (see docs/data-sources.md), so this traces
-    that footprint's true outline rather than the raster's full (padded, mostly-nodata) pixel grid.
-    Interior holes (isolated nodata pixels from real DEM ray-intersection speckle -- see
-    `render.DEM_HEIGHT_ERROR_TOL_M`'s docstring) are dropped: they're display noise, not meaningful
-    "outline" content."""
+    """The non-NaN footprint of `raster_da` as a single Shapely geometry, in the raster's own
+    (already-georeferenced) coordinates.
+
+    :param raster_da: A `rioxarray`-opened `DataArray`.
+    :returns: The outline as a `MultiPolygon`, with interior holes dropped.
+    """
+    # E.g. `run_mapproject`'s output is NaN outside the actual reprojected camera footprint (see
+    # docs/data-sources.md), so this traces that footprint's true outline rather than the raster's
+    # full (padded, mostly-nodata) pixel grid. Interior holes (isolated nodata pixels from DEM
+    # ray-intersection speckle -- see `render.DEM_HEIGHT_ERROR_TOL_M`'s docstring) are dropped:
+    # they're display noise, not meaningful "outline" content.
     mask = ~np.isnan(raster_da.values)
     polygons = [
         shapely.geometry.shape(geom)
@@ -516,17 +594,22 @@ def _valid_data_outline(raster_da):
 
 def _fill_overlay_nodata_for_display(overlay_da, max_search_distance: int = 10):
     """Fill small nodata gaps in `overlay_da` for display, via GDAL's inverse-distance-weighted
-    `rasterio.fill.fillnodata` -- orientation-agnostic (unlike `_fill_dead_columns_for_display`'s
-    row-wise interpolation, which only helps gaps that are narrow *within a row*), needed here
-    because a `mapproject` output's real-but-sparse defects (e.g. the same framelet-boundary
-    dead-detector-columns `_fill_dead_columns_for_display` handles pre-reprojection -- see its
-    docstring) trace diagonal "dash" streaks once reprojected into map space, following the
-    sensor's ground track rather than the image's row/column axes. Confirmed empirically: a ~1%
-    dead-pixel rate this regular (the exact same ~56 columns recurring at every framelet boundary,
-    hundreds of times across a swath) reads as severe, dense-looking striping once mapprojected,
-    even though the raw fraction is small -- `max_search_distance` (pixels) only needs to bridge
-    those few-pixel-wide dashes, not the genuine, much larger nodata region outside the real
-    footprint entirely (left untouched, since it's far beyond this search radius)."""
+    `rasterio.fill.fillnodata`.
+
+    :param overlay_da: A `rioxarray`-opened `DataArray`.
+    :param max_search_distance: Pixels; only needs to bridge a few-pixel-wide gap, not the much
+        larger nodata region outside the actual footprint entirely (left untouched, since it's far
+        beyond this search radius).
+    :returns: `overlay_da` with small gaps filled.
+    """
+    # Orientation-agnostic (unlike `_fill_dead_columns_for_display`'s row-wise interpolation, which
+    # only helps gaps that are narrow within a row), needed here because a `mapproject` output's
+    # sparse defects (e.g. the same framelet-boundary dead-detector-columns
+    # `_fill_dead_columns_for_display` handles pre-reprojection -- see its docstring) trace diagonal
+    # "dash" streaks once reprojected into map space, following the sensor's ground track rather than
+    # the image's row/column axes. A ~1% dead-pixel rate this regular (the exact same ~56 columns
+    # recurring at every framelet boundary, hundreds of times across a swath) reads as severe,
+    # dense-looking striping once mapprojected, even though the raw fraction is small.
     filled = rasterio.fill.fillnodata(
         overlay_da.values.astype(np.float32).copy(),
         mask=(~np.isnan(overlay_da.values)).astype(np.uint8),
@@ -539,33 +622,39 @@ def _fill_overlay_nodata_for_display(overlay_da, max_search_distance: int = 10):
 @dataclasses.dataclass
 class OverlayLayer:
     """One optional vector-data annotation layer for `plot_overlay`/`plot_overlay_toggle` -- e.g.
-    Robbins crater database ellipses, the concrete case this was added for (see `docs/plan.md`'s
-    open items). `geoseries` must already be in the same CRS as the base/overlay raster and already
-    filtered down to the relevant AOI -- this module stays consumption-only (no fetch/filter/
-    reprojection here, per its own module docstring).
+    Robbins crater database ellipses, the concrete case this was added for (see `docs/plan.md`'s open
+    items).
 
-    Deliberately a plain `geoseries` + a handful of style fields (a "GeoJSON-like" geometry+style
-    pairing, not literal GeoJSON) rather than named `plot_overlay(..., crater_geoseries=...)`
-    parameters -- an earlier version of this did exactly that for craters alone, and adding a second
-    annotation-layer type would have meant threading two more parameters through all four of
-    `plot_overlay`/`plot_overlay_toggle`/`_render_overlay_figure`/`_render_overlay_frame` again, the
-    same way the crater parameters were threaded through the first time. A `layers: list[OverlayLayer]`
-    on all four instead scales to any number of layers with no further signature changes -- the
-    footprint outline (`outline_geoseries`/`overlay_outline_color`) deliberately stays a separate,
-    dedicated, always-present parameter rather than folding into this list: it's the actual geometry
-    validation reference the whole Phase 5/6 comparison exists to show, not an optional annotation.
+    :ivar geoseries: Must already be in the same CRS as the base/overlay raster and already filtered
+        down to the relevant AOI -- this module stays consumption-only (no fetch/filter/reprojection
+        here, per its own module docstring).
+    :ivar color: Line/fill color.
+    :ivar linewidth: Boundary line width, when `fill=False`.
+    :ivar alpha: Opacity.
+    :ivar fill: Draw as a filled shape rather than just the boundary.
+    :ivar linestyle: Any matplotlib `Line2D` linestyle -- a named style (`"solid"`, `"dashed"`,
+        `"dotted"`) or a custom `(offset, (on_pt, off_pt, ...))` dash tuple.
+    """
 
-    `fill=False` (default) draws just the boundary (`.boundary.plot(...)`, matching the existing
-    footprint-outline style) rather than a filled shape -- outlines read better than fills stacked on
-    top of imagery at `plot_overlay`'s typical `overlay_alpha=1.0`.
-
-    `linestyle` is any matplotlib `Line2D` linestyle -- a named style (`"solid"`, `"dashed"`,
-    `"dotted"`) or a custom `(offset, (on_pt, off_pt, ...))` dash tuple, passed straight through to
-    `.boundary.plot(...)`/`.plot(...)`'s own `linestyle` kwarg. Added because a solid outline at full
-    opacity/width can itself obscure the very rim it's meant to help visually verify -- a sparse
-    dotted line (e.g. `(0, (1, 10))`: a 1pt dash every 10pt) leaves most of the underlying image
-    visible between dots while still marking the boundary at full color/opacity, unlike turning down
-    `alpha`/`linewidth` instead (which fades the boundary itself, not just how much it covers)."""
+    # Deliberately a plain `geoseries` + a handful of style fields rather than named
+    # `plot_overlay(..., crater_geoseries=...)` parameters -- an earlier version did exactly that for
+    # craters alone, and adding a second annotation-layer type would have meant threading two more
+    # parameters through all four of `plot_overlay`/`plot_overlay_toggle`/`_render_overlay_figure`/
+    # `_render_overlay_frame` again. A `layers: list[OverlayLayer]` on all four instead scales to any
+    # number of layers with no further signature changes -- the footprint outline
+    # (`outline_geoseries`/`overlay_outline_color`) deliberately stays a separate, dedicated,
+    # always-present parameter rather than folding into this list: it's the actual geometry
+    # validation reference the whole comparison exists to show, not an optional annotation.
+    #
+    # `fill=False` (default) draws just the boundary, matching the existing footprint-outline style --
+    # outlines read better than fills stacked on top of imagery at `plot_overlay`'s typical
+    # `overlay_alpha=1.0`.
+    #
+    # `linestyle` was added because a solid outline at full opacity/width can itself obscure the very
+    # rim it's meant to help visually verify -- a sparse dotted line (e.g. `(0, (1, 10))`: a 1pt dash
+    # every 10pt) leaves most of the underlying image visible between dots while still marking the
+    # boundary at full color/opacity, unlike turning down `alpha`/`linewidth` instead (which fades the
+    # boundary itself, not just how much it covers).
 
     geoseries: geopandas.GeoSeries
     color: str = "orange"
@@ -575,6 +664,7 @@ class OverlayLayer:
     linestyle: str | tuple = "solid"
 
     def plot(self, ax):
+        """Draw this layer on `ax`."""
         if self.fill:
             self.geoseries.plot(ax=ax, color=self.color, alpha=self.alpha)
         else:
@@ -594,64 +684,66 @@ def plot_overlay(
     fill_overlay_nodata: bool = True,
     layers: list[OverlayLayer] | None = None,
 ):
-    """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the real
-    geographic coordinates in each file's own georeferencing drive the plot -- unlike
-    `plot_comparison`'s side-by-side panels (aligned only by matching real-km extent and a north-up
-    display rotation), this is genuine pixel-for-pixel geo-registration: both rasters are expected to
-    already share the same map grid (e.g. `render.run_mapproject`'s `--ref-map` output alongside
-    `DemOrthoResult.ortho`), not reprojected/aligned here. `overlay_cmap` defaults to `"gray"`
-    (matching the base) since the overlay is typically also a real image, not categorical/scalar
-    data -- a high-chroma colormap like `"inferno"` visually exaggerates what's actually a mild,
-    real brightness gradient (e.g. real-sun hillshade) into a distracting "rainbow" look.
-    `show_overlay_outline` traces the overlay's real (non-NaN) footprint with `geopandas` and draws
-    it as a vector outline -- useful both as a sanity check that the overlay is actually where it
-    claims to be, and as a template for future vector-layer overlays (e.g. the Robbins crater
-    database; see `docs/plan.md`'s open items) on top of this same raster display.
-    `fill_overlay_nodata` applies `_fill_overlay_nodata_for_display` before the overlay is drawn --
-    display only (the outline above is still traced from the real, unfilled data, so it reflects the
-    genuine sensor footprint, not the filled result). The overlay is first brightness-matched to the
-    base via a single multiplicative scale at the median (`_prep_overlay_rasters`) -- the same
-    technique `plot_comparison`/`plot_isis_comparison` already use for Phase 5A/6A (see their own
-    docstrings for the full rationale). Necessary here for the same real reason it mattered there:
-    `overlay_raster_path` and `base_raster_path` can come from different pipelines on different
-    numeric scales (e.g. 6B's ISIS-calibrated I/F crop vs. the hillshade-based basemap), and each
-    panel's own independent percentile stretch doesn't guarantee the two end up looking similarly
-    bright even though each is individually well-exposed -- distracting when `plot_overlay_toggle`
-    blinks between them. Base and the now-brightness-matched overlay are then both displayed on the
-    *same* `vmin=0`/`vmax=`99.9th-percentile linear stretch (base's own; same technique as
-    `plot_render_vs_basemap`'s "6A darkness" fix) rather than `imshow`'s naive min/max autoscale --
-    without it, a real calibrated overlay's actual valid-data footprint can visually read as a thin
-    sliver near `show_overlay_outline`'s boundary line rather than the majority of the frame it
-    actually covers, since the naive-autoscaled overlay blends into the base almost invisibly at
-    `overlay_alpha`.
+    """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the
+    georeferenced coordinates in each file drive the plot -- genuine pixel-for-pixel geo-registration,
+    unlike `plot_comparison`'s side-by-side panels.
 
-    `overlay_alpha` defaults to fully opaque (`1.0`), not a blend -- per explicit user feedback, a
-    partial blend (the original default, `0.6`) makes it genuinely hard to tell which pixels are the
-    overlay's own content versus the base showing through, especially when debugging a
-    not-yet-fully-correct overlay (exactly when that distinction matters most). `show_overlay_outline`
-    still marks the overlay's real footprint boundary regardless of alpha.
-
-    `overlay_raster_path` is expected to already cover only the real ground footprint actually being
-    compared (e.g. `isis_wac.crop_for_camera`'s real, single crop cube run through
-    `isis_wac.run_cam2map_for_crop`), the same way the synthetic render's own mapprojected overlay already
-    does (`sat_sim` only ever renders the camera's own FOV, never more) -- no view-restricting
-    parameter is needed here as a result. An earlier version of this function tried to paper over a
-    too-large overlay (the *entire* WAC swath, not just the crop) with a `zoom_footprint_lonlat_deg`
-    parameter that only restricted the displayed *view*, leaving `show_overlay_outline`'s trace still
-    running on the full un-clipped raster -- confirmed not to work (the outline still only showed a
-    partial cross-section of a much longer boundary, not a closed shape) and removed; see
-    `docs/history.md`'s dated entry for the full story.
-
-    See also `plot_overlay_toggle`, which renders this same overlay twice (`overlay_alpha=0` and
-    `overlay_alpha=1`) as an auto-blinking animated GIF rather than a single fixed `overlay_alpha`.
-
-    `layers`, if given, is a list of `OverlayLayer`s (see its own docstring) each drawn as an
-    additional vector layer on top of the footprint outline above -- e.g. a single-entry list
-    wrapping Robbins crater database ellipses, the concrete case this parameter was added for (see
-    `docs/plan.md`'s open items). Each layer's geometry must already be in the same CRS as
-    `overlay`'s own raster CRS and already filtered down to the relevant AOI -- this function stays
-    consumption-only (no fetch/filter/reprojection logic here), matching this module's own "pure
-    consumption of already-computed values" docstring."""
+    :param base_raster_path: Base raster (e.g. `DemOrthoResult.ortho`).
+    :param overlay_raster_path: Overlay raster, expected to already share the same map grid as the
+        base (e.g. `render.run_mapproject`'s `--ref-map` output) -- not reprojected/aligned here.
+    :param overlay_cmap: Overlay colormap.
+    :param overlay_alpha: Overlay opacity.
+    :param title: Figure title.
+    :param show_overlay_outline: Trace the overlay's non-NaN footprint and draw it as a vector
+        outline.
+    :param overlay_outline_color: Outline color.
+    :param fill_overlay_nodata: Fill the overlay's small nodata gaps for display
+        (`_fill_overlay_nodata_for_display`) before drawing; the outline (if shown) is still traced
+        from the unfilled data.
+    :param layers: Additional vector annotation layers (see `OverlayLayer`), drawn on top of the
+        footprint outline, in list order.
+    :returns: The `Figure`.
+    """
+    # `overlay_cmap` defaults to `"gray"` (matching the base) since the overlay is typically also an
+    # image, not categorical/scalar data -- a high-chroma colormap like `"inferno"` visually
+    # exaggerates what's actually a mild brightness gradient (e.g. a sun-lit hillshade) into a
+    # distracting "rainbow" look. `show_overlay_outline` is also useful as a template for future
+    # vector-layer overlays (e.g. the Robbins crater database; see `docs/plan.md`'s open items) on
+    # top of this same raster display.
+    #
+    # The overlay is first brightness-matched to the base via a single multiplicative scale at the
+    # median (`_prep_overlay_rasters`) -- the same technique `plot_comparison`/`plot_isis_comparison`
+    # already use. Necessary here for the same reason it mattered there: `overlay_raster_path` and
+    # `base_raster_path` can come from different pipelines on different numeric scales (e.g. an
+    # ISIS-calibrated I/F crop vs. the hillshade-based basemap), and each panel's own independent
+    # percentile stretch doesn't guarantee the two end up looking similarly bright even though each
+    # is individually well-exposed -- distracting when `plot_overlay_toggle` blinks between them.
+    # Base and the now-brightness-matched overlay are then both displayed on the same
+    # `vmin=0`/`vmax=`99.9th-percentile linear stretch (base's own; same technique as
+    # `plot_render_vs_basemap`'s darkness fix) rather than `imshow`'s naive min/max autoscale --
+    # without it, a calibrated overlay's actual valid-data footprint can visually read as a thin
+    # sliver near `show_overlay_outline`'s boundary line rather than the majority of the frame it
+    # actually covers, since the naive-autoscaled overlay blends into the base almost invisibly at
+    # `overlay_alpha`.
+    #
+    # `overlay_alpha` defaults to fully opaque (`1.0`), not a blend -- per explicit user feedback, a
+    # partial blend (the original default, `0.6`) makes it hard to tell which pixels are the
+    # overlay's own content versus the base showing through, especially when debugging a
+    # not-yet-fully-correct overlay (exactly when that distinction matters most). `show_overlay_outline`
+    # still marks the overlay's footprint boundary regardless of alpha.
+    #
+    # `overlay_raster_path` is expected to already cover only the ground footprint actually being
+    # compared (e.g. `isis_wac.crop_for_camera`'s single crop cube run through
+    # `isis_wac.run_cam2map_for_crop`), the same way the synthetic render's own mapprojected overlay
+    # already does (`sat_sim` only ever renders the camera's own FOV, never more) -- no
+    # view-restricting parameter is needed here as a result. An earlier version tried to paper over a
+    # too-large overlay (the entire WAC swath, not just the crop) with a `zoom_footprint_lonlat_deg`
+    # parameter that only restricted the displayed view, leaving `show_overlay_outline`'s trace still
+    # running on the full un-clipped raster -- didn't work (the outline still only showed a partial
+    # cross-section of a much longer boundary, not a closed shape) and was removed.
+    #
+    # See also `plot_overlay_toggle`, which renders this same overlay twice (`overlay_alpha=0` and
+    # `overlay_alpha=1`) as an auto-blinking animated GIF rather than a single fixed `overlay_alpha`.
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata
     )
@@ -674,11 +766,17 @@ def plot_overlay(
 
 def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_nodata: bool):
     """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`: open both rasters, optionally fill
-    the overlay's small nodata gaps for display, brightness-match the overlay to the base (see
-    `plot_overlay`'s docstring for the full rationale), and compute a shared 0/99.9th-percentile
-    display stretch (see `plot_overlay`'s docstring for why a naive min/max autoscale washes out real
-    calibrated-I/F data). Split out so `plot_overlay_toggle` can do this once and reuse it for both of
-    its two renders, rather than re-opening/re-stretching/re-scaling the same rasters twice."""
+    the overlay's small nodata gaps for display, brightness-match the overlay to the base, and
+    compute a shared display stretch.
+
+    :param base_raster_path: Base raster path.
+    :param overlay_raster_path: Overlay raster path.
+    :param fill_overlay_nodata: Fill the overlay's small nodata gaps for display.
+    :returns: `(base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax)`.
+    """
+    # See `plot_overlay`'s docstring for the brightness-matching and display-stretch rationale. Split
+    # out so `plot_overlay_toggle` can do this once and reuse it for both of its two renders, rather
+    # than re-opening/re-stretching/re-scaling the same rasters twice.
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
@@ -701,7 +799,7 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
 
 @dataclasses.dataclass(frozen=True)
 class BrightnessMatchedDiffResult:
-    """`compute_brightness_matched_diff`'s return -- see that function's own docstring."""
+    """`compute_brightness_matched_diff`'s return."""
 
     mean_abs_diff: float
     median_abs_diff: float
@@ -709,30 +807,30 @@ class BrightnessMatchedDiffResult:
 
 
 def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> BrightnessMatchedDiffResult:
-    """The quantitative counterpart to `plot_overlay`'s visual comparison: a real, reusable
-    "brightness-matched mean|diff|" number between two geo-aligned rasters on the same map grid (e.g.
-    `DemOrthoResult.ortho` vs. a real WAC crop's `isis_wac.run_cam2map_for_crop` output) -- the same
-    metric this project's own investigation notebooks have repeatedly hand-recomputed ad hoc (see
-    docs/history.md's Phase 68/70/71 entries, none of which kept the actual comparison code), each
-    time as a throwaway script with no guarantee of matching any other attempt's exact methodology.
-    Factored out here specifically so future comparisons are reproducible and mutually comparable,
-    not re-derived from scratch each time.
+    """The quantitative counterpart to `plot_overlay`'s visual comparison: a reusable
+    brightness-matched mean|diff| between two geo-aligned rasters on the same map grid.
 
-    Reuses `_prep_overlay_rasters`'s exact brightness-matching technique (a single multiplicative
-    scale at the median, not an affine/percentile stretch -- see its own docstring for why) with
-    `fill_overlay_nodata=False`: unlike `plot_overlay`'s display use, a quantitative diff must never
-    include interpolated/filled pixels, only real data.
-
-    `base_raster_path` and `overlay_raster_path` are expected to already share the same map grid
-    (same CRS/pixel size) but not necessarily the same window/extent -- e.g. `base_raster_path` is
-    typically the full padded DEM/ortho fetch AOI while `overlay_raster_path` covers only a real
-    crop's own smaller real footprint. Confirmed live (2026-08-22, docs/history.md's Phase 71 entry):
-    naively diffing the two underlying arrays by raw position raises a shape-mismatch error, or worse,
-    would silently misalign them if the shapes happened to match by coincidence -- both must be
-    aligned by real coordinate first (`reindex_like`), not raw array indexing. `tolerance` is half the
-    base raster's own pixel size, derived from its `x` coordinate spacing -- generous enough to absorb
-    any real floating-point/rounding difference between how each raster's own window was independently
-    computed, tight enough to never accidentally match two genuinely different grid cells."""
+    :param base_raster_path: Base raster (typically the full padded DEM/ortho fetch AOI).
+    :param overlay_raster_path: Overlay raster, expected to share the base's CRS/pixel size but not
+        necessarily the same window/extent (e.g. a crop's own smaller footprint).
+    :returns: A `BrightnessMatchedDiffResult`.
+    """
+    # Factored out so comparisons are reproducible and mutually comparable, rather than each
+    # investigation notebook hand-recomputing this metric ad hoc with no guarantee of matching any
+    # other attempt's exact methodology.
+    #
+    # Reuses `_prep_overlay_rasters`'s exact brightness-matching technique (a single multiplicative
+    # scale at the median, not an affine/percentile stretch -- see its own docstring for why) with
+    # `fill_overlay_nodata=False`: unlike `plot_overlay`'s display use, a quantitative diff must never
+    # include interpolated/filled pixels, only real data.
+    #
+    # The two rasters are aligned by coordinate (`reindex_like`), not raw array indexing, since they
+    # aren't guaranteed to share the same window/extent -- naively diffing the two underlying arrays
+    # by raw position raises a shape-mismatch error, or worse, would silently misalign them if the
+    # shapes happened to match by coincidence. `tolerance` is half the base raster's own pixel size,
+    # derived from its `x` coordinate spacing -- generous enough to absorb any floating-point/rounding
+    # difference between how each raster's own window was independently computed, tight enough to
+    # never accidentally match two genuinely different grid cells.
     base, _, overlay_display, *_ = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata=False
     )
@@ -750,15 +848,22 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
 
 
 def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title: str | None = None):
-    """Real WAC crop vs. our own Hapke hillshade vs. Ames Stereo Pipeline `sfs`'s independent
-    forward-render (`sfs_validation.run_sfs_forward_render`), all three on the real WAC panel's own
-    display range and brightness-matched to it via the same single-multiplicative-median-scale
-    technique `_prep_overlay_rasters`/`compute_brightness_matched_diff` use (see either's docstring
-    for why this, not an affine/percentile stretch). `sfs_sim_intensity_path` is expected to already
-    be coverage-masked (`sfs_validation.mask_sfs_uncovered`) -- `sfs`'s own literal-`0.0`
-    "outside camera coverage" convention would otherwise dominate the median and wash out the
-    brightness match entirely, the same failure mode `compute_brightness_matched_diff`'s own
-    docstring warns a mismatched-extent raster can cause."""
+    """WAC crop vs. this project's own Hapke hillshade vs. ASP `sfs`'s independent forward-render
+    (`sfs_validation.run_sfs_forward_render`), all brightness-matched to the WAC panel.
+
+    :param real_wac_path: WAC crop raster path.
+    :param ours_path: This project's Hapke hillshade raster path.
+    :param sfs_sim_intensity_path: `sfs`'s forward-render intensity raster path, already
+        coverage-masked (`sfs_validation.mask_sfs_uncovered`).
+    :param title: Optional figure title.
+    :returns: The `Figure`.
+    """
+    # Brightness-matched via the same single-multiplicative-median-scale technique
+    # `_prep_overlay_rasters`/`compute_brightness_matched_diff` use (see either's docstring for why,
+    # not an affine/percentile stretch). `sfs_sim_intensity_path` must already be coverage-masked --
+    # `sfs`'s own literal-`0.0` "outside camera coverage" convention would otherwise dominate the
+    # median and wash out the brightness match entirely, the same failure mode
+    # `compute_brightness_matched_diff`'s own docstring warns a mismatched-extent raster can cause.
     real = _open_raster_dataarray(real_wac_path)
     tolerance = _cellsize_m(real) / 2.0
     ours = _open_raster_dataarray(ours_path).reindex_like(real, method="nearest", tolerance=tolerance)
@@ -788,12 +893,18 @@ def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title:
 
 
 def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg: np.ndarray, title: str | None = None):
-    """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check
-    (`sfs_validation.run_sfs_lambertian_incidence`/`incidence_deg_from_lambertian_sim_intensity`):
-    `sfs`'s own independently ray-traced incidence field, `lunaserv.real_geometry_photometric_
-    angles`'s own field, and their difference (degrees) -- both plain arrays, already `NaN` outside
-    real camera coverage (`sfs`'s own -- see `incidence_deg_from_lambertian_sim_intensity`), not
-    raster paths, since both are already in-memory by the time a caller has something to compare."""
+    """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check: `sfs`'s own
+    independently ray-traced incidence field, `lunaserv.real_geometry_photometric_angles`'s own
+    field, and their difference.
+
+    :param incidence_sfs_deg: `sfs`'s incidence field, degrees, NaN outside camera coverage
+        (see `incidence_deg_from_lambertian_sim_intensity`).
+    :param incidence_ours_deg: This project's incidence field, degrees, same shape.
+    :param title: Optional figure title.
+    :returns: The `Figure`.
+    """
+    # Both plain arrays, not raster paths, since both are already in-memory by the time a caller has
+    # something to compare.
     diff_deg = incidence_sfs_deg - incidence_ours_deg
     vmin = float(np.nanmin([np.nanmin(incidence_sfs_deg), np.nanmin(incidence_ours_deg)]))
     vmax = float(np.nanmax([np.nanmax(incidence_sfs_deg), np.nanmax(incidence_ours_deg)]))
@@ -817,10 +928,14 @@ def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg:
 
 
 def _overlay_outline_geoseries(overlay):
-    """The overlay's real-data footprint (see `_valid_data_outline`) as a `GeoSeries`, ready to draw
-    via `.boundary.plot(...)` -- split out of `_render_overlay_figure` so `plot_overlay_toggle` can
-    compute this once and pass the same `GeoSeries` into both of its two renders, rather than
-    re-tracing the same footprint (a real rasterio/shapely computation) twice."""
+    """The overlay's non-NaN footprint (`_valid_data_outline`) as a `GeoSeries`.
+
+    :param overlay: A `rioxarray`-opened `DataArray`.
+    :returns: The footprint as a single-entry `GeoSeries`.
+    """
+    # Split out of `_render_overlay_figure` so `plot_overlay_toggle` can compute this once and pass
+    # the same `GeoSeries` into both of its two renders, rather than re-tracing the same footprint (a
+    # rasterio/shapely computation) twice.
     return geopandas.GeoSeries([_valid_data_outline(overlay)], crs=overlay.rio.crs)
 
 
@@ -838,15 +953,31 @@ def _render_overlay_figure(
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
 ):
-    """Builds one `Figure` for `plot_overlay`/`plot_overlay_toggle` -- identical rendering path
-    (figsize, draw order, axis-limit restore, km tick formatting) regardless of `overlay_alpha`, so
-    two calls with only `overlay_alpha` varying produce pixel-aligned images (same figure size, same
-    dpi, same bbox -- required for `plot_overlay_toggle`'s two GIF frames to align pixel-for-pixel).
+    """Build one `Figure` for `plot_overlay`/`plot_overlay_toggle`.
 
-    `layers` draw after `outline_geoseries`, in list order -- `OverlayLayer`'s own default color
-    (`"orange"`) is distinct from both the footprint outline's `"red"` and `MARKER_STYLES`'s
-    tie-point colors so a default-styled layer is never hidden underneath the footprint boundary
-    line."""
+    :param base: Base `DataArray`.
+    :param overlay_display: Overlay `DataArray` (already brightness-matched/nodata-filled).
+    :param base_vmin: Base display stretch minimum.
+    :param base_vmax: Base display stretch maximum.
+    :param overlay_vmin: Overlay display stretch minimum.
+    :param overlay_vmax: Overlay display stretch maximum.
+    :param overlay_cmap: Overlay colormap.
+    :param overlay_alpha: Overlay opacity.
+    :param title: Figure title.
+    :param outline_geoseries: Overlay footprint outline to draw, or `None` to skip.
+    :param overlay_outline_color: Outline color.
+    :param layers: Additional vector annotation layers (see `OverlayLayer`), drawn after
+        `outline_geoseries`, in list order.
+    :returns: The `Figure`.
+    """
+    # Identical rendering path (figsize, draw order, axis-limit restore, km tick formatting)
+    # regardless of `overlay_alpha`, so two calls with only `overlay_alpha` varying produce
+    # pixel-aligned images (same figure size, same dpi, same bbox -- required for
+    # `plot_overlay_toggle`'s two GIF frames to align pixel-for-pixel).
+    #
+    # `layers`' default color (`OverlayLayer`'s `"orange"`) is distinct from both the footprint
+    # outline's `"red"` and `MARKER_STYLES`'s tie-point colors so a default-styled layer is never
+    # hidden underneath the footprint boundary line.
     fig, ax = plt.subplots(figsize=(9, 9))
     base.plot.imshow(ax=ax, cmap="gray", vmin=base_vmin, vmax=base_vmax, add_colorbar=False)
     # xarray's plot.imshow resets the axes' xlim/ylim to whatever it just plotted -- without
@@ -865,8 +996,8 @@ def _render_overlay_figure(
     ax.set_ylim(ylim)
     ax.set_title(title)
     # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
-    # `lunaserv.fetch_dem_and_ortho`'s docstring for why (a genuinely isotropic-meter grid, unlike
-    # Lunaserv's native unprojected geographic layer). Displayed in km (matching
+    # `lunaserv.fetch_dem_and_ortho`'s docstring for why (an isotropic-meter grid, unlike Lunaserv's
+    # native unprojected geographic layer). Displayed in km (matching
     # `plot_comparison`/`plot_isis_comparison`'s real-km scaling) via a tick formatter -- the
     # underlying data/geometry stay in meters (real CRS units), only the tick labels are rescaled.
     km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.0f}")
@@ -890,51 +1021,50 @@ def plot_overlay_toggle(
     blink_interval_ms: int = 700,
     layers: list[OverlayLayer] | None = None,
 ):
-    """Like `plot_overlay`, but instead of a single fixed `overlay_alpha`, renders the overlay at both
-    `overlay_alpha=0` and `overlay_alpha=1` -- two complete, independently valid frames ("base only"
-    and "with overlay"), not a transparent layer meant to be blended by the browser -- and encodes
-    them as a single looping animated GIF that automatically blinks between the two: the classic
-    image-analyst "blink comparator" technique for spotting registration differences, showing each
-    frame at full clarity in turn rather than a partial blend of both at once (a blend makes it hard
-    to tell which pixels are the overlay's own content versus the base showing through -- see
-    `plot_overlay`'s docstring -- exactly when that distinction matters most, e.g. debugging a
-    not-yet-correct overlay).
+    """Like `plot_overlay`, but renders the overlay at both `overlay_alpha=0` and `overlay_alpha=1`
+    and encodes them as a single looping animated GIF that automatically blinks between the two -- the
+    classic image-analyst "blink comparator" technique for spotting registration differences.
 
-    This is this function's third mechanism. Two earlier, click-driven-toggle versions (a single
-    `<details>` element, then a CSS `:target` scheme built from two `<a href="#...">` links) were each
-    built and validated against what looked like GitHub's real `.ipynb`-rendering sanitizer, and both
-    still failed live on github.com anyway -- see docs/history.md Phases 33-35 for the full trail.
-    Phase 35's fetch of GitHub's actual pre-sanitization notebook payload (not just its sanitizer's
-    source code) found the real, previously-unknown reason: a server-side rendering pass, upstream of
-    GitHub's client-side DOMPurify sanitizer entirely, strips every `<style>` tag outright and rewrites
-    same-page `href="#fragment"` links into absolute, filename-dropping URLs -- independently breaking
-    both halves any CSS `:target`-based toggle needs (no CSS rule can exist without a surviving
-    `<style>` tag; no click can change the in-page URL fragment once its href points elsewhere). A
-    single self-contained `<img src="data:image/gif;...">` sidesteps both failure modes at once -- no
-    `<style>` block, no anchor links, nothing left for either sanitizer layer to strip -- and, unlike
-    the pixel-registered `:target` stacking (a live-kernel-only concession even when the toggle itself
-    worked), renders identically on both platforms since it's the exact same one HTML element either
-    way.
-
-    `initial_visible` (default `True`, matching `plot_overlay`'s own `overlay_alpha=1.0` default)
-    picks which frame plays first in the loop. `blink_interval_ms` sets how long each frame is shown
-    before switching -- fast enough to compare by eye, slow enough not to strobe.
-
-    `layers` -- see `plot_overlay`'s docstring; drawn identically in both GIF frames (computed once
-    here, like `outline_geoseries`, so both frames stay pixel-aligned).
-
-    Each frame's title gets a `" - ☑ Overlay Visibility"`/`" - ☐ Overlay Visibility"`
-    suffix (Unicode's checked/unchecked ballot-box glyphs) marking which frame is showing. An
-    earlier version used the GFM `[x]`/`[ ]` task-list convention instead, but this isn't a
-    fixed-width font, so swapping `"x"` for `" "` inside literal brackets shifted the trailing
-    words -- confirmed via matplotlib's own `get_window_extent()` that the two ballot-box glyphs
-    render at identical bounding-box width in this font, so this swap is genuinely static, not just
-    visually close. Deliberately only the glyph changes between frames, not the surrounding words --
-    per explicit user feedback, the goal is for the blinking GIF to visually read as a checkbox
-    ticking on/off in place, not as title text jumping around alongside the image.
-
-    Returns an `IPython.display.HTML` object (not a `Figure`) -- must be the bare last expression of a
-    cell (no trailing `;`) to actually display."""
+    :param base_raster_path: Base raster.
+    :param overlay_raster_path: Overlay raster.
+    :param overlay_cmap: Overlay colormap.
+    :param title: Figure title (each frame gets a checkbox-glyph suffix, see below).
+    :param show_overlay_outline: Trace and draw the overlay's footprint outline.
+    :param overlay_outline_color: Outline color.
+    :param fill_overlay_nodata: Fill the overlay's small nodata gaps for display.
+    :param initial_visible: Which frame plays first in the loop (matching `plot_overlay`'s own
+        `overlay_alpha=1.0` default).
+    :param blink_interval_ms: How long each frame is shown before switching.
+    :param layers: Additional vector annotation layers (see `OverlayLayer`); drawn identically in
+        both GIF frames.
+    :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
+        trailing `;`) to actually display.
+    """
+    # Two complete, independently valid frames ("base only" and "with overlay"), not a transparent
+    # layer meant to be blended by the browser -- showing each frame at full clarity in turn rather
+    # than a partial blend of both at once (a blend makes it hard to tell which pixels are the
+    # overlay's own content versus the base showing through -- see `plot_overlay`'s docstring --
+    # exactly when that distinction matters most, e.g. debugging a not-yet-correct overlay).
+    #
+    # This is this function's third toggle mechanism. Two earlier, click-driven-toggle versions (a
+    # single `<details>` element, then a CSS `:target` scheme built from two `<a href="#...">` links)
+    # both failed live on github.com: a server-side rendering pass, upstream of GitHub's client-side
+    # sanitizer, strips every `<style>` tag outright and rewrites same-page `href="#fragment"` links
+    # into absolute, filename-dropping URLs -- independently breaking both halves any CSS
+    # `:target`-based toggle needs. A single self-contained `<img src="data:image/gif;...">`
+    # sidesteps both failure modes at once -- no `<style>` block, no anchor links, nothing left for
+    # either sanitizer layer to strip -- and renders identically on both platforms since it's the
+    # exact same one HTML element either way.
+    #
+    # Each frame's title gets a `" - ☑ Overlay Visibility"`/`" - ☐ Overlay Visibility"` suffix
+    # (Unicode's checked/unchecked ballot-box glyphs) marking which frame is showing. An earlier
+    # version used the GFM `[x]`/`[ ]` task-list convention instead, but this isn't a fixed-width
+    # font, so swapping `"x"` for `" "` inside literal brackets shifted the trailing words -- the two
+    # ballot-box glyphs render at identical bounding-box width in this font, so this swap is
+    # genuinely static, not just visually close. Deliberately only the glyph changes between frames,
+    # not the surrounding words -- per explicit user feedback, the goal is for the blinking GIF to
+    # visually read as a checkbox ticking on/off in place, not as title text jumping around alongside
+    # the image.
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata
     )
@@ -988,13 +1118,29 @@ def _render_overlay_frame(
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
 ):
-    """Renders one `_render_overlay_figure(...)` frame to a `PIL.Image`. Deliberately no
-    `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both frames must use plain,
-    consistent full-figure export so the two frames `plot_overlay_toggle` produces are pixel-dimension-
-    identical (a content-dependent tight-bbox crop could differ between the transparent and opaque
-    frames, breaking the GIF's frame alignment). `plt.close(fig)` is required, not cleanup hygiene: the
-    notebook's inline matplotlib backend auto-displays any figure left open at cell-end, so without it
-    this would leak two extra static images into the cell's output alongside the intended GIF."""
+    """Render one `_render_overlay_figure(...)` frame to a `PIL.Image`.
+
+    :param base: Base `DataArray`.
+    :param overlay_display: Overlay `DataArray`.
+    :param base_vmin: Base display stretch minimum.
+    :param base_vmax: Base display stretch maximum.
+    :param overlay_vmin: Overlay display stretch minimum.
+    :param overlay_vmax: Overlay display stretch maximum.
+    :param overlay_cmap: Overlay colormap.
+    :param overlay_alpha: Overlay opacity.
+    :param title: Frame title.
+    :param outline_geoseries: Overlay footprint outline to draw, or `None` to skip.
+    :param overlay_outline_color: Outline color.
+    :param layers: Additional vector annotation layers.
+    :returns: `(image, width_px, height_px)`.
+    """
+    # Deliberately no `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both
+    # frames must use plain, consistent full-figure export so the two frames `plot_overlay_toggle`
+    # produces are pixel-dimension-identical (a content-dependent tight-bbox crop could differ
+    # between the transparent and opaque frames, breaking the GIF's frame alignment). `plt.close(fig)`
+    # is required, not cleanup hygiene: the notebook's inline matplotlib backend auto-displays any
+    # figure left open at cell-end, so without it this would leak two extra static images into the
+    # cell's output alongside the intended GIF.
     fig = _render_overlay_figure(
         base,
         overlay_display,
@@ -1018,13 +1164,20 @@ def _render_overlay_frame(
 
 
 def _blink_gif_b64(base_frame, overlay_frame, initial_visible: bool, interval_ms: int) -> str:
-    """Encodes `base_frame`/`overlay_frame` (same-size `PIL.Image`s, from `_render_overlay_frame`) as a
-    base64-encoded, looping animated GIF. Both frames are quantized onto one shared 256-color palette
-    (built from the two frames pasted side by side, then each re-quantized onto that same palette via
-    `Image.quantize(palette=...)`) rather than each picking its own independently -- letting GIF
-    encoding choose per-frame palettes would recolor the unchanged base-image pixels slightly
-    differently in each frame, showing up as a flicker across the *whole* image on every blink instead
-    of only where the overlay actually differs."""
+    """Encode `base_frame`/`overlay_frame` as a base64-encoded, looping animated GIF.
+
+    :param base_frame: A `PIL.Image` (from `_render_overlay_frame`).
+    :param overlay_frame: A same-size `PIL.Image` (from `_render_overlay_frame`).
+    :param initial_visible: Whether `overlay_frame` plays first.
+    :param interval_ms: Milliseconds per frame.
+    :returns: The base64-encoded GIF.
+    """
+    # Both frames are quantized onto one shared 256-color palette (built from the two frames pasted
+    # side by side, then each re-quantized onto that same palette via `Image.quantize(palette=...)`)
+    # rather than each picking its own independently -- letting GIF encoding choose per-frame
+    # palettes would recolor the unchanged base-image pixels slightly differently in each frame,
+    # showing up as a flicker across the whole image on every blink instead of only where the overlay
+    # actually differs.
     width, height = base_frame.size
     combined = Image.new("RGB", (width * 2, height))
     combined.paste(base_frame, (0, 0))
@@ -1051,35 +1204,47 @@ def plot_render_toggle(
     show_a_first: bool = True,
     blink_interval_ms: int = 700,
 ):
-    """Blink comparator for two renders that already share the exact same pixel grid by construction
-    -- e.g. `hillshade` vs. `reproject`, both `sat_sim` renders through one shared `Camera` (same
-    pose, same corrected FOV, same rotation -- see `camera.solve_corrected_fov`'s docstring). Unlike
-    `plot_overlay_toggle`, this needs no `rioxarray`/geo-registration step at all: `raster_a_path`/
-    `raster_b_path` are read as plain arrays (`read_raster_band`) and rotated north-up with the one
-    shared `rotation_k`, the same technique `plot_render_vs_basemap`'s render panel uses -- no
-    reprojection, since there's nothing to align. No tie-point markers -- unlike the other panels in
-    this notebook, the whole point here is the blink itself; static markers didn't actually help
-    read it and just added clutter (confirmed live).
+    """Blink comparator for two renders that already share the exact same pixel grid by
+    construction -- e.g. `hillshade` vs. `reproject`, both `sat_sim` renders through one shared
+    `Camera`.
 
-    Still brightness-matches `raster_b_path` to `raster_a_path`'s own median (the same single-
-    multiplicative technique `plot_isis_comparison`/`plot_overlay` use) -- necessary even though both
-    are `sat_sim` renders, since the two can land on very different absolute DN scales depending on
-    their own texture source (e.g. `reproject`'s real ISIS-calibrated I/F input, ~0.01-0.2, vs.
-    `hillshade`'s synthetic basemap texture).
-
-    Reuses `_blink_gif_b64` directly for the actual GIF encoding (shared 256-color palette, `<img
-    src="data:image/gif;...">`, no `<style>`/anchor links for GitHub's sanitizer to strip -- see
-    `plot_overlay_toggle`'s docstring for why that mechanism specifically) -- only the frame-rendering
-    step differs (plain rotated arrays here vs. geo-registered `rioxarray` panels there).
-
-    Each frame's title shows both labels with a `☑`/`☐` checkbox glyph marking which one is
-    currently showing (`"☑ {label_a} / ☐ {label_b}"`, flipped on the other frame) -- the same
-    stable-width checkbox convention `plot_overlay_toggle` uses (only the two glyphs swap in place;
-    `label_a`/`label_b` themselves never move), generalized from an on/off binary to naming which of
-    two candidates is on screen.
-
-    Returns an `IPython.display.HTML` object -- must be the bare last expression of a cell (no
-    trailing `;`), same requirement as `plot_overlay_toggle`."""
+    :param raster_a_path: First render raster path.
+    :param raster_b_path: Second render raster path, brightness-matched to the first.
+    :param rotation_k: North-up display rotation, shared by both (same pose, same corrected FOV --
+        see `camera.solve_corrected_fov`'s docstring).
+    :param width_km: Displayed width, km.
+    :param height_km: Displayed height, km.
+    :param label_a: First render's label.
+    :param label_b: Second render's label.
+    :param show_a_first: Which frame plays first in the loop.
+    :param blink_interval_ms: How long each frame is shown before switching.
+    :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
+        trailing `;`), same requirement as `plot_overlay_toggle`.
+    """
+    # Unlike `plot_overlay_toggle`, this needs no `rioxarray`/geo-registration step at all:
+    # `raster_a_path`/`raster_b_path` are read as plain arrays (`read_raster_band`) and rotated
+    # north-up with the one shared `rotation_k`, the same technique `plot_render_vs_basemap`'s render
+    # panel uses -- no reprojection, since there's nothing to align. No tie-point markers -- unlike
+    # the other panels in this notebook, the whole point here is the blink itself; static markers
+    # didn't actually help read it and just added clutter.
+    #
+    # Still brightness-matches `raster_b_path` to `raster_a_path`'s own median (the same
+    # single-multiplicative technique `plot_isis_comparison`/`plot_overlay` use) -- necessary even
+    # though both are `sat_sim` renders, since the two can land on very different absolute DN scales
+    # depending on their own texture source (e.g. an ISIS-calibrated I/F input, ~0.01-0.2, vs. a
+    # synthetic basemap texture).
+    #
+    # Reuses `_blink_gif_b64` directly for the actual GIF encoding (shared 256-color palette, `<img
+    # src="data:image/gif;...">`, no `<style>`/anchor links for GitHub's sanitizer to strip -- see
+    # `plot_overlay_toggle`'s docstring for why that mechanism specifically) -- only the
+    # frame-rendering step differs (plain rotated arrays here vs. geo-registered `rioxarray` panels
+    # there).
+    #
+    # Each frame's title shows both labels with a `☑`/`☐` checkbox glyph marking which one is
+    # currently showing (`"☑ {label_a} / ☐ {label_b}"`, flipped on the other frame) -- the same
+    # stable-width checkbox convention `plot_overlay_toggle` uses (only the two glyphs swap in place;
+    # `label_a`/`label_b` themselves never move), generalized from an on/off binary to naming which
+    # of two candidates is on screen.
     data_a = read_raster_band(raster_a_path)
     data_b = read_raster_band(raster_b_path)
 
@@ -1125,10 +1290,16 @@ def plot_sun_elevation_vs_edr_count(
     figsize: tuple[float, float] = (10, 7),
 ) -> None:
     """2D histogram (`notebooks/select_datasets.py`): how much sun elevation at the illuminated node
-    actually buys you, in terms of acceptable-EDR yield -- `sun_elev_bin_width_deg`-wide sun-elevation
-    bins (0-90) x exact acceptable-EDR count (`orbits_df["acceptable_edr_count"]`, one bin per
-    integer value), colored by how many orbits (`dataset_selection.find_orbits`'s rows) fall in each
-    cell."""
+    buys you, in terms of acceptable-EDR yield.
+
+    :param orbits_df: `dataset_selection.find_orbits`'s rows.
+    :param period_start: Period start (for the title).
+    :param period_end: Period end (for the title).
+    :param sun_elev_bin_width_deg: Sun-elevation bin width, degrees (0-90).
+    :param figsize: Figure size.
+    """
+    # x = sun-elevation bin, y = exact acceptable-EDR count (`orbits_df["acceptable_edr_count"]`, one
+    # bin per integer value), colored by orbit count per cell.
     sun_elev_bins = np.arange(0, 91, sun_elev_bin_width_deg)
     max_edr_count = int(orbits_df["acceptable_edr_count"].max())
     edr_count_bins = np.arange(-0.5, max_edr_count + 1.5, 1)  # one bin per integer count, 0..max_edr_count
@@ -1153,9 +1324,16 @@ def plot_sun_elevation_vs_edr_count(
 def _underline_segments(
     start_lon: float, start_y: float, end_lon: float, end_y: float
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Segments for a line from (start_lon, start_y) to (end_lon, end_y), broken at the +/-180
-    wraparound rather than drawn as one line straight across the plot -- see
-    `plot_illuminated_node_scatter`'s docstring for why this exists."""
+    """Segments for a line from `(start_lon, start_y)` to `(end_lon, end_y)`, broken at the +/-180
+    wraparound rather than drawn as one line straight across the plot.
+
+    :param start_lon: Start longitude, degrees.
+    :param start_y: Start y-value.
+    :param end_lon: End longitude, degrees.
+    :param end_y: End y-value.
+    :returns: One or two line segments, each `((x0, y0), (x1, y1))`.
+    """
+    # See `plot_illuminated_node_scatter`'s own trailing comment for why this exists.
     end_lon_unwrapped = illumination.unwrap_relative_deg(start_lon, end_lon)
     if end_lon_unwrapped == start_lon:
         return [((start_lon, start_y), (end_lon, end_y))]
@@ -1184,24 +1362,33 @@ def plot_illuminated_node_scatter(
     dataset_group_colors: tuple[str, str] = ("#000000", "#808080"),
 ) -> None:
     """One marker per orbit (`notebooks/select_datasets.py`): x = illuminated-node longitude, y =
-    solar hour angle at that node. Circles colored by acceptable-EDR count (viridis -- perceptually
-    uniform and varies in hue as well as lightness, easier to read a value back off a marker's color
-    than a ramp that only varies in lightness, and its dark-purple low end is never invisible against
-    the white figure background either); a red X overrides the circle for any orbit flagged as
-    containing a maneuver. No connecting line between orbits -- markers stay individually resolvable
-    at ~13 orbits/day, so consecutive orbits are already easy to associate visually without one.
+    solar hour angle at that node.
 
-    If `selected_datasets` (`dataset_selection.select_diverse_datasets`'s output) is given, each
-    selected dataset gets an "underline": a line from `underline_offset_deg` below the first orbit's
-    own (longitude, hour angle) to the same below the last orbit's, so it reads as marking that
-    dataset's own span on the plot rather than sitting on top of (and hiding) the markers themselves.
-    Broken at the +/-180 wraparound via `illumination.unwrap_relative_deg` (`_underline_segments`) --
-    draw in an unwrapped coordinate, then clip/split wherever that crosses +/-180, rather than drawing
-    one spurious line across the whole plot. The first `dataset_group_size` picks (by pick order, not
-    time order) are `dataset_group_colors[0]`, the rest `dataset_group_colors[1]` -- black/medium-grey
-    by default, chosen to read unambiguously at a glance and stay clearly distinct from viridis's own
-    purple/teal/green/yellow gamut and from the red maneuver X's (an earlier orange/magenta pairing
-    was hard to tell apart)."""
+    :param orbits_df: `dataset_selection.find_orbits`'s rows.
+    :param period_start: Period start (for the title).
+    :param period_end: Period end (for the title).
+    :param selected_datasets: `dataset_selection.select_diverse_datasets`'s output; if given, each
+        selected dataset gets an "underline" marking its span.
+    :param figsize: Figure size.
+    :param underline_offset_deg: Vertical offset of the underline below the orbit markers.
+    :param dataset_group_size: Number of `selected_datasets` picks (by pick order) in the first
+        underline color group; the rest use the second.
+    :param dataset_group_colors: `(first_group_color, rest_color)`.
+    """
+    # Circles colored by acceptable-EDR count (viridis -- perceptually uniform and varies in hue as
+    # well as lightness, easier to read a value back off a marker's color than a ramp that only
+    # varies in lightness, and its dark-purple low end is never invisible against the white figure
+    # background either); a red X overrides the circle for any orbit flagged as containing a
+    # maneuver. No connecting line between orbits -- markers stay individually resolvable at ~13
+    # orbits/day, so consecutive orbits are already easy to associate visually without one.
+    #
+    # Each underline reads as marking a dataset's own span on the plot rather than sitting on top of
+    # (and hiding) the markers themselves. Broken at the +/-180 wraparound via
+    # `illumination.unwrap_relative_deg` (`_underline_segments`) -- draw in an unwrapped coordinate,
+    # then clip/split wherever that crosses +/-180, rather than drawing one spurious line across the
+    # whole plot. `dataset_group_colors` (black/medium-grey by default) was chosen to read
+    # unambiguously at a glance and stay clearly distinct from viridis's own purple/teal/green/yellow
+    # gamut and from the red maneuver X's (an earlier orange/magenta pairing was hard to tell apart).
     x = orbits_df["illum_lon_deg"].to_numpy()
     y = orbits_df["hour_angle_deg"].to_numpy()
 

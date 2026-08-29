@@ -79,6 +79,15 @@ alternation", "an actual gotcha") rather than to distinguish from something spec
 an estimate, an assumption) — one repo-wide file was found with 150+ uses of "real" this way. If
 there's nothing concrete it's being contrasted against, cut the word.
 
+Write for an arbitrary future reader, not today's reviewer. A doc or docstring should read the same
+whether it's opened during code review or two years from now by someone who's never heard of this
+change. Watch for narrative asides that only make sense to someone in the room right now — "for now",
+"once this one is validated", "still working on the rest" — these narrate an in-progress conversation
+with a specific reviewer, not a fact about the code; state what's true, plainly, instead. This is
+different from declaring that a choice was intentional ("deliberately does X, because Y") — that's a
+normal, useful fact about the design. The problem is narrating the state of an ongoing review, not the
+word "deliberately" itself.
+
 ## One source of truth per fact
 
 The same fact (a path, a policy, a rationale) showing up in multiple docs is a bug, not redundancy

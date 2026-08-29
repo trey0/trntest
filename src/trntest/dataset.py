@@ -472,8 +472,18 @@ def generate_dataset(
 
 
 def write_manifest(images: pd.DataFrame, path: Path | str) -> None:
+    """Write `images` (e.g. `images_for_window()`'s output) to a manifest CSV.
+
+    :param images: Rows to write.
+    :param path: Output CSV path.
+    """
     images.to_csv(path, index=False)
 
 
 def read_manifest(path: Path | str) -> pd.DataFrame:
+    """Read a manifest CSV written by `write_manifest`.
+
+    :param path: Input CSV path.
+    :returns: The rows, with `start_time`/`stop_time` parsed as dates.
+    """
     return pd.read_csv(path, parse_dates=["start_time", "stop_time"])

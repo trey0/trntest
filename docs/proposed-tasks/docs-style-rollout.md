@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (3 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (4 of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -65,6 +65,25 @@ truth per fact, thin index files, sensible file naming.
   where the field it explains lives). All 6 `docs/history.md` citations removed. Verified with
   `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file). No code logic touched,
   so no notebook re-run was needed.
+- `src/trntest/plotting.py` — full pass (1257 -> 1427 lines, the densest file yet: `plot_overlay`/
+  `plot_overlay_toggle`/`plot_render_toggle` each had 30-60-line docstrings). Module docstring was
+  already minimal (2 sentences), no change needed there. All 5 `docs/history.md` citations removed,
+  including `plot_overlay_toggle`'s GitHub-sanitizer investigation narrative (kept as a condensed
+  trailing comment — genuinely load-bearing rationale for why the `<img>`-GIF mechanism was chosen
+  over two rejected alternatives — with the dated Phase 33-35 citations cut). Verified with
+  `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file). No code logic touched,
+  so no notebook re-run was needed.
+- **Scope addition, per user feedback: functions/classes with no docstring at all now stand out
+  against the reworked ones, so add them (not a blanket mandate — a trivial one-liner or a
+  nested/local closure can still skip one).** Applied across the 4 files done so far:
+  `lunaserv.py` (`pad_bbox`, `union_bbox`), `isis_wac.py` (`_resolved_wac_ck_cache_path`,
+  `run_lrowaccal`), `dataset.py` (`write_manifest`, `read_manifest`), `plotting.py`
+  (`plot_synthetic_render`, `plot_comparison`, `OverlayLayer.plot`) — all got a docstring in the
+  same minimal + RST-fields style. Left two nested closures in `plotting.py`
+  (`plot_sfs_comparison`'s `brightness_matched`, `plot_render_toggle`'s `_frame`) undocumented,
+  matching the "trivial/local, can skip" carve-out. Apply this same pass to every file as it's
+  reworked going forward, not just retroactively to these 4. Verified with `trntest-lint` (all
+  four files clean); the 3 non-`plotting.py` diffs are pure additions, no logic touched.
 
 **Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
 cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
@@ -72,14 +91,13 @@ cross-references *fixed* (pointers updated to the files things moved to) as a si
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 15
-files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py` done, see Completed
-above). Rough priority order (citation count, then size, as a proxy for how much chatty/historical
-material likely needs trimming):
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 14
+files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py` done, see
+Completed above). Rough priority order (citation count, then size, as a proxy for how much
+chatty/historical material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `plotting.py` | 5 | 1257 |
 | `sfs_validation.py` | 4 | 324 |
 | `config.py` | 4 | 263 |
 | `camera.py` | 4 | 608 |
@@ -101,8 +119,12 @@ plus RST `:param:`/`:returns:`/`:raises:` fields where they clarify — see `doc
 current wording), move rationale/caveats/open items to a plain comment block as the first lines of
 the function body (not above the `def`, so it stays out of `help()`) — or, for module-docstring
 material about one specific function/class, relocate it there instead of a module-level comment, per
-`docs/docs-style.md`'s current wording — fix "real"-as-filler and em-dash sentence-stacking.
-`plotting.py` is next — worst offender remaining.
+`docs/docs-style.md`'s current wording — fix "real"-as-filler and em-dash sentence-stacking, **and add
+a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
+trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
+leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
+`sfs_validation.py` is next (tied at 4 citations with `config.py`/`camera.py`/`cache.py`; picked first
+among the tie).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -118,7 +140,7 @@ material about one specific function/class, relocate it there instead of a modul
 
 1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
    other sessions may have touched these files since.
-2. Work one file at a time; `plotting.py` next. Re-verify with `trntest-lint` and, if a docstring
+2. Work one file at a time; `sfs_validation.py` next. Re-verify with `trntest-lint` and, if a docstring
    change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
    notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
    `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.

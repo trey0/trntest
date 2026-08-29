@@ -228,6 +228,11 @@ def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> Spicei
 
 
 def _resolved_wac_ck_cache_path(config: TrntestConfig) -> Path:
+    """Where `resolve_wac_ck_kernels` persists its resolved CK kernel list for the current product.
+
+    :param config: Project config.
+    :returns: The cache JSON path.
+    """
     return config.cache_root / "isis_ck_resolution" / f"{config.edr_product}.json"
 
 
@@ -378,6 +383,12 @@ class LrowaccalResult:
 
 
 def run_lrowaccal(spiceinit_result: SpiceinitResult, config: TrntestConfig | None = None) -> LrowaccalResult:
+    """Calibrate a spiceinit'd cube via ISIS's `lrowaccal`.
+
+    :param spiceinit_result: Spiceinit'd cube (`run_spiceinit`'s output).
+    :param config: Project config; `load_config()` if not given.
+    :returns: A `LrowaccalResult` for the calibrated cube.
+    """
     config = config or load_config()
     in_path = spiceinit_result.cub_path
     out_path = in_path.with_name(in_path.stem + ".cal.cub")

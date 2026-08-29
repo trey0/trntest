@@ -212,12 +212,24 @@ def footprint_bbox_deg(footprint_lonlat):
 
 
 def pad_bbox(bbox, fraction):
+    """Pad a bbox outward by `fraction` of its own width/height on each side.
+
+    :param bbox: `(minx, miny, maxx, maxy)`.
+    :param fraction: Fraction of width/height to pad by, per side.
+    :returns: The padded bbox, same units as `bbox`.
+    """
     minx, miny, maxx, maxy = bbox
     dx, dy = (maxx - minx) * fraction, (maxy - miny) * fraction
     return (minx - dx, miny - dy, maxx + dx, maxy + dy)
 
 
 def union_bbox(bbox1, bbox2):
+    """The smallest bbox containing both `bbox1` and `bbox2`.
+
+    :param bbox1: `(minx, miny, maxx, maxy)`.
+    :param bbox2: `(minx, miny, maxx, maxy)`, same units as `bbox1`.
+    :returns: The union bbox.
+    """
     minx1, miny1, maxx1, maxy1 = bbox1
     minx2, miny2, maxx2, maxy2 = bbox2
     return min(minx1, minx2), min(miny1, miny2), max(maxx1, maxx2), max(maxy1, maxy2)
