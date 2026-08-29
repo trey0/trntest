@@ -10,7 +10,11 @@ of disrepair. When a doc or docstring is stale or no longer earns its length, cu
 ## Docstrings define the interface, not the history
 
 A docstring's job is to let a caller use the function/class without reading its body: what it does,
-its arguments and return value, and exceptions it deliberately raises. That's it.
+its arguments and return value, and exceptions it deliberately raises. Keep it to exactly that —
+genuinely minimal, not "everything relevant, tersely worded." Prefer RST field-list syntax for
+parameters, return values, and raised exceptions (`:param name:`, `:returns:`, `:raises ValueError:`)
+over prose that just restates the signature — it's the common convention for Python docstrings, and
+tools (Sphinx, most IDEs) render it.
 
 Out of scope for a docstring:
 - **The implementation.** If understanding correct usage requires understanding the implementation,
@@ -22,12 +26,18 @@ Out of scope for a docstring:
 - **Sharp edges, as a default.** If a function has a surprising failure mode, the first move is to
   fix it (better default, validation, a clearer error) — not to document around it. Only document a
   sharp edge you've concluded isn't worth fixing.
+- **Rationale, caveats, and open questions worth keeping.** Why the function is shaped the way it is,
+  what to be skeptical of, a comparison of approaches it rejected — real material, but not part of
+  the contract a caller needs in order to call it correctly.
 
-If there's real material that doesn't fit — a non-obvious rationale, a comparison of approaches, a
-worked example — it belongs in one of these, not stacked into the docstring:
-- A **comment block** near the code it actually explains, for a future editor of this specific code —
-  inside the function body if it's about implementation details, above the function if it's about the
-  function as a whole (e.g. why it exists, why it's shaped the way it is).
+That last category isn't "nowhere" — when it's worth keeping, put it in a plain (non-docstring)
+comment block as the first lines of the function body, immediately after the docstring, not above the
+`def`. This keeps it next to the code it explains for someone reading the source, while keeping it
+out of `help()`/`.__doc__`/IDE hover, which only ever show the docstring itself. A comment above the
+`def` reads as module- or class-level context, not this one function's own caveats.
+
+If there's material that doesn't fit even there — a worked example, a comparison spanning multiple
+functions — it belongs in one of these instead:
 - An **overview/tutorial doc** under `docs/`, if it's about how to use a whole area of the API rather
   than one function's contract.
 - **Nowhere.** Most of the time, this is the right answer. Before relocating verbatim, ask whether
