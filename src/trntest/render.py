@@ -27,17 +27,16 @@ class RenderResult:
     camera_list: Path
 
 
-# `sat_sim --dem-height-error-tol` default is 0.001m -- far tighter than the DEM's actual achievable
+# `sat_sim --dem-height-error-tol` default is 0.001m -- far tighter than the DEM's achievable
 # precision. Lunaserv's DTM layer serves planetocentric radius (~1.7e6 m) as float32; float32 has
 # ~7.2 significant decimal digits, so its ULP (smallest representable step) at that magnitude is
 # already ~0.125m (2**(20-23), since 2**20 < 1.7e6 < 2**21) -- baked into the source data itself
 # before `lunaserv.radius_to_elevation` ever subtracts the reference radius, not something fixable
-# on our end. Confirmed empirically (see docs/history.md): the default tolerance causes `sat_sim`'s
-# ray/DEM-intersection root-finder to misbehave at scattered pixels, producing salt-and-pepper
-# speckle in the render; tightening it further makes this dramatically worse, and loosening it to
-# comfortably clear the float32 precision floor eliminates it cleanly. 0.5m is a 4x safety margin
-# above that ~0.125m floor while still far tighter than anything resolvable at the DEM's 100m/px
-# posting.
+# on our end. The default tolerance causes `sat_sim`'s ray/DEM-intersection root-finder to misbehave
+# at scattered pixels, producing salt-and-pepper speckle in the render; tightening it further makes
+# this dramatically worse, and loosening it to comfortably clear the float32 precision floor
+# eliminates it cleanly. 0.5m is a 4x safety margin above that ~0.125m floor while still far tighter
+# than anything resolvable at the DEM's 100m/px posting.
 DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 
@@ -119,7 +118,7 @@ def run_mapproject_image(
     its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`) always uses the default
     `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV (`camera.solve_corrected_fov`)
     once made `cam_gen`'s CSM Frame conversion measurably wrong here (silently averaging `fu`/`fv`
-    into one isotropic `m_focalLength`, a real ~5% reprojected-footprint error), which this parameter
+    into one isotropic `m_focalLength`, a ~5% reprojected-footprint error), which this parameter
     let the caller work around (`camera_type="pinhole"`, reading `camera.tsai_path` directly). Now
     that `solve_corrected_fov` is isotropic again (`fu == fv` always), CSM and Pinhole reprojections
     of the same camera agree by construction, so the parameter is no longer load-bearing for
@@ -151,10 +150,10 @@ def run_mapproject(
     crop). `--ref-map` reads the projection and grid size from `dem_ortho_result.dem` -- the same DEM
     `run_sat_sim` rendered from -- so the output shares an exact pixel grid with every other raster
     in `dem_ortho_result` (the hillshade-based ortho included), letting them be overlaid directly with
-    no separate reprojection/alignment step. Confirmed empirically (see docs/data-sources.md): this
-    round trip aligns real terrain features pixel-precisely, as expected for going forward and back
-    through one consistent camera model. Opt-in/on-demand (not part of `dataset.generate_dataset`'s
-    default pipeline) -- a real ~4s subprocess call not every run needs."""
+    no separate reprojection/alignment step. This round trip aligns terrain features
+    pixel-precisely, as expected for going forward and back through one consistent camera model.
+    Opt-in/on-demand (not part of `dataset.generate_dataset`'s default pipeline) -- a ~4s subprocess
+    call not every run needs."""
     config = config or load_config()
     camera_stem = render_result.rendered_tif.stem
     render_dir = render_result.rendered_tif.parent
@@ -175,27 +174,31 @@ def read_csm_state(csm_json_path: str | Path) -> tuple[str, dict]:
 
 
 def patch_sun_position(csm_json_path: str | Path, et: float) -> None:
-    """`cam_gen`'s CSM Frame conversion (`run_sat_sim`) never populates `m_sunPosition` -- ASP's own
-    tools have no need for real sun geometry -- so a CSM state produced this way leaves ISIS's
-    `csminit`/`campt`/`phocube` with a degenerate (zero) sun position, and therefore degenerate
-    incidence/phase, once attached. Patches in the real one, in-place, via the same real-ephemeris
-    call `illumination.sun_azimuth_elevation_deg` already makes (`spice.spkpos("SUN", et, "MOON_ME",
-    "NONE", "MOON")`) -- SPICE's own native km, converted to meters (`* 1000.0`, matching this
-    project's own `camera.py` convention, e.g. `camera_center_moon_me_m`) to match the CSM state's
-    other position fields. First proven out by hand during Phase 70's `phocube` investigation
-    (docs/history.md); this is that same fix, as a reusable function instead of a one-off notebook
-    step. Assumes the relevant SPICE kernels are already furnished (true by the time a real `Camera`
-    -- and therefore `et` -- has been built for this candidate), matching `illumination.py`'s own
-    assumption; does not furnish kernels itself.
+    """Patch `m_sunPosition` into a CSM state file produced by `run_sat_sim`'s `cam_gen` conversion,
+    in-place.
 
-    Feed the resulting file to ISIS's `csminit` via its `state=` parameter, not `isd=` -- confirmed
-    live (Phase 71, docs/history.md): `csminit isd=` expects a from-scratch ISD (the format ALE's
-    `isd_generate` produces, `isis_wac.run_isd_generate`'s own ISD), which needs a real
-    "constructModelFromISD" build step per candidate plugin/model and fails ("Could not parse the
-    sensor model name") on a `cam_gen`-style pre-built model *state* string like this one even once
-    it's valid JSON. `csminit state=` (a separate, documented parameter, not just an alias) is the one
-    that actually wants this file's own native "bare model-name line + JSON state" format -- exactly
-    what `read_csm_state`/`cam_gen` already produce, unmodified."""
+    :param csm_json_path: A CSM state file in `read_csm_state`'s format.
+    :param et: SPICE ET (seconds) to compute the sun position at.
+    """
+    # `cam_gen`'s CSM Frame conversion never populates `m_sunPosition` -- ASP's own tools have no
+    # need for sun geometry -- so a CSM state produced this way leaves ISIS's `csminit`/`campt`/
+    # `phocube` with a degenerate (zero) sun position, and therefore degenerate incidence/phase,
+    # once attached. Patches in the actual one via the same ephemeris call
+    # `illumination.sun_azimuth_elevation_deg` already makes (`spice.spkpos("SUN", et, "MOON_ME",
+    # "NONE", "MOON")`) -- SPICE's own native km, converted to meters (`* 1000.0`, matching this
+    # project's own `camera.py` convention, e.g. `camera_center_moon_me_m`) to match the CSM state's
+    # other position fields. Assumes the relevant SPICE kernels are already furnished (true by the
+    # time a `Camera` -- and therefore `et` -- has been built for this candidate), matching
+    # `illumination.py`'s own assumption; does not furnish kernels itself.
+    #
+    # Feed the resulting file to ISIS's `csminit` via its `state=` parameter, not `isd=`: `csminit
+    # isd=` expects a from-scratch ISD (the format ALE's `isd_generate` produces,
+    # `isis_wac.run_isd_generate`'s own ISD), which needs a "constructModelFromISD" build step per
+    # candidate plugin/model and fails ("Could not parse the sensor model name") on a
+    # `cam_gen`-style pre-built model *state* string like this one even once it's valid JSON.
+    # `csminit state=` (a separate, documented parameter, not just an alias) is the one that
+    # actually wants this file's own native "bare model-name line + JSON state" format -- exactly
+    # what `read_csm_state`/`cam_gen` already produce, unmodified.
     model_name, csm_state = read_csm_state(csm_json_path)
     sun_position_km, _ = spice.spkpos("SUN", et, "MOON_ME", "NONE", "MOON")
     csm_state["m_sunPosition"] = (np.asarray(sun_position_km, dtype=float) * 1000.0).tolist()
