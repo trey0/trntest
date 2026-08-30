@@ -1209,7 +1209,7 @@ def _table_extra_label(label_text: str, table_name: str) -> pvl.PVLModule:
     """
     # Round-tripping a Table via `tabledump`/`csv2table` without this metadata silently drops it,
     # producing a systematic ~0.08deg pointing error, not just precision loss -- see
-    # docs/proposed-tasks/corrected-overlay-cam2map-plan.md.
+    # docs/external-tools.md's "Patching a cube's cached pointing via tabledump/csv2table" section.
     label = pvl.loads(label_text)
     tables = [obj for obj in label.getlist("Table") if obj.get("Name") == table_name]
     if len(tables) != 1:
@@ -1231,30 +1231,15 @@ def apply_pose_correction_to_crop(
     # Patches the copy's cached `InstrumentPointing` Table's single `ConstantRotation` matrix (the
     # -85621->-85620, camera-to-spacecraft-bus, time-independent rotation) -- so ISIS's own `cam2map`
     # (`run_cam2map_for_crop`, unmodified) picks up the corrected pose automatically, with no new
-    # hand-rolled warp/resampling code. See docs/proposed-tasks/corrected-overlay-cam2map-plan.md for
-    # the full background this implements.
+    # hand-rolled warp/resampling code. See docs/external-tools.md's "Patching a cube's cached
+    # pointing via tabledump/csv2table" section for the mechanism's own gotchas and the
+    # `ConstantRotation_new = correction.delta_rotation.T @ ConstantRotation_original` composition
+    # formula this implements.
     #
-    # Only the rotation is injected here -- `correction.delta_position_m` is deliberately not applied
-    # (see that plan doc's "Position correction: deliberately not implemented via this mechanism" for
-    # why: `InstrumentPosition`'s cache is a coarser Hermite spline in a different frame, and the fit
-    # found position's effect negligible, ~9m -> ~0.06px, so rotation alone accounts for essentially
-    # all of it).
-    #
-    # `ConstantRotation_new = correction.delta_rotation.T @ ConstantRotation_original` --
-    # cross-validated (not derived from ISIS source) against `wac_camera_model`'s own already-validated
-    # forward projector using a known synthetic test rotation: matched the projector's predicted pixel
-    # to ~1e-6, while the naively-expected `ConstantRotation_original @ delta_rotation` placed the
-    # point outside the crop's coverage entirely. Likely explanation: ISIS's stored matrix is the
-    # transpose of this project's own `R_A_to_B` convention (`v_B = R_A_to_B @ v_A`) --
-    # `correction.delta_rotation` itself is defined in that convention (`camera.py`/
-    # `wac_camera_model.py`), so transposing it before composing with ISIS's own (already-transposed)
-    # stored matrix reconciles the two conventions.
-    #
-    # The cube's 259-row `InstrumentPointing` quaternion/AV/ET table itself is untouched -- `tabledump`
-    # round-trips it byte-for-byte via `csv2table`, only the label's `ConstantRotation` keyword
-    # changes. ISIS 9.0's `csv2table` converts every CSV column to floating point unconditionally --
-    # no `coltypes` parameter exists to declare it (an earlier ISIS version needed one; `csv2table
-    # -help` confirms the current one doesn't accept it).
+    # Only the rotation is injected here -- `correction.delta_position_m` is deliberately not
+    # applied: `InstrumentPosition`'s cache is a coarser Hermite spline in a different frame, and the
+    # fit found position's effect negligible, ~9m -> ~0.06px, so rotation alone accounts for
+    # essentially all of it.
     config = config or load_config()
     out_path = crop.cub_path.with_name(crop.cub_path.stem + ".corrected.cub")
     shutil.copy(crop.cub_path, out_path)

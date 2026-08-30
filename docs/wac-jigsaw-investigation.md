@@ -139,11 +139,12 @@ flip bookkeeping.
 **Real overlap confirmed to actually occur** (previously flagged as unconfirmed): adjacent
 framelets' `within_framelet_line` advances by ~9.9 lines per framelet step, not the full
 `FRAMELET_HEIGHT`=14 -- a real ~29% ground-coverage overlap, independently corroborated by this
-project's own earlier `docs/data-sources.md` note (from the `usgscsm`/`jigsaw` bug investigation)
-that adjacent Pushframe exposures have real overlapping coverage. **This is not a correctness
-problem**: a ground point legitimately has more than one valid image-space solution in an overlap
-band, and any of them is equally correct -- there is no need to recover whichever specific pixel a
-prior observation happened to be measured at (a framing this session tried and the user corrected).
+project's own earlier note in `docs/external-tools.md`'s "`usgscsm`'s `groundToImage` bug for
+Pushframe sensors" section that adjacent Pushframe exposures have real overlapping coverage.
+**This is not a correctness problem**: a ground point legitimately has more than one valid
+image-space solution in an overlap band, and any of them is equally correct -- there is no need to
+recover whichever specific pixel a prior observation happened to be measured at (a framing this
+session tried and the user corrected).
 The center-line tiebreak (picking whichever valid framelet puts the point deepest inside its own
 valid range) exists for a different reason: keeping the choice *smooth* under small pose
 perturbations, so a downstream optimizer doesn't see a discontinuous jump between framelets as it
@@ -203,9 +204,9 @@ tested so far.
    LightGlue matches): residual mean 4.42px -> 3.36px, dominated by a small (~0.18deg) camera-frame
    rotation. The corrected pose is baked into a copy of the crop cube via
    `isis_wac.apply_pose_correction_to_crop` (patches the cached `InstrumentPointing` Table's
-   `ConstantRotation` via `tabledump`/`csv2table` -- see `docs/data-sources.md`'s own entry on this
-   mechanism and its real gotchas, and `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` for the full
-   implementation trail) so the existing, unmodified `cam2map`/`plotting.plot_overlay_toggle` path
+   `ConstantRotation` via `tabledump`/`csv2table` -- see `docs/external-tools.md`'s "Patching a
+   cube's cached pointing via tabledump/csv2table" section for the mechanism's own gotchas) so the
+   existing, unmodified `cam2map`/`plotting.plot_overlay_toggle` path
    reprojects and displays it, wired into `notebooks/pose_alignment_spike.py` and reviewed live by
    the user. **Real result, not a full win**: the fit only closes ~24% of the real gap (~813m ->
    ~618m of residual at this crop's own ~184m/px native GSD, vs. the homography spike's own
@@ -232,8 +233,9 @@ A still-later session (2026-08-19) completed item 4: the real fit, `isis_wac.
 apply_pose_correction_to_crop`, and the corrected-overlay notebook wiring -- see that item's own
 entry above for the real result. Also batched `control_network.resolve_control_points`'s per-point
 `campt` calls (`isis_wac.ground_to_image_pixels_batch`, ~230s -> ~3s on the real 767-point set, see
-`docs/data-sources.md`), unrelated to the alignment question itself but found while working the same
-notebook. What's left for this investigation as a whole: the DEM-aware ground truth follow-up noted
+`docs/external-tools.md`'s "`campt`'s `USECOORDLIST` batch mode" section), unrelated to the
+alignment question itself but found while working the same notebook. What's left for this
+investigation as a whole: the DEM-aware ground truth follow-up noted
 in item 4 and `docs/plan.md`'s status line.
 
 The `Instructions.trn`/`LroWacSerialNumber.trn` serial-number patch (Part 2, Blocker 1) is **not**

@@ -436,6 +436,33 @@ if a future consumer starts relying on `ending_ephemeris_time`'s own absolute ac
 hypothesis above would be a good first thing to test directly, rather than re-deriving this
 investigation from scratch).
 
+## Patching a cube's cached pointing via `tabledump`/`csv2table`
+
+`isis_wac.apply_pose_correction_to_crop` bakes a fitted 6-DOF pose correction into a copy of a
+cube's `InstrumentPointing` Table, so ISIS's own `cam2map` picks up the corrected pose with no new
+hand-rolled warp/resampling code. Two `tabledump`/`csv2table` gotchas this relies on:
+
+- `csv2table`'s `label=` parameter (a flat-PVL file of the table's own extra keywords beyond the raw
+  field records) is required, not optional, for `InstrumentPointing` specifically: it carries
+  load-bearing metadata (`ConstantRotation`, `TimeDependentFrames`, `ConstantFrames`,
+  `CkTableStartTime`/`EndTime`/`OriginalSize`, `FrameTypeCode`, `Description`, `Kernels`) that
+  `tabledump`'s own CSV export doesn't include. Round-tripping without it silently drops
+  `ConstantRotation`, producing a systematic ~0.08 deg pointing error, not an obvious crash.
+  Extracting the label from `catlab` output via the `pvl` library (not hand-transcribing it) avoids
+  precision/typo risk.
+- ISIS 9.0's `csv2table` converts every CSV column to floating point unconditionally -- no
+  `coltypes` parameter exists to declare otherwise (an earlier ISIS version needed one; `csv2table
+  -help` confirms the current one doesn't accept it).
+
+For a Pushframe WAC cube, the single fixed `ConstantRotation` matrix carries the -85621->-85620
+(camera-to-spacecraft-bus) rotation; the 259-row time-dependent quaternion/AV/ET table represents
+bus-to-J2000 and doesn't need to change for a camera-frame correction. The composition is
+`ConstantRotation_new = delta_rotation.T @ ConstantRotation_original`, not `ConstantRotation_original
+@ delta_rotation` -- cross-validated against `wac_camera_model`'s own forward projector using a
+known synthetic test rotation (matched the projector's predicted pixel to ~1e-6; the untransposed
+order placed the point outside the crop's coverage entirely). Likely explanation: ISIS's stored
+matrix is the transpose of this project's own `R_A_to_B` convention (`v_B = R_A_to_B @ v_A`).
+
 ## LightGlue tie-point matching
 
 `src/trntest/pose_alignment.py`'s `match_features_lightglue` is a second feature-matcher option

@@ -7,12 +7,10 @@ for the full approach and status, and `AGENTS.md` for how the docs in this repo 
 
 The demo logic is the installable `trntest` Python package (`src/trntest/`); `notebooks/
 image_generation.py`/`.ipynb` drives it via a small `Session` facade, reading the checked-in
-`notebooks/dataset_manifest.csv` (a frozen selection of a favorable real LROC EDR image -- see
-`docs/history.md`'s dated entry for how it was picked and why the notebook that originally
-generated it was later removed) and rendering/validating it. Tracked as a jupytext-paired pair: the
-`.py` (percent format) is the source of truth for review/diff/lint/IDE work, and the `.ipynb`
-(fully executed, viewable directly in GitHub's file browser — no separate publishing step needed)
-carries the real outputs.
+`notebooks/dataset_manifest.csv` (a frozen selection of one favorable real LROC EDR image) and
+rendering/validating it. Tracked as a jupytext-paired pair: the `.py` (percent format) is the
+source of truth for review/diff/lint/IDE work, and the `.ipynb` (fully executed, viewable directly
+in GitHub's file browser — no separate publishing step needed) carries the outputs.
 
 `notebooks/select_datasets.py`/`.ipynb` is a separate, early-stage/exploratory notebook for picking
 *multiple* maneuver-free multi-orbit TRN-OD test datasets -- see its own module docstring and
@@ -142,8 +140,8 @@ any clone with just Docker installed -- no host-side Python setup required.
 
 ## Viewing the rendered demo
 
-The git-tracked `notebooks/image_generation.ipynb` carries real, fully-executed outputs and
-renders natively in GitHub's file browser (markdown, code, and outputs, including images) — just
+The git-tracked `notebooks/image_generation.ipynb` carries fully-executed outputs and renders
+natively in GitHub's file browser (markdown, code, and outputs, including images) — just
 click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
 
 `notebooks/image_generation.py` (jupytext percent format, paired with its own `.ipynb` via inline

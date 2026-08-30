@@ -138,6 +138,24 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
 
 ## Scope, part 4: `docs/*.md`
 
+**Done:**
+- `README.md` -- reviewed against `docs/docs-style.md`. Cut one `docs/history.md` citation (the
+  fact it carried -- why the dataset-manifest-generating notebook was removed -- wasn't load-bearing
+  for a top-level README) and two bare-intensifier "real" uses.
+- `docs/caching.md:22` -- stale `docs/data-sources.md` reference repointed at
+  `docs/data-sources/robbins-craters.md`, which now holds that fact. (This file was otherwise
+  already "done" by the prior plan; this was a mechanical fix only, not a full pass.)
+- `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` -- turned out to be fully implemented
+  already (`isis_wac.apply_pose_correction_to_crop`, wired into
+  `notebooks/pose_alignment_spike.py`, both live on `main`), so per this repo's own
+  "fold into current-state docs and delete the plan" convention for `docs/proposed-tasks/`: folded
+  its one not-yet-documented fact (the `tabledump`/`csv2table`/`ConstantRotation` patching
+  mechanism and its two gotchas) into a new `docs/external-tools.md` section, fixed 4 now-dangling
+  references to this plan doc across `isis_wac.py`/`notebooks/pose_alignment_spike.py`/
+  `docs/wac-jigsaw-investigation.md` to point there instead, fixed 2 more stale
+  `docs/data-sources.md` references discovered in `docs/wac-jigsaw-investigation.md` along the way
+  (both facts actually live in `docs/external-tools.md`), and deleted the plan file.
+
 **Not yet reworked at all** (carried over from the prior plan, still accurate):
 - `docs/plan.md` (623 lines) -- flagged as its own future index-pattern candidate (thin index +
   split-out detail files, the same pattern `docs/data-sources.md` and `docs/generators.md` already
@@ -147,19 +165,18 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
 - `docs/environment.md` (242 lines) -- confirmed-stale "ephemeral VPS, archive/restore" framing
   (the VPS now persists across sessions); a full rewrite is owed, not just a style pass. Also has a
   stale `docs/data-sources.md` reference.
-- `README.md` (172 lines, cites `docs/history.md` once) -- never reviewed against
-  `docs/docs-style.md`.
 - `docs/reproject-fov-investigation.md` (371 lines) and `docs/wac-jigsaw-investigation.md` (246
-  lines, cites `docs/history.md` once) -- only got mechanical link fixes during the split, never a
+  lines, cites `docs/history.md` once) -- only got mechanical link fixes during the split (plus this
+  session's 2 additional stale-ref fixes for `wac-jigsaw-investigation.md`, see above), never a
   content pass. Both have high `real`/`genuine`/`actual` counts (68 each) -- expected to some
   degree for investigation docs describing what turned out to be real vs. spurious findings, but
   worth a read, not an assumption.
-- `docs/proposed-tasks/report-plan.md` (148 lines, cites `docs/history.md` once) and
-  `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` (153 lines) -- never reviewed.
+- `docs/proposed-tasks/report-plan.md` (148 lines, cites `docs/history.md` once) -- never reviewed;
+  worth checking first whether it's also already fully implemented like
+  `corrected-overlay-cam2map-plan.md` turned out to be, before doing a style pass on it.
 
 **Marked "done" by the prior plan, but with a stale `docs/data-sources.md` reference found by this
-audit**: `docs/caching.md:22` (a `robbins_craters` fact that now lives in
-`docs/data-sources/robbins-craters.md`) and `docs/plan.md` (5 hits -- see its own bullet above).
+audit**: `docs/plan.md` (5 hits -- see its own bullet above).
 Checked and confirmed **not** stale, despite mentioning `docs/data-sources.md`: every
 `docs/data-sources/*.md` file's own "Index: `docs/data-sources.md`" backlink (correct -- that *is*
 the index now), `docs/external-tools.md`'s one mention (explaining how it differs from

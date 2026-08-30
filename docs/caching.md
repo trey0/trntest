@@ -19,7 +19,7 @@ cache/
   isisdata/base/...   (ISIS's own mission-independent reference data)
   isisdata/lro/...    (LRO/WAC calibration files, and -- see below -- WAC CK kernels ISIS resolves)
   astropedia/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif   (one whole file, ~10GB -- see below)
-  robbins_craters/lunar_crater_database_robbins_2018.zip   (one whole file, ~92MB -- see docs/data-sources.md)
+  robbins_craters/lunar_crater_database_robbins_2018.zip   (one whole file, ~92MB -- see docs/data-sources/robbins-craters.md)
   isis_ck_resolution/<edr_product>.json   (persisted spiceinit CK resolution -- see below)
   naif_latest_metakernel/<year>.txt   (persisted "latest metakernel" resolution -- see below)
   torch/hub/checkpoints/...   (LightGlue/DISK pretrained weights -- see below)
