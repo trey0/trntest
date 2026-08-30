@@ -115,7 +115,7 @@ _ = plotting.plot_dem_ortho(dem_ortho_result, camera)
 # convert that same camera to a CSM Frame model-state JSON (the "ISD" sidecar).
 
 # %%
-_ = plotting.plot_synthetic_render(entry.hillshade.raster_path)
+_ = plotting.plot_synthetic_render(entry.hillshade.raster_path, label=r"$\mathtt{hillshade}$")
 
 # %% [markdown]
 # ### The CSM / "ISD" JSON sidecar
@@ -200,11 +200,16 @@ print(f"Robbins craters in view: {len(crater_layer.geoseries) if crater_layer is
 # %%
 _ = entry.hillshade.plot_vs_basemap(
     tie_point_results=tie_point_results,
-    title="Phase 5A: `hillshade` vs. basemap",
+    title=r"Phase 5A: $\mathtt{hillshade}$ vs. basemap",
+    render_label=r"$\mathtt{hillshade}$",
 )
 
 # %%
-entry.hillshade.plot_overlay(title="Phase 5B: `hillshade` over basemap", layers=crater_layers)
+entry.hillshade.plot_overlay(
+    title="Phase 5B: Basemap + Overlay",
+    overlay_label=r"$\mathtt{hillshade}$",
+    layers=crater_layers,
+)
 
 # %% [markdown]
 # ## Phase 6: does `crop`'s geometry check out?
@@ -224,11 +229,16 @@ for name, r in tie_point_results.items():
 # %%
 _ = entry.crop.plot_vs_basemap(
     tie_point_results=tie_point_results,
-    title="Phase 6A: `crop` vs. basemap",
+    title=r"Phase 6A: $\mathtt{crop}$ vs. basemap",
+    render_label=r"$\mathtt{crop}$",
 )
 
 # %%
-entry.crop.plot_overlay(title="Phase 6B: `crop` over basemap", layers=crater_layers)
+entry.crop.plot_overlay(
+    title="Phase 6B: Basemap + Overlay",
+    overlay_label=r"$\mathtt{crop}$",
+    layers=crater_layers,
+)
 
 # %% [markdown]
 # ## Phase 7: `hillshade` vs. `crop`, side by side
@@ -240,7 +250,13 @@ entry.crop.plot_overlay(title="Phase 6B: `crop` over basemap", layers=crater_lay
 
 # %%
 _ = plotting.plot_isis_comparison(
-    camera, tie_point_results, entry.hillshade.raster_path, entry.crop.raster_path, rotations
+    camera,
+    tie_point_results,
+    entry.hillshade.raster_path,
+    entry.crop.raster_path,
+    rotations,
+    synthetic_label=r"$\mathtt{hillshade}$",
+    real_label=r"$\mathtt{crop}$",
 )
 
 # %% [markdown]
@@ -278,24 +294,6 @@ plotting.plot_render_toggle(
     entry.rotations.k_synthetic,
     entry.hillshade.width_km,
     entry.hillshade.height_km,
-    "`hillshade`",
-    "`reproject`",
+    r"$\mathtt{hillshade}$",
+    r"$\mathtt{reproject}$",
 )
-
-# %% [markdown]
-# ## Summary
-#
-# - Selected a real, illuminated LROC WAC EDR via a catalog-driven, multi-orbit dataset search, and
-#   computed LRO's true position/orientation at that image's timestamp directly in the Moon's
-#   `MOON_ME` frame.
-# - Built a `.tsai` Pinhole camera from that pose and rendered `hillshade` with ASP's `sat_sim`, fed
-#   by real DEM/imagery (see the table above). Produced a CSM/"ISD" JSON sidecar for it.
-# - Validated `hillshade`'s geometry against the basemap two ways: a raw, north-up-rotated quality
-#   check, and a pixel-for-pixel geo-registered overlay via `mapproject` (Phase 5).
-# - Processed the same footprint's WAC EDR into `crop` (ISIS3's pipeline), and validated its
-#   geometry against the same basemap the same two ways -- using ISIS's native camera model
-#   (`cam2map`) rather than `mapproject`/CSM (Phase 6).
-# - Compared `hillshade` and `crop` directly against each other, with explicit tie points (Phase 7).
-# - Rendered `reproject` through the same camera as `hillshade` but textured from `crop` instead of
-#   the basemap, confirmed coverage out to the FOV's corners, and blinked it against `hillshade` to
-#   isolate the effect of the texture source alone (Phase 8).

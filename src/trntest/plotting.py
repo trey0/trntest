@@ -123,8 +123,8 @@ def plot_raster(
 
 
 def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
-    """Left: the Lunaserv ortho mosaic with the SPICE-derived camera's ground footprint overlaid, to
-    visually confirm the pose lands where expected. Right: the GLD100 DEM (elevation). Both share one
+    """Left: the ortho mosaic with the SPICE-derived camera's ground footprint overlaid, to visually
+    confirm the pose lands where expected. Right: the GLD100 DEM, elevation in km. Both share one
     figure and the same km-scaled Easting/Northing axes.
 
     :param dem_ortho_result: DEM/ortho pair to display.
@@ -162,13 +162,14 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
     if center_lonlat is not None:
         center = geopandas.GeoSeries([shapely.geometry.Point(center_lonlat)], crs=moon_geographic_crs)
         center.to_crs(ortho_crs).plot(ax=axes[0], color="red", markersize=30)
-    axes[0].set_title("Lunaserv WAC global mosaic (ROI) with camera footprint")
+    axes[0].set_title("Ortho mosaic (ROI) with camera footprint")
 
+    dem_km = dem * 0.001
     im = axes[1].imshow(
-        dem, cmap="terrain", extent=(dem_bounds.left, dem_bounds.right, dem_bounds.bottom, dem_bounds.top)
+        dem_km, cmap="terrain", extent=(dem_bounds.left, dem_bounds.right, dem_bounds.bottom, dem_bounds.top)
     )
-    axes[1].set_title("GLD100 DEM (elevation, m)")
-    fig.colorbar(im, ax=axes[1], shrink=0.8)
+    axes[1].set_title("GLD100 DEM")
+    fig.colorbar(im, ax=axes[1], shrink=0.8, label="Elevation (km)")
 
     km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.0f}")
     for ax in axes:
@@ -180,17 +181,18 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
     return fig
 
 
-def plot_synthetic_render(rendered_tif_path):
+def plot_synthetic_render(rendered_tif_path, label: str = "Synthetic sat_sim render"):
     """Display the synthetic `sat_sim` render.
 
     :param rendered_tif_path: Rendered GeoTIFF path.
+    :param label: Figure title.
     :returns: The `Figure`.
     """
     synthetic = read_raster_band(rendered_tif_path)
 
     fig = plt.figure(figsize=(5, 5))
     plt.imshow(synthetic, cmap="gray")
-    plt.title("Synthetic sat_sim render")
+    plt.title(label)
     plt.xlabel("sample")
     plt.ylabel("line")
     return fig
@@ -335,6 +337,8 @@ def plot_isis_comparison(
     stitched_cub_path,
     rotations: DisplayRotations,
     window: rasterio.windows.Window | None = None,
+    synthetic_label: str = "Synthetic (sat_sim, SPICE-posed)",
+    real_label: str = "Real WAC (ISIS-processed)",
 ):
     """Synthetic render next to a same-footprint crop of the ISIS-processed WAC image
     (`isis_wac.crop_for_camera`) -- an ad hoc km/north-up comparison, not true pixel-for-pixel
@@ -350,6 +354,8 @@ def plot_isis_comparison(
     :param window: Optional crop window into `stitched_cub_path`, if it's the full, uncropped
         stitched cube rather than an already-cropped one (`isis_wac.crop_for_camera`'s own output
         needs no further windowing).
+    :param synthetic_label: Synthetic render panel title (no rotation/brightness-match note appended).
+    :param real_label: Real WAC panel title (no rotation/brightness-match note appended).
     :returns: The `Figure`.
     """
     # Applies the same north-up display rotation and km extent scaling `plot_comparison` uses, for
@@ -401,9 +407,9 @@ def plot_isis_comparison(
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 6))
     axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_height_km, 0])
-    axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
+    axes[0].set_title(f"{synthetic_label} (north-up)")
     axes[1].imshow(real_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
-    axes[1].set_title("Real WAC (ISIS-processed, brightness-matched to synthetic, north-up)")
+    axes[1].set_title(f"{real_label} (brightness-matched to {synthetic_label}, north-up)")
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
@@ -505,7 +511,7 @@ def plot_render_vs_basemap(
     )
     axes[0].set_title(f"{render_label} (north-up)")
     axes[1].imshow(base_crop, cmap="gray", vmin=base_vmin, vmax=base_vmax, extent=[0, base_width_km, base_height_km, 0])
-    axes[1].set_title("Hillshade-based basemap (same real footprint)")
+    axes[1].set_title("Basemap")
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
@@ -1014,6 +1020,7 @@ def plot_overlay_toggle(
     overlay_raster_path,
     overlay_cmap: str = "gray",
     title: str = "Overlay (geo-aligned)",
+    overlay_label: str | None = None,
     show_overlay_outline: bool = True,
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
@@ -1029,6 +1036,9 @@ def plot_overlay_toggle(
     :param overlay_raster_path: Overlay raster.
     :param overlay_cmap: Overlay colormap.
     :param title: Figure title (each frame gets a checkbox-glyph suffix, see below).
+    :param overlay_label: If given, the suffix names the overlay directly
+        (`"{title}: ☑ {overlay_label}"`/`"{title}: ☐ {overlay_label}"`, checkbox right next to the
+        name of the thing blinking on/off) instead of the generic "Overlay Visibility" toggle.
     :param show_overlay_outline: Trace and draw the overlay's footprint outline.
     :param overlay_outline_color: Outline color.
     :param fill_overlay_nodata: Fill the overlay's small nodata gaps for display.
@@ -1065,6 +1075,13 @@ def plot_overlay_toggle(
     # not the surrounding words -- per explicit user feedback, the goal is for the blinking GIF to
     # visually read as a checkbox ticking on/off in place, not as title text jumping around alongside
     # the image.
+    if overlay_label is not None:
+        base_title = f"{title}: ☐ {overlay_label}"
+        overlay_title = f"{title}: ☑ {overlay_label}"
+    else:
+        base_title = f"{title} - ☐ Overlay Visibility"
+        overlay_title = f"{title} - ☑ Overlay Visibility"
+
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata
     )
@@ -1079,7 +1096,7 @@ def plot_overlay_toggle(
         overlay_vmax,
         overlay_cmap,
         0.0,
-        f"{title} - ☐ Overlay Visibility",
+        base_title,
         outline_geoseries,
         overlay_outline_color,
         layers,
@@ -1093,7 +1110,7 @@ def plot_overlay_toggle(
         overlay_vmax,
         overlay_cmap,
         1.0,
-        f"{title} - ☑ Overlay Visibility",
+        overlay_title,
         outline_geoseries,
         overlay_outline_color,
         layers,

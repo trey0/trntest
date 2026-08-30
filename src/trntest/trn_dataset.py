@@ -388,7 +388,9 @@ class TrnTestImage(abc.ABC):
                 "call .generate() or dataset.populate() first"
             )
 
-    def plot_vs_basemap(self, tie_point_results: dict | None = None, title: str | None = None):
+    def plot_vs_basemap(
+        self, tie_point_results: dict | None = None, title: str | None = None, render_label: str | None = None
+    ):
         self._require_generated()
         return plotting.plot_render_vs_basemap(
             plotting.read_raster_band(self.raster_path),
@@ -397,19 +399,27 @@ class TrnTestImage(abc.ABC):
             self.height_km,
             self.footprint_lonlat_deg,
             self.entry.dem_ortho_result.ortho,
-            title=title or f"{self.render_label} vs. hillshade-based basemap",
-            render_label=self.render_label,
+            title=title or f"{self.render_label} vs. basemap",
+            render_label=render_label or self.render_label,
             tie_point_results=tie_point_results,
             render_px_key=self.tie_point_px_key,
         )
 
-    def plot_overlay(self, title: str | None = None, layers: list[plotting.OverlayLayer] | None = None):
+    def plot_overlay(
+        self,
+        title: str | None = None,
+        overlay_label: str | None = None,
+        layers: list[plotting.OverlayLayer] | None = None,
+    ):
         """Uses `plotting.plot_overlay_toggle`, not the plain `plotting.plot_overlay` -- the
         notebook this replaces already switched
         to the auto-blinking-GIF toggle version (see its own docstring) before this class existed,
         and reverting that UX improvement here would be a real regression, not a neutral relocation.
         Returns an `IPython.display.HTML` object -- callers must not add a trailing `;` in a
         notebook cell, same requirement as calling `plot_overlay_toggle` directly.
+
+        `overlay_label` passes straight through to `plotting.plot_overlay_toggle` -- see its own
+        docstring for the checkbox-title format this switches to.
 
         `layers` passes straight through to `plotting.plot_overlay_toggle` -- see
         `plotting.OverlayLayer`'s docstring (each layer's geometry must already be in
@@ -422,6 +432,7 @@ class TrnTestImage(abc.ABC):
             self.entry.dem_ortho_result.ortho,
             self._mapprojected_path(),
             title=title or f"{self.render_label} over basemap",
+            overlay_label=overlay_label,
             layers=layers,
         )
 
