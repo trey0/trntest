@@ -1,6 +1,6 @@
 # Notebooks: tone/structure pass
 
-**Status: 6 of 11 notebooks done.**
+**Status: 7 of 11 notebooks done.**
 
 ## Goal
 
@@ -48,12 +48,22 @@ scope decision -- see below).
    directly by testing the old `lunaserv_wms` ortho path too, not guessed) is now documented in
    `docs/external-tools.md`'s ISIS Pushframe pipeline section, so it doesn't have to be
    re-diagnosed if it resurfaces elsewhere.
-7. `real_hapke_params.py` (165 lines)
+7. ~~`real_hapke_params.py`~~ -- done, light touch. Was one of 4 notebooks `docs/plan.md` flagged
+   as stale since the WAC_EMP ortho-source migration (never regenerated under it) -- regenerating
+   surfaced a real finding, now noted directly in the notebook: on this one candidate, placeholder
+   Hapke params slightly beat the real-calibration default (5.62 vs. 6.25 mean|diff|), opposite of
+   what motivated the default. Kept the default as-is (physical grounds, single-candidate result).
+   Also updated `docs/plan.md`'s stale-notebook tracking to match (2 of 4 no longer stale;
+   `reproject_spike.py`/`pose_alignment_spike.py` still are).
 8. `sfs_validation.py` (172 lines) -- **check before editing**: its intro claims a "still-open,
    unexplained regression against the real WAC crop" (Phase 68-72). `docs/plan.md`'s `lunaserv.py`
    row says that regression "now looks resolved as of Phase 78" -- likely another stale-status
-   case like `wac_isis.py`'s. Verify against current `docs/plan.md`/`docs/data-sources.md` before
-   deciding what this notebook should say.
+   case like `wac_isis.py`'s. The peer session (docs-style rollout) checked the *module's*
+   `src/trntest/sfs_validation.py` docstring claims against `docs/plan.md` while reworking it and
+   found no staleness there -- but that's a different claim (an along-track-correction limitation,
+   confirmed still genuinely open) from this *notebook's* own "still-open regression" line, which
+   hasn't been checked yet. Verify the notebook's own claim specifically before deciding what it
+   should say.
 9. `crater_sharpness_review.py` (255 lines)
 10. `reproject_spike.py` (507 lines) -- **likely obsolete, decide before rewriting**: its premise
     is "should we build `TrnTestReprojectImage`?", but `reproject` is now fully implemented and
