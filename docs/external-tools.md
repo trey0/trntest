@@ -329,6 +329,28 @@ model even on the known-good full cube) had missed both. Full investigation:
   a shared pixel grid, so matching *projection* (verified above) is sufficient; a separate
   resampling pass would have reintroduced exactly the kind of interpolation-quality/subtle-
   misalignment risk this whole detour was meant to avoid.
+- **Composite via real coordinates, not raw array indexing — and reindex the smaller raster onto
+  the larger one's grid, never the reverse.** `cam2map`'s own pixel dimensions and a
+  `DemOrthoResult`'s (GDAL/rasterio-computed) never exactly agree, even at the "same" resolution and
+  projection — each tool rounds physical bounds to pixel counts independently, so their grids are
+  offset from each other by a fraction of a pixel that drifts smoothly across the image. Any code
+  that windows/crops the *larger* raster down to the *smaller* one's shape by raw array index
+  (`rasterio.windows.from_bounds` + manual `row_off`/`col_off`/height/width slicing) can silently
+  end up off by one row/column once that drift shifts far enough — confirmed live: this broke
+  `notebooks/along_track_correction.py`'s comparison outright (`ValueError: operands could not be
+  broadcast together with shapes (1827,1688) (1828,1688)`) after some change (not the WAC_EMP
+  ortho-source migration — tested directly, `ortho_source="lunaserv_wms"` hits the identical
+  mismatch) shifted which side of a rounding boundary the two grids' shapes land on. Coordinate-based
+  alignment (`xarray.DataArray.reindex_like`/`.interp_like`, `plotting.compute_brightness_matched_diff`'s
+  approach) sidesteps the raw-shape assumption, but **reindexing in the "shrink big onto small"
+  direction is still not safe**: `method="nearest"` with a half-cell `tolerance` can leave an
+  all-NaN row right where the sub-pixel drift crosses the tolerance boundary (confirmed: the same
+  crop/basemap pairing drops the identical row under this method, regardless of ortho source).
+  `compute_brightness_matched_diff` avoids this by always reindexing the smaller raster onto the
+  larger one's full grid (gaps then land only outside the smaller raster's real footprint, never
+  inside it) — the safe direction. Where the "shrink" direction is unavoidable (e.g. cropping a
+  basemap down to a small comparison window, as `along_track_correction.py` does), `interp_like`
+  (linear interpolation, no tolerance cliff) is the more robust choice.
 - **`cam2map`'s own `WARPALGORITHM=AUTOMATIC` default introduces real striping for this sensor**,
   found via manual visual check the automated correlation checks above had missed (a correlation
   check only sees pixels valid in *both* rasters — it can't detect matching coverage gaps). ISIS
