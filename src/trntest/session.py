@@ -1,7 +1,7 @@
 """Thin convenience facade over the module-level functions, so notebook/interactive code doesn't
-repeat `config=...` at every call. The actual logic stays in `camera.py`/`lunaserv.py`/`render.py`/
-etc. as free functions (independently usable and unit-testable without constructing a `Session`);
-`Session` methods are one-line delegators.
+repeat `config=...` at every call. The logic stays in `camera.py`/`lunaserv.py`/`render.py`/etc. as
+free functions (independently usable and unit-testable without constructing a `Session`); `Session`
+methods are one-line delegators.
 """
 
 from datetime import datetime
@@ -20,11 +20,16 @@ from trntest.render import RenderResult
 
 
 def _inherit_doc(source):
-    """Decorator: copy `source`'s docstring onto the decorated method, so help() on the Session
-    wrapper shows the real explanation instead of a blank one. Deliberately not `functools.wraps` --
-    that would also copy `__wrapped__` and make inspect.signature()/help() show the free function's
-    signature (including a `config` parameter the Session method doesn't actually take)."""
+    """Decorator: copy `source`'s docstring onto the decorated method.
 
+    :param source: The free function whose docstring to copy.
+    :returns: The decorator.
+    """
+
+    # So help() on the Session wrapper shows the explanation instead of a blank one. Deliberately
+    # not `functools.wraps` -- that would also copy `__wrapped__` and make
+    # inspect.signature()/help() show the free function's signature (including a `config` parameter
+    # the Session method doesn't actually take).
     def decorator(method):
         method.__doc__ = source.__doc__
         return method
