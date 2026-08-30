@@ -211,6 +211,9 @@ entry.hillshade.plot_overlay(
     layers=crater_layers,
 )
 
+# %%
+entry.hillshade.plot_zoom_blink_over()
+
 # %% [markdown]
 # ## Phase 6: does `crop`'s geometry check out?
 #
@@ -239,6 +242,9 @@ entry.crop.plot_overlay(
     overlay_label=r"$\mathtt{crop}$",
     layers=crater_layers,
 )
+
+# %%
+entry.crop.plot_zoom_blink_over()
 
 # %% [markdown]
 # ## Phase 7: `hillshade` vs. `crop`, side by side
