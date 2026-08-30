@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (11 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (13 done, 1 partial, of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -158,23 +158,88 @@ truth per fact, thin index files, sensible file naming.
   intact. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file).
   No code logic touched, so no notebook re-run was needed.
 
-**Mechanical only, not a content rework**: `docs/plan.md` and ~30 `src/trntest/*.py` files got
-cross-references *fixed* (pointers updated to the files things moved to) as a side effect of the
-`data-sources.md` split — their own prose wasn't edited for style beyond that.
+- **`src/trntest/trn_dataset.py` — merged as an improvement, but user review says it's not yet
+  satisfactory; don't count this file as done.** What was worse about it than the other done files
+  isn't yet specified — ask before doing further work here, don't guess at what to change. (693 ->
+  712 lines, both `docs/history.md` citations removed):
+  pulled in `origin/main` first (a peer session's label-override changes to
+  `plot_vs_basemap`/`plot_overlay`) before starting. Applied the what/why split consistently from
+  the start (per the `cache.py` review below) rather than needing a second pass. **Also caught 4
+  historical-narrative sentences embedded directly in docstrings with no `docs/history.md` citation
+  attached** — the same "used to do X, now does Z" pattern flagged in `render.py`'s docstring (see
+  that review below): the module docstring's "Replaces `dataset.generate_dataset()`'s flat...
+  layout" and "`populate()` no longer supports... old filesystem lock files... are gone" framing
+  (restated as direct current-state facts), `TrnTestHillshadeImage`'s "so this is a pure
+  relocation, not new pipeline logic" aside (cut), and `TrnTestReprojectImage`'s "The user's own
+  framing: ..." quoted aside (replaced with a plain statement). Added a docstring to
+  `plot_vs_basemap`, which had none. Fixed several stale "see X's own docstring" cross-references
+  that now point to content relocated to a comment in an earlier-reworked file. Verified with
+  `trntest-lint` and `tests/test_trn_dataset.py` (32 passed, non-heavy). No code logic touched.
+- `src/trntest/tie_points.py` (491 -> 450 lines, both `docs/history.md` citations removed): the
+  densest file yet — a ~59-line module docstring (full 5-step selection/projection procedure plus a
+  deprecated-camera-model investigation narrative) and several 30+-line function docstrings in the
+  same investigation-trail style. Module docstring trimmed to what/why in ~7 lines; the
+  local-meters-not-lonlat-degrees rationale and the WAC-VIS axis convention (both genuinely shared
+  across `inscribed_bbox`/`select_tie_points`/`camera.py`) kept as a trailing module comment, per the
+  relocation rule — everything else (the deprecated-path switch history, exact measured
+  discrepancies) cut as either duplicated elsewhere (each deprecated function's own docstring already
+  says "superseded by X") or as pure investigation narrative not load-bearing today.
+  `crop_footprint_corners_for_camera`'s and `resolve_crop_pixels`'s docstrings (the two heaviest)
+  trimmed to interface + RST fields, rationale moved to body comment blocks. Added docstrings to the
+  2 previously-undocumented functions (`lonlat_to_ground_km`, `intersect_bbox`). Kept this project's
+  established "real WAC crop" vs. synthetic-render contrast intact rather than treating it as filler.
+  Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file) and
+  `tests/test_tie_points_geometry.py` (11 passed). No code logic touched, so no notebook re-run was
+  needed.
+- `src/trntest/spice_kernels.py` (345 -> 356 lines, both `docs/history.md` citations removed):
+  `latest_metakernel_url`'s/`select_isis_wac_ck_kernels`'s/`fetch_and_furnish`'s/
+  `furnish_spk_range`'s docstrings trimmed to interface + RST fields, rationale moved to body
+  comment blocks. `fetch_and_furnish`'s docstring dropped a duplicate restatement of the
+  SPICE(KERNELPOOLFULL)/SPICE(NOMOREROOM) rationale — that's already the `_loaded_date_ranged_kernels`/
+  `_loaded_kernels` module-level comments' own job (per "one source of truth"); the
+  `_loaded_date_ranged_kernels` comment, which previously just said "see fetch_and_furnish's
+  docstring for why this matters," now states the SPICE(KERNELPOOLFULL) rationale directly instead of
+  forward-referencing. Added docstrings to 3 previously-undocumented functions/classes (`KernelRef`,
+  `select_kernels_for`, `_fetch_kernel_ref`). **Also fixed a stale fact carried over from before the
+  `config.py` pass's correction**: `select_naif_wac_ck_kernels`'s docstring still claimed a
+  "confirmed ~11-13km disagreement with ISIS's own camera model" as the reason it's deprecated, but
+  `select_isis_wac_ck_kernels`'s own docstring already recorded that this discrepancy was never
+  reproduced (direct verification found both `wac_ck_source` options give numerically identical WAC
+  pointing) — reworded to state the actual reason it's kept only for comparison (doesn't fetch the
+  second CK ISIS furnishes) without repeating the stale ~11-13km claim. Verified with `trntest-lint`
+  (`ruff format`/`ruff check`/`mypy` all clean on this file) and `tests/test_spice_kernels_parsing.py`
+  (12 passed). No code logic touched, so no notebook re-run was needed.
+
+**User review findings on the first pass (2026-08-30), applied to `cache.py` and then
+retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and carried forward into
+`trn_dataset.py` from the start**:
+1. **Removing `docs/history.md` citations and "real"/"genuine" filler is not the whole job.**
+   Several large docstrings still mixed "why" (design rationale, investigation-derived numbers,
+   comparisons to sibling functions) into the docstring body instead of splitting it into a
+   minimal docstring + a plain comment block as the first lines of the function body, per
+   `docs/docs-style.md`'s own rule. `lunaserv.py` is the reference example for this pattern —
+   consult it, not just the rule text, when in doubt.
+2. **Historical narrative can hide in a docstring with no `docs/history.md` citation attached** —
+   e.g. "Replaces the old `run_sat_sim.sh`" (`render.py`) or "so this is a pure relocation, not new
+   pipeline logic" (`trn_dataset.py`). Read every docstring for "used to do X, but now Y"/"no
+   longer"/"before this existed" framing even when `grep -c docs/history.md` comes back clean —
+   that grep only catches explicit citations, not the underlying narrative style.
+3. A cross-reference ("see X's own docstring for...") can go stale the moment the target's content
+   moves to a comment during its own docs-style pass — re-verify each pointer against the file it
+   actually points to when doing this style of rewrite, don't just carry old wording forward.
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 7
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 4
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`
-done, see Completed above). Rough priority order (citation count, then size, as a proxy for how
-much chatty/historical material likely needs trimming):
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/
+`tie_points.py`/`spice_kernels.py` fully done; `trn_dataset.py` had its citations removed but isn't
+yet considered satisfactory, see its own Completed entry above — don't count it done). Rough
+priority order (citation count, then size, as a proxy for how much chatty/historical material likely
+needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `trn_dataset.py` | 2 | 682 |
-| `tie_points.py` | 2 | 491 |
-| `spice_kernels.py` | 2 | 345 |
 | `product_registry.py` | 2 | 194 |
 | `dataset_selection.py` | 2 | 283 |
 | `maneuver_detection.py` | 1 | 269 |
@@ -189,9 +254,11 @@ material about one specific function/class, relocate it there instead of a modul
 `docs/docs-style.md`'s current wording — fix "real"-as-filler and em-dash sentence-stacking, **and add
 a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
 trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
-leave undocumented, same bar applied retroactively to the first 4 files, see Completed above).
-`trn_dataset.py` is next (tied at 2 citations with 4 others; picked first among the tie, largest
-of them by line count).
+leave undocumented, same bar applied retroactively to the first 4 files, see Completed above), and
+**read every docstring for historical-narrative framing even where `docs/history.md` isn't
+cited** (see the "User review findings" item above — `grep -c docs/history.md` alone won't catch it).
+`dataset_selection.py` is next (tied at 2 citations with `product_registry.py`; picked first among
+the tie, larger of the two by line count).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -207,7 +274,7 @@ of them by line count).
 
 1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
    other sessions may have touched these files since.
-2. Work one file at a time; `config.py` next. Re-verify with `trntest-lint` and, if a docstring
+2. Work one file at a time; `dataset_selection.py` next. Re-verify with `trntest-lint` and, if a docstring
    change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
    notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
    `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
