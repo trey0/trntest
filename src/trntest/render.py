@@ -1,7 +1,6 @@
 """Render the synthetic image with ASP's `sat_sim` using the real SPICE-derived camera, then convert
-that exact camera to a CSM Frame model-state JSON sidecar with `cam_gen`. Replaces the old
-`run_sat_sim.sh` -- direct subprocess calls instead of a shell script, so the DEM/ortho paths flow
-in as plain Python values (no `dem_ortho_result.txt` handoff file needed).
+that exact camera to a CSM Frame model-state JSON sidecar with `cam_gen`. Takes the DEM/ortho paths
+as plain Python values directly -- no file handoff needed.
 """
 
 import dataclasses
@@ -120,8 +119,8 @@ def run_mapproject_image(
     :param camera_path: A camera file matching `camera_type` ("csm" or "pinhole").
     :param dem_ortho_result: Supplies the reference DEM (`--ref-map`) both this and `run_sat_sim`
         share, so the output lands on the exact same pixel grid.
-    :param camera_type: See `run_mapproject`'s docstring for the full rationale for keeping this
-        generic rather than hardcoded.
+    :param camera_type: See the comment below for the full rationale for keeping this generic
+        rather than hardcoded.
     :returns: `output_path`.
     """
     # The shared low-level worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM
