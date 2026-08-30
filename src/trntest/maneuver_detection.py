@@ -2,68 +2,8 @@
 unloads, eclipse-phasing maneuvers -- anything a mission's flight-dynamics team's "small forces
 file" would log, which this project has no access to for LRO, and no public source is known to
 exist) directly from LRO's public reconstructed-orbit SPK product, by looking for step changes in
-two exact/near-exact conserved quantities of two-body motion: specific angular momentum and
-specific orbital energy.
-
-Why these two, not the classical elements (a, e, i, ...): a real impulsive burn's effect on the
-state vector is exact and simple --
-
-  h_after = r x (v + dv) = h_before + r x dv        (EXACT, any dv magnitude, r unchanged mid-burn)
-  eps_after = eps_before + v.dv + |dv|^2/2           (eps = v^2/2 - GM/r; the |dv|^2/2 term is
-                                                       3+ orders of magnitude smaller than v.dv for
-                                                       the cm/s-to-few-m/s burns this module cares
-                                                       about, so eps_after - eps_before ~= v.dv)
-
-`r x dv` is a *linear*, always-exact map from dv to Delta-h with a clean, phase-INDEPENDENT null
-along the radial direction only (r x (anything parallel to r) = 0, always -- not "at some orbital
-phases", *always*) -- so Delta-h alone fully captures the tangential and normal components of any
-impulse. `v.dv` picks up the remaining radial (+ some tangential) sensitivity, weak only very close
-to periapsis/apoapsis passage (where the radial velocity itself is briefly ~0), a narrow window, not
-a wide phase range.
-
-This matters because a single classical element doesn't have this property: semi-major axis / energy
-alone is *exactly* blind to a purely-normal impulse (a normal dv does zero work, full stop -- and
-per Mesarch et al., AAS-23-234, LRO's momentum unloads were literally performed "in the +/- orbit
-normal direction to minimize the along-track perturbative effects" early in the mission, i.e.
-deliberately designed to be invisible to exactly this kind of check). Inclination alone would fix
-that but reintroduces a different phase-dependent blind spot of its own (di/dt in the Gauss
-variational equations is scaled by cos(argument of latitude) -- exactly zero at node crossings,
-which a momentum unload has no reason to avoid). Tracking the full h vector instead of a scalar
-derived from it (like inclination) avoids this: `Delta h = r x dv` has no such modulation.
-
-Together, (h_x, h_y, h_z, eps) span the full 3-DOF impulse direction space, with one honest residual
-gap: eps's radial sensitivity is v_R (the pre-burn radial velocity), which for an orbit as close to
-circular as LRO's current one (e ~ 0.02) stays small (a few % of orbital speed) across the ENTIRE
-orbit, not just right at periapsis/apoapsis passage as a first guess might suggest -- confirmed
-directly (see `tests/test_maneuver_detection.py`'s radial-impulse test) by checking the actual
-singular values of the (h, eps) measurement matrix even at the point of maximum radial velocity.
-Detection is unaffected (the combined statistic doesn't need this direction to be well-conditioned
-to cross threshold), but this module doesn't claim an accurate radial-component magnitude/direction
-for a candidate -- `_reconstruct_candidate`'s explicit `rcond` cutoff deliberately reports ~0 there
-rather than amplifying noise into a wildly implausible number (confirmed via a real regression: an
-early, unregularized version of this reconstruction reported +373 m/s radial for a real 2019-07-02
-momentum unload every other channel agreed was an ordinary ~cm/s-scale event). This is a real,
-narrower gap than the single-scalar/single-classical-element alternatives it replaces -- but is
-still a gap, not a solved problem, for a purely-radial impulse specifically.
-
-Detection method: sample (r, v) at fine, uniform cadence, compute (h, eps) at each epoch, and (per
-channel) compare the median just-after vs. just-before a one-orbital-period window -- a real burn
-shows up as a PERSISTENT shift (post-burn dynamics continue from the new state), cancelling most of
-the periodic two-body oscillation. Each channel's diff series is normalized by its own robust
-(MAD-based) noise floor and combined via quadrature (`sqrt(sum of squared per-channel z-scores)`,
-a chi-like combined statistic) -- self-calibrating to each channel's real noise level rather than
-needing hand-derived, phase-dependent analytic sensitivity weights.
-
-At each detected peak, the observed (Delta-h, Delta-eps) is inverted (weighted least squares, using
-each channel's own noise floor as the weight) to reconstruct an estimated 3D impulse vector, then
-decomposed into radial/tangential/normal (RTN) components for interpretability -- this replaces a
-cruder "assume the impulse was tangential" magnitude estimate, which would be systematically wrong
-(too small) for a normal- or radial-dominant event now that this module can actually detect those.
-
-Validated (see `docs/history.md`'s dated entries) against Mesarch et al.'s AAS-23-234 ("Long-Term
-Orbit Operations for the Lunar Reconnaissance Orbiter") published momentum-unload cadence/magnitude
-for the second half of 2019, and against real, much larger (>1 m/s) stationkeeping-scale events in
-2010, before LRO's frozen-orbit transition.
+two conserved quantities of two-body motion: specific angular momentum (h) and specific orbital
+energy (eps).
 
 `sample_orbit_state`/`find_maneuver_candidates` need live SPICE kernels and network access (via
 `spice_kernels`) -- run only inside Docker, and marked `@pytest.mark.heavy` in
@@ -71,6 +11,49 @@ for the second half of 2019, and against real, much larger (>1 m/s) stationkeepi
 `detect_discontinuities` itself is pure/deterministic (plain numpy over an already-sampled state
 series), so it's covered by ordinary fast unit tests against a synthetic two-body-propagated orbit.
 """
+# Why h and eps, not the classical elements (a, e, i, ...): an impulsive burn's effect on the state
+# vector is exact and simple --
+#
+#   h_after = r x (v + dv) = h_before + r x dv        (exact, any dv magnitude, r unchanged mid-burn)
+#   eps_after = eps_before + v.dv + |dv|^2/2           (eps = v^2/2 - GM/r; the |dv|^2/2 term is
+#                                                        3+ orders of magnitude smaller than v.dv for
+#                                                        the cm/s-to-few-m/s burns this module cares
+#                                                        about, so eps_after - eps_before ~= v.dv)
+#
+# r x dv is a linear, always-exact map from dv to Delta-h with a clean, phase-independent null along
+# the radial direction only (r x (anything parallel to r) = 0, always -- not "at some orbital
+# phases", always) -- so Delta-h alone fully captures the tangential and normal components of any
+# impulse. v.dv picks up the remaining radial (+ some tangential) sensitivity, weak only very close
+# to periapsis/apoapsis passage (where the radial velocity itself is briefly ~0), a narrow window,
+# not a wide phase range.
+#
+# This matters because a single classical element doesn't have this property: semi-major axis /
+# energy alone is exactly blind to a purely-normal impulse (a normal dv does zero work, full stop --
+# and per Mesarch et al., AAS-23-234, LRO's momentum unloads were performed "in the +/- orbit normal
+# direction to minimize the along-track perturbative effects" early in the mission, deliberately
+# designed to be invisible to exactly this kind of check). Inclination alone would fix that but
+# reintroduces a different phase-dependent blind spot of its own (di/dt in the Gauss variational
+# equations is scaled by cos(argument of latitude) -- exactly zero at node crossings, which a
+# momentum unload has no reason to avoid). Tracking the full h vector instead of a scalar derived
+# from it (like inclination) avoids this: Delta h = r x dv has no such modulation.
+#
+# Together, (h_x, h_y, h_z, eps) span the full 3-DOF impulse direction space, with one honest
+# residual gap: eps's radial sensitivity is v_R (the pre-burn radial velocity), which for an orbit
+# as close to circular as LRO's current one (e ~ 0.02) stays small (a few % of orbital speed) across
+# the entire orbit, not just right at periapsis/apoapsis passage as a first guess might suggest --
+# confirmed directly (see tests/test_maneuver_detection.py's radial-impulse test) by checking the
+# actual singular values of the (h, eps) measurement matrix even at the point of maximum radial
+# velocity. Detection is unaffected (the combined statistic doesn't need this direction to be
+# well-conditioned to cross threshold), but this module doesn't claim an accurate radial-component
+# magnitude/direction for a candidate -- see _reconstruct_candidate's own comment for why its rcond
+# cutoff deliberately reports ~0 there instead. This is a narrower gap than the
+# single-scalar/single-classical-element alternatives it replaces -- but is still a gap, not a
+# solved problem, for a purely-radial impulse specifically.
+#
+# Validated against Mesarch et al.'s AAS-23-234 ("Long-Term Orbit Operations for the Lunar
+# Reconnaissance Orbiter") published momentum-unload cadence/magnitude for the second half of 2019,
+# and against much larger (>1 m/s) stationkeeping-scale events in 2010, before LRO's frozen-orbit
+# transition.
 
 import dataclasses
 from datetime import datetime
@@ -92,8 +75,8 @@ DEFAULT_SIGMA_THRESHOLD = 6.0
 
 @dataclasses.dataclass(frozen=True)
 class ManeuverCandidate:
-    """One detected step in (h, eps) -- a likely real maneuver, with its impulse reconstructed
-    (weighted least squares, see module docstring) and decomposed into radial/tangential/normal
+    """One detected step in (h, eps) -- a likely maneuver, with its impulse reconstructed (weighted
+    least squares, see `_reconstruct_candidate`) and decomposed into radial/tangential/normal
     components. `estimated_dv_m_s` is the reconstructed vector's magnitude; a stationkeeping burn is
     ~5.5 m/s, a momentum unload is 0.05-0.3 m/s (Mesarch et al., AAS-23-234)."""
 
@@ -118,11 +101,13 @@ def sample_orbit_state(
     config: TrntestConfig | None = None,
     dt_s: float = DEFAULT_SAMPLE_DT_S,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Furnishes LRO's real reconstructed-orbit SPK across [start_dt, end_dt] (`spice_kernels.
-    fetch_and_furnish` for the small always-needed kernels, `furnish_spk_range` for SPK coverage)
-    and returns (ets, r_km, v_km_s): uniform dt_s-cadence sample epochs and each one's position/
-    velocity (MOON_ME frame, (n, 3) arrays). Needs live SPICE kernels/network access -- not for use
-    from fast/pure tests."""
+    """Furnishes LRO's reconstructed-orbit SPK across `[start_dt, end_dt]` (`spice_kernels.
+    fetch_and_furnish` for the small always-needed kernels, `furnish_spk_range` for SPK coverage).
+    Needs live SPICE kernels/network access -- not for use from fast/pure tests.
+
+    :returns: `(ets, r_km, v_km_s)` -- uniform `dt_s`-cadence sample epochs and each one's
+        position/velocity (MOON_ME frame, `(n, 3)` arrays).
+    """
     config = config or load_config()
     spice_kernels.fetch_and_furnish(start_dt, config)
     spice_kernels.furnish_spk_range(start_dt, end_dt, config)
@@ -157,23 +142,25 @@ def _reconstruct_candidate(
 ) -> ManeuverCandidate:
     """Inverts the observed (Delta-h, Delta-eps) at one candidate peak for the 3D impulse that
     produced it -- weighted least squares (weights = 1/each channel's own robust noise floor, the
-    same `sigmas` used for detection -- standard GLS: scale each row by 1/sigma before an ordinary
-    least-squares solve), then decomposes into radial/tangential/normal (RTN) components using the
-    orbital state at the peak sample."""
+    same `sigmas` used for detection), then decomposes into radial/tangential/normal (RTN)
+    components using the orbital state at the peak sample. Replaces a cruder "assume the impulse was
+    tangential" magnitude estimate, which would be systematically wrong (too small) for a normal- or
+    radial-dominant event.
+    """
     m = np.vstack([_skew(r_peak), v_peak])  # (4, 3): rows = [r x] (Delta-h) then v. (Delta-eps)
     b = np.concatenate([dh_km2_s, [deps_km2_s2]])  # (4,)
-    scale = 1.0 / sigmas
+    scale = 1.0 / sigmas  # standard GLS: scale each row by 1/sigma before an ordinary least-squares solve
     # rcond=None (numpy's machine-epsilon-scaled default) isn't aggressive enough here: right near
-    # apsis passage, v_R -> 0 and BOTH equations lose sensitivity to a purely-radial component at
+    # apsis passage, v_R -> 0 and both equations lose sensitivity to a purely-radial component at
     # once ([r x] is exactly, always blind to it; eps's v.dv term needs a nonzero v_R) -- the
     # weighted system's smallest singular value can be ~1e-6x the largest without ever being
     # "machine-precision zero," so an unregularized solve amplifies whatever noise happens to be in
-    # that direction into a wildly implausible reconstructed component (confirmed on a real 2019-07
+    # that direction into a wildly implausible reconstructed component (confirmed on a 2019-07
     # candidate: an unregularized solve reported +373 m/s radial for what every other channel says is
-    # a real, ordinary ~cm/s-scale momentum unload). Explicit rcond=1e-2 treats any direction that
-    # weak as genuinely unconstrained (contributes ~0) rather than over-confidently inverting it --
-    # narrow apsis-adjacent radial sensitivity is a real, physical limit (see module docstring), not
-    # a bug to paper over with a bigger number.
+    # an ordinary ~cm/s-scale momentum unload). Explicit rcond=1e-2 treats any direction that weak as
+    # genuinely unconstrained (contributes ~0) rather than over-confidently inverting it -- narrow
+    # apsis-adjacent radial sensitivity is a physical limit (see module docstring's trailing
+    # comment), not a bug to paper over with a bigger number.
     dv_est_km_s, *_ = np.linalg.lstsq(m * scale[:, None], b * scale, rcond=1e-2)
 
     r_hat = r_peak / np.linalg.norm(r_peak)
@@ -200,10 +187,17 @@ def detect_discontinuities(
     orbital_period_s: float = ORBITAL_PERIOD_S,
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
 ) -> list[ManeuverCandidate]:
-    """Pure, SPICE-free step-change detector over an already-sampled (ets, r, v) series from
-    `sample_orbit_state` -- see module docstring for the method. Consecutive over-threshold samples
-    (a real step stays flagged for close to a full window's width) are deduplicated to their single
-    peak-magnitude sample."""
+    """Pure, SPICE-free step-change detector over an already-sampled `(ets, r, v)` series from
+    `sample_orbit_state`. Compares the median just-after vs. just-before a one-orbital-period window
+    for each of `(h, eps)`'s four channels; a burn shows up as a persistent shift (post-burn
+    dynamics continue from the new state), cancelling most of the periodic two-body oscillation.
+    Each channel's diff series is normalized by its own robust (MAD-based) noise floor and combined
+    via quadrature (`sqrt(sum of squared per-channel z-scores)`), self-calibrating to each channel's
+    own noise level rather than needing hand-derived, phase-dependent analytic sensitivity weights.
+
+    Consecutive over-threshold samples (a step stays flagged for close to a full window's width) are
+    deduplicated to their single peak-magnitude sample.
+    """
     h = np.cross(r, v)  # (n, 3) km^2/s
     r_norm = np.linalg.norm(r, axis=1)
     eps = np.sum(v * v, axis=1) / 2 - gm_km3_s2 / r_norm  # (n,) km^2/s^2
@@ -241,13 +235,12 @@ def detect_discontinuities(
                 )
             )
             # Skip a full window past the peak, not just past this contiguous over-threshold run --
-            # a real step's before/after window comparison can dip briefly back under threshold and
-            # pop back up again while still within one window of the true step (edge-transition
-            # ripple as the sliding windows straddle it in different ways), which would otherwise
-            # register as spurious extra candidates a few percent of the real event's magnitude.
-            # Real distinct maneuvers are always far more than one window apart (momentum unloads
-            # are weeks apart; the window is ~one orbital period), so this can't merge two genuine
-            # events.
+            # a step's before/after window comparison can dip briefly back under threshold and pop
+            # back up again while still within one window of the true step (edge-transition ripple
+            # as the sliding windows straddle it in different ways), which would otherwise register
+            # as spurious extra candidates a few percent of the event's magnitude. Distinct
+            # maneuvers are always far more than one window apart (momentum unloads are weeks apart;
+            # the window is ~one orbital period), so this can't merge two genuine events.
             i = peak_i + win
         else:
             i += 1
