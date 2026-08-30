@@ -1,10 +1,9 @@
 # Docs-style second pass: files and rules the history.md-citation sweep missed
 
 **Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
-merged to main). Part 1: `wac_camera_model.py` and `crater_depth_batch.py` done (also fixed a
-downstream stale pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/
-`notebooks/pose_alignment_spike.py`); 11 of 13 files remain, `control_network.py` next (highest
-`real`/`genuine`/`actual` count of what's left).
+merged to main). Part 1: `wac_camera_model.py`, `crater_depth_batch.py`, and `control_network.py`
+done (also fixed a downstream stale pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/
+`notebooks/pose_alignment_spike.py`); 10 of 13 files remain, `craters.py` next.
 
 ## Why this plan exists
 
