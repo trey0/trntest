@@ -276,13 +276,18 @@ def cross_track_width_km(c_km: np.ndarray, r_cam_to_me: np.ndarray, half_angle_r
 
 
 def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int = 10) -> np.ndarray:
-    """The "forward in time" ground-track step vector (MOON_ME, km, not normalized): the
-    boresight's ground point at `frame_index + n` minus at `frame_index`, smoothed over `n` frames.
-    Measured fresh from SPICE trajectory data rather than assumed from a fixed raw-camera axis,
-    since that direction is pass/yaw-state-dependent (see `boresight_rotation_k`'s docstring and
-    docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention"). Used both for
-    `km_per_frame`'s magnitude and for `boresight_rotation_k`'s (and
-    `orientation.compute_display_rotations`'s) direction."""
+    """The "forward in time" ground-track step vector, MOON_ME km, not normalized.
+
+    :param frame_timing: This product's frame timing.
+    :param frame_index: Reference framelet index.
+    :param n: Frames to smooth the step over.
+    :returns: The boresight's ground point at `frame_index + n` minus at `frame_index`. Used both
+        for `km_per_frame`'s magnitude and for `boresight_rotation_k`'s (and
+        `orientation.compute_display_rotations`'s) direction.
+    """
+    # Measured fresh from SPICE trajectory data rather than assumed from a fixed raw-camera axis,
+    # since that direction is pass/yaw-state-dependent (see `boresight_rotation_k`'s docstring and
+    # docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention").
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))
     c1_m, r1, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index + n))
     ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)

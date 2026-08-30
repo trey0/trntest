@@ -89,9 +89,14 @@ class ManeuverCandidate:
 
 
 def candidate_utc(candidate: ManeuverCandidate) -> str:
-    """Human-readable UTC timestamp for a candidate -- needs an LSK already furnished (true for
-    any candidate produced via `find_maneuver_candidates`), so kept separate from the dataclass
-    itself rather than precomputed, to keep `detect_discontinuities` SPICE-free."""
+    """Human-readable UTC timestamp for a candidate.
+
+    :param candidate: A candidate, e.g. from `find_maneuver_candidates`.
+    :returns: The UTC timestamp.
+    """
+    # Needs an LSK already furnished (true for any candidate produced via
+    # `find_maneuver_candidates`) -- kept separate from the dataclass itself rather than
+    # precomputed, to keep `detect_discontinuities` SPICE-free.
     return spice.et2utc(candidate.et, "ISOC", 0)
 
 

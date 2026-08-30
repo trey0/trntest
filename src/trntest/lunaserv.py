@@ -1267,8 +1267,7 @@ def hapke_shade_ortho(
     :param cellsize_m: DEM pixel size, meters.
     :param config: Project config, passed to `fetch_real_hapke_params` when `real_hapke_params=True`.
     :param along_track_correction: Apply `_terrain_photometric_angles`'s along-track correction using
-        `camera`'s own along-track attitude axis. On by default; substantially more accurate against
-        `campt` ground truth than the base per-pixel-camera-position approach alone.
+        `camera`'s own along-track attitude axis. On by default.
     :param real_hapke_params: Use `fetch_real_hapke_params()`'s ISIS-calibration-cube-sourced Hapke
         coefficients (the default) rather than `_HAPKE_PLACEHOLDER_PARAMS`'s illustrative constants
         (kept for comparison in `notebooks/real_hapke_params.ipynb`).
@@ -1278,6 +1277,8 @@ def hapke_shade_ortho(
     """
     # The angle rasters come from `_terrain_photometric_angles`, computed from `camera`'s own position
     # (this ortho has no ISIS camera model for `photomet` to derive angles from automatically).
+    # `along_track_correction`, on by default, is substantially more accurate against `campt` ground
+    # truth than the base per-pixel-camera-position approach alone.
     # `photomet`'s own subprocess-orchestration mechanics live in the shared `_hapke_reflectance`
     # helper -- see its own docstring. `_HAPKE_PLACEHOLDER_PARAMS` is illustrative, not
     # lunar-calibrated -- a feasibility prototype, not a validated photometric model; see

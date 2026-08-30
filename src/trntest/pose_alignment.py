@@ -3,29 +3,32 @@ Phase 6B overlay, `isis_wac.run_cam2map_for_crop`'s output) against a trusted re
 already in the same map projection (e.g. `dem_ortho_result.ortho`) -- feature-match the two rasters,
 fit a 2D correction from the matches, and apply it to the source raster's own georeferencing.
 
-This exists because the real-WAC overlay is visibly not perfectly aligned with the basemap (small,
-"not huge" per direct user observation) -- see `docs/plan.md`'s open items ("camera-pose alignment")
-for the full research trail this module is the result of, including why the two most obvious
-approaches don't apply here: ASP's own `bundle_adjust`/`pc_align`/`image_align` route corrects
-cameras via ASP's `mapproject`, which is the CSM/Pushframe path already abandoned elsewhere in this
-project for a confirmed severe bug; and ISIS's own `jigsaw` + `findfeatures` (the architecturally
-"right" tool, USGS-documented practice for single-image space resection against a basemap) hits an
-unresolved blocker where its control-point-construction step discards every match regardless
-of `TARGET=`/`GEOMTYPE=` settings, likely because the basemap here is a plain GDAL-exported GeoTIFF,
-not something ISIS itself map-projected.
-
-This module works entirely in 2D image/map space instead, sidestepping both: match two already
-map-projected, same-CRS rasters directly (no camera model, no ISIS control network), fit a 2D
-correction, and apply it to the source raster's own affine transform. **Validated, but not wired
-into the main pipeline**: direct user visual inspection of the homography-corrected blink overlay
-confirmed the correspondences this module finds are real matches, not RANSAC accepting noise --
-concluded as the deliberate stopping point for this 2D approach, with the next step being a proper
-projection-informed (camera-model) alignment rather than further refinement here, so this stays a
-standalone tool, not wired into `image_generation.py`'s main pipeline. `notebooks/pose_alignment_spike.py`
-exercises this module end-to-end against the current default dataset candidate.
-
-Requires `opencv-python-headless` for SIFT/RANSAC (`cv2`) -- not needed anywhere else in this
-project, added as a dependency specifically for this module."""
+Works entirely in 2D image/map space: match two already map-projected, same-CRS rasters directly (no
+camera model, no ISIS control network), fit a 2D correction, and apply it to the source raster's own
+affine transform. Validated but not wired into the main pipeline -- see the closing note below and
+`docs/plan.md`'s open items ("camera-pose alignment"). `notebooks/pose_alignment_spike.py` exercises
+this module end-to-end against the current default dataset candidate.
+"""
+# Exists because the real-WAC overlay is visibly not perfectly aligned with the basemap (small,
+# "not huge" per direct user observation) -- see docs/plan.md's open items for the full research
+# trail this module is the result of, including why the two most obvious approaches don't apply
+# here: ASP's own `bundle_adjust`/`pc_align`/`image_align` route corrects cameras via ASP's
+# `mapproject`, which is the CSM/Pushframe path already abandoned elsewhere in this project for a
+# confirmed severe bug; and ISIS's own `jigsaw` + `findfeatures` (the architecturally "right" tool,
+# USGS-documented practice for single-image space resection against a basemap) hits an unresolved
+# blocker where its control-point-construction step discards every match regardless of
+# `TARGET=`/`GEOMTYPE=` settings, likely because the basemap here is a plain GDAL-exported GeoTIFF,
+# not something ISIS itself map-projected. This module sidesteps both.
+#
+# **Validated, but not wired into the main pipeline**: direct user visual inspection of the
+# homography-corrected blink overlay confirmed the correspondences this module finds are real
+# matches, not RANSAC accepting noise -- concluded as the deliberate stopping point for this 2D
+# approach, with the next step being a proper projection-informed (camera-model) alignment rather
+# than further refinement here, so this stays a standalone tool, not wired into
+# `image_generation.py`'s main pipeline.
+#
+# Requires `opencv-python-headless` for SIFT/RANSAC (`cv2`) -- not needed anywhere else in this
+# project, added as a dependency specifically for this module.
 
 import functools
 from pathlib import Path
@@ -149,15 +152,17 @@ def downsample_to_gsd(
     resampling: rasterio.warp.Resampling = rasterio.warp.Resampling.average,
 ) -> Path:
     """Resamples `raster_path` (band 1) onto a coarser grid at `target_gsd_m` m/px, same CRS and
-    origin -- used to bring a map-projected product's pixel grid back down toward its own native
-    resolution (see `native_wac_gsd_m`) before feature matching, instead of matching SIFT keypoints
-    on a grid that's been interpolated finer than the sensor actually resolved (confirmed, via a
-    direct `cam2map PIXRES=camera` probe, to be a ~1.8x linear oversampling on this project's own
-    default candidate).
+    origin.
 
     :raises ValueError: If `target_gsd_m` isn't actually coarser than the source's own resolution --
         this function downsamples, it doesn't upsample.
     """
+    # Used to bring a map-projected product's pixel grid back down toward its own native resolution
+    # (see `native_wac_gsd_m`) before feature matching, instead of matching SIFT keypoints on a grid
+    # that's been interpolated finer than the sensor actually resolved (confirmed, via a direct
+    # `cam2map PIXRES=camera` probe, to be a ~1.8x linear oversampling on this project's own default
+    # candidate).
+    #
     # `resampling=Resampling.average` (not the default nearest/bilinear) is the deliberate choice
     # for genuinely *shrinking* imagery -- it approximates what a coarser-GSD sensor would actually
     # have integrated over each output pixel, rather than just picking or blending between a few
@@ -289,10 +294,14 @@ def match_features(
 
 @functools.cache
 def _lightglue_models() -> tuple[lightglue.DISK, lightglue.LightGlue]:
-    """Constructs (and, via `functools.cache`, memoizes process-wide) the DISK extractor + LightGlue
-    matcher, so this avoids re-downloading/re-initializing them on every `match_features_lightglue`
-    call within one process. See docs/external-tools.md's "LightGlue tie-point matching" section for
-    the pretrained-weight fetch/caching and why DISK, not SuperPoint, is the extractor used."""
+    """Construct the DISK extractor + LightGlue matcher, memoized process-wide via `functools.cache`.
+
+    :returns: `(extractor, matcher)`.
+    """
+    # Memoized so this avoids re-downloading/re-initializing them on every
+    # `match_features_lightglue` call within one process. See docs/external-tools.md's "LightGlue
+    # tie-point matching" section for the pretrained-weight fetch/caching and why DISK, not
+    # SuperPoint, is the extractor used.
     return lightglue.DISK(max_num_keypoints=2048).eval(), lightglue.LightGlue(features="disk").eval()
 
 
@@ -349,10 +358,14 @@ def match_features_lightglue(
 
 
 def pixel_points_to_map(points_px: np.ndarray, transform: rasterio.Affine) -> np.ndarray:
-    """Converts `(x, y)` pixel coordinates (as returned by `match_features`) to real map coordinates
-    via `transform` (a raster's own `rasterio` affine transform) -- the necessary step before
-    comparing points from two different rasters, since two independently-cropped rasters don't share
-    a pixel origin even when they share a CRS/scale."""
+    """Convert `(x, y)` pixel coordinates (as returned by `match_features`) to map coordinates.
+
+    :param points_px: `(N, 2)` `(x, y)` pixel coordinates.
+    :param transform: The raster's own `rasterio` affine transform.
+    :returns: `(N, 2)` `(x, y)` map coordinates.
+    """
+    # The necessary step before comparing points from two different rasters: two
+    # independently-cropped rasters don't share a pixel origin even when they share a CRS/scale.
     xs, ys = transform * (points_px[:, 0], points_px[:, 1])
     return np.stack([xs, ys], axis=1).astype("float64")
 
@@ -398,12 +411,13 @@ def fit_affine_correction(
 ) -> tuple[affine.Affine, np.ndarray, np.ndarray]:
     """Fits a full affine transform (6 degrees of freedom -- translation, rotation, independent x/y
     scale, and shear, via `cv2.estimateAffine2D`'s own internal RANSAC) mapping `from_points_map`
-    onto `to_points_map`. A strictly richer model than `fit_similarity_correction`'s 4-DOF fit (same
-    inputs/RANSAC threshold convention, same `affine.Affine` return type, so it's a drop-in
-    alternative -- `apply_correction` composes with either identically, since it never inspects which
-    of an `affine.Affine`'s 6 possible degrees of freedom are actually non-trivial). See
-    `fit_similarity_correction`'s docstring for why *some* fixed model is used at all despite none
-    being asserted as physically "correct"."""
+    onto `to_points_map`.
+
+    A strictly richer model than `fit_similarity_correction`'s 4-DOF fit -- same inputs/RANSAC
+    threshold convention, same `affine.Affine` return type, so it's a drop-in alternative wherever
+    `apply_correction` is used. See `fit_similarity_correction`'s docstring for why *some* fixed
+    model is used at all despite none being asserted as physically "correct".
+    """
     src = from_points_map.astype("float32")
     dst = to_points_map.astype("float32")
     matrix, inliers = cv2.estimateAffine2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_threshold_m)
