@@ -1,6 +1,8 @@
 # Docs-style second pass: files and rules the history.md-citation sweep missed
 
-**Status: not started. Scoping/audit done (this doc); no files edited yet.**
+**Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
+merged to main). Part 1: `wac_camera_model.py` done (also fixed one downstream stale pointer this
+surfaced in `isis_wac.py`); 12 of 13 files remain, `crater_depth_batch.py` next.
 
 ## Why this plan exists
 
