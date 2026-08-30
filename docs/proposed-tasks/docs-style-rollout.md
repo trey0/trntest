@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (14 done, 1 partial, of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (15 done, 1 partial, of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -224,6 +224,16 @@ truth per fact, thin index files, sensible file naming.
   trivial/local carve-out already applied in `plotting.py`. No dedicated test file exists for this
   module. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file).
   No code logic touched, so no notebook re-run was needed.
+- `src/trntest/product_registry.py` (194 -> 197 lines, both `docs/history.md` citations removed):
+  the module docstring's Phase 79/80 rollout citation and `add_maneuver_flags`-style "real
+  writers/readers/deleters"/"real writer conventions" filler cut. `atomic_publish`'s/
+  `atomic_publish_path`'s/`atomic_publish_prefix`'s docstrings (each mixing the ISIS-`to=`-output
+  investigation trail into the interface description) trimmed to interface + RST fields, rationale
+  moved to body comment blocks -- including the "confirmed live" `.tmp`-suffix-silently-fails-ISIS
+  finding, kept as load-bearing rationale for why the temp name preserves `dest`'s real extension,
+  not dropped outright. All functions/classes already had docstrings. Verified with `trntest-lint`
+  (`ruff format`/`ruff check`/`mypy` all clean on this file) and `tests/test_product_registry.py`
+  (23 passed). No code logic touched, so no notebook re-run was needed.
 
 **User review findings on the first pass (2026-08-30), applied to `cache.py` and then
 retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and carried forward into
@@ -245,17 +255,16 @@ retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and car
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 3
+**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 2
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
 `sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/
-`tie_points.py`/`spice_kernels.py`/`dataset_selection.py` fully done; `trn_dataset.py` had its
-citations removed but isn't yet considered satisfactory, see its own Completed entry above — don't
-count it done). Rough priority order (citation count, then size, as a proxy for how much
-chatty/historical material likely needs trimming):
+`tie_points.py`/`spice_kernels.py`/`dataset_selection.py`/`product_registry.py` fully done;
+`trn_dataset.py` had its citations removed but isn't yet considered satisfactory, see its own
+Completed entry above — don't count it done). Both remaining files have 1 citation each, so the
+size proxy for chatty/historical material no longer breaks a tie:
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
-| `product_registry.py` | 2 | 194 |
 | `maneuver_detection.py` | 1 | 269 |
 | `_lint.py` | 1 | 230 |
 
@@ -271,8 +280,10 @@ trivial one-liner or a nested/local closure can still skip one; use judgment for
 leave undocumented, same bar applied retroactively to the first 4 files, see Completed above), and
 **read every docstring for historical-narrative framing even where `docs/history.md` isn't
 cited** (see the "User review findings" item above — `grep -c docs/history.md` alone won't catch it).
-`product_registry.py` is next (tied at 2 citations with nothing else remaining, only file left with
-more than 1 citation).
+`maneuver_detection.py` is next (tied with `_lint.py` at 1 citation each; picked first among the
+tie, larger of the two by line count). After it and `_lint.py`, `src/trntest/*.py` will be clean of
+`docs/history.md` citations, leaving only `trn_dataset.py`'s open "not yet satisfactory" item (see
+its Completed entry above).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -288,7 +299,7 @@ more than 1 citation).
 
 1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
    other sessions may have touched these files since.
-2. Work one file at a time; `product_registry.py` next. Re-verify with `trntest-lint` and, if a docstring
+2. Work one file at a time; `maneuver_detection.py` next. Re-verify with `trntest-lint` and, if a docstring
    change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
    notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
    `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
