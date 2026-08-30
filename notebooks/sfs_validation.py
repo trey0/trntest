@@ -18,34 +18,30 @@
 #
 # `lunaserv.hapke_shade_ortho` is our own hand-rolled pipeline: `_terrain_photometric_angles`
 # (per-pixel incidence/emission/phase, computed directly in Python) feeds ISIS `photomet`'s Hapke
-# evaluator, and the result relights the WAC_EMP ortho texture by the ratio H(i,e,g)/H(reference) --
-# see `docs/history.md`'s Phase 68-72 entries for the full history, including a still-open,
-# unexplained regression against the real WAC crop.
+# evaluator, and the result relights the WAC_EMP ortho texture by the ratio H(i,e,g)/H(reference).
 #
-# This notebook runs a genuinely *independent* check instead of another variation on that same
-# pipeline: Ames Stereo Pipeline's `sfs` tool, used purely as a forward renderer
-# (`--save-sim-intensity-only`, no DEM refinement) -- its own ray-DEM intersection, its own Hapke
-# reflectance implementation, given the same real DEM, the same real ISIS-calibration-sourced Hapke
-# parameters, and a "true albedo" map built by *undoing* the same reference-geometry normalization
-# `hapke_shade_ortho` itself undoes (`sfs_validation.true_albedo_map`). If our own pipeline has a
-# real bug, a second, differently-coded implementation given the same inputs has a real chance of
-# disagreeing in a way that points at it; if the two agree, that's real, independent confirmation
-# neither is obviously broken.
+# This notebook runs an independent check instead of another variation on that same pipeline: Ames
+# Stereo Pipeline's `sfs` tool, used purely as a forward renderer (`--save-sim-intensity-only`, no
+# DEM refinement) -- its own ray-DEM intersection, its own Hapke reflectance implementation, given
+# the same DEM and the same ISIS-calibration-sourced Hapke parameters, and a "true albedo" map built
+# by undoing the same reference-geometry normalization `hapke_shade_ortho` itself undoes
+# (`sfs_validation.true_albedo_map`). If the two independently-coded pipelines agree given the same
+# inputs, that's evidence neither is broken.
 #
-# **Known real caveats, not swept under the rug (see `sfs_validation.py`'s own module docstring):**
+# **Caveats, from `sfs_validation.py`'s own module docstring:**
 # - ASP's `sfs --model-coeffs` Hapke parameterization (`omega, b, c, B0, h`) has no equivalent to
-#   ISIS `HAPKEHEN`'s `theta` (macroscopic roughness, real and non-trivial for this project's own
-#   candidates) -- silently dropped, a permanent gap in this cross-check.
+#   ISIS `HAPKEHEN`'s `theta` (macroscopic roughness) -- silently dropped, a permanent gap in this
+#   cross-check.
 # - `sfs` refuses the real WAC crop's own native ISIS Pushframe camera outright ("Seems to have Isis
 #   camera type 1... Maybe it will work with CSM"). This uses our own reconstructed CSM camera
 #   instead (the same one `hapke_shade_ortho` itself renders from, independently validated against
-#   real `campt` to ~0.018 deg) -- a real, if different, source of camera-pose truth than the real
-#   WAC crop's own camera, not an approximation of unknown quality.
-# - `sfs`'s own simulated-intensity coverage is smaller than the padded DEM/ortho AOI (only the real
+#   `campt` to ~0.018 deg) -- a different source of camera-pose truth than the real WAC crop's own
+#   camera, not an approximation of unknown quality.
+# - `sfs`'s own simulated-intensity coverage is smaller than the padded DEM/ortho AOI (only the
 #   camera's own FOV, ~28-32% of the AOI for the candidate this notebook uses by default) --
 #   `sfs_validation.mask_sfs_uncovered` converts `sfs`'s own literal-`0.0` "outside coverage"
-#   convention to real `nodata` before any brightness comparison, or the comparison is dominated by
-#   that region instead of real signal.
+#   convention to `nodata` before any brightness comparison, or the comparison is dominated by that
+#   region instead of signal.
 
 # %%
 import numpy as np
@@ -71,8 +67,8 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 #
 # `entry.dem_ortho_result` is the current default basemap (resumed from disk if
 # `image_generation.ipynb` already generated it for this manifest entry, fetched fresh otherwise).
-# `sfs_validation.run_sfs_forward_render` builds the true-albedo map and the real Hapke
-# `--model-coeffs` string from it, then runs `sfs -i <dem> --reflectance-type 2 --model-coeffs ...
+# `sfs_validation.run_sfs_forward_render` builds the true-albedo map and the Hapke `--model-coeffs`
+# string from it, then runs `sfs -i <dem> --reflectance-type 2 --model-coeffs ...
 # --input-albedo ... --save-sim-intensity-only <our own CSM-attached camera cube>`.
 
 # %%
@@ -86,15 +82,15 @@ print("sim_intensity_tif:", sfs_result.sim_intensity_tif)
 # %% [markdown]
 # ## Mask sfs's "outside coverage" pixels, then compare against the real WAC crop
 #
-# `entry.crop._mapprojected_path()` is the real, ISIS-processed WAC crop reprojected onto this same
-# local Orthographic CRS (`isis_wac.run_cam2map_for_crop`) -- the same real-ground-truth image
+# `entry.crop._mapprojected_path()` is the ISIS-processed WAC crop reprojected onto this same local
+# Orthographic CRS (`isis_wac.run_cam2map_for_crop`) -- the same ground-truth image
 # `image_generation.ipynb`'s own blink comparisons use.
 
 # %%
-sim_masked_path = config.output_dir / "sfs_run" / "sim-intensity-masked.tif"
+sim_masked_path = sfs_result.sim_intensity_tif.parent / "sim-intensity-masked.tif"
 sfs_validation.mask_sfs_uncovered(sfs_result.sim_intensity_tif, sim_masked_path)
 
-real_wac_mapproj_path = entry.crop._mapprojected_path()  # noqa: SLF001 -- notebook-side use, matching other phases
+real_wac_mapproj_path = entry.crop._mapprojected_path()  # noqa: SLF001 -- notebook-side use
 
 diff_vs_sfs = compute_brightness_matched_diff(real_wac_mapproj_path, sim_masked_path)
 diff_vs_ours = compute_brightness_matched_diff(real_wac_mapproj_path, dem_ortho_result.ortho)
@@ -107,8 +103,8 @@ print("brightness-matched diff, real WAC vs. sfs forward-render: ", diff_vs_sfs)
 # All three panels brightness-matched to the real WAC panel (single multiplicative median scale, not
 # an affine/percentile stretch -- see `plotting.compute_brightness_matched_diff`'s own docstring for
 # why). Look for whether `sfs`'s independent render agrees with the real WAC crop about as well as
-# our own hillshade does, and whether any disagreement looks structured (a real geometric/photometric
-# effect) rather than uniform noise.
+# our own hillshade does, and whether any disagreement looks like a structured geometric or
+# photometric effect rather than uniform noise.
 
 # %%
 _ = plotting.plot_sfs_comparison(
@@ -121,24 +117,23 @@ _ = plotting.plot_sfs_comparison(
 # %% [markdown]
 # ## A cleaner cross-check: sfs's own incidence angle, via a Lambertian-mode trick
 #
-# The Hapke comparison above is confounded by real caveats (the missing `theta` mapping, and
-# especially `sfs`'s reconstructed CSM camera having no way to represent `along_track_correction` --
-# see `docs/history.md`'s Phase 74 follow-up for the full mechanism behind that). Lambert's law has
-# no emission or phase term at all -- just `image = exposure * albedo * cos(incidence)` -- so running
-# `sfs` with `--reflectance-type 0` and a uniform `albedo=1` makes its raw `sim-intensity` output
-# exactly `exposure * cos(incidence)`, letting us invert for `sfs`'s own independently ray-traced
-# incidence angle with **no Hapke-model dependence at all**. `exposure` isn't `1.0` -- `sfs` applies
-# some internal default scaling even without `--estimate-exposure-haze-albedo` -- so
-# `run_sfs_lambertian_incidence` reads it back from `sfs`'s own `<prefix>-exposures.txt` rather than
-# assuming it.
+# The Hapke comparison above is confounded by two caveats: the missing `theta` mapping, and
+# especially `sfs`'s reconstructed CSM camera having no way to represent `along_track_correction`.
+# Lambert's law has no emission or phase term at all -- just `image = exposure * albedo *
+# cos(incidence)` -- so running `sfs` with `--reflectance-type 0` and a uniform `albedo=1` makes its
+# raw `sim-intensity` output exactly `exposure * cos(incidence)`, letting us invert for `sfs`'s own
+# independently ray-traced incidence angle with **no Hapke-model dependence at all**. `exposure` isn't
+# `1.0` -- `sfs` applies some internal default scaling even without `--estimate-exposure-haze-albedo`
+# -- so `run_sfs_lambertian_incidence` reads it back from `sfs`'s own `<prefix>-exposures.txt` rather
+# than assuming it.
 #
-# This is also this project's first genuine **DEM-aware** ground-truth check (Phase 70/73 found no
-# ISIS tool that gives one -- `phocube`'s `LOCAL*` backplanes were confirmed broken, and real
-# `campt`'s angles stay ellipsoid-normal-based even with a DEM shape model attached). Since incidence
-# depends only on the surface normal and sun direction (never the view vector), it's also unaffected
-# by the along-track-correction gap that limits the Hapke comparison above --
-# `along_track_correction` only ever changes emission/phase, confirmed directly by comparing
-# `lunaserv.real_geometry_photometric_angles` with it on vs. off (identical incidence either way).
+# This is also this project's first **DEM-aware** ground-truth check -- no ISIS tool gives one:
+# `phocube`'s `LOCAL*` backplanes are broken, and `campt`'s angles stay ellipsoid-normal-based even
+# with a DEM shape model attached. Since incidence depends only on the surface normal and sun
+# direction (never the view vector), it's also unaffected by the along-track-correction gap that
+# limits the Hapke comparison above -- `along_track_correction` only ever changes emission/phase,
+# confirmed by comparing `lunaserv.real_geometry_photometric_angles` with it on vs. off (identical
+# incidence either way).
 
 # %%
 lambertian_result = sfs_validation.run_sfs_lambertian_incidence(camera, dem_ortho_result, config)

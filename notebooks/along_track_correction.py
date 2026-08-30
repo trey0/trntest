@@ -88,13 +88,19 @@ real_crop_display = real_crop_da.values.astype(np.float64)
 #
 # `along_track_correction=True`/`False` each write to their own filename (`ortho_shaded_filename`),
 # so both can be fetched here without disturbing whichever one `entry.dem_ortho_result`/
-# `image_generation.ipynb` later resumes from -- no cleanup fetch needed.
+# `image_generation.ipynb` later resumes from -- as long as `extra_footprint_lonlat_deg` matches
+# `entry.dem_ortho_result`'s own call, or the shared DEM tile (which carries no footprint-specific
+# suffix) gets overwritten with a mismatched extent.
 
 
 # %%
 def basemap_and_diff(along_track_correction: bool):
     dem_ortho = lunaserv.fetch_dem_and_ortho(
-        camera, entry.per_image_config, hapke=True, along_track_correction=along_track_correction
+        camera,
+        entry.per_image_config,
+        extra_footprint_lonlat_deg=entry.crop_footprint,
+        hapke=True,
+        along_track_correction=along_track_correction,
     )
     basemap_da = rioxarray.open_rasterio(dem_ortho.ortho, masked=True)
     assert isinstance(basemap_da, xarray.DataArray)

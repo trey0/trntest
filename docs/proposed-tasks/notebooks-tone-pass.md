@@ -1,6 +1,6 @@
 # Notebooks: tone/structure pass
 
-**Status: 7 of 11 notebooks done.**
+**Status: 8 of 11 notebooks done.**
 
 ## Goal
 
@@ -9,6 +9,37 @@ rationale to explain the demo's benefit" into development-history narrative (bug
 `docs/history.md` citations, tuning backstory) -- per `docs/docs-style.md`. Fix each notebook's
 markdown cells to match; regenerate its `.ipynb` (`scripts/run_notebook.sh`) after editing. One
 notebook at a time, user reviews in Jupyter Lab before commit.
+
+## Also check: undocumented cross-notebook dependencies
+
+Added 2026-08-30, per user request. Some notebooks quietly assume another notebook already ran and
+produced their input. For each notebook (including ones already marked done above), check every
+product path it reads and prefer, in order:
+
+1. **Generate on demand if missing** -- the existing pattern in this codebase:
+   `TrnTestEntry.camera`/`.crop_result`/`.dem_ortho_result` (`trn_dataset.py`, all
+   `functools.cached_property`, all idempotent resume-from-disk-or-fetch-fresh) and
+   `TrnTestImage.generate()` (`if not self.exists(): self._generate_impl()`). Route reads through
+   these rather than a raw path.
+2. **Fail fast with a clear message** if (1) isn't practical -- `TrnTestImage._require_generated()`
+   already does this (`FileNotFoundError` naming the product and pointing at `.generate()`/
+   `dataset.populate()`); reuse it rather than inventing a new one.
+3. **A markdown warning cell** naming the notebook to run first -- last resort, only when neither
+   fits.
+
+**Audit (2026-08-30): the codebase already does (1) almost everywhere.** Every notebook markdown
+claim of the form "resumed from disk if `image_generation.ipynb` already generated it, else fetched
+fresh here" (`hapke_hillshade.py`, `real_hapke_params.py`, `along_track_correction.py`,
+`sfs_validation.py`, `crater_sharpness_review.py`, `pose_alignment_spike.py`) is accurate, not a
+hidden dependency -- all go through the self-healing properties above. `wac_isis.py`/
+`select_datasets.py` never touch `TrnTestEntry` at all, no risk. **One real gap found**:
+`reproject_spike.py` reads `entry.hillshade.raster_path` directly in two plotting cells instead of
+through `.generate()`/`_require_generated()` -- a genuine undocumented dependency on
+`image_generation.ipynb` having run first. Left as-is: item 10 below already flags this notebook as
+likely headed for `old_notebooks/` rather than a rewrite, so fix it only if it survives that
+decision -- otherwise moot. Re-check this for `crater_sharpness_review.py`/`reproject_spike.py`/
+`pose_alignment_spike.py` specifically as each is reworked below (the others are already confirmed
+clean).
 
 ## Order
 
@@ -55,15 +86,25 @@ scope decision -- see below).
    what motivated the default. Kept the default as-is (physical grounds, single-candidate result).
    Also updated `docs/plan.md`'s stale-notebook tracking to match (2 of 4 no longer stale;
    `reproject_spike.py`/`pose_alignment_spike.py` still are).
-8. `sfs_validation.py` (172 lines) -- **check before editing**: its intro claims a "still-open,
-   unexplained regression against the real WAC crop" (Phase 68-72). `docs/plan.md`'s `lunaserv.py`
-   row says that regression "now looks resolved as of Phase 78" -- likely another stale-status
-   case like `wac_isis.py`'s. The peer session (docs-style rollout) checked the *module's*
-   `src/trntest/sfs_validation.py` docstring claims against `docs/plan.md` while reworking it and
-   found no staleness there -- but that's a different claim (an along-track-correction limitation,
-   confirmed still genuinely open) from this *notebook's* own "still-open regression" line, which
-   hasn't been checked yet. Verify the notebook's own claim specifically before deciding what it
-   should say.
+8. ~~`sfs_validation.py`~~ -- done. Confirmed stale as expected: cut the "still-open, unexplained
+   regression" framing entirely (not updated -- restating the nuanced current status here would
+   just duplicate `docs/plan.md`'s own entries and risk going stale again, same call as
+   `wac_isis.py`'s). Regenerating surfaced two real, live bugs, neither related to the tone edits:
+   (1) `entry.dem_ortho_result`'s DEM/ortho pair was already mismatched on disk (shapes
+   `(2267,2258)` vs `(2440,2387)`) -- a live hit of `docs/plan.md`'s already-documented
+   footprint-suffix-less `dem_filled-tile-0.tif` clobbering gap, traced to
+   `along_track_correction.py`'s own `fetch_dem_and_ortho` call missing
+   `extra_footprint_lonlat_deg=entry.crop_footprint` (unlike its `hapke_hillshade.py`/
+   `real_hapke_params.py` siblings, already fixed this way per `docs/plan.md`). Fixed that call
+   site the same way and regenerated `along_track_correction.ipynb` too (confirmed both
+   `along_track_correction` variants now fetch the same 2387x2440 ROI). (2) The notebook's own
+   `sim_masked_path` was hand-built from `config.output_dir / "sfs_run"`, but
+   `run_sfs_forward_render` actually writes under `config.output_dir / "sfs_validation" / "sfs_run"`
+   -- fixed by deriving the path from `sfs_result.sim_intensity_tif.parent` instead of
+   reconstructing it. Regenerated numbers corroborate the "resolved" framing: brightness-matched
+   diff 0.00382 (matches `docs/plan.md`'s own recorded Phase 78 value exactly), incidence diff
+   0.0005 deg mean/max (matches its Phase 77 value). Verified with `trntest-lint` on both notebook
+   pairs.
 9. `crater_sharpness_review.py` (255 lines)
 10. `reproject_spike.py` (507 lines) -- **likely obsolete, decide before rewriting**: its premise
     is "should we build `TrnTestReprojectImage`?", but `reproject` is now fully implemented and
