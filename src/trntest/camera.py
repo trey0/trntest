@@ -62,12 +62,12 @@ def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.nda
 
 @dataclasses.dataclass(frozen=True)
 class FrameTiming:
-    """Per-frame acquisition timing, parsed from the EDR product's PDS4 label (start time,
-    spacecraft clock, interframe delay, frame count) -- see `fetch_frame_timing`. This is the only
-    role EDR data plays in this pipeline; no EDR pixel data is read. Pixel data for visual
-    comparison against the synthetic render comes from the CDR counterpart of the same acquisition
-    -- see `trntest.wac.fetch_vis_mosaic`."""
+    """Per-frame acquisition timing, parsed from the EDR product's PDS4 label: start time,
+    spacecraft clock, interframe delay, frame count. See `fetch_frame_timing`."""
 
+    # This is the only role EDR data plays in this pipeline; no EDR pixel data is read. Pixel data
+    # for visual comparison against the synthetic render comes from the CDR counterpart of the same
+    # acquisition -- see `trntest.wac.fetch_vis_mosaic`.
     start_time: datetime
     sclk_start: str
     interframe_delay_s: float
@@ -107,18 +107,19 @@ class Camera:
     def reverse_crop_along_track(self) -> bool:
         """True when this pass's "forward in time" ground-track direction is dominant +X in the raw
         WAC-VIS camera frame (see `boresight_rotation_k`) -- opposite of the original reference
-        product's convention. `wac.fetch_vis_mosaic` must then stack CDR frames in reverse
-        along-track order (and `tie_points`/`orientation` must correspondingly flip their row/up-
-        direction conventions) for the crop's pixel-space chirality to keep matching the synthetic
-        image's -- see docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis
-        convention": a pass-dependent mirror, not just a rotation."""
+        product's convention."""
+        # `wac.fetch_vis_mosaic` must then stack CDR frames in reverse along-track order (and
+        # `tie_points`/`orientation` must correspondingly flip their row/up-direction conventions)
+        # for the crop's pixel-space chirality to keep matching the synthetic image's -- see
+        # docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention": a
+        # pass-dependent mirror, not just a rotation.
         return self.boresight_rotation_k == _REVERSED_TIME_K
 
 
 def fetch_frame_timing(config: TrntestConfig | None = None) -> FrameTiming:
     """Fetch and parse the chosen EDR product's PDS4 XML label for its frame timing. See
-    `FrameTiming`'s docstring for why this is named for timing, not "EDR", despite reading from the
-    EDR product's label."""
+    `FrameTiming`'s own comment for why this is named for timing, not "EDR", despite reading from
+    the EDR product's label."""
     config = config or load_config()
     label_path = cache.fetch_lroc_file(
         config.lroc_edr_dataset,
@@ -158,10 +159,16 @@ def frame_et(frame_timing: FrameTiming, frame_index: float) -> float:
 
 
 def off_nadir_and_slant_range(c_km: np.ndarray, boresight_me: np.ndarray) -> tuple[float, float]:
-    """off_nadir_deg (angle between `boresight_me` and local nadir) and slant_range_km (distance
-    from `c_km` to where `boresight_me` hits the Moon) -- shared by `camera_pose_moon_me` (boresight
-    = the nominal `LRO_LROCWAC_VIS` frame's raw Z axis) and `build_camera`'s re-aimed boresight (see
-    its docstring) with whatever boresight direction the caller actually used."""
+    """`(off_nadir_deg, slant_range_km)` for a camera at `c_km` looking along `boresight_me`.
+
+    :param c_km: Camera center (MOON_ME, km).
+    :param boresight_me: Boresight direction (unit vector, MOON_ME frame).
+    :returns: Off-nadir angle (degrees, between `boresight_me` and local nadir) and slant range
+        (km, distance from `c_km` to where `boresight_me` hits the Moon).
+    """
+    # Shared by `camera_pose_moon_me` (boresight = the nominal `LRO_LROCWAC_VIS` frame's raw Z
+    # axis) and `build_camera`'s re-aimed boresight, with whatever boresight direction the caller
+    # actually used.
     nadir = -c_km / np.linalg.norm(c_km)
     off_nadir_deg = np.degrees(np.arccos(np.clip(np.dot(boresight_me, nadir), -1, 1)))
     slant_range_km = ray_sphere_intersect_range(c_km, boresight_me)
@@ -186,10 +193,10 @@ def camera_pose_moon_me(et: float):
 def look_at_rotation(boresight_me: np.ndarray, reference_r_cam_to_me: np.ndarray) -> np.ndarray:
     """Builds a new R_cam_to_me whose Z axis is exactly `boresight_me` (a unit vector, MOON_ME
     frame), with X/Y axes derived from `reference_r_cam_to_me`'s own X axis via Gram-Schmidt
-    orthogonalization against the new boresight. Used by `build_camera` to re-aim the synthetic
-    camera at a real, ISIS-determined target ground point (see its docstring) while keeping the
-    camera's roll close to its original SPICE attitude -- changes only which direction it points,
-    not how it's rolled around that direction."""
+    orthogonalization against the new boresight -- changes only which direction it points, not how
+    it's rolled around that direction."""
+    # Used by `build_camera` to re-aim the synthetic camera at an ISIS-determined target ground
+    # point while keeping the camera's roll close to its original SPICE attitude.
     z = boresight_me / np.linalg.norm(boresight_me)
     x_ref = reference_r_cam_to_me[:, 0]
     x = x_ref - np.dot(x_ref, z) * z
