@@ -1,94 +1,46 @@
 """Whole-database crater-depth precompute, tiled for cache coherence -- runs
-`crater_depth.crater_depth_m` across every Robbins crater in GLD100's own +-79 deg coverage, not
-just one camera footprint's worth (unlike `crater_depth.crater_depths_for_footprint`), sharing one
-DEM reprojection across every crater a tile owns instead of paying a fresh reprojection per crater.
+`crater_depth.crater_depth_m` across every Robbins crater in GLD100's own +-79 deg coverage (unlike
+`crater_depth.crater_depths_for_footprint`, which covers just one camera footprint), sharing one DEM
+reprojection across every crater a tile owns instead of paying a fresh reprojection per crater.
 
-Two deliberately separate concepts, not one, because conflating them is exactly what makes a crater
-near a tile boundary get truncated:
-
-- **Ownership**: which tile is responsible for computing a given crater, decided purely by the
-  crater's own center point falling inside that tile's *nominal* (unpadded) bounds
-  (`craters.query_craters_in_bbox`, no padding) -- the same center-point key `craters.py`'s own
-  spatial index is already built on, so a crater is graded by exactly one tile, never duplicated.
-- **Raster extent**: how much DEM data that tile actually reads, which is *not* bounded by the
-  nominal tile size at all -- each tile's DEM is reprojected over a larger, fixed *padded* bbox
-  (`padded_tile_size_deg`, independently tunable from `tile_size_deg`). A crater whose real ellipse
-  (plus `crater_depth.crater_depth_m`'s own small pixel-diagonal buffer) doesn't fit entirely inside
-  its own tile's padded raster gets `depth_m=None` -- kept as a row, not dropped, same convention
-  `crater_depth.crater_depths_for_footprint` already uses. Both tile sizes are fixed, global
-  constants here (not sized per-crater/per-tile from the data), a deliberate simplification: rare,
-  large outlier craters near a tile edge going ungraded is an accepted cost, not a correctness bug --
-  this precompute's actual purpose is finding *sharper* (shallower-relative, smaller) craters for a
-  debug view, where the rare large-crater miss doesn't matter.
-
-Each tile's real DEM read comes straight out of the already-locally-cached GLD100 flat file
-(`cache.fetch_astropedia_gld100`, ~10GB, downloaded once and shared across every tile in a run --
-`grade_database` resolves it once, not per tile) via the same
-`lunaserv.reproject_astropedia_elevation_to_local_grid` reprojection the per-camera-footprint path
-already uses, onto a fresh local Orthographic CRS centered on that tile -- **not** a direct window
-read off GLD100's own native Equirectangular grid. That distinction matters for correctness, not
-just convenience: `crater_depth.crater_depth_m` was deliberately simplified to skip Breton et al.'s
-original per-pixel area-weighting because it assumes an isotropic-meters grid (every pixel covers
-the same real ground area), which only holds reprojected -- GLD100's own native grid has real,
-latitude-dependent east-west compression (down to ~19% of nominal at 79 deg, `cos(latitude)`), so a
-tile small enough for its own local-Orthographic reprojection to stay low-distortion is also what
-keeps `crater_depth_m`'s isotropic assumption valid.
-
-**Known, deliberately deferred gap**: no antimeridian handling. A tile whose padded bounds straddle
-the 0/360 deg longitude seam isn't specially unwrapped here (unlike e.g.
-`lunaserv.footprint_bbox_deg`'s own antimeridian unwrapping) -- a narrow band of craters right at
-that seam may be missed or get a wrong-looking (but `None`-guarded, never silently wrong) result.
-Not fixed yet since it's a small fraction of the database and this precompute's own consumer
-(prioritizing sharper craters for a debug view) doesn't depend on any specific longitude.
-
-Output is one small CSV file per tile (`CRATER_ID`, `diameter_km`, `depth_m`, `depth_diameter_ratio`,
-`arc_img` -- no geometry column, unlike `crater_depths_for_footprint`'s GeoDataFrame, since nothing
-downstream of this precompute needs per-crater shape). CSV, not Parquet: this table's schema is
-simple and each tile's row count small, so Parquet's columnar/typed advantages aren't worth a new
-real dependency (`pyarrow`, pandas' Parquet engine) here -- plain `pandas.DataFrame.to_csv`/`read_csv`
-needs none. Atomically published (`product_registry.atomic_publish`) under a directory whose own
-name encodes the tuning parameters that determine its content (`_tile_output_dir_name` -- principle
-1's "intentional-variant artifacts" from `docs/intermediate-product-discipline.md`: two runs under
-different `tile_size_deg`/`padded_tile_size_deg`/`target_gsd_m` are different artifacts, not the
-same one silently overwritten). One file per tile, not one growing table, specifically so
-`grade_database` is resumable (skip a tile whose output file already exists) and so a `limit`
-parameter can split a long run across multiple invocations, matching
-`trn_dataset.TrnTestDataSet.populate(limit=...)`'s own existing convention -- appending to one
-shared file wouldn't get either property for free under principle 4's atomic-publish-once model.
-Deliberately stores measured depth only, not a sharpness grade -- the depth measurement is the slow,
-DEM-dependent part; combining it with a reference/fresh depth (e.g.
-`crater_depth.stoffler_fresh_depth_km`) into an actual sharpness score is cheap and not yet decided,
-so it's left to `load_graded_database`'s caller rather than baked into this precompute (a formula
-change shouldn't require re-running the whole multi-hour DEM pass).
-
-**`grade_database_via_workers` is the real multi-worker path** -- measured live (10 diverse real
-tiles spanning pole to pole), a single-threaded `grade_database` run over the whole non-polar grid
-(14,220 tiles, ~1.25M in-coverage craters) costs ~13-14 hours: ~2.2s/tile fixed overhead (mostly the
-`dem_mosaic` hole-fill subprocess) plus ~0.014s/crater, dominated by the fixed part, not crater
-count. Reuses `trn_dataset.TrnTestDataSet.populate_via_workers`'s own established pattern exactly
-(`tasks.start_consumer`/`stop_consumer` managing a real `huey_consumer -k process` subprocess) --
-generalized `tasks.start_consumer` to take a `huey_module` argument rather than duplicate that
-subprocess-management code for a second task domain. A dedicated `huey_crater_depth` instance (own
-sqlite file, own task), not `tasks.huey_parallel` -- that one's task (`generate_product_parallel`)
-takes a `TrnTestImage`, a different domain entirely; per `tasks.py`'s own docstring, one `Huey`
-instance per real use case, not shared. `-k process` (real worker processes, not threads) for the
-same reason `tasks.py` already gives: SPICE/spiceypy-adjacent process-global state (this module
-doesn't touch SPICE directly, but `craters.py`/`lunaserv.py` do) isn't safe to share within one
-process.
-
-**`consolidate_graded_geopackage` is the read-side consolidation step** -- left-joins
-`load_graded_database`'s combined depth table onto the full Robbins GeoDataFrame by `CRATER_ID` and
-writes it as its own GeoPackage, so a per-footprint query (this project's more common case) can
-reuse `craters.query_craters_in_bbox`'s exact same fast `bbox=`-restricted, spatial-index-backed
-pattern directly against "Robbins plus depth" rather than needing to know tiling ever happened.
-GeoPackage, not Parquet, specifically because that spatial-index reuse is worth more here than
-Parquet's columnar/compression advantage would be for the less-frequent whole-database-scan case --
-see the function's own docstring for the full reasoning. Also computes and stores the actual
-sharpness grade itself here (`sharpness`, `crater_depth.sharpness_ratio` -- measured depth over
-Stoffler et al. 2006's reference "fresh crater" depth for the same diameter), since that combination
-is cheap and, unlike the depth measurement itself, safe to recompute on every consolidation without
-re-running the multi-hour DEM pass. A snapshot, not auto-synced -- re-run it after grading more
-tiles."""
+`grade_database`/`grade_database_via_workers` grade the whole database; `grade_footprint` grades just
+the tiles one raster's footprint touches. `load_graded_database` reads the per-tile CSV output back;
+`consolidate_graded_geopackage` joins it onto the full Robbins GeoPackage for per-footprint queries.
+"""
+# Two deliberately separate concepts, not one -- conflating them is exactly what would truncate a
+# crater near a tile boundary:
+#
+# - Ownership: which tile is responsible for grading a given crater, decided purely by the crater's
+#   own center point falling inside that tile's *nominal* (unpadded) bounds
+#   (`craters.query_craters_in_bbox`, no padding) -- the same center-point key `craters.py`'s spatial
+#   index is built on, so a crater is graded by exactly one tile, never duplicated.
+# - Raster extent: how much DEM data a tile actually reads, sized independently from the nominal
+#   tile (`padded_tile_size_deg`, tunable separately from `tile_size_deg`). A crater whose ellipse
+#   (plus `crater_depth.crater_depth_m`'s own pixel-diagonal buffer) doesn't fit entirely inside its
+#   tile's padded raster gets `depth_m=None` -- kept as a row, not dropped (same convention
+#   `crater_depth.crater_depths_for_footprint` uses). Both sizes are fixed global constants, not
+#   sized per-crater/per-tile: a rare large crater near a tile edge going ungraded is an accepted
+#   cost for this precompute's purpose (finding sharper, smaller craters for a debug view).
+#
+# Known, deliberately deferred gap: no antimeridian handling. A tile whose padded bounds straddle
+# the 0/360 seam isn't specially unwrapped (unlike `lunaserv.footprint_bbox_deg`) -- a narrow band of
+# craters right at that seam may be missed or get a `None`-guarded (never silently wrong) result. Not
+# worth fixing yet: it's a small fraction of the database, and this precompute's consumer
+# (prioritizing sharper craters for a debug view) doesn't depend on any specific longitude.
+#
+# Output is one small CSV file per tile (`CRATER_ID`, `diameter_km`, `depth_m`,
+# `depth_diameter_ratio`, `arc_img` -- no geometry column, unlike `crater_depths_for_footprint`'s
+# GeoDataFrame). CSV, not Parquet: this table's schema is simple and each tile's row count small, not
+# worth a new dependency (`pyarrow`) for. Atomically published under a directory whose name encodes
+# the tuning parameters that determine its content (`_tile_output_dir_name` --
+# docs/intermediate-product-discipline.md's "intentional-variant artifacts" principle): a run under
+# different `tile_size_deg`/`padded_tile_size_deg`/`target_gsd_m` is a different artifact, not a
+# silent overwrite. One file per tile, not one growing table, so `grade_database` is resumable (skip
+# a tile whose output already exists) and a `limit` can split a long run across invocations, matching
+# `trn_dataset.TrnTestDataSet.populate(limit=...)`'s convention. Stores measured depth only, not a
+# sharpness grade: the depth measurement is the slow, DEM-dependent part, while combining it with a
+# reference depth into a sharpness score (`consolidate_graded_geopackage`) is cheap enough to leave to
+# the read side, so a formula change doesn't require re-running the multi-hour DEM pass.
 
 import math
 import tempfile
@@ -110,8 +62,8 @@ huey_crater_depth = SqliteHuey(filename=str(_huey_dir / "crater_depth_tasks.db")
 
 DEFAULT_TILE_SIZE_DEG = 2.0
 DEFAULT_PADDED_TILE_SIZE_DEG = 3.0
-# Matches GLD100's own native resolution (see docs/data-sources.md) -- no point resampling finer,
-# and coarser would waste real detail `crater_depth_m`'s percentiles rely on.
+# Matches GLD100's own native resolution (docs/data-sources/astropedia-gld100.md) -- no point
+# resampling finer, and coarser would waste detail `crater_depth_m`'s percentiles rely on.
 DEFAULT_TARGET_GSD_M = 100.0
 _FULL_LONGITUDE_RANGE_DEG = 360.0
 
@@ -121,11 +73,16 @@ def iter_tile_origins(
     max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> Iterator[tuple[float, float]]:
     """Nominal `(lon_min, lat_min)` tile origins tiling the full `[0, 360) x [-max_abs_lat_deg,
-    max_abs_lat_deg)` grid, row-major (south to north, west to east within a row -- deterministic
-    order, useful for resuming a `limit`-bounded run predictably). The northernmost row is clipped to
-    `max_abs_lat_deg` by `tile_bounds_deg` below, not here -- this just yields origins, not full
-    bounds, so a possibly-shorter last row's origin is still a clean multiple of `tile_size_deg` from
-    `-max_abs_lat_deg`."""
+    max_abs_lat_deg)` grid, row-major (south to north, west to east within a row).
+
+    :param tile_size_deg: Tile size, degrees.
+    :param max_abs_lat_deg: Latitude extent to tile, degrees (+-).
+    :returns: An iterator of `(lon_min, lat_min)` origins.
+    """
+    # Row-major order is deterministic -- useful for resuming a `limit`-bounded run predictably. The
+    # northernmost row is clipped to `max_abs_lat_deg` by `tile_bounds_deg`, not here: this just
+    # yields origins, so a possibly-shorter last row's origin is still a clean multiple of
+    # `tile_size_deg` from `-max_abs_lat_deg`.
     lat = -max_abs_lat_deg
     while lat < max_abs_lat_deg:
         lon = 0.0
@@ -136,9 +93,13 @@ def iter_tile_origins(
 
 
 def tile_id(lon_min: float, lat_min: float) -> str:
-    """Filename-safe identity for the tile whose nominal bounds start at `(lon_min, lat_min)` --
-    fixed decimal formatting (not `repr`) so float-formatting noise can't produce two different
-    filenames for what `iter_tile_origins` intends as the same tile."""
+    """Filename-safe identity for the tile whose nominal bounds start at `(lon_min, lat_min)`.
+
+    :param lon_min: Tile origin longitude, degrees.
+    :param lat_min: Tile origin latitude, degrees.
+    :returns: A fixed-decimal-formatted (not `repr`) identity string, so float-formatting noise can't
+        produce two different filenames for what `iter_tile_origins` intends as the same tile.
+    """
     return f"lon{lon_min:06.2f}_lat{lat_min:+06.2f}"
 
 
@@ -149,11 +110,18 @@ def tile_bounds_deg(
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
     max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> tuple[tuple, tuple]:
-    """`(nominal_bounds, padded_bounds)`, both `(minlon, minlat, maxlon, maxlat)` degrees. Nominal
-    bounds decide crater *ownership* (query craters by center within these, unpadded); padded bounds
-    decide how much DEM this tile actually reprojects/reads -- independently sized, clipped to
-    `+-max_abs_lat_deg` since that's GLD100's own real coverage limit (see module docstring's
-    antimeridian caveat for why longitude is *not* similarly clipped/wrapped)."""
+    """Nominal and padded bounds for the tile at `(lon_min, lat_min)` -- see the module comment above
+    for what each is for.
+
+    :param lon_min: Tile origin longitude, degrees.
+    :param lat_min: Tile origin latitude, degrees.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param max_abs_lat_deg: Latitude extent to clip to, degrees (+-).
+    :returns: `(nominal_bounds, padded_bounds)`, both `(minlon, minlat, maxlon, maxlat)` degrees.
+    """
+    # Both clipped to +-max_abs_lat_deg since that's GLD100's own coverage limit; longitude is not
+    # similarly clipped/wrapped (see the module comment's antimeridian caveat).
     nominal = (lon_min, lat_min, lon_min + tile_size_deg, min(lat_min + tile_size_deg, max_abs_lat_deg))
     pad_deg = (padded_tile_size_deg - tile_size_deg) / 2.0
     padded = (
@@ -166,9 +134,14 @@ def tile_bounds_deg(
 
 
 def _tile_output_dir_name(tile_size_deg: float, padded_tile_size_deg: float, target_gsd_m: float) -> str:
-    """Encodes the parameters that determine this precompute's own content into the output
-    directory's name (`docs/intermediate-product-discipline.md`'s principle 1) -- a run under
-    different tuning knobs is a genuinely different artifact, not a silent overwrite of this one."""
+    """Encode the tuning parameters that determine this precompute's content into an output
+    directory name (see the module comment's "intentional-variant artifacts" note).
+
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :returns: The directory name.
+    """
     return f"crater_depth_tiles_t{tile_size_deg:g}_p{padded_tile_size_deg:g}_g{target_gsd_m:g}"
 
 
@@ -178,18 +151,31 @@ def default_output_dir(
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
 ) -> Path:
-    """Alongside the other Robbins-derived cache artifacts (`craters.ensure_geopackage`'s own
-    `.gpkg`), not under a dataset's `_tmp/` hierarchy -- this precompute is scoped to the whole
-    crater database, not to any one dataset entry."""
+    """Default output directory for this precompute's tile files.
+
+    :param config: Project config.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :returns: `config.cache_root / _tile_output_dir_name(...)`.
+    """
+    # Alongside the other Robbins-derived cache artifacts (`craters.ensure_geopackage`'s own
+    # `.gpkg`), not under a dataset's `_tmp/` hierarchy -- this precompute is scoped to the whole
+    # crater database, not to any one dataset entry.
     return config.cache_root / _tile_output_dir_name(tile_size_deg, padded_tile_size_deg, target_gsd_m)
 
 
 def _crater_ellipse_fits(polygon_local, dst_bbox_m: tuple, buffer_m: float) -> bool:
-    """Whether `polygon_local` (already in the tile's own local-meters CRS), outward-buffered by
-    `buffer_m` (matching `crater_depth.crater_depth_m`'s own pixel-diagonal ring buffer), lies
-    entirely inside `dst_bbox_m` -- the tile's padded raster bounds, known directly from the
-    destination grid this precompute built (`lunaserv.footprint_bbox_local_m`), not by reopening the
-    written file just to ask it its own bounds back."""
+    """Whether `polygon_local`, outward-buffered by `buffer_m`, lies entirely inside `dst_bbox_m`.
+
+    :param polygon_local: Crater ellipse, already in the tile's own local-meters CRS.
+    :param dst_bbox_m: The tile's padded raster bounds, local meters.
+    :param buffer_m: Outward buffer, meters -- matches `crater_depth.crater_depth_m`'s own
+        pixel-diagonal ring buffer.
+    :returns: Whether the buffered polygon fits entirely inside `dst_bbox_m`.
+    """
+    # dst_bbox_m comes directly from the destination grid this precompute built
+    # (`lunaserv.footprint_bbox_local_m`), not by reopening the written file to ask its own bounds.
     minx, miny, maxx, maxy = dst_bbox_m
     outer_minx, outer_miny, outer_maxx, outer_maxy = polygon_local.buffer(buffer_m).bounds
     return outer_minx >= minx and outer_miny >= miny and outer_maxx <= maxx and outer_maxy <= maxy
@@ -205,19 +191,32 @@ def grade_tile(
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
 ) -> pd.DataFrame:
-    """Grades every Robbins crater owned by the tile at `(lon_min, lat_min)` (see `tile_bounds_deg`)
-    -- one shared DEM reprojection for the whole tile, not one per crater. Returns a plain (no
-    geometry) `pandas.DataFrame`, one row per owned crater: `CRATER_ID`, `diameter_km`
-    (`DIAM_CIRC_IMG`, matching `crater_depth.crater_depths_for_footprint`'s own column), `depth_m`,
-    `depth_diameter_ratio`, `arc_img`. `depth_m`/`depth_diameter_ratio` are `None` for a crater whose
-    real ellipse (plus buffer) doesn't fit entirely inside this tile's own padded raster (see module
-    docstring) -- kept as a row, not dropped. Returns an empty `DataFrame` (no DEM fetch at all) if
-    the tile owns no craters -- the common case is skipping this cheaply, not paying a reprojection
-    for empty ocean-of-craters gaps that don't actually exist at ~1.3M rows, but a real short-circuit
-    all the same.
+    """Grade every Robbins crater owned by the tile at `(lon_min, lat_min)` -- one shared DEM
+    reprojection for the whole tile, not one per crater.
 
-    `astropedia_path` lets a batch caller (`grade_database`) resolve the ~10GB cached GLD100 file
-    once and pass it to every tile, rather than re-resolving (cheap, but not free) per call."""
+    :param lon_min: Tile origin longitude, degrees.
+    :param lat_min: Tile origin latitude, degrees.
+    :param config: Project config; `load_config()` if not given.
+    :param astropedia_path: The cached GLD100 file path, if already resolved -- lets a batch caller
+        (`grade_database`) resolve it once and pass it to every tile, rather than re-resolving per
+        call.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :returns: One row per owned crater: `CRATER_ID`, `diameter_km` (`DIAM_CIRC_IMG`, matching
+        `crater_depth.crater_depths_for_footprint`'s own column), `depth_m`, `depth_diameter_ratio`,
+        `arc_img`. `depth_m`/`depth_diameter_ratio` are `None` for a crater whose ellipse (plus
+        buffer) doesn't fit entirely inside this tile's padded raster (see the module comment) --
+        kept as a row, not dropped. Empty (no DEM fetch at all) if the tile owns no craters.
+    """
+    # Reprojects onto a fresh local Orthographic CRS centered on this tile (same as the
+    # per-camera-footprint path), rather than a direct window read off GLD100's own native
+    # Equirectangular grid -- that distinction matters for correctness, not just convenience:
+    # `crater_depth.crater_depth_m` skips Breton et al.'s original per-pixel area-weighting, which
+    # assumes an isotropic-meters grid (every pixel the same ground area). GLD100's native grid has
+    # latitude-dependent east-west compression (down to ~19% of nominal at 79 deg, `cos(latitude)`),
+    # so only a tile small enough for low-distortion local-Orthographic reprojection keeps that
+    # isotropic assumption valid.
     config = config or load_config()
     nominal, padded = tile_bounds_deg(lon_min, lat_min, tile_size_deg, padded_tile_size_deg)
 
@@ -256,12 +255,12 @@ def grade_tile(
             MOON_RADIUS_M,
             dem_elevation_path,
         )
-        # `reproject_astropedia_elevation_to_local_grid`'s own raw output has no `nodata` tag set on
-        # the file (even though real gaps -- e.g. GLD100's own small internal nodata cells, see
-        # docs/data-sources.md -- are filled with literal NaN), so `crater_depth_m`'s masked read
-        # wouldn't mask them at all, leaking NaN into the percentile as if it were real elevation.
-        # `lunaserv.fetch_dem` never hits this because it always runs `hole_fill_dem` first for
-        # exactly this reason -- same fix applied here, not skipped.
+        # `reproject_astropedia_elevation_to_local_grid`'s own output has no `nodata` tag set (even
+        # though gaps -- e.g. GLD100's own small internal nodata cells, see
+        # docs/data-sources/astropedia-gld100.md -- are filled with literal NaN), so
+        # `crater_depth_m`'s masked read wouldn't mask them, leaking NaN into the percentile as
+        # elevation. `lunaserv.fetch_dem` never hits this because it always runs `hole_fill_dem`
+        # first for exactly this reason; same fix applied here.
         dem_path = Path(tmp_dir) / "dem_filled-tile-0.tif"
         lunaserv.hole_fill_dem(dem_elevation_path, dem_path)
 
@@ -293,16 +292,22 @@ def tiles_covering_bbox(
     tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
     max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> list[tuple[float, float]]:
-    """Nominal `(lon_min, lat_min)` tile origins (a subset of what `iter_tile_origins` would yield
-    for the same `tile_size_deg`/`max_abs_lat_deg`) whose nominal bounds intersect `bbox_deg`
-    (`minlon, minlat, maxlon, maxlat`, e.g. `craters.raster_bbox_deg`'s output) -- for grading just
-    enough of the database to cover one footprint (`grade_footprint`) rather than the whole grid.
-    Snaps to the same grid `iter_tile_origins` defines (latitude rows starting exactly at
-    `-max_abs_lat_deg`, not at a multiple of `tile_size_deg` from zero), so a tile this returns is
-    always one `grade_database`/`grade_database_via_workers` would also reach -- same resumability,
-    same output filename, whichever entry point graded it first. Same antimeridian caveat as
-    `craters.raster_bbox_deg`: a `bbox_deg` that straddles the 0/360 seam (`minlon > maxlon`) isn't
-    specially unwrapped here either."""
+    """Nominal `(lon_min, lat_min)` tile origins whose nominal bounds intersect `bbox_deg`.
+
+    :param bbox_deg: `(minlon, minlat, maxlon, maxlat)` degrees, e.g. `craters.raster_bbox_deg`'s
+        output.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param max_abs_lat_deg: Latitude extent to tile, degrees (+-).
+    :returns: A subset of what `iter_tile_origins` would yield for the same `tile_size_deg`/
+        `max_abs_lat_deg` -- for grading just enough of the database to cover one footprint
+        (`grade_footprint`) rather than the whole grid.
+    """
+    # Snaps to the same grid `iter_tile_origins` defines (latitude rows starting exactly at
+    # `-max_abs_lat_deg`, not at a multiple of `tile_size_deg` from zero), so a tile this returns is
+    # always one `grade_database`/`grade_database_via_workers` would also reach -- same
+    # resumability, same output filename, whichever entry point graded it first. Same antimeridian
+    # caveat as `craters.raster_bbox_deg`: a `bbox_deg` that straddles the 0/360 seam
+    # (`minlon > maxlon`) isn't specially unwrapped here either.
     minlon, minlat, maxlon, maxlat = bbox_deg
     lat_row_first = math.floor((minlat - (-max_abs_lat_deg)) / tile_size_deg)
     lat_row_last = math.floor((maxlat - (-max_abs_lat_deg)) / tile_size_deg)
@@ -327,15 +332,23 @@ def grade_footprint(
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
 ) -> int:
-    """Grades just the tiles whose nominal bounds intersect `raster_path`'s own real footprint
-    (`craters.raster_bbox_deg`, `tiles_covering_bbox`) -- for reviewing/validating sharpness grading
-    against one candidate image (e.g. `dem_ortho_result.ortho`) without paying the whole-database
-    precompute's cost. Sequential, matching `grade_database`'s own single-process shape -- a
-    footprint's worth of tiles is small enough this doesn't need `grade_database_via_workers`'s real
-    parallelism. Writes into the exact same `output_dir` tile CSVs `grade_database`/
-    `grade_database_via_workers` use (skip-if-exists, same resumability), so a later full-database
-    run doesn't redo this footprint's tiles, and `consolidate_graded_geopackage` picks up whatever's
-    graded here with no special-casing. Returns the number of tiles actually graded this call."""
+    """Grade just the tiles whose nominal bounds intersect `raster_path`'s own footprint.
+
+    :param raster_path: A raster (e.g. `dem_ortho_result.ortho`) to grade craters within.
+    :param config: Project config; `load_config()` if not given.
+    :param output_dir: Where tile CSVs are read/written; `default_output_dir(...)` if not given.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :returns: The number of tiles actually graded this call.
+    """
+    # For reviewing/validating sharpness grading against one candidate image without paying the
+    # whole-database precompute's cost. Sequential, matching `grade_database`'s own single-process
+    # shape -- a footprint's worth of tiles is small enough this doesn't need
+    # `grade_database_via_workers`'s parallelism. Writes into the exact same `output_dir` tile CSVs
+    # `grade_database`/`grade_database_via_workers` use (skip-if-exists, same resumability), so a
+    # later full-database run doesn't redo this footprint's tiles, and
+    # `consolidate_graded_geopackage` picks up whatever's graded here with no special-casing.
     config = config or load_config()
     output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
     astropedia_path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
@@ -360,19 +373,28 @@ def grade_database(
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
     limit: int | None = None,
 ) -> int:
-    """Drives `grade_tile` across the whole `iter_tile_origins` grid, sequentially in this one
-    process, writing one atomically-published CSV file per tile (`tile_id(lon_min, lat_min) +
-    ".csv"`, under `output_dir` or `default_output_dir`). Resumable: a tile whose output file
-    already exists is skipped without calling `grade_tile` at all, so re-running this after an
-    interruption (or splitting a long run across multiple invocations via `limit`, matching
-    `trn_dataset.TrnTestDataSet.populate(limit=...)`'s own convention) only does genuinely new work.
-    Returns the number of tiles actually graded this call (not the running total).
+    """Drive `grade_tile` across the whole `iter_tile_origins` grid, sequentially in this process.
 
-    Single-threaded and slow at full scale (~13-14 hours for the whole grid -- see module
-    docstring) -- `grade_database_via_workers` is the real multi-worker equivalent for an actual
-    full-database run; this sequential version stays useful for a quick/small/`limit`-bounded pass
-    and as the simpler reference implementation `_grade_and_publish_tile` (shared by both) is
-    tested against."""
+    :param config: Project config; `load_config()` if not given.
+    :param output_dir: Where tile CSVs are written; `default_output_dir(...)` if not given.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :param limit: Stop after grading this many new tiles, if given -- splits a long run across
+        multiple invocations, matching `trn_dataset.TrnTestDataSet.populate(limit=...)`'s convention.
+    :returns: The number of tiles actually graded this call (not the running total).
+    """
+    # Writes one atomically-published CSV per tile (`tile_id(lon_min, lat_min) + ".csv"`). Resumable:
+    # a tile whose output file already exists is skipped without calling `grade_tile` at all, so
+    # re-running this after an interruption only does genuinely new work.
+    #
+    # Single-threaded and slow at full scale: ~13-14 hours for the whole non-polar grid (14,220
+    # tiles, ~1.25M in-coverage craters), measured live across 10 diverse tiles spanning pole to
+    # pole -- ~2.2s/tile fixed overhead (mostly the `dem_mosaic` hole-fill subprocess) plus
+    # ~0.014s/crater, dominated by the fixed part, not crater count. `grade_database_via_workers` is
+    # the multi-worker equivalent for an actual full-database run; this sequential version stays
+    # useful for a quick/small/`limit`-bounded pass and as the simpler reference implementation
+    # `_grade_and_publish_tile` (shared by both) is tested against.
     config = config or load_config()
     output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
     astropedia_path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
@@ -401,15 +423,24 @@ def _grade_and_publish_tile(
     target_gsd_m: float,
     dest: Path,
 ) -> str:
-    """Shared body for `grade_database`'s sequential loop and `grade_tile_task`'s worker-process
-    body below -- grades one tile (`grade_tile`) and atomically publishes its CSV to `dest`, same
-    two steps either way. Factored out (rather than duplicated, or left only inside the huey task)
-    specifically so it stays directly unit-testable without needing a live huey consumer -- calling
-    a `huey.task()`-decorated function directly on an `immediate=False` instance enqueues rather
-    than runs it, so the real logic has to live somewhere callable on its own. Returns `str(dest)`,
-    not `None` -- huey only stores a result for a non-`None` return (confirmed empirically, see
-    `tasks._generate`'s own docstring for the same gotcha), and `grade_database_via_workers` needs a
-    real result to wait on."""
+    """Grade one tile (`grade_tile`) and atomically publish its CSV to `dest`.
+
+    :param lon_min: Tile origin longitude, degrees.
+    :param lat_min: Tile origin latitude, degrees.
+    :param config: Project config.
+    :param astropedia_path: The cached GLD100 file path.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :param dest: Output CSV path. If it already exists, returns immediately without re-grading.
+    :returns: `str(dest)`.
+    """
+    # Shared body for `grade_database`'s sequential loop and `grade_tile_task`'s worker-process body
+    # below -- factored out (rather than duplicated, or left only inside the huey task) so it stays
+    # directly unit-testable without a live huey consumer: calling a `huey.task()`-decorated function
+    # directly on an `immediate=False` instance enqueues rather than runs it. Returns `str(dest)`, not
+    # `None` -- huey only stores a result for a non-`None` return (same gotcha as `tasks._generate`'s
+    # own docstring), and `grade_database_via_workers` needs a result to wait on.
     if dest.exists():
         return str(dest)
     df = grade_tile(
@@ -437,12 +468,24 @@ def grade_tile_task(
     target_gsd_m: float,
     dest: Path,
 ) -> str:
-    """What `grade_database_via_workers` enqueues -- thin wrapper so a `-k process` worker runs
-    `_grade_and_publish_tile` through huey's own queue/result machinery (stored exceptions, a real
-    process boundary) rather than in this calling process. `config`/`astropedia_path`/`dest` all
-    pickle cleanly (a plain dataclass and two `Path`s -- no SPICE/open-file state), confirmed the
-    same way `tasks.generate_product_parallel`'s own docstring already establishes for its own
-    (different) task argument."""
+    """What `grade_database_via_workers` enqueues.
+
+    :param lon_min: Tile origin longitude, degrees.
+    :param lat_min: Tile origin latitude, degrees.
+    :param config: Project config.
+    :param astropedia_path: The cached GLD100 file path.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :param dest: Output CSV path.
+    :returns: `str(dest)`, see `_grade_and_publish_tile`.
+    """
+    # Thin wrapper so a `-k process` worker runs `_grade_and_publish_tile` through huey's own
+    # queue/result machinery (stored exceptions, a real process boundary) rather than in this calling
+    # process. `config`/`astropedia_path`/`dest` all pickle cleanly (a plain dataclass and two
+    # `Path`s -- no SPICE/open-file state), confirmed the same way
+    # `tasks.generate_product_parallel`'s own docstring already establishes for its own (different)
+    # task argument.
     return _grade_and_publish_tile(
         lon_min, lat_min, config, astropedia_path, tile_size_deg, padded_tile_size_deg, target_gsd_m, dest
     )
@@ -457,17 +500,35 @@ def grade_database_via_workers(
     limit: int | None = None,
     workers: int = 4,
 ) -> int:
-    """`grade_database`'s real multi-worker equivalent -- same `output_dir`/tile-size/`limit`
-    semantics (a tile whose output file already exists is skipped, same resumability), but each
-    tile's `grade_tile` + atomic-publish (`_grade_and_publish_tile`) runs in one of `workers`
-    separate `-k process` worker processes instead of sequentially in this one, via a real
-    `huey_consumer` subprocess this call starts and tears down for its own duration -- see the
-    module docstring's own paragraph on this function and `trn_dataset.TrnTestDataSet.
-    populate_via_workers`'s docstring, whose exact pattern this mirrors. Blocks until every enqueued
-    tile finishes (or fails); one tile's failure doesn't abort the batch (`TaskException` caught, not
-    raised, same as `trn_dataset._await_result`) -- real DEM/ISIS calls at this scale are expected to
-    have occasional real failures. Returns the number of tiles enqueued this call (0 if every tile
-    up to `limit` -- or the whole grid, if `limit` is `None` -- was already done)."""
+    """`grade_database`'s multi-worker equivalent -- each tile's `grade_tile` + atomic-publish
+    (`_grade_and_publish_tile`) runs in one of `workers` separate `-k process` worker processes
+    instead of sequentially in this one.
+
+    :param config: Project config; `load_config()` if not given.
+    :param output_dir: Where tile CSVs are written; `default_output_dir(...)` if not given.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :param limit: Enqueue at most this many new tiles, if given.
+    :param workers: Worker process count.
+    :returns: The number of tiles enqueued this call (0 if every tile up to `limit` -- or the whole
+        grid, if `limit` is `None` -- was already done).
+    """
+    # Same `output_dir`/tile-size/`limit` semantics as `grade_database` (a tile whose output file
+    # already exists is skipped, same resumability), via a real `huey_consumer` subprocess this call
+    # starts and tears down for its own duration -- see `trn_dataset.TrnTestDataSet.
+    # populate_via_workers`'s docstring, whose exact pattern this mirrors (`tasks.start_consumer`/
+    # `stop_consumer`; `tasks.start_consumer` was generalized to take a `huey_module` argument rather
+    # than duplicate that subprocess-management code for a second task domain). A dedicated
+    # `huey_crater_depth` instance (own sqlite file, own task), not `tasks.huey_parallel` -- that
+    # one's task (`generate_product_parallel`) takes a `TrnTestImage`, a different domain entirely;
+    # per `tasks.py`'s own docstring, one `Huey` instance per use case, not shared. `-k process` (real
+    # worker processes, not threads) for the same reason `tasks.py` already gives:
+    # SPICE/spiceypy-adjacent process-global state (this module doesn't touch SPICE directly, but
+    # `craters.py`/`lunaserv.py` do) isn't safe to share within one process. Blocks until every
+    # enqueued tile finishes or fails; one tile's failure doesn't abort the batch (`TaskException`
+    # caught, not raised, same as `trn_dataset._await_result`) -- DEM/ISIS calls at this scale are
+    # expected to have occasional failures.
     config = config or load_config()
     output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
     astropedia_path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
@@ -505,10 +566,14 @@ def grade_database_via_workers(
 
 @product_registry.reads_product("crater_depth_tile")
 def load_graded_database(output_dir: Path) -> pd.DataFrame:
-    """Concatenates every tile's CSV file under `output_dir` (`grade_database`'s own output) into one
-    `pandas.DataFrame` -- the read-side counterpart callers join a sharpness formula (e.g.
-    `crater_depth.stoffler_fresh_depth_km`) onto by `CRATER_ID`. Returns an empty frame with the
-    expected columns if `output_dir` has no tile files yet, rather than raising."""
+    """Concatenate every tile's CSV file under `output_dir` into one `DataFrame`.
+
+    :param output_dir: `grade_database`'s own output directory.
+    :returns: The combined table (`CRATER_ID`, `diameter_km`, `depth_m`, `depth_diameter_ratio`,
+        `arc_img`), or an empty frame with those columns if `output_dir` has no tile files yet.
+    """
+    # The read-side counterpart callers join a sharpness formula (e.g.
+    # `crater_depth.stoffler_fresh_depth_km`) onto by `CRATER_ID`.
     columns = ["CRATER_ID", "diameter_km", "depth_m", "depth_diameter_ratio", "arc_img"]
     tile_paths = sorted(Path(output_dir).glob("*.csv"))
     if not tile_paths:
@@ -524,42 +589,46 @@ def consolidate_graded_geopackage(
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
 ) -> Path:
-    """Left-joins `load_graded_database`'s combined depth table onto the *full* Robbins GeoDataFrame
-    (`craters.ensure_geopackage`, every column, real geometry, no bbox restriction) by `CRATER_ID`,
-    and writes the result as its own atomically-published GeoPackage -- a single, ready-to-query
-    "Robbins database, now with depth" artifact, `output_dir / "robbins_with_depth.gpkg"`.
+    """Left-join `load_graded_database`'s combined depth table onto the full Robbins GeoDataFrame by
+    `CRATER_ID`, and write the result as its own GeoPackage.
 
-    GeoPackage, not Parquet, deliberately: every existing query function in this codebase
-    (`craters.query_craters_in_bbox`, `crater_overlay_layer`, `crater_depths_for_footprint`, this
-    module's own `grade_tile`) already relies on GeoPackage's real `rtree` spatial index for fast
-    `bbox=`-restricted queries -- confirmed live elsewhere at ~0.05s for a 10x10 deg box against the
-    full ~1.3M-row table. A caller wanting per-footprint sharpness (this project's own more common
-    case, per the user's own framing) can query this file with that exact same pattern, unchanged.
-    An occasional whole-database load (`geopandas.read_file(path)`, no `bbox=`) is slower and heavier
-    than a lean Parquet would be, but workable for what's expected to stay the less-frequent case --
-    not worth a second, separately-maintained artifact/format until that's confirmed to actually
-    matter in practice.
-
-    Only `depth_m`/`depth_diameter_ratio` are joined in, not `load_graded_database`'s own
-    `diameter_km`/`arc_img` columns -- those already exist on the Robbins side as `DIAM_CIRC_IMG`/
-    `ARC_IMG`, so merging them in too would just create redundant, confusingly-named duplicate
-    columns. A **left** join, not inner: every real Robbins crater is kept, including any not yet
-    graded (`grade_database`/`grade_database_via_workers` still mid-run, or never reached) --
-    `depth_m`/`depth_diameter_ratio` are `NaN` for those rows, indistinguishable from a crater that
-    *was* graded but didn't fit its tile's padded raster (`grade_tile`'s own `None` convention,
-    already an accepted ambiguity, not a new one introduced here).
-
-    Also adds `sharpness` (`crater_depth.sharpness_ratio(depth_m, DIAM_CIRC_IMG)`, the actual grade)
-    here rather than leaving every caller to recompute it -- cheap (no DEM read, just arithmetic
-    against columns already in hand) and, unlike `depth_m` itself, not something worth protecting
-    from a multi-hour re-run if the formula ever changes: `NaN` propagates through automatically for
-    any row without a depth, so no extra handling is needed for the same not-yet-graded/didn't-fit
-    rows above.
-
-    **This is a snapshot, not kept in sync automatically** -- re-run this after grading more tiles to
-    refresh it; nothing in `grade_database`/`grade_database_via_workers` calls this on its own,
-    matching this project's existing pattern for other generated-not-auto-synced artifacts (e.g.
-    `notebooks/dataset_manifest.csv`)."""
+    :param config: Project config; `load_config()` if not given.
+    :param output_dir: Where tile CSVs are read from; `default_output_dir(...)` if not given.
+    :param tile_size_deg: Nominal tile size, degrees.
+    :param padded_tile_size_deg: Padded tile size, degrees.
+    :param target_gsd_m: DEM reprojection resolution, meters/pixel.
+    :returns: `output_dir / "robbins_with_depth.gpkg"`.
+    """
+    # A single, ready-to-query "Robbins database, now with depth" artifact
+    # (`craters.ensure_geopackage`, every column, geometry, no bbox restriction). GeoPackage, not
+    # Parquet, deliberately: every existing query function in this codebase
+    # (`craters.query_craters_in_bbox`, `crater_overlay_layer`, `crater_depths_for_footprint`, this
+    # module's own `grade_tile`) already relies on GeoPackage's `rtree` spatial index for fast
+    # `bbox=`-restricted queries (measured live elsewhere at ~0.05s for a 10x10 deg box against the
+    # full ~1.3M-row table). A caller wanting per-footprint sharpness -- this project's more common
+    # case -- can query this file with that same pattern, unchanged. An occasional whole-database
+    # load (`geopandas.read_file(path)`, no `bbox=`) is slower and heavier than a lean Parquet would
+    # be, but workable for what's expected to stay the less-frequent case -- not worth a second,
+    # separately-maintained artifact/format until that's confirmed to matter in practice.
+    #
+    # Only `depth_m`/`depth_diameter_ratio` are joined in, not `load_graded_database`'s own
+    # `diameter_km`/`arc_img` -- those already exist on the Robbins side as `DIAM_CIRC_IMG`/
+    # `ARC_IMG`, so merging them too would create redundant, confusingly-named duplicate columns. A
+    # left join, not inner: every Robbins crater is kept, including any not yet graded
+    # (`grade_database`/`grade_database_via_workers` still mid-run, or never reached) --
+    # `depth_m`/`depth_diameter_ratio` are `NaN` for those rows, indistinguishable from a crater that
+    # was graded but didn't fit its tile's padded raster (`grade_tile`'s own `None` convention,
+    # already an accepted ambiguity, not a new one).
+    #
+    # Also adds `sharpness` (`crater_depth.sharpness_ratio(depth_m, DIAM_CIRC_IMG)`) here rather than
+    # leaving every caller to recompute it -- cheap (no DEM read, just arithmetic against columns
+    # already in hand) and, unlike `depth_m` itself, not worth protecting from a multi-hour re-run if
+    # the formula ever changes: `NaN` propagates through automatically for any row without a depth.
+    #
+    # This is a snapshot, not kept in sync automatically -- re-run this after grading more tiles to
+    # refresh it; nothing in `grade_database`/`grade_database_via_workers` calls this on its own,
+    # matching this project's pattern for other generated-not-auto-synced artifacts (e.g.
+    # `notebooks/dataset_manifest.csv`).
     config = config or load_config()
     output_dir = output_dir or default_output_dir(config, tile_size_deg, padded_tile_size_deg, target_gsd_m)
 
