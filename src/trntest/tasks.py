@@ -54,20 +54,25 @@ _CONSUMER_LOG_PATH = _huey_dir / "consumer.log"
 
 
 def task_id(dataset_folder: str, product_id: str) -> str:
-    """Deterministic (not random) task id, so `trn_dataset.task_state()` can look up a task's
-    stored result from a process that never enqueued it -- e.g. `status()` in a fresh
-    `docker compose run` after a prior run's failure. One id per *entry*, not per
-    `(entry, product_type)` -- see `_generate_entry`'s own docstring for why task granularity moved
-    to the entry level."""
+    """Deterministic (not random) task id for `(dataset_folder, product_id)`.
+
+    :returns: `f"{dataset_folder}::{product_id}"`.
+    """
+    # Deterministic so `trn_dataset.task_state()` can look up a task's stored result from a process
+    # that never enqueued it -- e.g. `status()` in a fresh `docker compose run` after a prior run's
+    # failure. One id per *entry*, not per `(entry, product_type)` -- see `_generate_entry`'s own
+    # comment for why task granularity moved to the entry level.
     return f"{dataset_folder}::{product_id}"
 
 
 class EntryGenerationError(Exception):
     """Raised by `_generate_entry` when one or more of an entry's requested product types failed to
     generate. Carries every failure (`self.errors`, `{product_type: Exception}`), not just the
-    first -- each product type is attempted independently within the task (see `_generate_entry`'s
-    own docstring), so one's failure must not hide another's own distinct error."""
+    first.
+    """
 
+    # Each product type is attempted independently within the task (see `_generate_entry`'s own
+    # comment), so one's failure must not hide another's own distinct error.
     def __init__(self, errors: dict[str, Exception]):
         self.errors = errors
         summary = "; ".join(f"{pt}: {type(exc).__name__}: {exc}" for pt, exc in errors.items())
@@ -79,7 +84,7 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
     type in `product_types` for `entry` within a single task.
 
     :param entry: A `TrnTestEntry` (not a picklable `(dataset_folder, product_id)` pair -- see
-        `generate_product_parallel`'s own docstring for why the object itself is passed).
+        `generate_product_parallel`'s own comment for why the object itself is passed).
     :param product_types: Product types to generate for this entry.
     :returns: `{product_type: raster_path}` for every product type that succeeded.
     :raises EntryGenerationError: If any product type failed, once every product type has been
@@ -127,53 +132,56 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
 @huey.task()
 def generate_product(entry, product_types: tuple[str, ...]) -> dict:
     """Thin wrapper so `populate()` goes through huey's queue/result machinery (stored exceptions,
-    huey's own introspection) instead of calling `_generate_entry` directly. See that function's own
-    docstring for the shared logic, the entry-level task granularity, and the non-`None`-return
-    requirement."""
+    huey's own introspection) instead of calling `_generate_entry` directly. See that function for
+    the shared logic and design rationale."""
     return _generate_entry(entry, product_types)
 
 
 @huey_parallel.task()
 def generate_product_parallel(entry, product_types: tuple[str, ...]) -> dict:
     """Same as `generate_product`, bound to `huey_parallel` instead -- what `populate_via_workers`
-    enqueues.
-
-    Takes the `TrnTestEntry` object itself, not picklable primitive args re-derived via
-    `TrnTestDataSet.open()` -- re-opening from disk would force every caller, including fast,
-    disk-free unit tests that never call `TrnTestDataSet.create()`, to round-trip a `manifest.csv`
-    just to run a fake `generate()`. Unlike `generate_product`, this one does cross a process
-    boundary to a `-k process` worker subprocess: confirmed the object round-trips fine as a task
-    argument there (huey's own serializer handles it), not just assumed. `TrnTestEntry` pickles
-    cleanly as long as no `functools.cached_property` already computed on it holds something
-    unpicklable (SPICE objects are never cached directly on `entry` today, only derived plain data,
-    so this holds in practice; revisit if that ever changes) -- true at enqueue time regardless,
-    since nothing's been computed on a freshly-enqueued entry yet."""
+    enqueues."""
+    # Takes the `TrnTestEntry` object itself, not picklable primitive args re-derived via
+    # `TrnTestDataSet.open()` -- re-opening from disk would force every caller, including fast,
+    # disk-free unit tests that never call `TrnTestDataSet.create()`, to round-trip a
+    # `manifest.csv` just to run a fake `generate()`. Unlike `generate_product`, this one does
+    # cross a process boundary to a `-k process` worker subprocess: confirmed the object
+    # round-trips fine as a task argument there (huey's own serializer handles it), not just
+    # assumed. `TrnTestEntry` pickles cleanly as long as no `functools.cached_property` already
+    # computed on it holds something unpicklable (SPICE objects are never cached directly on
+    # `entry` today, only derived plain data, so this holds in practice; revisit if that ever
+    # changes) -- true at enqueue time regardless, since nothing's been computed on a
+    # freshly-enqueued entry yet.
     return _generate_entry(entry, product_types)
 
 
 def start_consumer(
     workers: int, huey_module: str = "trntest.tasks.huey_parallel", env: dict[str, str] | None = None
 ) -> subprocess.Popen:
-    """Starts a `huey_consumer` OS process against `huey_module`'s queue (default:
-    `huey_parallel` above) -- `-k process` worker processes, not threads (see this module's own
-    docstring for why). Output is redirected to `<output_dir>/.huey/consumer.log` rather than left
-    to flood the caller's own stdout, matching this project's `subprocess_utils.run_quiet`
-    convention for noisy tooling -- not built on that helper itself, since this is a long-running
-    background process to start/monitor/stop, not a one-shot call to run to completion and capture.
-    Caller must call `stop_consumer` once the batch drains -- otherwise this keeps polling forever,
-    same as any other `huey_consumer` invocation.
+    """Starts a `huey_consumer` OS process against `huey_module`'s queue (default: `huey_parallel`
+    above) -- `-k process` worker processes, not threads (see the `huey_parallel` comment above for
+    why).
 
-    `huey_module` is a plain dotted `<module>.<Huey-instance-name>` path -- `huey_consumer` itself
-    imports it generically, so this isn't limited to instances defined in this file;
-    `crater_depth_batch.grade_database_via_workers` points it at its own `huey_crater_depth`
-    instance instead, reusing this same subprocess-management machinery rather than duplicating it
-    for a second task domain.
-
-    `env`, if given, replaces (not merges into) the subprocess's environment -- `None` (the default)
-    inherits the calling process's own environment unchanged, same as plain `subprocess.Popen`.
-    Exists for `tests/test_trn_dataset.py`'s own subprocess consumer test, which needs a task
-    argument importable from a fresh process without the whole `trntest` package's SPICE/ASP/ISIS
-    dependencies -- not expected to matter for real callers."""
+    :param workers: Number of `-k process` worker processes.
+    :param huey_module: Dotted `<module>.<Huey-instance-name>` path `huey_consumer` imports
+        generically -- not limited to instances defined in this file.
+    :param env: Replaces (not merges into) the subprocess's environment; `None` (the default)
+        inherits the calling process's own environment unchanged, same as plain `subprocess.Popen`.
+    :returns: The running consumer process. Caller must call `stop_consumer` once the batch drains
+        -- otherwise this keeps polling forever, same as any other `huey_consumer` invocation.
+    """
+    # Output is redirected to `<output_dir>/.huey/consumer.log` rather than left to flood the
+    # caller's own stdout, matching this project's `subprocess_utils.run_quiet` convention for
+    # noisy tooling -- not built on that helper itself, since this is a long-running background
+    # process to start/monitor/stop, not a one-shot call to run to completion and capture.
+    #
+    # `huey_module`'s genericity is deliberate: `crater_depth_batch.grade_database_via_workers`
+    # points it at its own `huey_crater_depth` instance instead, reusing this same
+    # subprocess-management machinery rather than duplicating it for a second task domain.
+    #
+    # `env` exists for `tests/test_trn_dataset.py`'s own subprocess consumer test, which needs a
+    # task argument importable from a fresh process without the whole `trntest` package's
+    # SPICE/ASP/ISIS dependencies -- not expected to matter for real callers.
     with open(_CONSUMER_LOG_PATH, "w") as log_file:
         return subprocess.Popen(
             ["huey_consumer", huey_module, "-w", str(workers), "-k", "process"],
