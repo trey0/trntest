@@ -27,12 +27,12 @@
 # 1. **Sharpness-colored crater overlay** on the same hillshade basemap
 #    (`dem_ortho_result.ortho`) `image_generation.ipynb`'s Phase 5B/6B use, with the Robbins
 #    ellipses drawn in the same sparse dashed style -- but colored by sharpness instead of one
-#    fixed color, so real fresh/degraded craters should visibly separate by color.
+#    fixed color, so fresh/degraded craters should visibly separate by color.
 # 2. **Diameter vs. depth 2D histogram**, with the Stoffler reference curve overlaid -- checks
-#    whether the real measured population actually clusters around the reference curve the way the
+#    whether the measured population actually clusters around the reference curve the way the
 #    formula assumes, or whether it's systematically offset.
 #
-# Both need real depth data for this candidate's own footprint, which doesn't exist yet the first
+# Both need depth data for this candidate's own footprint, which doesn't exist yet the first
 # time this notebook runs against a new candidate -- **Load the candidate** below grades just the
 # tiles covering it (`crater_depth_batch.grade_footprint`) and consolidates the result
 # (`crater_depth_batch.consolidate_graded_geopackage`) before either plot. Minimal setup, reusing
@@ -66,7 +66,7 @@ print(f"Ground footprint center (lon, lat): {entry.camera.footprint_lonlat_deg['
 # ## Grade this footprint's tiles, then consolidate
 #
 # `grade_footprint` only grades tiles whose nominal bounds actually touch `dem_ortho_result.ortho`'s
-# own real footprint (typically a handful of tiles at the default 2 deg tile size, not the whole
+# own footprint (typically a handful of tiles at the default 2 deg tile size, not the whole
 # ~14,220-tile global grid) -- writes into the same per-tile CSVs a full `grade_database`/
 # `grade_database_via_workers` run would, so this is fully resumable/compatible with a later
 # whole-database run, not a separate one-off. `consolidate_graded_geopackage` then left-joins
@@ -87,7 +87,7 @@ print(f"Consolidated graded database: {gpkg_path}")
 # Same query/ellipse-construction pattern `craters.crater_overlay_layer` uses (bbox-pushdown query
 # via `craters.raster_bbox_deg`, then `craters._ellipse_polygon` per row against each crater's
 # center reprojected into the raster's own CRS) -- applied to the consolidated "Robbins + depth"
-# GeoPackage instead of the plain Robbins one, and keeping `depth_m`/`sharpness` as real per-row
+# GeoPackage instead of the plain Robbins one, and keeping `depth_m`/`sharpness` as per-row
 # attributes rather than reducing everything to one flat overlay color. Rows with no depth grade
 # (not yet graded -- shouldn't happen for this footprint's own tiles right after the cell above --
 # or graded but excluded for not fitting its tile's padded raster) are dropped: nothing to plot or
@@ -137,8 +137,8 @@ print(f"Graded craters in view: {len(graded_view)}")
 # `.plot(column="sharpness", ...)` (a `GeoDataFrame`-only feature) has something to color by; the
 # equivalent single-flat-color case (`plotting.OverlayLayer.plot`) never needed this since it only
 # ever draws one color for a whole layer. `vmin`/`vmax` are fixed, not data-derived, so color means
-# the same thing across different candidates/reruns -- 2.0 gives real headroom above the 1.0
-# "exactly fresh" reference for genuine crater-to-crater scatter (Stoffler's curve is a central
+# the same thing across different candidates/reruns -- 2.0 gives headroom above the 1.0
+# "exactly fresh" reference for crater-to-crater scatter (Stoffler's curve is a central
 # tendency fit, not an upper bound).
 #
 # `MIN_MAJOR_KM` filters this panel only (`Phase 5B/6B`'s own `min_major_km` convention/name,
@@ -146,9 +146,9 @@ print(f"Graded craters in view: {len(graded_view)}")
 # footprint's scale (thousands of mostly-small craters) made the sparse-dashed ellipses collapse
 # into an unreadable cloud rather than showing individual crater shapes; the histogram below stays
 # unfiltered, since its whole point is the full distribution, not individually legible shapes.
-# `graded_craters_in_view`'s own query bbox is deliberately padded 5% beyond the raster's real
-# footprint (a crater whose *center* sits just outside the exact frame can still have real overlap
-# with it) -- so this panel's axis limits are clipped to the raster's own exact bounds
+# `graded_craters_in_view`'s own query bbox is deliberately padded 5% beyond the raster's
+# footprint (a crater whose *center* sits just outside the exact frame can still overlap
+# it) -- so this panel's axis limits are clipped to the raster's own exact bounds
 # (`ax.set_xlim`/`set_ylim`) to suppress those queried-but-out-of-frame craters from the display,
 # rather than re-filtering the query itself.
 
@@ -198,12 +198,12 @@ fig.tight_layout()
 # crater count in that bin. **Both axes and the bin edges are log-spaced**, not linear -- crater
 # size-frequency famously follows a power law (many small craters, few large ones), and the Stoffler
 # reference curve itself is a power law in both its regimes, so a linear-binned view was tried first
-# and found genuinely unreadable: one bin near the smallest diameters/depths held the vast majority
-# of craters, visually swamping everything else, while the real interesting structure (whether the
+# and found unreadable: one bin near the smallest diameters/depths held the vast majority
+# of craters, visually swamping everything else, while the interesting structure (whether the
 # bulk of craters track the reference curve or deviate from it) was compressed into a sliver of the
 # plot. Log-log is also the standard way this kind of depth-diameter data is presented in the
 # planetary science literature, not just a fix for this one plot's own axis range. Log-scaled color
-# (`LogNorm`) for the same underlying reason -- count-per-bin is itself skewed. Real depths must be
+# (`LogNorm`) for the same underlying reason -- count-per-bin is itself skewed. Depths must be
 # positive to take a log; any non-positive `depth_m` (possible in principle for a heavily degraded/
 # noisy measurement) is dropped and counted, not silently discarded.
 #

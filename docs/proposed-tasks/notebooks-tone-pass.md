@@ -1,6 +1,6 @@
 # Notebooks: tone/structure pass
 
-**Status: 8 of 11 notebooks done.**
+**Status: 9 of 11 notebooks done.**
 
 ## Goal
 
@@ -105,7 +105,11 @@ scope decision -- see below).
    diff 0.00382 (matches `docs/plan.md`'s own recorded Phase 78 value exactly), incidence diff
    0.0005 deg mean/max (matches its Phase 77 value). Verified with `trntest-lint` on both notebook
    pairs.
-9. `crater_sharpness_review.py` (255 lines)
+9. ~~`crater_sharpness_review.py`~~ -- done, light touch. No `docs/history.md` citations to begin
+   with; cut ~10 bare "real"/"genuine" intensifiers. Cross-notebook dependency check: already
+   clean (`entry.dem_ortho_result` self-heals; `grade_footprint`'s own markdown already documents
+   that it grades on demand for a new candidate). Verified with `trntest-lint`; regenerated
+   cleanly, no code logic touched.
 10. `reproject_spike.py` (507 lines) -- **likely obsolete, decide before rewriting**: its premise
     is "should we build `TrnTestReprojectImage`?", but `reproject` is now fully implemented and
     wired into `image_generation.py`'s Phase 8. May be a better fit for `old_notebooks/` (archived,
