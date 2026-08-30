@@ -1,9 +1,8 @@
 """Intermediate-product access-discipline primitives -- see `docs/intermediate-product-discipline.md`
-for the principles this implements and `docs/history.md`'s Phase 79/80 entries for this project's own
-rollout of it.
+for the principles this implements.
 
-Two independent pieces, both pure infrastructure with no behavior change of their own until real
-writers/readers/deleters are decorated (`docs/history.md`'s Phase 79 entry):
+Two independent pieces, both pure infrastructure with no behavior change of their own until
+writers/readers/deleters are decorated:
 
 - `writes_product`/`reads_product`/`deletes_product`: a lightweight registry making "which code path
   writes/reads/deletes this label" a legible, checkable fact (principle 7) rather than something only
@@ -12,7 +11,7 @@ writers/readers/deleters are decorated (`docs/history.md`'s Phase 79 entry):
 - `atomic_publish`/`atomic_publish_path`/`atomic_publish_prefix`: generalizes `cache.cached_get`'s
   existing temp-file-then-atomic-rename pattern (see that function's own docstring) from fetched
   files to generated ones, so a reader never observes a partially-written artifact (principle 4).
-  Three shapes for three different real writer conventions: a caller-chosen exact path
+  Three shapes for three different writer conventions: a caller-chosen exact path
   (`atomic_publish`), a tool's own `to=`/`-o` exact-path parameter (`atomic_publish_path`), and a
   tool's own output-*prefix* parameter that gets its own fixed suffix appended
   (`atomic_publish_prefix`).
@@ -28,7 +27,7 @@ from pathlib import Path
 
 class ProductRegistryError(Exception):
     """Raised by `writes_product` when a label already has a registered writer -- principle 2 ("exactly
-    one code path writes any given label") caught at decoration time (i.e. import time, for real
+    one code path writes any given label") caught at decoration time (i.e. import time, for
     module-level decorator use) rather than left to be discovered later by a runtime collision."""
 
 
@@ -100,20 +99,20 @@ def deleters_of(label: str) -> list[Callable]:
 
 @contextlib.contextmanager
 def atomic_publish(dest: Path) -> Iterator[Path]:
-    """Yields a uniquely-named temp path in `dest`'s own parent directory for the caller to write to
+    """Yields a uniquely-named temp path in `dest`'s parent directory for the caller to write to
     directly (e.g. `rasterio.open(tmp, "w", ...)`). On clean exit, atomically renames the temp path to
-    `dest` (principle 4: nothing is ever visible at `dest` until it's complete). On any exception, the
-    temp path (file or directory) is removed and the exception re-raised -- `dest` is never partially
+    `dest` (principle 4: nothing is visible at `dest` until it's complete). On any exception, the temp
+    path (file or directory) is removed and the exception re-raised -- `dest` is never partially
     written or left in a torn state.
-
-    Same unique-temp-name mechanism as `cache.cached_get` (`tempfile.mkstemp`), generalized from
-    fetched files to generated ones -- see that function's own docstring for why a fixed shared temp
-    path per destination is unsafe under concurrent/rapid sequential use. Unlike `cached_get`'s own
-    `<dest.name>.<random>.part`, the temp name here preserves `dest`'s real suffix at the end
-    (`<dest.stem>.tmp.<random><dest.suffix>`) rather than appending a generic `.tmp` -- some callers
-    (format-sniffing tools, or just correctness in general) care about the real extension, not just
-    this helper's own rasterio/subprocess call sites that happen not to (see `atomic_publish_path`'s
-    own docstring for a real case, ISIS `to=` outputs, where this mattered)."""
+    """
+    # Same unique-temp-name mechanism as cache.cached_get (tempfile.mkstemp), generalized from
+    # fetched files to generated ones -- see that function's own docstring for why a fixed shared
+    # temp path per destination is unsafe under concurrent/rapid sequential use. Unlike
+    # cached_get's own <dest.name>.<random>.part, the temp name here preserves dest's suffix
+    # (<dest.stem>.tmp.<random><dest.suffix>) instead of a generic .tmp: some callers
+    # (format-sniffing tools, or correctness in general) care about the extension, not just this
+    # helper's own rasterio/subprocess call sites that happen not to (see atomic_publish_path's own
+    # comment for the ISIS to= case where this mattered).
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.", suffix=dest.suffix)
     os.close(fd)
@@ -134,21 +133,22 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
     """Same contract as `atomic_publish`, but yields a path that does **not** exist on disk (only
     reserved -- claimed via `tempfile.mkstemp` then immediately unlinked). Required for ISIS/ASP tools
     invoked via `subprocess_utils.run_quiet` that take their own `to=`/`-o` output-path argument and
-    refuse to write to an already-existing path (confirmed repeatedly for ISIS apps specifically --
-    see e.g. `isis_wac.crop_for_camera`/`run_lrowac2isis`'s own docstrings: "ISIS's `crop` app ...
-    refuses to overwrite an existing `to=` output").
+    refuse to write to an already-existing path.
 
     Caller builds their own subprocess argv referencing the yielded path and runs it (typically via
-    `run_quiet`); on clean exit this renames the tool's real output at that path to `dest`, same as
-    `atomic_publish`. On any exception -- including the tool never having created anything at the
-    yielded path at all -- cleanup is a no-op if there's nothing there.
-
-    The temp name preserves `dest`'s real suffix (`<dest.stem>.tmp.<random><dest.suffix>`), not a
-    generic `.tmp` -- confirmed live to matter for real ISIS `to=` cube outputs (`framestitch`/`crop`/
-    `cam2map`): a `.tmp`-suffixed path silently never got written to at all (ISIS's own cube-writer
-    apparently declines to create real cube content at a path without a `.cub`-like extension, no
-    error surfaced -- the failure only showed up later, as this context manager's own rename finding
-    nothing there). See `atomic_publish`'s own docstring for the same fix applied there too."""
+    `run_quiet`); on clean exit this renames the tool's output at that path to `dest`, same as
+    `atomic_publish`.
+    """
+    # Confirmed repeatedly for ISIS apps specifically -- see e.g. isis_wac.crop_for_camera/
+    # run_lrowac2isis's own docstrings: "ISIS's crop app ... refuses to overwrite an existing to=
+    # output". Cleanup is a no-op if the tool never created anything at the yielded path at all.
+    #
+    # The temp name preserves dest's suffix (<dest.stem>.tmp.<random><dest.suffix>), not a generic
+    # .tmp: confirmed to matter for ISIS to= cube outputs (framestitch/crop/cam2map) -- a
+    # .tmp-suffixed path silently never got written to (ISIS's own cube-writer declines to create
+    # cube content at a path without a .cub-like extension, no error surfaced -- the failure only
+    # showed up later, as this context manager's own rename finding nothing there). See
+    # atomic_publish's own comment for the same fix applied there too.
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.", suffix=dest.suffix)
     os.close(fd)
@@ -172,14 +172,17 @@ def atomic_publish_prefix(dest: Path, tool_suffix: str) -> Iterator[Path]:
     `sat_sim`'s `<prefix>-<camera_stem>.tif` (`render.run_sat_sim`) -- neither of which fits
     `atomic_publish_path`'s exact-final-path contract directly.
 
-    Yields a unique temp *prefix* (reserved the same way `atomic_publish_path` reserves its path: a
-    `tempfile.mkstemp` claim, then immediately unlinked) such that `<yielded><tool_suffix>` is a
-    guaranteed-fresh, non-existent path for the tool to write its real output to. Caller runs the tool
-    against the yielded prefix; on clean exit, `<yielded><tool_suffix>` is atomically renamed to
-    `dest`. `tool_suffix` must be the exact string the tool appends, including any separator (e.g.
-    `"-tile-0.tif"`, or `f"-{camera_stem}.tif"`) -- get this wrong and the rename silently finds
-    nothing there, the same failure mode `atomic_publish_path`'s own docstring describes for a plain
-    wrong-extension guess."""
+    Yields a unique temp *prefix* such that `<yielded><tool_suffix>` is a guaranteed-fresh,
+    non-existent path for the tool to write its output to. Caller runs the tool against the yielded
+    prefix; on clean exit, `<yielded><tool_suffix>` is atomically renamed to `dest`.
+
+    :param tool_suffix: the exact string the tool appends, including any separator (e.g.
+        `"-tile-0.tif"`, or `f"-{camera_stem}.tif"`) -- get this wrong and the rename silently finds
+        nothing there.
+    """
+    # Reserved the same way atomic_publish_path reserves its path: a tempfile.mkstemp claim, then
+    # immediately unlinked. A wrong tool_suffix is the same failure mode atomic_publish_path's own
+    # comment describes for a wrong-extension guess.
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.stem + ".tmp.")
     os.close(fd)
