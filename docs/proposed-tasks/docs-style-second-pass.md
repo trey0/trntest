@@ -1,10 +1,13 @@
 # Docs-style second pass: files and rules the history.md-citation sweep missed
 
 **Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
-merged to main). Part 1: `wac_camera_model.py`, `crater_depth_batch.py`, `control_network.py`,
-`craters.py`, `crater_depth.py`, `illumination.py`, `wac.py`, `catalog.py`, and `orientation.py` done
-(also fixed a downstream stale pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/
-`notebooks/pose_alignment_spike.py`); 4 of 13 files remain, `session.py` next.
+merged to main). **Part 1 done** -- all 13 files reworked (`wac_camera_model.py`,
+`crater_depth_batch.py`, `control_network.py`, `craters.py`, `crater_depth.py`, `illumination.py`,
+`wac.py`, `catalog.py`, `orientation.py`, `session.py`, `__init__.py` -- confirmed already
+compliant, no edit needed --, `subprocess_utils.py`, `report.py`); also fixed a downstream stale
+pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/`notebooks/pose_alignment_spike.py`.
+Parts 3 and 4 remain, in either order (see their own sections below) -- next up is either a `docs/*.md`
+file (part 4) or a spot-check of the other 17 "done" files (part 3).
 
 Workflow note: the user reviews in batches of up to 3 files via GitHub links before merging to
 main -- push each file's commit to the branch as it's done, but hold the `git push origin
@@ -167,13 +170,10 @@ point to, so the check doesn't have to be redone.
 
 ## If resuming
 
-1. Start with part 2 (stale `docs/data-sources.md` refs in 4 already-reworked `.py` files) -- it's
-   small, mechanical, and fast, and clears the most confusing kind of debt (a "done" file with a
-   broken pointer) first.
-2. Then part 1, one file at a time, `wac_camera_model.py` first (highest filler count, no stale-ref
-   overlap with part 2 to worry about ordering around). Fix each file's own stale
-   `docs/data-sources.md` reference (if it has one, per the part 1 table) as part of its own pass,
-   not separately.
+1. ~~Start with part 2~~ Done.
+2. ~~Then part 1~~ Done -- all 13 files reworked, one file (up to 3, batched for review) per
+   `docs/docs-style.md` recipe, each stale `docs/data-sources.md` reference repointed as part of its
+   own file's pass, not separately.
 3. Part 3 (re-verifying the other 17) and part 4 (`docs/*.md`) can happen in either order or in
    parallel across worktrees -- they don't depend on each other or on parts 1/2.
 4. Re-verify every `src/trntest/*.py` change with `trntest-lint`; re-run
