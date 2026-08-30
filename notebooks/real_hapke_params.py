@@ -18,23 +18,20 @@
 #
 # `lunaserv.hapke_shade_ortho`'s `_HAPKE_PLACEHOLDER_PARAMS` are explicitly "illustrative values...
 # not calibrated against real lunar photometry" (a feasibility prototype for evaluating ISIS `photomet`
-# at all, see `docs/history.md`'s Phase 45). Researching real lunar Hapke photometry (Sato et al. 2014,
-# *"Resolved Hapke parameter maps of the Moon,"* JGR Planets) found that ISIS itself already ships that
-# exact calibration, converted into its own native `Wh`/`Hg1`/`Hg2`/`Bc0`/`hc`/`B0`/`Hh`/`Theta`/`phi`
-# parameterization, as part of the `lro` ISIS data package this project's `isis_wac.ensure_isisdata`
-# already fetches (not a new download) --
-# `$ISISDATA/lro/calibration/WAC_global_7bands_1x1_wbhs70NS_const_each_pole.cub`, a real, spatially-
-# resolved 1deg/px (~30km) cube, 7 wavelength bands x 9 parameters. `lunaserv.fetch_real_hapke_params`
-# samples it at one real ground point (a candidate's own footprint center, at 643nm to match
-# `config.lunaserv_ortho_layer`'s own real wavelength).
+# at all). Researching lunar Hapke photometry (Sato et al. 2014, *"Resolved Hapke parameter maps of
+# the Moon,"* JGR Planets) found that ISIS itself already ships that exact calibration, converted into
+# its own native `Wh`/`Hg1`/`Hg2`/`Bc0`/`hc`/`B0`/`Hh`/`Theta`/`phi` parameterization, as part of the
+# `lro` ISIS data package this project's `isis_wac.ensure_isisdata` already fetches (not a new
+# download) -- `$ISISDATA/lro/calibration/WAC_global_7bands_1x1_wbhs70NS_const_each_pole.cub`, a
+# spatially-resolved 1deg/px (~30km) cube, 7 wavelength bands x 9 parameters.
+# `lunaserv.fetch_real_hapke_params` samples it at one ground point (a candidate's own footprint
+# center, at 643nm to match `config.lunaserv_ortho_layer`'s own wavelength).
 #
 # **Now the default** (`lunaserv.DEFAULT_REAL_HAPKE_PARAMS = True`), wired through
 # `hapke_shade_ortho`/`despeckle_and_shade_ortho`/`fetch_dem_and_ortho` the same way
 # `along_track_correction` was -- `real_hapke_params=False` keeps the original placeholder available as
 # an explicit fallback. This notebook is now a reference/regression comparison between the two, not an
-# "should we do this" evaluation -- see `docs/history.md`'s dated entry for the full research trail
-# (including the ISIS `Hg1`/`Hg2` <-> McEwen `(b, c)` parameterization mapping that had to be verified,
-# not guessed) and the comparison numbers that motivated making this the default.
+# "should we do this" evaluation.
 
 # %%
 import matplotlib.pyplot as plt
@@ -64,7 +61,7 @@ print(f"Ground footprint center (lon, lat): {center}")
 # `fetch_real_hapke_params` returns all 9 real parameters; `hapke_shade_ortho` only ever uses the 6
 # the simpler shadow-hiding-only `HAPKEHEN` model accepts (`bc0`/`hc`/`phi` describe the fuller Hapke
 # model's separate coherent-backscatter term -- confirmed, via this same cube globally, always
-# `0`/`1`/`0` for this real WAC-derived product, i.e. genuinely unused by it).
+# `0`/`1`/`0` for this WAC-derived product, i.e. genuinely unused by it).
 
 # %%
 real_params = lunaserv.fetch_real_hapke_params(*center, config)
@@ -93,15 +90,16 @@ print("Placeholder-param ortho:     ", dem_ortho_placeholder.ortho)
 # %% [markdown]
 # ## Blink comparison
 #
-# Both orthos share the exact same real georeferencing/pixel grid (same camera footprint, same DEM,
-# only the Hapke coefficients feeding `photomet` differ) -- a direct visual read of what the real
+# Both orthos share the exact same georeferencing/pixel grid (same camera footprint, same DEM, only
+# the Hapke coefficients feeding `photomet` differ) -- a direct visual read of what the real
 # calibration changes relative to the placeholder.
 
 # %%
 plotting.plot_overlay_toggle(
     dem_ortho_placeholder.ortho,
     dem_ortho_real.ortho,
-    title="Placeholder Hapke params vs. real ISIS-calibration-sourced params (default)",
+    title="Basemap + Overlay",
+    overlay_label="real ISIS-calibration-sourced params",
 )
 
 # %% [markdown]
@@ -163,3 +161,10 @@ print(
     f"mean|diff| vs. real crop -- real (default): {np.nanmean(np.abs(diff_real)):.2f}, "
     f"placeholder: {np.nanmean(np.abs(diff_placeholder)):.2f}"
 )
+
+# %% [markdown]
+# On this candidate, the placeholder params come out slightly *ahead* of the real-calibration
+# default -- this dataset doesn't support the choice of `real_hapke_params=True` as the default.
+# Kept as the default anyway: it's the actual measured lunar calibration rather than an illustrative
+# placeholder, a single-candidate diff isn't a broad validation, and the gap here is modest. Not
+# investigated further.
