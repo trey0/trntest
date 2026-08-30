@@ -1,13 +1,16 @@
 # Docs-style second pass: files and rules the history.md-citation sweep missed
 
-**Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
-merged to main). **Part 1 done** -- all 13 files reworked (`wac_camera_model.py`,
+**Status: in progress.** Parts 1-3 done. Part 2: all 4 files' stale `docs/data-sources.md` refs
+repointed. Part 1: all 13 never-audited files reworked (`wac_camera_model.py`,
 `crater_depth_batch.py`, `control_network.py`, `craters.py`, `crater_depth.py`, `illumination.py`,
 `wac.py`, `catalog.py`, `orientation.py`, `session.py`, `__init__.py` -- confirmed already
 compliant, no edit needed --, `subprocess_utils.py`, `report.py`); also fixed a downstream stale
 pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/`notebooks/pose_alignment_spike.py`.
-Parts 3 and 4 remain, in either order (see their own sections below) -- next up is either a `docs/*.md`
-file (part 4) or a spot-check of the other 17 "done" files (part 3).
+Part 3: all 17 previously-"done" files re-verified against the stricter docstring bar, 5 needed
+fixes (`lunaserv.py`, `pose_alignment.py`, `camera.py`, `maneuver_detection.py`, `tie_points.py`).
+
+**Only part 4 remains** (`docs/*.md` files) -- see its own section below for the file list and
+what's already known about each.
 
 Workflow note: the user reviews in batches of up to 3 files via GitHub links before merging to
 main -- push each file's commit to the branch as it's done, but hold the `git push origin
@@ -116,36 +119,22 @@ step.
 
 ## Scope, part 3: re-verify the other 17 "done" `src/trntest/*.py` files against the stricter bar
 
-**In progress.** Read every docstring (via `ast.get_docstring`, not a `grep` heuristic -- catches a
-"why" clause phrased with a comma instead of an em dash too) in `lunaserv.py` and `isis_wac.py`
-(the two the "if resuming" note below called out first), then scripted a broader residue-pattern
-scan (`since |because |confirmed|deliberately|substantially|worth |the reason|in order to|so
-that|...`) across the other 15. Findings and fixes so far:
+**Done.** Read every docstring (via `ast.get_docstring`, not a `grep` heuristic -- catches a "why"
+clause phrased with a comma instead of an em dash too) in `lunaserv.py` and `isis_wac.py` (the two
+the plan's own "if resuming" note called out first), then scripted a broader residue-pattern scan
+(`since |because |confirmed|deliberately|substantially|worth |the reason|in order to|so that|...`)
+across all 16 of the remaining files (`trn_dataset.py`, already round-2'd, was excluded).
 
-- `isis_wac.py`: clean, no changes needed.
-- `lunaserv.py`: one fix (`hapke_shade_ortho`'s `along_track_correction` param had an evaluative
-  "substantially more accurate than X" justification inline).
-- `pose_alignment.py`: the module docstring's entire backstory/validation narrative was in the
-  docstring proper, plus 4 functions had "why" clauses mixed into otherwise-interface docstrings --
-  all fixed.
-- `camera.py` (`ground_track_step_km`) and `maneuver_detection.py` (`candidate_utc`): one "why"
-  clause each -- fixed.
-- `dataset.py`, `_lint.py`, `plotting.py`, `spice_kernels.py` (2 files' worth of hits): checked and
-  confirmed legitimate interface-relevant statements, not residue.
-- `tie_points.py`'s `resolve_crop_pixels`: one small hit not yet fixed -- a "-- validated to exact
-  (0.000px) agreement with ISIS `campt` output" empirical claim embedded in the docstring, should
-  move to the function's existing body comment. Quick, do this first when resuming.
+Fixed: `lunaserv.py` (`hapke_shade_ortho`'s `along_track_correction` param had an evaluative
+"substantially more accurate than X" justification inline), `pose_alignment.py` (module docstring's
+entire backstory/validation narrative was in the docstring proper, plus 4 functions had "why"
+clauses mixed into otherwise-interface docstrings), `camera.py` (`ground_track_step_km`),
+`maneuver_detection.py` (`candidate_utc`), and `tie_points.py` (`resolve_crop_pixels`'s "validated
+to exact (0.000px) agreement" empirical claim) -- one or two clauses each.
 
-**Not yet scanned at all**: `cache.py`, `config.py`, `dataset_selection.py`, `product_registry.py`,
-`render.py`, `sfs_validation.py`, `tasks.py` -- these didn't come up in the residue-pattern scan's
-own file list (the scan covered 15 of the 17; these 7 weren't included in that run for no principled
-reason, just an oversight in listing files -- re-run the same scripted scan against them, or read
-their docstrings directly).
-
-If resuming: fix `tie_points.py` first (quick), then run the residue-pattern scan (or a manual read)
-against the 7 not-yet-scanned files above. The one-doc-at-a-time question that's caught every real
-hit so far: "does this sentence explain what the function does, or does it also justify why it's
-built this way?"
+Checked and confirmed clean or only benign hits (factual cross-references, not embedded rationale):
+`isis_wac.py`, `dataset.py`, `_lint.py`, `plotting.py`, `spice_kernels.py`, `cache.py`, `config.py`,
+`dataset_selection.py`, `product_registry.py`, `render.py`, `sfs_validation.py`, `tasks.py`.
 
 ## Scope, part 4: `docs/*.md`
 
@@ -191,10 +180,10 @@ point to, so the check doesn't have to be redone.
 2. ~~Then part 1~~ Done -- all 13 files reworked, one file (up to 3, batched for review) per
    `docs/docs-style.md` recipe, each stale `docs/data-sources.md` reference repointed as part of its
    own file's pass, not separately.
-3. Part 3 (re-verifying the other 17) and part 4 (`docs/*.md`) can happen in either order or in
-   parallel across worktrees -- they don't depend on each other or on parts 1/2.
-4. Re-verify every `src/trntest/*.py` change with `trntest-lint`; re-run
+3. ~~Part 3~~ Done -- all 17 files re-read via `ast.get_docstring` + a residue-pattern scan, 5 fixed.
+4. Only part 4 (`docs/*.md`) remains -- see its own section for the file list and what's known.
+5. Re-verify every `src/trntest/*.py` change with `trntest-lint`; re-run
    `scripts/run_notebook.sh` only if a docstring change happens to touch code logic too (none of
    this plan's work should, if scoped correctly -- confirm via `git diff` before skipping).
-5. Delete this plan once all 4 parts are done, or fold whatever's left into a narrower follow-up,
-   same convention `docs-style-rollout.md` used.
+6. Delete this plan once part 4 is done, or fold whatever's left into a narrower follow-up, same
+   convention `docs-style-rollout.md` used.
