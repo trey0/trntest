@@ -58,6 +58,10 @@ class _FakeImage(trn_dataset.TrnTestImage):
         return "Fake"
 
     @property
+    def generator_name(self):
+        return "fake"
+
+    @property
     def tie_point_px_key(self):
         return "synthetic_px"
 
