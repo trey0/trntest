@@ -1,9 +1,19 @@
 # Docs-style second pass: files and rules the history.md-citation sweep missed
 
 **Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
-merged to main). Part 1: `wac_camera_model.py`, `crater_depth_batch.py`, and `control_network.py`
-done (also fixed a downstream stale pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/
-`notebooks/pose_alignment_spike.py`); 10 of 13 files remain, `craters.py` next.
+merged to main). Part 1: `wac_camera_model.py`, `crater_depth_batch.py`, `control_network.py`, and
+`craters.py` done (also fixed a downstream stale pointer `wac_camera_model.py`'s pass surfaced in
+`isis_wac.py`/`notebooks/pose_alignment_spike.py`); 9 of 13 files remain, `crater_depth.py` next.
+`crater_depth.py`'s own module docstring cites "`craters.crater_overlay_layer`'s own docstring on
+`ARC_IMG`" -- that content moved into a body comment during `craters.py`'s pass, so fix that
+cross-reference's wording as part of `crater_depth.py`'s own pass rather than separately.
+
+**Note for whoever hits the next `git push origin <branch>:main`**: the auto-mode classifier started
+blocking direct pushes to `main` partway through this plan (after `control_network.py`, before
+`craters.py`) even when the user explicitly asked for "commit, push, merge." `gh` CLI isn't
+installed in this worktree either, so there's no PR-based fallback available. Batches after that
+point are pushed to the branch only, not merged -- ask the user to merge, or to adjust permissions,
+rather than retrying the same push.
 
 ## Why this plan exists
 
