@@ -2,11 +2,11 @@
 `dataset.py`'s catalog-driven *single-image* evaluation (`images_for_window()`/`generate_dataset()`,
 the live demo pipeline's own EDR picker), which `resolve_orbit_sequence` below hands an
 already-selected orbit-sequence window to resolve, not the other way around. This module answers a
-different question: which
-*multi-day spans of consecutive orbits* make good maneuver-free TRN orbit-determination test data,
-picked to be jointly diverse in solar hour angle -- not which one EDR to render.
+different question: which *multi-day spans of consecutive orbits* make good maneuver-free TRN
+orbit-determination test data, picked to be jointly diverse in solar hour angle -- not which one EDR
+to render.
 
-Pipeline (each function one notebook cell): `find_orbits` -> `add_maneuver_flags` ->
+Pipeline (each function is one notebook cell): `find_orbits` -> `add_maneuver_flags` ->
 `add_acceptable_edr_counts` -> `enumerate_candidate_datasets` -> `select_diverse_datasets` ->
 `resolve_orbit_sequence`. See `docs/plan.md`'s architecture table and the notebook's own markdown
 cells for the per-step rationale (the "illuminated node" concept, the circular-mean "center"
@@ -24,12 +24,15 @@ from trntest.config import TrntestConfig
 
 
 def find_orbits(period_start: datetime, period_end: datetime, config: TrntestConfig) -> pd.DataFrame:
-    """Every orbit completing strictly inside `[period_start, period_end)`, one row each, with its
-    **illuminated node** (whichever of the ascending/descending node pair has the higher sun
-    elevation) statistics: `illum_lon_deg`, `illum_is_ascending`, `illum_sun_elev_deg`,
-    `hour_angle_deg` (see `illumination.hour_angle_deg`), plus `asc_et`/`next_asc_et`/`illum_et`/
-    `illum_utc` for downstream epoch bookkeeping. Furnishes a full year of SPK/CK coverage on a cold
-    cache -- the slow step (several minutes), cached afterward per `docs/caching.md`."""
+    """Every orbit completing strictly inside `[period_start, period_end)`, one row each. Furnishes a
+    full year of SPK/CK coverage on a cold cache -- the slow step (several minutes), cached
+    afterward per `docs/caching.md`.
+
+    :returns: each orbit's **illuminated node** (whichever of the ascending/descending node pair has
+        the higher sun elevation) statistics -- `illum_lon_deg`, `illum_is_ascending`,
+        `illum_sun_elev_deg`, `hour_angle_deg` (see `illumination.hour_angle_deg`), plus
+        `asc_et`/`next_asc_et`/`illum_et`/`illum_utc` for downstream epoch bookkeeping.
+    """
     spice_kernels.fetch_and_furnish(period_start, config)  # LSK/PCK/frame kernels
     et_start = spice.utc2et(period_start.strftime("%Y-%m-%dT%H:%M:%S"))
     et_end = spice.utc2et(period_end.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -80,10 +83,11 @@ def add_maneuver_flags(
     orbits_df: pd.DataFrame, period_start: datetime, period_end: datetime, config: TrntestConfig
 ) -> pd.DataFrame:
     """Returns a copy of `orbits_df` with a `has_maneuver` column, via one `find_maneuver_candidates`
-    call over the whole period -- not per-orbit, since the detector's own before/after noise-floor
-    calibration needs enough background samples to be reliable (confirmed: the same detector run on
-    a short, single-week window produces many spurious candidates that don't reproduce over the full
-    period; see `docs/history.md`)."""
+    call over the whole period (not per-orbit).
+    """
+    # Not per-orbit: the detector's own before/after noise-floor calibration needs enough background
+    # samples to be reliable -- the same detector run on a short, single-week window produces
+    # spurious candidates that don't reproduce over the full period.
     maneuver_candidates = maneuver_detection.find_maneuver_candidates(period_start, period_end, config)
     maneuver_ets = np.array([c.et for c in maneuver_candidates])
     asc_ets = orbits_df["asc_et"].to_numpy()
@@ -108,11 +112,12 @@ def add_acceptable_edr_counts(
     min_sun_elevation_deg: float = 15.0,
     max_emission_angle_deg: float = 15.0,
 ) -> pd.DataFrame:
-    """Returns a copy of `orbits_df` with an `acceptable_edr_count` column: real WAC EDRs in each
-    orbit meeting `min_sun_elevation_deg`/`max_emission_angle_deg` ("typical nadir mapping-mode").
-    One catalog query for the whole period (paginated internally by `catalog.list_products`), then a
-    vectorized per-EDR filter and a `searchsorted` bucketing into orbits by epoch -- looping
-    per-orbit queries against the live ODE API would be both slow and needlessly chatty."""
+    """Returns a copy of `orbits_df` with an `acceptable_edr_count` column: WAC EDRs in each orbit
+    meeting `min_sun_elevation_deg`/`max_emission_angle_deg` ("typical nadir mapping-mode").
+    """
+    # One catalog query for the whole period (paginated internally by catalog.list_products), then a
+    # vectorized per-EDR filter and a searchsorted bucketing into orbits by epoch -- looping
+    # per-orbit queries against the live ODE API would be slow and needlessly chatty.
     edrs_df = catalog.list_products(config, catalog.EDR_PRODUCT_TYPE, period_start, period_end)
     edrs_df["sun_elevation_deg"] = 90.0 - edrs_df["incidence_angle_deg"]
     acceptable = edrs_df[
@@ -139,13 +144,17 @@ def enumerate_candidate_datasets(
 ) -> pd.DataFrame:
     """Every `dataset_length_orbits`-orbit sliding window that's **acceptable**: every orbit in it
     has no maneuver and at least `min_edr_count_per_orbit` acceptable EDRs, and it contains no
-    illuminated-node flip (ascending/descending) -- the no-flip rule is what makes "center"
-    statistics (the circular mean of the first and last orbit's value) actually behave like an
-    average of nearby values, rather than splitting across two ~180-degree-apart node longitudes.
-    One row per acceptable window: `start_idx`/`end_idx` (into `orbits_df`), `start_utc`/`end_utc`,
-    `center_lon_deg`/`center_hour_angle_deg` (`illumination.circular_mean_deg` of the first and last
-    orbit), `min_edr_count` (the window's weakest orbit -- used both to seed `select_diverse_datasets`
-    and as a robustness readout)."""
+    illuminated-node flip (ascending/descending).
+
+    :returns: one row per acceptable window -- `start_idx`/`end_idx` (into `orbits_df`),
+        `start_utc`/`end_utc`, `center_lon_deg`/`center_hour_angle_deg`
+        (`illumination.circular_mean_deg` of the first and last orbit), `min_edr_count` (the
+        window's weakest orbit).
+    """
+    # The no-flip rule is what makes "center" statistics (the circular mean of the first and last
+    # orbit's value) behave like an average of nearby values, rather than splitting across two
+    # ~180-degree-apart node longitudes. min_edr_count also seeds select_diverse_datasets and serves
+    # as a robustness readout.
     orbit_acceptable = (
         ~orbits_df["has_maneuver"] & (orbits_df["acceptable_edr_count"] >= min_edr_count_per_orbit)
     ).to_numpy()
@@ -188,12 +197,13 @@ def select_diverse_datasets(
 ) -> pd.DataFrame:
     """Greedy farthest-point selection: repeatedly pick the acceptable, still-available candidate
     whose minimum center-hour-angle distance to every already-chosen dataset is largest, excluding
-    (from future consideration) anything that overlaps orbits with or is too close in center
-    longitude to the pick just made. The first pick, with nothing chosen yet to be far from, is
+    (from future consideration) anything that overlaps orbits with, or is too close in center
+    longitude to, the pick just made. The first pick, with nothing chosen yet to be far from, is
     seeded as the single most robust candidate (highest `min_edr_count`).
 
-    Raises `RuntimeError` if the exclusion constraints exhaust the candidate pool before
-    `n_datasets` picks are made, rather than silently returning fewer than asked for."""
+    :raises RuntimeError: if the exclusion constraints exhaust the candidate pool before
+        `n_datasets` picks are made, rather than silently returning fewer than asked for.
+    """
     start_idx = candidates["start_idx"].to_numpy()
     end_idx = candidates["end_idx"].to_numpy()
     center_lon = candidates["center_lon_deg"].to_numpy()
@@ -248,30 +258,35 @@ def resolve_orbit_sequence(
     throttle_minutes: float | None = None,
 ) -> pd.DataFrame:
     """Turns one selected orbit sequence (one row of `select_diverse_datasets`' output -- needs
-    `start_utc`/`end_utc`) into a real, `TrnTestDataSet`-ready images table (`dataset.
-    DATASET_COLUMNS`). Deliberately takes exactly one row, not the whole table -- resolve one orbit
-    sequence into a dataset at a time, the same "iterate fast on one image/one entry" discipline
-    this project already follows elsewhere (`image_generation.py`'s `populate(limit=1)`), not all
-    `n_datasets` selected sequences at once.
+    `start_utc`/`end_utc`) into an images table ready for `TrnTestDataSet` (`dataset.
+    DATASET_COLUMNS`). Thin wrapper around `dataset.images_for_window`.
 
-    Thin wrapper around `dataset.images_for_window` -- does NOT fetch full EDR pixel data (`.IMG`)
-    for any candidate, only small per-candidate XML labels (see `dataset.evaluate_candidate_image`),
-    paced at `cache.py`'s usual `_REQUEST_PACING_SECONDS`, not a bulk data transfer -- and a cheap
-    catalog-metadata pre-filter (`dataset._prefilter_by_catalog_metadata`) runs first, so most of a
-    raw window's candidates never reach that real per-candidate step at all (confirmed necessary
-    live: a real one-window resolve attempt without this pre-filter, several hundred raw candidates,
-    tripped a real rate limit on the LROC EDR host). `max_emission_angle_deg=15.0` (matching
-    `add_acceptable_edr_counts`'s own default) is passed through so resolving enforces the same
-    nadir/"typical mapping mode" criterion that made this orbit sequence's source window acceptable
-    in the first place -- unlike `images_for_window()`'s own sun-elevation-only default.
-    `attach_cdr=False`: confirmed `wac.py` is the only real consumer of the `cdr_*` columns anywhere
-    in this codebase, and it's already superseded by `isis_wac.py` (see `_finalize_images`'s
-    docstring) -- `TrnTestEntry`/`TrnTestImage` never read them, so skip that extra per-candidate
-    network round-trip here. `throttle_minutes=None` (default) keeps every acceptable candidate --
-    unlike the older, now-removed `select_dataset()`'s own 5-minute default (see `docs/history.md`'s
-    dated entry); thinning here isn't obviously wanted yet (an
-    orbit-sequence window was already chosen for being densely acceptable, not searched fresh), so
-    leave it to the caller to opt in."""
+    :param max_emission_angle_deg: matches `add_acceptable_edr_counts`'s own default -- enforces the
+        same nadir/"typical mapping mode" criterion that made this orbit sequence's source window
+        acceptable in the first place, unlike `images_for_window()`'s own sun-elevation-only default.
+    :param throttle_minutes: `None` (default) keeps every acceptable candidate.
+    """
+    # Deliberately takes exactly one row, not the whole table: resolve one orbit sequence into a
+    # dataset at a time, the same "iterate fast on one image/one entry" discipline this project
+    # already follows elsewhere (image_generation.py's populate(limit=1)), not all n_datasets
+    # selected sequences at once.
+    #
+    # Does not fetch full EDR pixel data (.IMG) for any candidate, only small per-candidate XML
+    # labels (see dataset.evaluate_candidate_image), paced at cache.py's usual
+    # _REQUEST_PACING_SECONDS -- and a cheap catalog-metadata pre-filter
+    # (dataset._prefilter_by_catalog_metadata) runs first, so most of a raw window's candidates
+    # never reach that per-candidate step at all (confirmed necessary: an early resolve attempt
+    # without this pre-filter, several hundred raw candidates, tripped a rate limit on the LROC EDR
+    # host).
+    #
+    # attach_cdr=False: wac.py is the only consumer of the cdr_* columns anywhere in this codebase,
+    # and it's superseded by isis_wac.py (see _finalize_images's docstring) --
+    # TrnTestEntry/TrnTestImage never read them, so this skips that extra per-candidate network
+    # round-trip.
+    #
+    # throttle_minutes=None differs from the older, now-removed select_dataset()'s own 5-minute
+    # default: thinning here isn't obviously wanted (an orbit-sequence window was already chosen for
+    # being densely acceptable, not searched fresh), so it's left to the caller to opt in.
     return dataset.images_for_window(
         orbit_sequence["start_utc"],
         orbit_sequence["end_utc"],
