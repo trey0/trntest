@@ -3,8 +3,9 @@ for `sat_sim`: the DEM as elevation (not raw radius) and hole-filled, the ortho 
 with a sun-lit hillshade (see `shade_ortho`'s own trailing comment for why the hillshade has to be
 baked in here). Live defaults: Astropedia's GLD100 DEM (`fetch_dem_astropedia`) and WAC_EMP's PDS4
 reflectance ortho (`fetch_wac_emp_reflectance`); Lunaserv WMS (`fetch_dem_native`,
-`ortho_source="lunaserv_wms"`) is a deprecated fallback kept for comparison. See docs/data-sources.md
-and docs/caching.md.
+`ortho_source="lunaserv_wms"`) is a deprecated fallback kept for comparison. See
+docs/data-sources/astropedia-gld100.md, docs/data-sources/wac-emp-pds4.md,
+docs/data-sources/lunaserv-wms.md, and docs/caching.md.
 """
 
 import dataclasses
@@ -57,7 +58,8 @@ _HAPKE_CALIBRATION_WAVELENGTHS_NM = (321, 360, 415, 566, 604, 643, 689)
 _HAPKE_CALIBRATION_PARAM_ORDER = ("wh", "hg1", "hg2", "bc0", "hc", "b0", "hh", "theta", "phi")
 _HAPKE_CALIBRATION_CUBE_GLOB = "WAC_global_7bands_1x1_wbhs70NS_const_each_pole.*.cub"
 # Matches `config.lunaserv_ortho_layer`'s own wavelength (`luna_wac_normalized_reflectance`, 643nm --
-# see docs/data-sources.md) -- the calibration should describe the same imagery being shaded.
+# see docs/data-sources/lunaserv-wms.md) -- the calibration should describe the same imagery being
+# shaded.
 DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
 
 # `fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction`/
@@ -84,7 +86,7 @@ DEFAULT_REAL_HAPKE_PARAMS = True
 # `reproject_wac_emp_reflectance_to_local_grid`) -- physical reflectance, no embedded display stretch.
 # "lunaserv_wms" is the deprecated fallback (the original `luna_wac_normalized_reflectance` WMS
 # layer), kept reachable for comparison but carrying an uncorrected affine display stretch, not raw
-# reflectance -- see docs/data-sources.md.
+# reflectance -- see docs/data-sources/lunaserv-wms.md.
 DEFAULT_ORTHO_SOURCE = "wac_emp_pds"
 ORTHO_SOURCES = ("wac_emp_pds", "lunaserv_wms")
 
@@ -854,9 +856,10 @@ def despeckle(data: np.ndarray, size: int = 3, n_mad: float = 6.0) -> np.ndarray
     # `n_mad` scaled MADs of that same neighborhood -- this makes the threshold self-scaling to local
     # contrast, so a pixel next to an edge or large feature (where the neighborhood's own MAD is
     # already high) is far less likely to be flagged than an isolated pixel in otherwise-smooth terrain.
-    # Validated against fetched Lunaserv WAC tiles (see docs/data-sources.md): ~90% of statistical
-    # outliers under this test are isolated single pixels with no adjacent outlier, and a known
-    # saturated-crater blob in that data is untouched by design (its neighborhood MAD is not small).
+    # Validated against fetched Lunaserv WAC tiles (see docs/data-sources/lunaserv-wms.md): ~90% of
+    # statistical outliers under this test are isolated single pixels with no adjacent outlier, and a
+    # known saturated-crater blob in that data is untouched by design (its neighborhood MAD is not
+    # small).
     pad = size // 2
     padded = np.pad(data, pad, mode="edge")
     neighborhood = np.lib.stride_tricks.sliding_window_view(padded, (size, size)).reshape(*data.shape, -1)
@@ -880,12 +883,12 @@ def shade_ortho(
     :returns: The shaded `uint8` image.
     """
     # `sat_sim` applies no illumination model of its own; it geometrically reprojects whatever's
-    # already in the ortho (see docs/data-sources.md), so any relief in the synthetic render has to
-    # come from here. A direct multiply, not `0.5 + 0.5 * hillshade` (an earlier version's artificial
-    # floor that halved the shading term's usable dynamic range and washed out the render relative to
-    # WAC imagery): terrain facing away from the sun should render dark, not floored at ~50% gray. This
-    # is still just local per-facet shading, not cast-shadow occlusion from other terrain, which
-    # remains out of scope (see docs/external-tools.md's ASP `sat_sim` section).
+    # already in the ortho (see docs/external-tools.md's ASP `sat_sim` section), so any relief in the
+    # synthetic render has to come from here. A direct multiply, not `0.5 + 0.5 * hillshade` (an
+    # earlier version's artificial floor that halved the shading term's usable dynamic range and
+    # washed out the render relative to WAC imagery): terrain facing away from the sun should render
+    # dark, not floored at ~50% gray. This is still just local per-facet shading, not cast-shadow
+    # occlusion from other terrain, which remains out of scope (same section).
     light = LightSource(azdeg=azimuth_deg, altdeg=elevation_deg)
     hillshade = light.hillshade(dem.astype(np.float64), dx=cellsize_m, dy=cellsize_m)
     ortho_norm = ortho.astype(np.float64) / 255.0
@@ -1148,7 +1151,7 @@ def fetch_real_hapke_params(
     :param center_lat_deg: Ground point latitude, degrees.
     :param config: Project config, passed to `_hapke_calibration_cube_path`.
     :param wavelength_nm: One of the cube's 7 bands (321/360/415/566/604/643/689); the default matches
-        `config.lunaserv_ortho_layer`'s own wavelength (643nm, see docs/data-sources.md).
+        `config.lunaserv_ortho_layer`'s own wavelength (643nm, see docs/data-sources/lunaserv-wms.md).
     :returns: All 9 parameters (ISIS's native `Wh`/`Hg1`/`Hg2`/`Bc0`/`hc`/`B0`/`Hh`/`Theta`/`phi`
         parameterization), keyed lowercase to match `_HAPKE_PLACEHOLDER_PARAMS`'s own keys.
     """
@@ -1329,8 +1332,8 @@ def stretch_reflectance_to_uint8(
     # per-image adaptive/percentile stretch (see `DISPLAY_STRETCH_REFLECTANCE_MIN`/`_MAX`'s own
     # module-level comment for why), applied once at the very end of the pipeline rather than baked
     # into the input texture the way Lunaserv's old, uncorrected WMS display stretch effectively was
-    # (see docs/data-sources.md). Purely cosmetic -- has no bearing on this module's photometric
-    # physics, all of which is already complete by the time this runs.
+    # (see docs/data-sources/lunaserv-wms.md). Purely cosmetic -- has no bearing on this module's
+    # photometric physics, all of which is already complete by the time this runs.
     #
     # `DISPLAY_STRETCH_REFLECTANCE_MAX = 0.30` was confirmed non-saturating for exactly one candidate,
     # not swept across others. Whether/how often input actually exceeds it (clipping to 255, with the
@@ -1690,7 +1693,7 @@ def fetch_and_shade_ortho(
         `"wac_emp_pds"` (live default) fetches WAC_EMP's own reflectance directly from its PDS4
         archive -- physical reflectance, no embedded display stretch. `"lunaserv_wms"` is the
         deprecated fallback (the original Lunaserv WMS layer), which carries an uncorrected affine
-        display stretch -- see docs/data-sources.md.
+        display stretch -- see docs/data-sources/lunaserv-wms.md.
     :returns: A `DemOrthoResult` for the fetched, shaded ortho (paired with `dem`).
     :raises ValueError: If `ortho_source` isn't one of `ORTHO_SOURCES`, or (for `"wac_emp_pds"`) if the
         camera's footprint needs latitude beyond WAC_EMP's own equirect-tile coverage or straddles a
@@ -1740,7 +1743,7 @@ def fetch_and_shade_ortho(
     # output vertically by up to `1/cos(lat)`. A local Orthographic projection has square meter pixels
     # everywhere, so that mismatch can't arise in the first place. `IAU2000:30166` reports the Moon's
     # 1,737,400 m radius (unlike the generic OGC `AUTO:42003` Orthographic code, which is hardcoded to
-    # Earth's WGS84 ellipsoid) -- see docs/data-sources.md.
+    # Earth's WGS84 ellipsoid) -- see docs/data-sources/lunaserv-wms.md.
     srs = config.lunaserv_srs_template.format(c_lon=center_lon, c_lat=center_lat)
 
     if ortho_source == "wac_emp_pds":

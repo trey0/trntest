@@ -11,7 +11,8 @@ as a manifest: parsed, then only these are downloaded:
 - the WAC CK (pointing) kernel(s) for the target day, per `TrntestConfig.wac_ck_source` --
   `select_isis_wac_ck_kernels` (live default) or `select_naif_wac_ck_kernels` (deprecated).
 
-See docs/data-sources.md and docs/caching.md.
+See docs/data-sources/spice-kernels-isis.md, docs/data-sources/spice-kernels-naif.md, and
+docs/caching.md.
 """
 
 import dataclasses
@@ -38,8 +39,8 @@ ALWAYS_KERNELS = [
     "data/spk/de421.bsp",
 ]
 
-# CK filename prefixes relevant to LROC WAC pointing (see docs/data-sources.md) -- deprecated-path
-# only now (select_naif_wac_ck_kernels), see that function's docstring.
+# CK filename prefixes relevant to LROC WAC pointing (see docs/data-sources/spice-kernels-naif.md) --
+# deprecated-path only now (select_naif_wac_ck_kernels), see that function's docstring.
 WAC_CK_PREFIXES = ("lrosc", "lrolc")
 
 # SPK (trajectory) filename prefix -- LRO's own reconstructed orbit.

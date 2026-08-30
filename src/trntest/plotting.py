@@ -581,9 +581,10 @@ def _valid_data_outline(raster_da):
     :returns: The outline as a `MultiPolygon`, with interior holes dropped.
     """
     # E.g. `run_mapproject`'s output is NaN outside the actual reprojected camera footprint (see
-    # docs/data-sources.md), so this traces that footprint's true outline rather than the raster's
-    # full (padded, mostly-nodata) pixel grid. Interior holes (isolated nodata pixels from DEM
-    # ray-intersection speckle -- see `render.DEM_HEIGHT_ERROR_TOL_M`'s docstring) are dropped:
+    # docs/external-tools.md's ASP `mapproject` section), so this traces that footprint's true outline
+    # rather than the raster's full (padded, mostly-nodata) pixel grid. Interior holes (isolated
+    # nodata pixels from DEM ray-intersection speckle -- see `render.DEM_HEIGHT_ERROR_TOL_M`'s
+    # docstring) are dropped:
     # they're display noise, not meaningful "outline" content.
     mask = ~np.isnan(raster_da.values)
     polygons = [

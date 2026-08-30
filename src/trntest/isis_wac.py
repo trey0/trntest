@@ -416,7 +416,8 @@ def run_framestitch(
     :param even: Calibrated even-parity cube.
     :param odd: Calibrated odd-parity cube.
     :param flip: Must match `camera.boresight_rotation_k`'s sign for this product (see
-        docs/data-sources.md) -- a per-pass manual decision, not derived automatically by ISIS.
+        docs/external-tools.md's "ISIS Pushframe pipeline" section) -- a per-pass manual decision,
+        not derived automatically by ISIS.
     :param config: Project config; `load_config()` if not given.
     :returns: A `FramestitchResult` for the stitched cube.
     """
@@ -601,8 +602,9 @@ def run_isd_generate(stitched: FramestitchResult, config: TrntestConfig | None =
     # embedded, per-parity, before `framestitch` -- `framestitch`'s merge carries those groups through
     # intact: the resulting ISD's geometry/timing parameters (`interframe_delay`, the 259-sample
     # pointing table, etc.) come out identical whether generated from this stitched cube or a single
-    # unstitched parity alone (see docs/data-sources.md). Despite that, which cube you actually
-    # reproject through this ISD matters a great deal -- see `run_mapproject`'s docstring.
+    # unstitched parity alone (see docs/external-tools.md's "ISIS Pushframe pipeline" section).
+    # Despite that, which cube you actually reproject through this ISD matters a great deal -- see
+    # `run_mapproject`'s docstring.
     #
     # Patches the ISD's `framelet_order_reversed` to match `stitched.flip`: `isd_generate` always
     # emits `false` here regardless of the cube's actual content -- it doesn't read `framestitch`'s own
@@ -772,8 +774,7 @@ def run_isd_generate_for_crop(
     # under `instrument_pointing`) is correctly updated to the cropped line count. The underlying
     # `instrument_pointing.ephemeris_times`/`quaternions`/`angular_velocities` arrays are untouched by
     # `crop` and still hold the entire pass's absolute-time-tagged samples, so shifting just the 5
-    # scalar time fields above by the crop's own time offset is sufficient (see docs/data-sources.md
-    # for that formula's own validation).
+    # scalar time fields above by the crop's own time offset is sufficient (same entry, above).
     #
     # `line_offset` -- how many lines into the stitched cube `crop.cub_path` actually starts -- comes
     # from `crop_window_for_camera(camera).row_off`, the exact same window `crop_for_camera` itself
