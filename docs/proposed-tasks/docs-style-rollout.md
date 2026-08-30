@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (16 done, 1 partial, of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done except `trn_dataset.py` (17 done, 1 partial, of 18 files) -- every `docs/history.md` citation is now out of `src/trntest/*.py`.**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -252,6 +252,20 @@ truth per fact, thin index files, sensible file naming.
   format`/`ruff check`/`mypy` all clean on this file) and the fast (non-`@pytest.mark.heavy`)
   subset of `tests/test_maneuver_detection.py` (5 passed, 2 heavy deselected -- need live
   SPICE/network). No code logic touched, so no notebook re-run was needed.
+- `src/trntest/_lint.py` (230 -> 232 lines, the one `docs/history.md` citation removed): already
+  the cleanest file in the pass -- module docstring was already minimal, and every function already
+  had a docstring except two truly trivial private one-liners (`_git_lines`, `_paired_ipynb`, etc.,
+  left undocumented per the trivial-one-liner carve-out) and two that weren't quite trivial enough to
+  skip (`_diff_files` combines two git queries for a non-obvious reason -- `git diff` alone misses
+  untracked files; `_unchanged_from_head`'s returncode-based boolean isn't self-evident from its
+  name), which got short docstrings added. Cut 3 "genuinely"-as-filler instances (none were
+  contrastive against a specific alternative) and kept one legitimate "real" contrast (`--output -`
+  (stdout) vs. "a real file written into the same directory instead"). This closes out
+  `src/trntest/*.py`'s `docs/history.md` citations entirely -- `grep -rc "docs/history.md"
+  src/trntest/*.py` now returns nothing. Verified with `trntest-lint` (`ruff format`/`ruff
+  check`/`mypy` all clean on this file, and the run itself -- `_lint.py` is the tool doing the
+  checking -- exercised the changed code end-to-end with no dedicated test file needed). No code
+  logic touched.
 
 **User review findings on the first pass (2026-08-30), applied to `cache.py` and then
 retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and carried forward into
@@ -273,32 +287,15 @@ retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and car
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 1
-file still cites `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/
-`tie_points.py`/`spice_kernels.py`/`dataset_selection.py`/`product_registry.py`/
-`maneuver_detection.py` fully done; `trn_dataset.py` had its citations removed but isn't yet
-considered satisfactory, see its own Completed entry above — don't count it done):
-
-| File | `docs/history.md` cites | Lines |
-|---|---|---|
-| `_lint.py` | 1 | 230 |
-
-For each: remove `docs/history.md` citations (state the load-bearing fact directly, or cut it), trim
-docstrings (function/class *and* the module docstring itself) to genuinely minimal (what it does,
-plus RST `:param:`/`:returns:`/`:raises:` fields where they clarify — see `docs/docs-style.md`'s
-current wording), move rationale/caveats/open items to a plain comment block as the first lines of
-the function body (not above the `def`, so it stays out of `help()`) — or, for module-docstring
-material about one specific function/class, relocate it there instead of a module-level comment, per
-`docs/docs-style.md`'s current wording — fix "real"-as-filler and em-dash sentence-stacking, **and add
-a docstring to any function/class in the file that's missing one entirely** (not a blanket mandate — a
-trivial one-liner or a nested/local closure can still skip one; use judgment for what "feels wrong" to
-leave undocumented, same bar applied retroactively to the first 4 files, see Completed above), and
-**read every docstring for historical-narrative framing even where `docs/history.md` isn't
-cited** (see the "User review findings" item above — `grep -c docs/history.md` alone won't catch it).
-`_lint.py` is next and last with an outstanding citation. After it, `src/trntest/*.py` will be
-clean of `docs/history.md` citations, leaving only `trn_dataset.py`'s open "not yet satisfactory"
-item (see its Completed entry above).
+**`src/trntest/*.py` docstrings/comments.** Every file is done except `trn_dataset.py`
+(`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/`sfs_validation.py`/`config.py`/`camera.py`/
+`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/`tie_points.py`/`spice_kernels.py`/
+`dataset_selection.py`/`product_registry.py`/`maneuver_detection.py`/`_lint.py` fully done —
+`grep -rc "docs/history.md" src/trntest/*.py` now returns nothing at all). `trn_dataset.py` had its
+`docs/history.md` citations removed but user review said the result still isn't satisfactory; what
+specifically was worse than the other done files was never specified — **ask before doing further
+work there, don't guess at what to change** (see its Completed entry above for what was already
+tried).
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -312,11 +309,13 @@ item (see its Completed entry above).
 
 ## If resuming
 
-1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to check the table above is still current —
-   other sessions may have touched these files since.
-2. Work one file at a time; `_lint.py` next. Re-verify with `trntest-lint` and, if a docstring
-   change touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant
-   notebook before committing. A pure docstring/comment edit with no code-logic change (confirm via
-   `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
-3. Delete this plan once `src/trntest/*.py` is clean of `docs/history.md` citations and the
-   remaining docs above have had their pass, or fold whatever's left into a narrower follow-up.
+1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to confirm it's still empty — other
+   sessions may have touched these files since.
+2. `trn_dataset.py` is the only file-level item left, and it's blocked on the user specifying what
+   was unsatisfactory about the first pass — ask, don't guess. Otherwise, work through the "Docs not
+   yet reworked" list one doc at a time; re-verify any `src/trntest/*.py` docstring change with
+   `trntest-lint` and, if it touches a function a notebook exercises, `scripts/run_notebook.sh` on
+   the relevant notebook before committing. A pure docstring/comment edit with no code-logic change
+   (confirm via `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
+3. Delete this plan once `trn_dataset.py` and the remaining docs above have had their pass, or fold
+   whatever's left into a narrower follow-up.

@@ -25,6 +25,8 @@ def _untracked_files(suffix: str) -> set[str]:
 
 
 def _diff_files(suffix: str) -> set[str]:
+    """Tracked files with `suffix` changed vs. `HEAD` (added/copied/modified/renamed), plus
+    untracked ones -- `git diff` alone misses untracked files entirely."""
     changed = set(_git_lines("diff", "--name-only", "--diff-filter=ACMR", "HEAD", "--", f"*{suffix}"))
     status_lines = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, check=True
@@ -65,14 +67,15 @@ def _paired_py(ipynb_file: str) -> str:
 
 
 def _unchanged_from_head(path: str) -> bool:
+    """Whether `path`'s working-tree content is identical to what's already committed."""
     return subprocess.run(["git", "diff", "--quiet", "HEAD", "--", path], check=False).returncode == 0
 
 
 def _check_notebook_sync(py_files: list[str], ipynb_files: list[str]) -> int:
     """Checks jupytext-paired notebook files for: both halves of a pair staged together (unless
     the un-staged twin is already unchanged from HEAD -- e.g. re-running a notebook after an
-    upstream code fix can refresh only its outputs, leaving the paired `.py` source genuinely
-    identical to what's already committed, with nothing to stage), code/markdown content matching
+    upstream code fix can refresh only its outputs, leaving the paired `.py` source identical to
+    what's already committed, with nothing to stage), code/markdown content matching
     between the two formats, and an execution_count sequence consistent with a single clean
     top-to-bottom execute (the shape `scripts/run_notebook.sh` produces). Read-only -- never writes
     to any file, only reports problems and the fix command.
@@ -145,9 +148,8 @@ def _check_notebook_warnings(ipynb_files: list[str]) -> int:
     or actually failing gets caught the same way the sync/execution_count checks already catch
     structural drift. Heuristic, not exhaustive (only catches output text that literally contains
     "Warning"/"WARNING", which covers Python's own `*Warning:` lines and GDAL/ISIS's own "Warning
-    N: ..." messages, but not every possible noisy-library convention) -- if a real subprocess/
-    library warning doesn't get flagged, extend the pattern rather than assuming this check is
-    exhaustive."""
+    N: ..." messages, but not every possible noisy-library convention) -- if a subprocess/library
+    warning doesn't get flagged, extend the pattern rather than assuming this check is exhaustive."""
     ok = True
     for nb in ipynb_files:
         notebook = json.loads(Path(nb).read_text())
@@ -195,9 +197,9 @@ def main() -> int:
         # the formatter), which used to force notebook files out of format-checking entirely. Fixed
         # by suppressing display via `_ = expr` instead (an `Assign` node, not the bare `Expr` node
         # IPython's display hook checks for) -- format-safe, so notebook files are now checked the
-        # same as everything else; see docs/history.md's dated entry.
+        # same as everything else.
         # `--force-exclude`: ruff's own `[tool.ruff] exclude` (e.g. `old_notebooks/`, a frozen
-        # archive genuinely out of scope for lint -- see its own README.md) only applies during
+        # archive out of scope for lint -- see its own README.md) only applies during
         # ruff's own directory discovery, not when files are passed explicitly on the command line
         # like this -- without this flag, an untracked/changed file under an excluded directory
         # would still get linted.
@@ -211,7 +213,7 @@ def main() -> int:
         results["mypy"] = subprocess.run(["mypy", "src/trntest"], check=False).returncode
     # Scoped to `notebooks/` only, matching `py_files`'s own filtering inside `_check_notebook_sync`
     # (`notebook_py = [f for f in py_files if f.startswith("notebooks/")]`) -- without this,
-    # `old_notebooks/` (a frozen archive genuinely out of scope for lint, see its own README.md)
+    # `old_notebooks/` (a frozen archive out of scope for lint, see its own README.md)
     # would still get pairing-checked whenever its .ipynb files are passed explicitly (e.g. the
     # pre-commit hook, which lints exactly the staged file list, not `--diff` mode's own
     # `notebooks/`-agnostic untracked-file detection).
