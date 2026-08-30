@@ -19,14 +19,14 @@
 # `image_generation.ipynb`'s Phase 6B overlay (the real, ISIS-processed WAC crop mapprojected onto
 # the basemap) used to be visibly not perfectly aligned with it. That turned out to be mostly a
 # ground-truth bug, not a camera-pose one: `isis_wac.run_spiceinit` hardcoded `shape=ellipsoid` for
-# every real-WAC cube, when the real fix was attaching ISIS's own real global lunar DEM
+# every real-WAC cube, when the fix was attaching ISIS's own real global lunar DEM
 # (`shape=user`) instead -- see `docs/plan.md`'s dated entry. That fix now lives in the main
 # pipeline (every real-WAC cube gets the real DEM by default), so this notebook no longer compares
 # DEM against ellipsoid -- there's nothing left running through the ellipsoid.
 #
 # **On the back burner, not superseded** (the user's own framing, see `docs/plan.md`): the DEM fix
 # closed the specific gap visible on this candidate, but the capability this notebook exercises --
-# measuring real alignment statistics, independent of whether a correction actually gets applied --
+# measuring alignment statistics, independent of whether a correction actually gets applied --
 # stays valuable. There's no guarantee a future WAC product's initial SPICE-derived registration will
 # be this clean; this is exactly the tooling that would catch it if not.
 #
@@ -37,10 +37,10 @@
 #   to the actual camera pose, projecting a real 3D ground point through it to a 2D image pixel
 #   (`src/trntest/wac_camera_model.py` + `control_network.py`, real ISIS control points).
 # - **matcher**: `SIFT` (classical, Sobel-filtered) vs. `LightGlue` (learned DISK features + learned
-#   matcher -- more matches, real headroom for future low-texture EDRs SIFT might struggle on).
+#   matcher -- more matches, headroom for future low-texture EDRs SIFT might struggle on).
 # - **correction**: `uncorrected` (the raw match-implied offset, no fit at all) through increasingly
 #   flexible 2D models (`similarity` 4 DOF, `affine` 6 DOF, `homography` 8 DOF) to the one physically
-#   real correction, `6-DOF pose` (an actual camera exterior-orientation correction, fit against real
+#   real correction, `6-DOF pose` (a camera exterior-orientation correction, fit against real
 #   ISIS control points, then baked back into the crop cube so ISIS's own unmodified `cam2map`
 #   reprojects it).
 #
@@ -66,7 +66,11 @@ from trntest import control_network, isis_wac, plotting, pose_alignment, tie_poi
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
 dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
-dataset.populate(limit=1)
+# NOT dataset.populate(limit=1) -- if entry 0 is already populated (e.g. from image_generation.ipynb),
+# populate(limit=1) silently advances to the next *undone* entry instead and does real, unwanted work
+# there (confirmed live -- see old_notebooks/reproject_spike.py's own identical fix). This notebook
+# only ever touches entry.crop_result/entry.dem_ortho_result/entry.camera, all self-healing
+# TrnTestEntry properties -- no populate() call needed at all.
 entry = dataset[0]
 
 # `entry.crop_result` carries ISIS's real global lunar DEM by default now (isis_wac.run_spiceinit) --
@@ -81,7 +85,7 @@ results = []  # one dict per table row, appended right after each metric is comp
 # %% [markdown]
 # ## Crop the basemap to the WAC's own footprint, and prepare both for matching
 #
-# The basemap ortho covers a much larger area than the WAC crop's own real footprint -- cropping to
+# The basemap ortho covers a much larger area than the WAC crop's own footprint -- cropping to
 # match (`pose_alignment.crop_to_footprint`, padded 15%) gives the feature matcher a far smaller,
 # more relevant search space; confirmed empirically to matter for match quality, not just compute.
 #
@@ -90,9 +94,9 @@ results = []  # one dict per table row, appended right after each metric is comp
 # (`luna_wac_global`'s own ~100 m/px mosaic) and *not* for this WAC crop: `isis_wac.
 # run_cam2map_for_crop`'s `PIXRES=map` forces its output onto that same 100 m/px grid regardless of
 # the camera's own real resolution at this pose, which a direct `cam2map PIXRES=camera` probe found
-# to be ~184 m/px for this candidate (~1.8x coarser -- see `docs/history.md`'s dated entry). Matching
+# to be ~184 m/px for this candidate (~1.8x coarser). Matching
 # SIFT keypoints on the interpolated-not-actually-resolved 100 m/px grid risks treating resampling
-# texture as real structure. `pose_alignment.native_wac_gsd_m` estimates the WAC crop's real native
+# texture as real structure. `pose_alignment.native_wac_gsd_m` estimates the WAC crop's native
 # GSD from the camera's own already-computed ground geometry (no extra ISIS call), and
 # `downsample_to_gsd` (area-averaging) brings both rasters down to that scale before matching.
 # `to_uint8_for_matching` then converts each to 8-bit, stretching over valid pixels only.
@@ -274,7 +278,7 @@ plotting.plot_overlay_toggle(
 # an elevation-aware ground truth with an elevation-unaware camera model (or vice versa) would
 # conflate real camera-pose error with a shape-model mismatch.
 #
-# `wac_camera_model.py`'s hand-rolled forward projection stands in for `jigsaw`, which hit a real,
+# `wac_camera_model.py`'s hand-rolled forward projection stands in for `jigsaw`, which hit a
 # root-caused, unfixable bug in its PushFrame framelet search (see `docs/wac-jigsaw-investigation.md`
 # for the full trail). Its optics chain is validated to exact (0.000px) agreement with real `campt`
 # output, and its framelet search is validated to 0.00m ground error round-tripped through `campt`'s
@@ -303,15 +307,15 @@ print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.
 
 def ground_space_residual_m(cub_path, observed_pixels, ground_points_me_m):
     """The one legitimate ground-space residual for a set of already-resolved `observed_pixels`:
-    queries `campt` (via `isis_wac.image_to_ground_points_batch`) for the real ground point each
-    pixel *actually* corresponds to under `cub_path`'s own real camera model, and compares that
+    queries `campt` (via `isis_wac.image_to_ground_points_batch`) for the ground point each
+    pixel actually corresponds to under `cub_path`'s own real camera model, and compares that
     directly (in meters, body-fixed) against the trusted `ground_points_me_m`. Deliberately avoids
     `wac_camera_model`'s own forward-projection/framelet-search tie-break entirely -- comparing
     predicted-vs-observed *pixels* re-litigates which of several equally-valid framelets is "right"
     whenever a ground point sits in an overlap band (~29% of framelet height, confirmed live -- see
     `wac_camera_model.py`'s own module docstring), which has no principled answer. This function
-    never searches for a framelet: `observed_pixels` are already fixed, real coordinates, and one
-    real pixel has exactly one real ground point -- nothing to litigate."""
+    never searches for a framelet: `observed_pixels` are already fixed coordinates, and one pixel
+    has exactly one ground point -- nothing to litigate."""
     ground_points = isis_wac.image_to_ground_points_batch(cub_path, observed_pixels)
     errors_m = []
     for ground_point, trusted_me_m in zip(ground_points, ground_points_me_m, strict=True):
@@ -374,7 +378,7 @@ def resolve_3d_control_points(wac_points_map, basemap_points_map, matcher_label)
 
 def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
     """Shared by every matcher's 3D rows below: `fit_pose_correction`, its own reporting, and the
-    legitimate ground-space residual for the *fitted* pose -- bakes the fit's correction into a real
+    legitimate ground-space residual for the *fitted* pose -- bakes the fit's correction into a
     corrected crop copy (`isis_wac.apply_pose_correction_to_crop`) and re-queries `observed_pixels`'
     real ground points through *that* (real ISIS work, not `wac_camera_model`'s own prediction), for
     the same ambiguity-free reason `ground_space_residual_m` exists."""
@@ -406,7 +410,7 @@ def fit_and_report_pose_correction(ground_points_me_m, observed_pixels):
 
 
 # %% [markdown]
-# **Table rows 5-6: 3D->2D, SIFT.** Added after the fact, specifically to test a real question the
+# **Table rows 5-6: 3D->2D, SIFT.** Added after the fact, specifically to test a question the
 # results table below raises: LightGlue's 3D rows (9-10, further down) run a noticeably higher
 # residual than the 2D rows do, and the leading explanation is that `resolve_control_points` does no
 # outlier rejection of its own, so LightGlue's noisier raw match set (see row 7) pollutes the 3D
@@ -459,7 +463,7 @@ results.append(
 # ## A second matcher: LightGlue
 #
 # `pose_alignment.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
-# extractor (DISK) + learned matcher -- real headroom for future shadowed/low-texture EDRs SIFT might
+# extractor (DISK) + learned matcher -- headroom for future shadowed/low-texture EDRs SIFT might
 # not find enough points on at all. Same inputs as SIFT above -- only the matcher differs, for a
 # direct, apples-to-apples comparison against SIFT's own rows. **Table row 7** is the raw
 # match-implied offset (same role as row 1). **Table row 8** is the same match set's homography fit
@@ -585,36 +589,36 @@ results.append(
 # including two wrong turns worth keeping visible rather than quietly erasing.**
 #
 # Ruled out along the way: a stale-ellipsoid product sneaking back in (`dem_radii_m` genuinely
-# varies, hundreds of meters of std, real terrain, not a flat constant); real local terrain relief
+# varies, hundreds of meters of std, real terrain, not a flat constant); local terrain relief
 # (residual-vs-elevation correlation across the full point set is ~0 -- an earlier claim that the
 # worst points sat on the highest terrain didn't survive checking against the full sample); and raw
 # match-set noise polluting `resolve_control_points` (tested directly via rows 5-6: SIFT's
 # already-heavily-filtered matches, fed through the same 3D pipeline, still didn't land close to
 # SIFT's own clean 2D rows -- ruling out match quality as the explanation).
 #
-# **The real methodological gap, caught by a direct question about what `residual_mean_m` even was
+# **The methodological gap, caught by a direct question about what `residual_mean_m` even was
 # for the 3D rows**: it used to be `residual_mean_px * target_gsd_m` -- a unit rescaling of the same
 # pixel-space quantity, not an independent measurement. And that pixel-space quantity itself
 # (predicted-vs-observed pixel, via `wac_camera_model`'s own forward projection) is only a legitimate
-# comparison in the `2D->2D` and `image->ground->image`-round-trip senses -- comparing it against a
-# real, independently-resolved `observed_pixels` re-litigates *which* framelet is "right" whenever a
-# control point's ground location sits in a real overlap band (~29% of framelet height, confirmed
+# comparison in the `2D->2D` and `image->ground->image`-round-trip senses -- comparing it against an
+# independently-resolved `observed_pixels` re-litigates *which* framelet is "right" whenever a
+# control point's ground location sits in an overlap band (~29% of framelet height, confirmed
 # live -- see `wac_camera_model.py`'s own module docstring), which has no principled answer.
 #
 # `residual_mean_m`/`residual_max_m` for rows 5-10 are now computed a genuinely different way
-# (`ground_space_residual_m`): the real ground point `observed_pixels` *actually* corresponds to
-# (queried directly via `campt`, no framelet search, no ambiguity -- a fixed real pixel has exactly
-# one real ground point), compared in meters against the trusted basemap+DEM ground truth. This
+# (`ground_space_residual_m`): the ground point `observed_pixels` actually corresponds to
+# (queried directly via `campt`, no framelet search, no ambiguity -- a fixed pixel has exactly
+# one ground point), compared in meters against the trusted basemap+DEM ground truth. This
 # never touches `wac_camera_model`'s own tie-break at all. `residual_mean_px` is still reported
 # alongside it (useful for cross-checking the fit's own optimization target, which does need a pixel-
 # space loss), but is the ambiguity-sensitive one -- `residual_mean_m` is the one to trust for
 # comparing the 3D->2D rows against the 2D->2D ones or against each other.
 #
-# ## Two open issues, flagged here rather than chased further this session
+# ## Two issues, flagged here rather than chased further this session -- one still open
 #
 # **1. `residual_mean_px` for the 3D->2D rows is now largely redundant with `residual_mean_m`, and
 # still carries a smaller residual version of the same ambiguity.** `control_network.
-# resolve_control_points` switched today from real `campt` (buggy, see above) to `wac_camera_model.
+# resolve_control_points` switched today from `campt` (buggy, see above) to `wac_camera_model.
 # find_framelet_and_project` for `observed_pixels` too -- so `residual_mean_px`'s `predicted - obs`
 # now compares two calls to the *same* deterministic function, not a real-vs-buggy-tool mismatch.
 # But `predicted` and `obs` are for two *different* ground points (trusted vs. WAC-observed); if they
@@ -623,29 +627,23 @@ results.append(
 # to just drop `residual_mean_px` from the 3D->2D rows (keeping it only for 2D->2D, where it's a
 # direct, uncontaminated unit conversion) is an open question, not yet decided or implemented.
 #
-# **2. Row 6 (SIFT, 6-DOF pose) looks like a real regression, not an improvement, once measured
-# correctly -- caught live by exactly the ground-space metric issue 1 describes.** `delta_position_m`
-# for the SIFT fit came out as `[566, -397, 1019]` m (~1.2km, physically implausible -- LightGlue's
-# own fit, same session, same crop, is `[-1, -3, 0]` m), yet its *pixel*-space residual still looked
-# like an improvement (0.68px -> 0.56px). The ground-space residual reveals what the pixel metric
-# hid: 126m baseline -> 1257m after "correction," a real ~10x regression. Leading hypothesis, not
-# confirmed: a position/attitude near-singularity in `fit_pose_correction`'s unconstrained 6-DOF
-# least-squares, the same class of issue `docs/wac-jigsaw-investigation.md` already documented for
-# `jigsaw` itself (a single image's geometry alone can't always separate "camera moved" from "camera
-# rotated") -- SIFT's smaller/less-distributed 316-point set may be hitting it where LightGlue's 791
-# points don't. Not investigated further this session (e.g., checking SIFT's actual spatial point
-# distribution for the degeneracy) -- row 6 should not be trusted as-is until this is chased down.
-# The final corrected overlay below is already built from LightGlue's fit (row 10), not SIFT's, so
-# this doesn't affect the notebook's own headline visual result, but it's a real, open correctness
-# question about `fit_pose_correction` worth resolving before leaning on a SIFT-based fit for
-# anything.
+# **2. Row 6 (SIFT, 6-DOF pose) no longer shows the regression an earlier version of this notebook
+# found here.** That earlier run's `delta_position_m` came out around `[566, -397, 1019]` m (~1.2km,
+# physically implausible), with a ground-space residual of 126m baseline -> 1257m after "correction"
+# (a ~10x regression) despite looking like an improvement in pixel space -- attributed, not
+# confirmed, to a position/attitude near-singularity in `fit_pose_correction`'s unconstrained 6-DOF
+# least-squares on SIFT's smaller point set. Regenerating under current code reproduces none of
+# that: `delta_position_m` is a plausible few meters, and the ground-space residual is a modest
+# improvement (183.8m -> 112.9m) in line with every other row in the table. Neither the original
+# regression nor why it stopped reproducing was investigated further -- the final corrected overlay
+# below is built from LightGlue's fit (row 10), not SIFT's, unaffected either way.
 
 # %%
 results_df = pd.DataFrame(results).set_index("row")
 results_df
 
 # %% [markdown]
-# ## A direct visual before/after: the fitted 6-DOF correction, baked into a real corrected overlay
+# ## A direct visual before/after: the fitted 6-DOF correction, baked into a corrected overlay
 #
 # `isis_wac.apply_pose_correction_to_crop` bakes `fit_lg.correction` into a *copy* of the crop cube's
 # cached `InstrumentPointing` (patching only its single, time-independent `ConstantRotation` matrix

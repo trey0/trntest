@@ -146,10 +146,14 @@ def _check_notebook_warnings(ipynb_files: list[str]) -> int:
     """Scans each notebook's already-recorded cell outputs (reads the committed .ipynb -- doesn't
     execute anything) for raised errors or warning-looking stream text, so a notebook that's noisy
     or actually failing gets caught the same way the sync/execution_count checks already catch
-    structural drift. Heuristic, not exhaustive (only catches output text that literally contains
-    "Warning"/"WARNING", which covers Python's own `*Warning:` lines and GDAL/ISIS's own "Warning
-    N: ..." messages, but not every possible noisy-library convention) -- if a subprocess/library
-    warning doesn't get flagged, extend the pattern rather than assuming this check is exhaustive."""
+    structural drift. Two independent signals, kept separate since they catch different things:
+    any `stream` output with `name == "stderr"` (this is the exact cue Jupyter's own renderer uses
+    to show a cell's output in red -- an unhandled exception logged by a background thread/process,
+    e.g. a `huey` worker, never becomes an `output_type == "error"` cell, only a stderr stream, so
+    checking `output_type` alone misses it), and, on any stream regardless of name, text literally
+    containing "Warning"/"WARNING" (Python's own `*Warning:` lines, GDAL/ISIS's "Warning N: ..."
+    messages) -- heuristic, not exhaustive, extend the pattern if a library's own warning convention
+    slips through."""
     ok = True
     for nb in ipynb_files:
         notebook = json.loads(Path(nb).read_text())
@@ -165,6 +169,14 @@ def _check_notebook_warnings(ipynb_files: list[str]) -> int:
                     ok = False
                 elif output.get("output_type") == "stream":
                     text = "".join(output.get("text", []))
+                    if output.get("name") == "stderr" and text.strip():
+                        first_line = text.strip().splitlines()[0]
+                        print(
+                            f"trntest-lint: {nb} cell {i} wrote to stderr (renders red in Jupyter): "
+                            f"{first_line.strip()[:200]}"
+                        )
+                        ok = False
+                        continue
                     for line in text.splitlines():
                         if _WARNING_LINE.search(line):
                             print(f"trntest-lint: {nb} cell {i} output contains a warning: {line.strip()[:200]}")

@@ -116,7 +116,15 @@ this file). Then, as needed:
   pair are linked via inline jupytext metadata (no `jupytext.toml`). Always edit through one of them
   (JupyterLab renders the `.py` as a live notebook via the bundled `jupyterlab-jupytext`
   extension) and run `scripts/run_notebook.sh <path/to/the/one/you/edited.py>` before committing —
-  see the pre-commit hook note below for what is and isn't automatically checked.
+  see the pre-commit hook note below for what is and isn't automatically checked. Notebook markdown
+  should read as tutorial prose per `docs/docs-style.md`, not development-history narrative — when a
+  notebook needs a product another notebook can generate, read it through this codebase's own
+  generate-on-demand primitives (`TrnTestEntry.camera`/`.crop_result`/`.dem_ortho_result`,
+  `TrnTestImage.generate()` — all idempotent resume-from-disk-or-fetch-fresh) rather than a raw path
+  assuming a prior run, falling back to `TrnTestImage._require_generated()`'s fail-fast error only
+  when that's not practical. A notebook's own markdown can go stale about what's still "open" as the
+  underlying code changes elsewhere — re-verify a specific claim against `docs/plan.md` (or by
+  re-running the notebook) before trusting it.
 - **New subprocess calls to ASP/ISIS binaries must use `trntest.subprocess_utils.run_quiet`**, not
   raw `subprocess.run`. These tools are noisy by default (progress bars, library-init messages,
   verbose logs) and inherit the calling process's own stdout/stderr, which floods a notebook cell

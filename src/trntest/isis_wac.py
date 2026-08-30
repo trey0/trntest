@@ -1193,7 +1193,6 @@ def run_cam2map_for_crop(
 
 
 _INSTRUMENT_POINTING_LABEL_EXCLUDE = {"Name", "StartByte", "Bytes", "Records", "ByteOrder", "Field"}
-_INSTRUMENT_POINTING_COLTYPES = "(Double,Double,Double,Double,Double,Double,Double,Double)"  # J2000Q0-3,AV1-3,ET
 
 
 def _table_extra_label(label_text: str, table_name: str) -> pvl.PVLModule:
@@ -1252,9 +1251,9 @@ def apply_pose_correction_to_crop(
     #
     # The cube's 259-row `InstrumentPointing` quaternion/AV/ET table itself is untouched -- `tabledump`
     # round-trips it byte-for-byte via `csv2table`, only the label's `ConstantRotation` keyword
-    # changes. `coltypes` is hardcoded to WAC-VIS's own fixed `InstrumentPointing` column layout
-    # (`J2000Q0..3`, `AV1..3`, `ET` -- 8 doubles), not derived generically since this project only ever
-    # touches this one table shape.
+    # changes. ISIS 9.0's `csv2table` converts every CSV column to floating point unconditionally --
+    # no `coltypes` parameter exists to declare it (an earlier ISIS version needed one; `csv2table
+    # -help` confirms the current one doesn't accept it).
     config = config or load_config()
     out_path = crop.cub_path.with_name(crop.cub_path.stem + ".corrected.cub")
     shutil.copy(crop.cub_path, out_path)
@@ -1277,7 +1276,6 @@ def apply_pose_correction_to_crop(
             f"label={label_path}",
             f"to={out_path}",
             "tablename=InstrumentPointing",
-            f"coltypes={_INSTRUMENT_POINTING_COLTYPES}",
         ]
     )
     return CropResult(cub_path=out_path)

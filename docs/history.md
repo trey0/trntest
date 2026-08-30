@@ -4836,3 +4836,71 @@ down to the current model instead of the history of getting there; kept every ot
 log lives) as-is, since those were already tight single-paragraph callouts, not narrative. 179 -> 142
 lines, zero `docs/history.md` citations. Updated `docs/proposed-tasks/docs-style-rollout.md` to
 reflect it.
+
+## Phase 90 (2026-08-30) — Notebooks tone/structure pass complete: all 11 notebooks, real bugs found along the way
+
+Multi-session effort (individual per-notebook commits in git log) applying `docs/docs-style.md`'s
+tutorial-tone rules to every `notebooks/*.py`/`.ipynb` pair, tracked in
+`docs/proposed-tasks/notebooks-tone-pass.md` (now deleted, folded into `AGENTS.md`'s notebook
+bullet per its own closing instructions). Same underlying problem as the parallel `src/trntest/*.py`
+docstring pass: notebooks had drifted from tutorial markdown into development-history narrative
+(`docs/history.md` citations, "Phase N" citations, tuning backstory, bare "real"/"genuine" filler)
+-- cut throughout, one notebook at a time, each regenerated (`scripts/run_notebook.sh`) and held for
+the user's own Jupyter Lab review before commit.
+
+Two of the 11 needed more than a tone pass. `report_template.py` (a Jinja template, not paired with
+an `.ipynb`) needed nothing at all -- already exactly what a template should be.
+`reproject_spike.py` was archived to `old_notebooks/` instead of rewritten (its premise question,
+"should we build `TrnTestReprojectImage`?", is stale now that `reproject` is fully implemented and
+wired into `image_generation.py`'s Phase 8) -- see `old_notebooks/README.md`'s own new section for
+the investigation summary.
+
+Regenerating repeatedly surfaced real, live bugs unrelated to the tone edits, each found and fixed
+in place: `along_track_correction.py`'s `basemap_and_diff` assumed two independently-fetched
+rasters always shared a pixel grid (false; switched nearest+tolerance to linear interpolation) and,
+separately, its `fetch_dem_and_ortho` call was missing `extra_footprint_lonlat_deg`, silently
+clobbering the shared, footprint-suffix-less `dem_filled-tile-0.tif` -- a live hit of an
+already-documented `docs/plan.md` open item, fixed to match its sibling call sites.
+`sfs_validation.py`'s `sim_masked_path` pointed at the wrong directory after an earlier refactor
+moved where `run_sfs_forward_render` actually writes. `isis_wac.apply_pose_correction_to_crop`'s
+`csv2table` call passed a `coltypes=` argument the installed ISIS 9.0 no longer accepts -- that
+version converts every CSV column to floating point unconditionally now, confirmed via the app's
+own XML docs; dropped the argument and the now-dead `_INSTRUMENT_POINTING_COLTYPES` constant.
+
+Also found, three separate times, a notebook's markdown asserting a "still open" investigation
+status that had actually been resolved (or, in `pose_alignment_spike.py`'s case, stopped
+reproducing, for reasons not investigated) elsewhere or later: `wac_isis.py`'s "unresolved
+blocker," `sfs_validation.py`'s "still-open, unexplained regression" against the real WAC crop, and
+`pose_alignment_spike.py`'s SIFT 6-DOF-pose regression (documented as a ~10x ground-space blowup;
+the fresh run shows a modest improvement instead). Cut or corrected in place rather than left stale.
+
+**A real bug the user caught by eye, not by the linter**: `pose_alignment_spike.ipynb`'s first
+executed cell rendered in Jupyter's red error styling, even though `scripts/run_notebook.sh` had
+exited 0 and `trntest-lint` passed clean. Root cause: the same class of bug
+`old_notebooks/reproject_spike.py`'s own docstring already documents -- `dataset.populate(limit=1)`
+on an already-populated entry 0 silently advances the queue to a *different*, not-yet-done manifest
+entry instead of no-op'ing, and that entry (`M1327215525CE`) hit a real `WAC_EMP` polar-coverage
+limit, logging an unhandled-exception traceback to stderr from a background `huey` worker thread --
+never a raised exception in the main execution path, so papermill saw nothing wrong. Fixed by
+removing the (unnecessary -- this notebook only ever touches `entry.crop_result`/
+`entry.dem_ortho_result`/`entry.camera`, all self-healing) `populate()` call, matching
+`reproject_spike.py`'s own precedent exactly.
+
+The linter gap itself was real too: `_check_notebook_warnings` only flagged `output_type == "error"`
+cells (a raised exception in the main thread) or stream text literally containing "Warning" --
+neither matches a background-thread traceback logged to stderr. Fixed to flag any `stream` output
+with `name == "stderr"` directly, the exact field Jupyter's own renderer keys its red styling off
+of, independent of content. Considered the weaker alternative (grep stderr text for "error") and
+rejected it after checking empirically: zero false positives from the strict version across every
+committed notebook, including the one LightGlue/torch-heavy one that could plausibly emit
+progress-bar noise, and no `tqdm`/progress-bar library anywhere in `src/trntest/*.py` to begin
+with -- consistent with this project's existing `run_quiet` philosophy (quiet by default, surface
+only on failure) rather than a new constraint.
+
+**Cross-notebook dependency check** (added mid-pass, per user request): audited whether any
+notebook reads another notebook's output without checking for it first. The codebase already does
+the right thing almost everywhere -- `TrnTestEntry.camera`/`.crop_result`/`.dem_ortho_result` and
+`TrnTestImage.generate()` are all idempotent generate-if-missing, and
+`TrnTestImage._require_generated()` is the fail-fast fallback. One real gap found
+(`reproject_spike.py` reading `entry.hillshade.raster_path` directly, bypassing both) -- moot once
+that notebook was archived rather than fixed forward.
