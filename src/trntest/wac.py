@@ -1,26 +1,11 @@
-"""Build a recognizable single-band image from the real WAC CDR product, for comparison against
-the synthetic sat_sim render.
+"""Build a recognizable single-band image from the WAC CDR product, for comparison against the
+synthetic sat_sim render.
 
-WAC is a "push-frame" camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS
-@ 14 TDI lines), and per the official LROC EDR/CDR SIS, "the WAC CDR file will require further
-processing to separate framelets into their respective bands ... in order to be viewed as a
-standard image" -- see docs/data-sources.md for the full byte-layout facts. This module extracts
-ONE filter's TDI-line block (lines [22:36) -- always pure VIS regardless of yaw-dependent band
-order, see the offset comment below) from each of many consecutive frames and stacks them
-vertically, matching how WAC's push-frame design is meant to build continuous coverage.
-
-The crop uses the full 704-sample width and however many along-track frames cover that same real
-ground distance -- a square patch of real ground, not a fixed pixel count (see
-`camera.compute_n_frames_for_square_crop`); the resulting crop isn't square in *pixels* (the two
-axes have different native GSD) but is square in real km, matching the synthetic camera's FOV.
-
-Frames are always read off disk in strict acquisition-time order (a PDS archival guarantee), but
-which real-world direction that "forward in time" runs, expressed against WAC's fixed sample-axis
-convention, is **pass-dependent** (see `camera.boresight_rotation_k`'s docstring and
-docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention") -- the resulting mosaic's chirality
-can come out mirrored, not just rotated, relative to the synthetic image. `fetch_vis_mosaic`
-corrects for this by reversing the along-track frame order (`camera_pose.reverse_crop_along_track`)
-whenever needed.
+WAC is a "push-frame" camera: each 78-line frame multiplexes 7 filters (2 UV @ 4 TDI lines + 5 VIS @
+14 TDI lines). This module extracts one VIS filter's TDI-line block from each of many consecutive
+frames and stacks them vertically (`fetch_vis_mosaic`), matching how WAC's push-frame design is meant
+to build continuous coverage -- see docs/data-sources/lroc-wac-edr-cdr.md for the full byte-layout
+facts.
 """
 
 import numpy as np
@@ -51,15 +36,27 @@ def fetch_vis_mosaic(
     config: TrntestConfig | None = None,
 ) -> np.ndarray:
     """Stack one VIS filter's TDI-line block from `n_frames` consecutive frames starting at
-    `start_frame`, producing a single continuous (n_frames * 14, 704) image. If `n_frames` isn't
-    given, it's computed so the crop covers the same real ground distance as the 704-sample
-    cross-track width -- see `camera.compute_n_frames_for_square_crop`.
+    `start_frame` into a single continuous image.
 
-    `camera_pose` (the already-built synthetic `Camera` for this same product/pose) determines
-    whether frames must be stacked in *reverse* along-track order
-    (`camera_pose.reverse_crop_along_track`): a real, pass-dependent mirror -- see that property's
-    docstring and docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention" -- not
-    optional/cosmetic, so this is a required argument, not a config knob."""
+    :param camera_pose: The already-built synthetic `Camera` for this same product/pose --
+        determines whether frames must be stacked in reverse along-track order (see the body comment
+        for why this is a required argument, not a config knob).
+    :param start_frame: First frame index; `config.target_frame_index` if not given.
+    :param n_frames: Frame count; if not given, computed so the crop covers the same ground distance
+        as the 704-sample cross-track width (`camera.compute_n_frames_for_square_crop`) -- a square
+        patch of ground, not a fixed pixel count, so the crop isn't square in *pixels* (the two axes
+        have different native GSD) but is square in km, matching the synthetic camera's FOV.
+    :param config: Project config; `load_config()` if not given.
+    :returns: `(n_frames * 14, 704)` image.
+    """
+    # Frames are always read off disk in strict acquisition-time order (a PDS archival guarantee),
+    # but which real-world direction that "forward in time" runs, expressed against WAC's fixed
+    # sample-axis convention, is pass-dependent (see `camera.boresight_rotation_k`'s docstring and
+    # docs/data-sources/lroc-wac-edr-cdr.md's "Pass-dependent sensor axis convention") -- the
+    # resulting mosaic's chirality can come out mirrored, not just rotated, relative to the synthetic
+    # image. `camera_pose.reverse_crop_along_track` carries that determination in from the
+    # already-built synthetic camera, so this function reverses the along-track frame order when
+    # needed rather than guessing.
     config = config or load_config()
     if start_frame is None:
         start_frame = config.target_frame_index
