@@ -42,11 +42,16 @@ DEM_HEIGHT_ERROR_TOL_M = 0.5
 
 @writes_product("sat_sim_render")
 def run_sat_sim(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None) -> RenderResult:
-    """`sat_sim`'s own `-o <prefix>` convention appends its own fixed `-<camera_stem>.tif` suffix to
-    whatever prefix it's given (`<camera_stem>` comes from the camera-list file's own contents, not
-    from the given prefix) -- `atomic_publish_prefix` fits this (see its own docstring), unlike
-    `atomic_publish_path`'s exact-final-path contract. `cam_gen`'s own `-o`, by contrast, does take an
-    exact path, so its own write goes through plain `atomic_publish_path`."""
+    """Render the synthetic image with ASP's `sat_sim`, then convert the camera to a CSM Frame
+    model-state JSON sidecar with `cam_gen`.
+
+    :returns: Paths to the rendered TIFF, CSM JSON sidecar, and camera-list file.
+    """
+    # `sat_sim`'s own `-o <prefix>` convention appends its own fixed `-<camera_stem>.tif` suffix to
+    # whatever prefix it's given (`<camera_stem>` comes from the camera-list file's own contents,
+    # not from the given prefix) -- `atomic_publish_prefix` fits this (see its own docstring),
+    # unlike `atomic_publish_path`'s exact-final-path contract. `cam_gen`'s own `-o`, by contrast,
+    # does take an exact path, so its own write goes through plain `atomic_publish_path`.
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,20 +114,28 @@ def run_mapproject_image(
     config: TrntestConfig | None = None,
     camera_type: str = "csm",
 ) -> Path:
-    """Reproject any image back onto the map via its own camera model and ASP `mapproject`'s
-    `--ref-map` -- see `run_mapproject`'s docstring for the full rationale. The shared low-level
-    worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM sidecar, dead code -- no
-    live caller, see below) and `isis_wac.run_mapproject` (the real, ISIS-processed WAC cube's
-    ALE-derived ISD, also dead code) use, so both land on the exact same DEM grid with no separate
-    alignment step. Kept generic (`camera_type`) rather than hardcoded, as good hygiene, even though
-    its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`) always uses the default
-    `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV (`camera.solve_corrected_fov`)
-    once made `cam_gen`'s CSM Frame conversion measurably wrong here (silently averaging `fu`/`fv`
-    into one isotropic `m_focalLength`, a ~5% reprojected-footprint error), which this parameter
-    let the caller work around (`camera_type="pinhole"`, reading `camera.tsai_path` directly). Now
-    that `solve_corrected_fov` is isotropic again (`fu == fv` always), CSM and Pinhole reprojections
-    of the same camera agree by construction, so the parameter is no longer load-bearing for
-    correctness -- just kept generic. See docs/reproject-fov-investigation.md for the full history."""
+    """Reproject `image_path` back onto the map via `camera_path`'s own camera model and ASP
+    `mapproject`'s `--ref-map`.
+
+    :param camera_path: A camera file matching `camera_type` ("csm" or "pinhole").
+    :param dem_ortho_result: Supplies the reference DEM (`--ref-map`) both this and `run_sat_sim`
+        share, so the output lands on the exact same pixel grid.
+    :param camera_type: See `run_mapproject`'s docstring for the full rationale for keeping this
+        generic rather than hardcoded.
+    :returns: `output_path`.
+    """
+    # The shared low-level worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM
+    # sidecar) and `isis_wac.run_mapproject` (the WAC cube's ALE-derived ISD) use -- currently dead
+    # code, no live caller for either. Kept generic (`camera_type`) rather than hardcoded, as good
+    # hygiene, even though its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`)
+    # always uses the default `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV
+    # (`camera.solve_corrected_fov`) once made `cam_gen`'s CSM Frame conversion measurably wrong
+    # here (silently averaging `fu`/`fv` into one isotropic `m_focalLength`, a ~5%
+    # reprojected-footprint error), which this parameter let the caller work around
+    # (`camera_type="pinhole"`, reading `camera.tsai_path` directly). Now that `solve_corrected_fov`
+    # is isotropic again (`fu == fv` always), CSM and Pinhole reprojections of the same camera agree
+    # by construction, so the parameter is no longer load-bearing for correctness -- just kept
+    # generic. See docs/reproject-fov-investigation.md for the full history.
     config = config or load_config()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_quiet(
@@ -145,15 +158,17 @@ def run_mapproject(
     render_result: RenderResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
     """Reproject `render_result`'s synthetic image back onto the map using its own CSM sidecar --
-    the geometric inverse of `run_sat_sim`'s forward DEM+camera-to-image render, through the same
-    camera model, so the output lands back on real ground coordinates (not just a visually-similar
-    crop). `--ref-map` reads the projection and grid size from `dem_ortho_result.dem` -- the same DEM
-    `run_sat_sim` rendered from -- so the output shares an exact pixel grid with every other raster
-    in `dem_ortho_result` (the hillshade-based ortho included), letting them be overlaid directly with
-    no separate reprojection/alignment step. This round trip aligns terrain features
-    pixel-precisely, as expected for going forward and back through one consistent camera model.
-    Opt-in/on-demand (not part of `dataset.generate_dataset`'s default pipeline) -- a ~4s subprocess
-    call not every run needs."""
+    the geometric inverse of `run_sat_sim`'s forward DEM+camera-to-image render.
+
+    :returns: Path to the reprojected TIFF, sharing an exact pixel grid with every other raster in
+        `dem_ortho_result` (the hillshade-based ortho included).
+    """
+    # `--ref-map` reads the projection and grid size from `dem_ortho_result.dem` -- the same DEM
+    # `run_sat_sim` rendered from -- letting outputs be overlaid directly with no separate
+    # reprojection/alignment step. This round trip aligns terrain features pixel-precisely, as
+    # expected for going forward and back through one consistent camera model. Opt-in/on-demand
+    # (not part of `dataset.generate_dataset`'s default pipeline) -- a ~4s subprocess call not
+    # every run needs.
     config = config or load_config()
     camera_stem = render_result.rendered_tif.stem
     render_dir = render_result.rendered_tif.parent
@@ -164,8 +179,11 @@ def run_mapproject(
 
 
 def read_csm_state(csm_json_path: str | Path) -> tuple[str, dict]:
-    """The CSM state file's first line is a bare model-name string (not JSON) -- standard CSM
-    "state string" convention; skip it before parsing. Returns (model_name, csm_state)."""
+    """Parses a CSM state file: a bare model-name string on the first line (not JSON, per the
+    standard CSM "state string" convention), then the JSON state on the rest.
+
+    :returns: `(model_name, csm_state)`.
+    """
     with open(csm_json_path) as f:
         lines = f.readlines()
     model_name = lines[0].strip()
