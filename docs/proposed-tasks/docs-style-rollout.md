@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done except `trn_dataset.py` (17 done, 1 partial, of 18 files) -- every `docs/history.md` citation is now out of `src/trntest/*.py`.**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done (18 of 18 files) -- every `docs/history.md` citation is out of `src/trntest/*.py`.**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -158,23 +158,29 @@ truth per fact, thin index files, sensible file naming.
   intact. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file).
   No code logic touched, so no notebook re-run was needed.
 
-- **`src/trntest/trn_dataset.py` — merged as an improvement, but user review says it's not yet
-  satisfactory; don't count this file as done.** What was worse about it than the other done files
-  isn't yet specified — ask before doing further work here, don't guess at what to change. (693 ->
-  712 lines, both `docs/history.md` citations removed):
-  pulled in `origin/main` first (a peer session's label-override changes to
-  `plot_vs_basemap`/`plot_overlay`) before starting. Applied the what/why split consistently from
-  the start (per the `cache.py` review below) rather than needing a second pass. **Also caught 4
-  historical-narrative sentences embedded directly in docstrings with no `docs/history.md` citation
-  attached** — the same "used to do X, now does Z" pattern flagged in `render.py`'s docstring (see
-  that review below): the module docstring's "Replaces `dataset.generate_dataset()`'s flat...
-  layout" and "`populate()` no longer supports... old filesystem lock files... are gone" framing
-  (restated as direct current-state facts), `TrnTestHillshadeImage`'s "so this is a pure
-  relocation, not new pipeline logic" aside (cut), and `TrnTestReprojectImage`'s "The user's own
-  framing: ..." quoted aside (replaced with a plain statement). Added a docstring to
-  `plot_vs_basemap`, which had none. Fixed several stale "see X's own docstring" cross-references
-  that now point to content relocated to a comment in an earlier-reworked file. Verified with
-  `trntest-lint` and `tests/test_trn_dataset.py` (32 passed, non-heavy). No code logic touched.
+- **`src/trntest/trn_dataset.py`, round 2 — the first pass (693 -> 712 lines) removed both
+  `docs/history.md` citations and caught 4 historical-narrative sentences, but user review said it
+  still wasn't far enough into "docstring = minimal statement of intent + non-obvious params" —
+  too many docstrings still read as commentary on *how*/*why* the implementation works, even after
+  the citations were gone, rather than *what* the thing does.** Concretely: a short rationale
+  clause tacked onto the end of an otherwise-minimal sentence ("-- since X", "-- confirmed Y",
+  "-- matching Z's approach") is exactly as out-of-scope for a docstring as a whole paragraph of
+  it, per `docs/docs-style.md`'s existing rule — the round-1 pass had been treating that rule as
+  "cut long history/investigation paragraphs" rather than "cut *any* implementation rationale,
+  however short." Round 2 (712 -> 706 lines) re-swept every docstring in the file with that
+  stricter bar: `TrnTestEntry.stitched`'s/`TrnTestDataSet`'s/`TrnTestImage`'s/
+  `TrnTestCropImage`'s/`TrnTestHillshadeImage`'s/`TrnTestReprojectImage`'s class-or-property
+  docstrings each had a trailing "-- because/since/matching ..." clause evicted to a class-body or
+  property-body comment; the module docstring's `populate_via_workers`/`reproject` asides moved to
+  a trailing module comment; `populate()`'s/`populate_via_workers()`'s/`_enqueue_pending()`'s
+  `:param:`/`:returns:` fields were trimmed to state the semantics, not also justify the design
+  choice inline. Left the load-bearing exceptions where a "why" clause **is** the correctness-
+  relevant fact a caller needs (`dem_ortho_result`'s resume-from-files behavior, `truncate()`'s not
+  clearing `_work/`, `create()`'s not touching already-generated files, `plot_overlay()`'s no-
+  trailing-`;` requirement) — those already lived in the docstring proper in round 1 and stayed
+  there, since they're usage contract, not implementation commentary. Verified with `trntest-lint`
+  (`ruff format`/`ruff check`/`mypy` all clean) and `tests/test_trn_dataset.py` (32 passed,
+  non-heavy). No code logic touched, so no notebook re-run was needed.
 - `src/trntest/tie_points.py` (491 -> 450 lines, both `docs/history.md` citations removed): the
   densest file yet — a ~59-line module docstring (full 5-step selection/projection procedure plus a
   deprecated-camera-model investigation narrative) and several 30+-line function docstrings in the
@@ -287,15 +293,11 @@ retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and car
 
 ## Not yet done
 
-**`src/trntest/*.py` docstrings/comments.** Every file is done except `trn_dataset.py`
-(`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/`sfs_validation.py`/`config.py`/`camera.py`/
-`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/`tie_points.py`/`spice_kernels.py`/
-`dataset_selection.py`/`product_registry.py`/`maneuver_detection.py`/`_lint.py` fully done —
-`grep -rc "docs/history.md" src/trntest/*.py` now returns nothing at all). `trn_dataset.py` had its
-`docs/history.md` citations removed but user review said the result still isn't satisfactory; what
-specifically was worse than the other done files was never specified — **ask before doing further
-work there, don't guess at what to change** (see its Completed entry above for what was already
-tried).
+**`src/trntest/*.py` docstrings/comments — done, all 18 files** (`grep -rc "docs/history.md"
+src/trntest/*.py` returns nothing). If a future review finds the same "docstring reads as
+implementation commentary" issue `trn_dataset.py` round 2 fixed (see its Completed entry above) in
+another file, the fix is the same: evict any "-- because/since/matching X" rationale clause from
+the docstring to a body/class comment, even a short one — not just long history paragraphs.
 
 **Docs not yet reworked**:
 - `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
@@ -309,13 +311,10 @@ tried).
 
 ## If resuming
 
-1. Re-run `grep -rc "docs/history.md" src/trntest/*.py` to confirm it's still empty — other
-   sessions may have touched these files since.
-2. `trn_dataset.py` is the only file-level item left, and it's blocked on the user specifying what
-   was unsatisfactory about the first pass — ask, don't guess. Otherwise, work through the "Docs not
-   yet reworked" list one doc at a time; re-verify any `src/trntest/*.py` docstring change with
-   `trntest-lint` and, if it touches a function a notebook exercises, `scripts/run_notebook.sh` on
-   the relevant notebook before committing. A pure docstring/comment edit with no code-logic change
-   (confirm via `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
-3. Delete this plan once `trn_dataset.py` and the remaining docs above have had their pass, or fold
-   whatever's left into a narrower follow-up.
+1. `src/trntest/*.py` is done; work through the "Docs not yet reworked" list one doc at a time.
+   Re-verify any `src/trntest/*.py` docstring change with `trntest-lint` and, if it touches a
+   function a notebook exercises, `scripts/run_notebook.sh` on the relevant notebook before
+   committing. A pure docstring/comment edit with no code-logic change (confirm via `git diff`)
+   doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
+2. Delete this plan once the remaining docs above have had their pass, or fold whatever's left into
+   a narrower follow-up.
