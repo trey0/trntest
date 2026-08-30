@@ -63,15 +63,20 @@ _MIN_POINTS_FOR_FUNDAMENTAL_MATRIX = 8
 
 def to_uint8_for_matching(raster_path, percentile: float = 99.9) -> tuple[np.ndarray, np.ndarray]:
     """Reads band 1 of `raster_path` and returns `(uint8_image, valid_mask)`, ready for OpenCV
-    feature matching -- OpenCV's feature detectors need 8-bit input (confirmed empirically: its TIFF
-    reader can't even load a raw float32 GeoTIFF, e.g. `isis_wac.run_cam2map_for_crop`'s calibrated
-    I/F output). A plain 0/`percentile`-th-percentile linear stretch over the *valid* pixels only
-    (matching `plotting`'s own stretch convention elsewhere in this project) -- computing the
-    percentile over the whole array, including large invalid/nodata regions (e.g. a mapprojected
-    crop's own padding outside its real rotated footprint), would be a no-op here since nodata reads
-    as a huge-magnitude sentinel, but is avoided on principle since it's the wrong statistic
-    regardless of this particular sentinel's value. Invalid pixels come back as `0` in the returned
-    image and `False` in `valid_mask`."""
+    feature matching.
+
+    :param percentile: Stretch valid pixels linearly from 0 to this percentile.
+    :returns: `(uint8_image, valid_mask)` -- invalid pixels come back as `0` in `uint8_image` and
+        `False` in `valid_mask`.
+    """
+    # OpenCV's feature detectors need 8-bit input (confirmed empirically: its TIFF reader can't
+    # even load a raw float32 GeoTIFF, e.g. `isis_wac.run_cam2map_for_crop`'s calibrated I/F
+    # output). The percentile stretch is computed over *valid* pixels only (matching `plotting`'s
+    # own stretch convention elsewhere in this project) -- computing it over the whole array,
+    # including large invalid/nodata regions (e.g. a mapprojected crop's own padding outside its
+    # rotated footprint), would be a no-op here since nodata reads as a huge-magnitude sentinel,
+    # but is avoided on principle since it's the wrong statistic regardless of this particular
+    # sentinel's value.
     with rasterio.open(raster_path) as src:
         data = src.read(1).astype("float64")
     valid = np.isfinite(data) & (np.abs(data) < _FLOAT_NODATA_MAGNITUDE_THRESHOLD)
@@ -83,12 +88,12 @@ def to_uint8_for_matching(raster_path, percentile: float = 99.9) -> tuple[np.nda
 
 def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fraction: float = 0.15) -> Path:
     """Crops `reference_path` (e.g. the basemap ortho, typically much larger than the area actually
-    being compared) down to `footprint_source_path`'s own real valid-data bounding box, padded by
-    `pad_fraction` (via `lunaserv.pad_bbox`, reused rather than reinvented -- same "pad generously"
-    convention this project already uses for WMS fetch AOIs). Matching the two rasters' extent like
-    this matters for feature matching specifically: an unmatched, much-larger reference frame
-    gives OpenCV's matcher a far larger, mostly-irrelevant search space to false-match against,
-    confirmed empirically to hurt match quality, not just waste compute."""
+    being compared) down to `footprint_source_path`'s own valid-data bounding box, padded by
+    `pad_fraction` (via `lunaserv.pad_bbox`)."""
+    # Matching the two rasters' extent like this matters for feature matching specifically: an
+    # unmatched, much-larger reference frame gives OpenCV's matcher a far larger, mostly-irrelevant
+    # search space to false-match against, confirmed empirically to hurt match quality, not just
+    # waste compute.
     with rasterio.open(footprint_source_path) as src:
         data = src.read(1)
         valid = np.isfinite(data) & (np.abs(data.astype("float64")) < _FLOAT_NODATA_MAGNITUDE_THRESHOLD)
@@ -199,14 +204,14 @@ def downsample_to_gsd(
 
 
 def _sobel_edges(image: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Sobel gradient-magnitude, percentile-normalized over valid pixels only (see
-    `to_uint8_for_matching` for why: normalizing over the whole array lets a large invalid/padding
-    region's own sharp valid/invalid boundary dominate the stretch and wash out content contrast) --
-    confirmed empirically necessary here: without masking, WAC keypoint counts came out
-    an order of magnitude lower (848 vs. 40000+) due to exactly this. Matches `findfeatures`'
-    `FILTER=SOBEL` option, used for the same reason: the WAC crop and the basemap are different
-    sensors/processing pipelines with different tone curves, and edge/gradient content is far more
-    consistent across that gap than raw intensity is."""
+    """Sobel gradient-magnitude, percentile-normalized over valid pixels only."""
+    # Normalizing over the whole array (see `to_uint8_for_matching` for why) would let a large
+    # invalid/padding region's own sharp valid/invalid boundary dominate the stretch and wash out
+    # content contrast -- confirmed empirically necessary here: without masking, WAC keypoint
+    # counts came out an order of magnitude lower (848 vs. 40000+) due to exactly this. Matches
+    # `findfeatures`' `FILTER=SOBEL` option, used for the same reason: the WAC crop and the basemap
+    # are different sensors/processing pipelines with different tone curves, and edge/gradient
+    # content is far more consistent across that gap than raw intensity is.
     gx = cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=3)
     mag = cv2.magnitude(gx, gy)
@@ -227,17 +232,19 @@ def match_features(
     """Matches `from_image` against `to_image` (both `to_uint8_for_matching`'s output) via SIFT on
     Sobel-filtered versions of each (see `_sobel_edges`), a mutual (both-directions) Lowe's ratio
     test, and two RANSAC geometric-consistency passes (homography, then epipolar/fundamental
-    matrix) -- the same pipeline ISIS's own `findfeatures` uses internally (confirmed by matching its
-    reported match counts closely: 47 vs. its own 46 on the same image pair), reimplemented
-    directly in OpenCV because `findfeatures` doesn't expose raw matched pixel coordinates, only
-    summary counts, and (separately, see the module docstring) its own control-point-construction
-    step doesn't work with this project's plain-GeoTIFF basemap regardless.
+    matrix).
 
-    Returns `(from_points_px, to_points_px)`, same-length arrays of matched `(x, y)` pixel
-    coordinates in each input image's own pixel space -- convert to real map coordinates via each
-    raster's own `rasterio` transform before comparing the two (they're different crops with
-    different origins, so raw pixel coordinates aren't directly comparable -- see
-    `pixel_points_to_map`)."""
+    :returns: `(from_points_px, to_points_px)`, same-length arrays of matched `(x, y)` pixel
+        coordinates in each input image's own pixel space -- convert to map coordinates via each
+        raster's own `rasterio` transform before comparing the two (they're different crops with
+        different origins, so raw pixel coordinates aren't directly comparable -- see
+        `pixel_points_to_map`).
+    """
+    # The same pipeline ISIS's own `findfeatures` uses internally (confirmed by matching its
+    # reported match counts closely: 47 vs. its own 46 on the same image pair), reimplemented
+    # directly in OpenCV because `findfeatures` doesn't expose raw matched pixel coordinates, only
+    # summary counts, and (separately, see the module docstring) its own control-point-construction
+    # step doesn't work with this project's plain-GeoTIFF basemap regardless.
     sift = cv2.SIFT_create()  # type: ignore[attr-defined]  # real at runtime; cv2's bundled stubs miss it
     from_edges = _sobel_edges(from_image, from_valid)
     to_edges = _sobel_edges(to_image, to_valid)
@@ -296,27 +303,28 @@ def match_features_lightglue(
     to_valid: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Matches `from_image` against `to_image` (both `to_uint8_for_matching`'s output) via DISK
-    (deep-learned local features) + LightGlue (a learned, attention-based matcher) instead of
-    `match_features`'s classical SIFT+ratio-test+RANSAC pipeline -- tried specifically to push match
-    count/quality higher for more challenging future EDRs (shadowed terrain, low texture) than SIFT
-    can reliably deliver. Unlike `match_features`, this doesn't run the raw uint8 images through
-    `_sobel_edges` first: DISK/LightGlue are deep features trained directly on natural RGB/grayscale
-    imagery (not edge maps), and are already designed to be more robust to cross-sensor appearance
-    changes than classical descriptors, so feeding them the same edge-filtered input `match_features`
-    needs would be fighting what they were actually trained on, not helping them -- an empirical
-    question worth revisiting if match quality doesn't hold up in practice, not a settled one.
+    (deep-learned local features) + LightGlue (a learned, attention-based matcher), instead of
+    `match_features`'s classical SIFT+ratio-test+RANSAC pipeline.
 
-    Also unlike `match_features`, this doesn't run its own homography/fundamental-matrix RANSAC
-    verification pass afterward -- LightGlue is specifically designed to output high-precision
-    matches directly (its own `filter_threshold`, not a separate geometric check, is what LightGlue's
-    own paper reports doing that job), and every caller of this function's output already runs its
-    own RANSAC when fitting a correction (`fit_similarity_correction`/`fit_affine_correction`/
-    `fit_homography_correction`), so a redundant geometric-verification pass here would just be
-    duplicated work, not additional safety.
-
-    Returns `(from_points_px, to_points_px)`, same contract as `match_features` (same-length arrays
-    of matched `(x, y)` pixel coordinates in each input image's own pixel space) -- a drop-in
-    alternative anywhere `match_features` is used."""
+    :returns: `(from_points_px, to_points_px)`, same contract as `match_features` -- a drop-in
+        alternative anywhere `match_features` is used.
+    """
+    # Tried specifically to push match count/quality higher for more challenging future EDRs
+    # (shadowed terrain, low texture) than SIFT can reliably deliver. Unlike `match_features`, this
+    # doesn't run the raw uint8 images through `_sobel_edges` first: DISK/LightGlue are deep
+    # features trained directly on natural RGB/grayscale imagery (not edge maps), and are already
+    # designed to be more robust to cross-sensor appearance changes than classical descriptors, so
+    # feeding them the same edge-filtered input `match_features` needs would be fighting what they
+    # were actually trained on, not helping them -- an empirical question worth revisiting if match
+    # quality doesn't hold up in practice, not a settled one.
+    #
+    # Also unlike `match_features`, this doesn't run its own homography/fundamental-matrix RANSAC
+    # verification pass afterward -- LightGlue is specifically designed to output high-precision
+    # matches directly (its own `filter_threshold`, not a separate geometric check, is what
+    # LightGlue's own paper reports doing that job), and every caller of this function's output
+    # already runs its own RANSAC when fitting a correction (`fit_similarity_correction`/
+    # `fit_affine_correction`/`fit_homography_correction`), so a redundant geometric-verification
+    # pass here would just be duplicated work, not additional safety.
     extractor, matcher = _lightglue_models()
 
     with torch.no_grad():
@@ -434,15 +442,16 @@ def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Pa
     """Applies `correction` (from `fit_similarity_correction`) to `src_raster_path`'s own
     georeferencing and resamples it back onto its own original pixel grid -- so the output drops
     into `plotting.plot_overlay`/`plot_overlay_toggle` exactly like the uncorrected raster did, no
-    further plumbing changes needed. Composes `correction` with the source's existing transform
-    (`correction * src_transform`, i.e. "first go from pixel to the original, possibly-wrong map
-    position, then apply the fitted correction") and resamples via `rasterio.warp.reproject`, not a
-    bare metadata edit: a metadata-only fix would be valid for a translation-only correction (the
-    pixel grid stays rectilinear), but a fitted rotation/scale component would leave the raster's
-    own affine transform non-rectilinear in a way `plotting.py`'s `rioxarray`/`xarray`-based display
-    path isn't set up to handle (it assumes a plain north-up grid throughout this project, matching
-    every other raster this pipeline produces) -- reprojecting onto the original grid keeps that
-    assumption true regardless of what the fitted correction turns out to contain."""
+    further plumbing changes needed."""
+    # Composes `correction` with the source's existing transform (`correction * src_transform`,
+    # i.e. "first go from pixel to the original, possibly-wrong map position, then apply the
+    # fitted correction") and resamples via `rasterio.warp.reproject`, not a bare metadata edit: a
+    # metadata-only fix would be valid for a translation-only correction (the pixel grid stays
+    # rectilinear), but a fitted rotation/scale component would leave the raster's own affine
+    # transform non-rectilinear in a way `plotting.py`'s `rioxarray`/`xarray`-based display path
+    # isn't set up to handle (it assumes a plain north-up grid throughout this project, matching
+    # every other raster this pipeline produces) -- reprojecting onto the original grid keeps that
+    # assumption true regardless of what the fitted correction turns out to contain.
     with rasterio.open(src_raster_path) as src:
         data = src.read(1)
         src_transform = src.transform
@@ -473,18 +482,17 @@ def apply_correction(src_raster_path, correction: affine.Affine, out_path) -> Pa
 def apply_homography_correction(src_raster_path, homography: np.ndarray, out_path) -> Path:
     """Applies `homography` (from `fit_homography_correction`) to `src_raster_path`'s own
     georeferencing and resamples back onto its original pixel grid -- the homography counterpart to
-    `apply_correction` (which only handles `affine.Affine` corrections, since it composes two affines
-    directly). A homography can't be composed with a raster's affine transform that way, and
-    `rasterio.warp.reproject` has no projective-transform mode -- instead, this builds the single
-    pixel-space projective matrix equivalent to "pixel -> map (`src_transform`) -> corrected map
-    (`homography`) -> map (`src_transform`'s own inverse)" and warps directly via
-    `cv2.warpPerspective`, which does understand a full 3x3 projective matrix. `src_transform`'s own
-    2x3 affine coefficients are lifted to a 3x3 homogeneous matrix (bottom row `[0, 0, 1]`) purely to
-    make that composition well-defined -- the *result*, `pixel_homography`, is genuinely projective in
-    general, unlike either of its two affine ends.
-
-    Same output semantics as `apply_correction`: the corrected raster lands back on its own original
+    `apply_correction`. Same output semantics: the corrected raster lands back on its own original
     pixel grid, so it drops straight into `plotting.plot_overlay`/`plot_overlay_toggle` unchanged."""
+    # A homography can't be composed with a raster's affine transform the way `apply_correction`
+    # does (which only handles `affine.Affine` corrections), and `rasterio.warp.reproject` has no
+    # projective-transform mode -- instead, this builds the single pixel-space projective matrix
+    # equivalent to "pixel -> map (`src_transform`) -> corrected map (`homography`) -> map
+    # (`src_transform`'s own inverse)" and warps directly via `cv2.warpPerspective`, which does
+    # understand a full 3x3 projective matrix. `src_transform`'s own 2x3 affine coefficients are
+    # lifted to a 3x3 homogeneous matrix (bottom row `[0, 0, 1]`) purely to make that composition
+    # well-defined -- the *result*, `pixel_homography`, is genuinely projective in general, unlike
+    # either of its two affine ends.
     with rasterio.open(src_raster_path) as src:
         data = src.read(1)
         src_transform = src.transform
