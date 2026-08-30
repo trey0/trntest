@@ -58,9 +58,14 @@ class FetchError(Exception):
 
 
 def _parse_retry_after_seconds(header_value: str | None) -> float | None:
-    """Only the delay-seconds form of `Retry-After` (e.g. "3600") is handled -- the HTTP-date form
-    is rare in practice for this kind of API and not worth parsing; treated as unknown (`None`),
-    same as a missing header, which `cached_get` conservatively treats as "too long to wait out"."""
+    """Parses the delay-seconds form of a `Retry-After` header (e.g. "3600").
+
+    :param header_value: The raw header value, or `None` if absent.
+    :returns: The delay in seconds, or `None` if absent or in the (unhandled) HTTP-date form.
+    """
+    # The HTTP-date form is rare in practice for this kind of API and not worth parsing -- treated
+    # as unknown, same as a missing header, which `cached_get` conservatively treats as "too long
+    # to wait out".
     if header_value is None:
         return None
     try:
@@ -74,20 +79,23 @@ def cached_get(
 ) -> Path:
     """Return a local path for `url`, downloading into `cache_root/rel_path` only if not already there.
 
-    Downloads to a uniquely-named temp file (not a fixed `dest.name + ".part"` path) before
-    renaming into place -- a fixed, shared temp path per destination was found to cause
-    reproducible `tmp.rename(dest)` failures ("No such file or directory") under the rapid
-    sequential I/O of evaluating many catalog candidates back-to-back (confirmed: ~1600 sequential
-    fetches in one candidate-evaluation sweep, 69 hit this exact failure). `tempfile.mkstemp` claims
-    the unique path atomically. On failure, the temp file is removed rather than left behind.
-
-    Retries a failed fetch up to `max_attempts` times with a short exponential backoff (1s, 2s, 4s,
-    ...), except a 429 -- handled separately via `Retry-After` (see `_MAX_RETRY_AFTER_SECONDS`).
-
-    :raises FetchError: Once attempts are exhausted (chained from the last exception) -- lets
-        callers distinguish a systemic failure from an ordinary one and abort a whole batch rather
-        than skip one item; see `FetchError`'s own docstring for why that distinction matters here.
+    :param url: URL to fetch.
+    :param rel_path: Cache path, relative to `cache_root`.
+    :param cache_root: Cache root directory.
+    :param max_attempts: Retries a failed fetch this many times with a short exponential backoff
+        (1s, 2s, 4s, ...), except a 429 -- handled separately via `Retry-After` (see
+        `_MAX_RETRY_AFTER_SECONDS`).
+    :param requests_kwargs: Passed through to `requests.Session.get`.
+    :raises FetchError: Once attempts are exhausted (chained from the last exception) -- see
+        `FetchError`'s own docstring for why callers must let this propagate.
     """
+    # Downloads to a uniquely-named temp file (not a fixed `dest.name + ".part"` path) before
+    # renaming into place -- a fixed, shared temp path per destination was found to cause
+    # reproducible `tmp.rename(dest)` failures ("No such file or directory") under the rapid
+    # sequential I/O of evaluating many catalog candidates back-to-back (confirmed: ~1600
+    # sequential fetches in one candidate-evaluation sweep, 69 hit this exact failure).
+    # `tempfile.mkstemp` claims the unique path atomically. On failure, the temp file is removed
+    # rather than left behind.
     dest = cache_root / rel_path
     if dest.exists() and dest.stat().st_size > 0:
         return dest
@@ -183,28 +191,30 @@ def fetch_lunaserv_getmap(
 
 
 def astropedia_rel_path(url: str) -> str:
-    """astropedia/<filename> -- a single named file, unlike the other fetch helpers' per-request-
-    parametrized paths (there's only ever one Astropedia GLD100 file, not one per bbox/resolution)."""
+    """`astropedia/<filename>` -- the cache path for the Astropedia GLD100 file."""
+    # A single named file, unlike the other fetch helpers' per-request-parametrized paths --
+    # there's only ever one Astropedia GLD100 file, not one per bbox/resolution.
     return f"astropedia/{url.rsplit('/', maxsplit=1)[-1]}"
 
 
 def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
     """Download and cache Astropedia's flat-file GLD100 DEM (~10GB, see
-    docs/data-sources/astropedia-gld100.md) once, resumably.
-
-    Deliberately *not* built on `cached_get` above -- that function downloads to a freshly
-    uniquely-named temp file every call and deletes it on any failure, both correct for small WMS
-    tiles but actively wrong for one huge file: a fresh random name each attempt gives `curl -C -`
-    nothing to resume *from*, and deleting a mostly-complete download on a transient failure would
-    throw away exactly the progress being protected. Uses a stable `<dest>.part` path instead, and
-    deliberately leaves it in place on failure for the next call to resume from.
-
-    `curl -C -` (continue-at), not a hand-rolled `requests` Range-header implementation: `curl` is
-    already a Docker image dependency (see `docker/Dockerfile`'s ASP tarball fetch), and its resume
-    support is mature and well-tested -- confirmed against this exact file/server, not just assumed
-    from curl's own docs. Not run through `subprocess_utils.run_quiet` (that helper is scoped to
-    ASP/ISIS binary calls) -- curl's own progress meter has live value for a transfer this size,
-    unlike a quick ASP tool call's noise, so it's left to print directly rather than captured."""
+    docs/data-sources/astropedia-gld100.md) once, resumably."""
+    # Deliberately *not* built on `cached_get` above -- that function downloads to a freshly
+    # uniquely-named temp file every call and deletes it on any failure, both correct for small
+    # WMS tiles but actively wrong for one huge file: a fresh random name each attempt gives
+    # `curl -C -` nothing to resume *from*, and deleting a mostly-complete download on a transient
+    # failure would throw away exactly the progress being protected. Uses a stable `<dest>.part`
+    # path instead, and deliberately leaves it in place on failure for the next call to resume
+    # from.
+    #
+    # `curl -C -` (continue-at), not a hand-rolled `requests` Range-header implementation: `curl`
+    # is already a Docker image dependency (see `docker/Dockerfile`'s ASP tarball fetch), and its
+    # resume support is mature and well-tested -- confirmed against this exact file/server, not
+    # just assumed from curl's own docs. Not run through `subprocess_utils.run_quiet` (that helper
+    # is scoped to ASP/ISIS binary calls) -- curl's own progress meter has live value for a
+    # transfer this size, unlike a quick ASP tool call's noise, so it's left to print directly
+    # rather than captured.
     dest = cache_root / astropedia_rel_path(base_url)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
@@ -221,55 +231,59 @@ def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
 
 
 def robbins_craters_rel_path(url: str) -> str:
-    """robbins_craters/<filename>.zip -- a single named file (there's only ever one Robbins database
-    to fetch, not one per bbox/resolution), same shape as `astropedia_rel_path`. `.zip` is appended
-    explicitly since the upstream URL's own final path segment has no extension (a CKAN
-    resource-download route) -- confirmed via the response's `Content-Type: application/zip`."""
+    """`robbins_craters/<filename>.zip` -- the cache path for the Robbins crater database zip."""
+    # A single named file (there's only ever one Robbins database to fetch, not one per
+    # bbox/resolution), same shape as `astropedia_rel_path`. `.zip` is appended explicitly since
+    # the upstream URL's own final path segment has no extension (a CKAN resource-download route)
+    # -- confirmed via the response's `Content-Type: application/zip`.
     return f"robbins_craters/{url.rsplit('/', maxsplit=1)[-1]}.zip"
 
 
 def fetch_robbins_craters(cache_root: Path, base_url: str) -> Path:
     """Download and cache the Robbins lunar crater database's raw zip (~92MB, see
-    docs/data-sources/robbins-craters.md) once. Plain `cached_get`, not `fetch_astropedia_gld100`'s
-    special resumable-curl path -- that path exists specifically because GLD100 is ~10GB, too large
-    for `cached_get`'s whole-response-then-rename shape to be a good fit; 92MB is comfortably fine
-    for it."""
+    docs/data-sources/robbins-craters.md) once."""
+    # Plain `cached_get`, not `fetch_astropedia_gld100`'s special resumable-curl path -- that path
+    # exists specifically because GLD100 is ~10GB, too large for `cached_get`'s
+    # whole-response-then-rename shape to be a good fit; 92MB is comfortably fine for it.
     return cached_get(base_url, robbins_craters_rel_path(base_url), cache_root=cache_root)
 
 
 def isis_kernel_rel_path(rel_path: str) -> str:
-    """rel_path like 'kernels/ck/moc42r_2019334_2020001_v01.bc' -> cache path under isisdata/lro/... --
-    deliberately mirrors $ISISDATA/lro/...'s own layout (not a new independent subtree), so a file
-    cached here already sits where a future local (non-web) spiceinit run, or a fuller
-    `downloadIsisData lro` fetch, would expect to find it. `isis_wac.ensure_isisdata()`'s own
-    --include filter deliberately excludes kernels/ck/ -- this is a narrow, additive exception living
-    alongside it, not a change to it. See docs/data-sources/spice-kernels-isis.md for the USGS S3
-    bucket this mirrors."""
+    """`rel_path` like `'kernels/ck/moc42r_2019334_2020001_v01.bc'` -> cache path under
+    `isisdata/lro/...`. See docs/data-sources/spice-kernels-isis.md for the USGS S3 bucket this
+    mirrors."""
+    # Deliberately mirrors `$ISISDATA/lro/...`'s own layout (not a new independent subtree), so a
+    # file cached here already sits where a future local (non-web) spiceinit run, or a fuller
+    # `downloadIsisData lro` fetch, would expect to find it. `isis_wac.ensure_isisdata()`'s own
+    # `--include` filter deliberately excludes `kernels/ck/` -- this is a narrow, additive
+    # exception living alongside it, not a change to it.
     return f"isisdata/lro/{rel_path}"
 
 
 def fetch_isis_kernel(rel_path: str, cache_root: Path, base_url: str) -> Path:
     """Fetch a kernel USGS's ISIS kernel database resolved (see spice_kernels.py's
-    `select_isis_wac_ck_kernels`), from USGS's public S3 bucket rather than NAIF's archive -- same
-    `cached_get` shape as `fetch_naif_kernel`. A 30-day `moc42r_*` CK merge is ~1.65 GiB, comparable
-    to what `fetch_naif_kernel` already streams for `lrosc`/`lrolc` today (~529MB/10-day chunk per
-    docs/caching.md) -- no special resumable-curl handling needed here, unlike
-    `fetch_astropedia_gld100`'s ~10GB single-file case."""
+    `select_isis_wac_ck_kernels`) from USGS's public S3 bucket, rather than NAIF's archive."""
+    # Same `cached_get` shape as `fetch_naif_kernel`. A 30-day `moc42r_*` CK merge is ~1.65 GiB,
+    # comparable to what `fetch_naif_kernel` already streams for `lrosc`/`lrolc` today
+    # (~529MB/10-day chunk per docs/caching.md) -- no special resumable-curl handling needed here,
+    # unlike `fetch_astropedia_gld100`'s ~10GB single-file case.
     return cached_get(f"{base_url}{rel_path}", isis_kernel_rel_path(rel_path), cache_root=cache_root)
 
 
 def wac_emp_rel_path(product_id: str) -> str:
-    """product_id like 'WAC_EMP_643NM_E300N1350_304P' (no extension) -> cache path -- one file per
-    tile/wavelength/ppd combination, same one-named-file-per-thing shape as `astropedia_rel_path`,
-    just parametrized instead of singular (WAC_EMP has multiple tiles, GLD100 doesn't)."""
+    """`product_id` like `'WAC_EMP_643NM_E300N1350_304P'` (no extension) -> cache path."""
+    # One file per tile/wavelength/ppd combination, same one-named-file-per-thing shape as
+    # `astropedia_rel_path`, just parametrized instead of singular (WAC_EMP has multiple tiles,
+    # GLD100 doesn't).
     return f"pds_wac_emp/{product_id}.IMG"
 
 
 def fetch_wac_emp_tile(product_id: str, cache_root: Path, base_url: str) -> Path:
     """Fetch one WAC_EMP PDS4 archive tile (see `lunaserv.wac_emp_tile_id_for_bbox`) and cache it
-    locally, once. Plain `cached_get`, not `fetch_astropedia_gld100`'s special resumable-curl path --
-    a WAC_EMP tile is ~1.86GB at 304 ppd (see docs/data-sources/wac-emp-pds4.md), comfortably within
-    `cached_get`'s range, the same call already made for `fetch_isis_kernel`'s ~1.65GB CK merges."""
+    locally, once."""
+    # Plain `cached_get`, not `fetch_astropedia_gld100`'s special resumable-curl path -- a WAC_EMP
+    # tile is ~1.86GB at 304 ppd (see docs/data-sources/wac-emp-pds4.md), comfortably within
+    # `cached_get`'s range, the same call already made for `fetch_isis_kernel`'s ~1.65GB CK merges.
     return cached_get(f"{base_url}{product_id}.IMG", wac_emp_rel_path(product_id), cache_root=cache_root)
 
 
