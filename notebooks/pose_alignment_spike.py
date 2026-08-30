@@ -313,9 +313,9 @@ def ground_space_residual_m(cub_path, observed_pixels, ground_points_me_m):
     `wac_camera_model`'s own forward-projection/framelet-search tie-break entirely -- comparing
     predicted-vs-observed *pixels* re-litigates which of several equally-valid framelets is "right"
     whenever a ground point sits in an overlap band (~29% of framelet height, confirmed live -- see
-    `wac_camera_model.py`'s own module docstring), which has no principled answer. This function
-    never searches for a framelet: `observed_pixels` are already fixed coordinates, and one pixel
-    has exactly one ground point -- nothing to litigate."""
+    `wac_camera_model.find_framelet_and_project`'s own docstring), which has no principled answer.
+    This function never searches for a framelet: `observed_pixels` are already fixed coordinates,
+    and one pixel has exactly one ground point -- nothing to litigate."""
     ground_points = isis_wac.image_to_ground_points_batch(cub_path, observed_pixels)
     errors_m = []
     for ground_point, trusted_me_m in zip(ground_points, ground_points_me_m, strict=True):
@@ -603,7 +603,8 @@ results.append(
 # comparison in the `2D->2D` and `image->ground->image`-round-trip senses -- comparing it against an
 # independently-resolved `observed_pixels` re-litigates *which* framelet is "right" whenever a
 # control point's ground location sits in an overlap band (~29% of framelet height, confirmed
-# live -- see `wac_camera_model.py`'s own module docstring), which has no principled answer.
+# live -- see `wac_camera_model.find_framelet_and_project`'s own docstring), which has no
+# principled answer.
 #
 # `residual_mean_m`/`residual_max_m` for rows 5-10 are now computed a genuinely different way
 # (`ground_space_residual_m`): the ground point `observed_pixels` actually corresponds to
