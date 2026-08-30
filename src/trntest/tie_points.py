@@ -406,13 +406,14 @@ def select_tie_points(frame_timing: FrameTiming, camera: Camera, config: Trntest
 
 
 def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: TrntestConfig | None = None) -> dict:
-    """Fill in each selected tie point's `crop_px`, via `wac_camera_model.find_framelet_and_project`
-    -- validated to exact (0.000px) agreement with ISIS `campt` output.
+    """Fill in each selected tie point's `crop_px`, via `wac_camera_model.find_framelet_and_project`.
 
     :raises RuntimeError: if a tie point doesn't project into the crop under its own camera model --
         `select_tie_points` places every candidate inside the shared FOV's local-meters inscribed
         box, so this means something is fundamentally wrong, not an expected case.
     """
+    # Validated to exact (0.000px) agreement with ISIS `campt` output.
+    #
     # Used instead of isis_wac.ground_to_image_pixel/resolve_ground_to_image_model's campt-based
     # query because campt's own ground-to-image solve has a ~38% failure rate for WAC's Pushframe
     # sensor on this project's default candidate -- a known upstream ISIS bug
