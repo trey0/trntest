@@ -92,16 +92,27 @@ print("Lambertian ortho: ", dem_ortho_lambertian.ortho)
 # ## Blink comparison
 #
 # Both orthos share the exact same georeferencing/pixel grid (same camera footprint, same DEM, only
-# the final shading step differs), so this is a direct visual read of what the Hapke default changes
-# relative to the plain Lambertian fallback -- emission-angle-dependent brightening toward the side
-# of the frame the camera is looking more obliquely at (a parallax effect the Lambertian path has no
-# equivalent of, since it only considers the Sun, never the viewer), opposition-surge brightening
-# near the sub-solar point, a different incidence-angle falloff, etc. -- not a geo-registration check
-# like Phase 5B/6B's own use of this same blink-comparator.
+# the final shading step differs), so `plotting.plot_render_toggle` applies directly -- the same
+# blink comparator `image_generation.ipynb`'s Phase 8 uses for `hillshade` vs. `reproject` (no
+# rotation needed here, since these orthos are already north-up map-projected, unlike a raw
+# sensor-frame render). Its title names each frame directly (`"☑ Lambertian... / ☐ ISIS photomet..."`,
+# flipped on the other frame) rather than a generic "Overlay Visibility" toggle, which doesn't say
+# which of two equally-weighted images -- not a base and an overlay -- is showing.
+#
+# What to look for: emission-angle-dependent brightening toward the side of the frame the camera is
+# looking more obliquely at (a parallax effect the Lambertian path has no equivalent of, since it
+# only considers the Sun, never the viewer), opposition-surge brightening near the sub-solar point,
+# a different incidence-angle falloff, etc.
 
 # %%
-plotting.plot_overlay_toggle(
+width_km = (dem_ortho_hapke.bbox[2] - dem_ortho_hapke.bbox[0]) / 1000.0
+height_km = (dem_ortho_hapke.bbox[3] - dem_ortho_hapke.bbox[1]) / 1000.0
+plotting.plot_render_toggle(
     dem_ortho_lambertian.ortho,
     dem_ortho_hapke.ortho,
-    title="Lambertian hillshade vs. ISIS photomet (Hapke) basemap",
+    0,
+    width_km,
+    height_km,
+    "Lambertian hillshade",
+    "ISIS photomet (Hapke)",
 )
