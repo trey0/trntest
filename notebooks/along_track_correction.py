@@ -18,41 +18,37 @@
 #
 # `lunaserv.hapke_shade_ortho`'s per-pixel photometric angles come from one **frozen** camera
 # position (`Camera.camera_center_moon_me_m`, matched to the crop's own center-frame time) -- but
-# the real WAC crop is a real ~97s pushframe scan, during which the real spacecraft actually moved
-# ~150km (confirmed directly via real ISIS `campt` `SpacecraftPosition` at the crop's edges -- see
-# `docs/history.md`'s dated entry). So the raw per-pixel view direction is only really accurate near
-# the crop's own center; it's a mismatched, wrong-epoch position everywhere else.
+# the WAC crop is a ~97s pushframe scan, during which the spacecraft moved ~150km (confirmed via
+# ISIS `campt`'s `SpacecraftPosition` at the crop's edges). So the raw per-pixel view direction is
+# only accurate near the crop's own center; it's a mismatched, wrong-epoch position everywhere else.
 #
 # `lunaserv._terrain_photometric_angles`'s `along_track_correction` is a "poor man's" fix for this
-# that doesn't need per-line real timing: project the raw view direction onto the plane perpendicular
-# to a chosen along-track vector before computing emission/phase -- i.e. trust only the *cross-track*
+# that doesn't need per-line timing: project the raw view direction onto the plane perpendicular to a
+# chosen along-track vector before computing emission/phase -- i.e. trust only the *cross-track*
 # component of the raw (wrong-position) view direction, discarding its along-track component
-# entirely, on the assumption that a real scanning pushframe sensor observes each line close to
-# nadir *in its own along-track direction* at the instant it's actually captured. **On by default**
+# entirely, on the assumption that a scanning pushframe sensor observes each line close to nadir
+# *in its own along-track direction* at the instant it's captured. **On by default**
 # (`DEFAULT_ALONG_TRACK_CORRECTION`) -- this notebook is now a reference/regression comparison
 # against the uncorrected fallback (`along_track_correction=False`), not an "should we turn this on"
 # evaluation anymore.
 #
-# **Which vector counts as "along-track" went through two versions.** The first used the
-# spacecraft's raw orbital velocity (`spkezr`'s own velocity, real but generic). The second --
-# `Camera.camera_along_track_direction_moon_me`, used below -- comes from the camera's own re-aimed
-# attitude instead (`camera.py`'s "Boresight re-aiming": the pre-twist X axis, which the sensor-model
-# axis convention comment there identifies as along-track/py; the *other* pre-twist axis, cross(z,
-# x), is cross-track/px, not this). Validated directly against real ISIS `campt` phase at 5 points
-# for this crop: raw velocity gave 4.8 deg mean absolute phase error; the camera-attitude-derived
-# axis gave 1.3 deg; the (wrong) cross-track axis gave 16.9 deg -- confirming both that a
-# camera-derived vector beats the generic orbital one, and that getting the specific axis right
-# matters a lot. See docs/history.md's dated entries for the full numbers.
+# The "along-track" vector used below is `Camera.camera_along_track_direction_moon_me` -- the
+# camera's own re-aimed attitude's pre-twist X axis (`camera.py`'s "Boresight re-aiming": the
+# sensor-model axis convention comment there identifies this as along-track/py; the *other*
+# pre-twist axis, cross(z, x), is cross-track/px, not this) -- rather than the spacecraft's raw
+# orbital velocity. Getting the specific axis right matters: validated against ISIS `campt` phase at
+# 5 points for this crop, the wrong (cross-track) axis is worse than no correction at all, while the
+# camera-attitude axis clearly beats the generic orbital-velocity one.
 #
 # Minimum setup: same Phase-1-2-only pattern as `hapke_hillshade.ipynb` (no `sat_sim` render needed),
-# plus the real WAC crop (`entry.crop_result`) `image_generation.ipynb` already generates, reprojected
-# once via ISIS's own `cam2map` -- the actual ground-truth comparison target.
+# plus the WAC crop (`entry.crop_result`) `image_generation.ipynb` already generates, reprojected
+# once via ISIS's own `cam2map` -- the ground-truth comparison target.
 
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
-import rasterio
-from rasterio.windows import from_bounds
+import rioxarray
+import xarray
 
 import trntest
 from trntest import isis_wac, lunaserv
@@ -82,13 +78,10 @@ mapprojected_crop_path = isis_wac.run_cam2map_for_crop(
     entry.crop_result, entry.dem_ortho_result, entry.per_image_config
 )
 
-with rasterio.open(mapprojected_crop_path) as src:
-    real_crop = src.read(1).astype(np.float64)
-    crop_bounds = src.bounds
-    crop_nodata = src.nodata
-
-valid = np.isfinite(real_crop) if crop_nodata is None else (real_crop != crop_nodata) & np.isfinite(real_crop)
-real_crop_display = np.where(valid, real_crop, np.nan)
+real_crop_da = rioxarray.open_rasterio(mapprojected_crop_path, masked=True)
+assert isinstance(real_crop_da, xarray.DataArray)
+real_crop_da = real_crop_da.squeeze()
+real_crop_display = real_crop_da.values.astype(np.float64)
 
 # %% [markdown]
 # ## Render both basemap variants and diff each against the real crop
@@ -103,13 +96,16 @@ def basemap_and_diff(along_track_correction: bool):
     dem_ortho = lunaserv.fetch_dem_and_ortho(
         camera, entry.per_image_config, hapke=True, along_track_correction=along_track_correction
     )
-    with rasterio.open(dem_ortho.ortho) as src:
-        basemap = src.read(1).astype(np.float64)
-        transform = src.transform
-    window = from_bounds(*crop_bounds, transform=transform)
-    row_off, col_off = int(window.row_off), int(window.col_off)
-    h, w = int(window.height), int(window.width)
-    basemap_crop = basemap[row_off : row_off + h, col_off : col_off + w]
+    basemap_da = rioxarray.open_rasterio(dem_ortho.ortho, masked=True)
+    assert isinstance(basemap_da, xarray.DataArray)
+    basemap_da = basemap_da.squeeze()
+    # Independently-fetched/reprojected rasters don't necessarily land on identical pixel grids --
+    # align by real coordinate rather than assuming matching array shapes. Linear interpolation
+    # (not compute_brightness_matched_diff's nearest+tolerance) since the two grids' pixel pitch
+    # drifts by a fraction of a cell across the image -- nearest-neighbor's hard tolerance cutoff
+    # leaves a gap row right where that drift crosses the tolerance boundary.
+    basemap_aligned = basemap_da.interp_like(real_crop_da, method="linear")
+    basemap_crop = basemap_aligned.values.astype(np.float64)
     scale = np.nanmedian(basemap_crop) / np.nanmedian(real_crop_display)
     diff = basemap_crop - real_crop_display * scale
     return basemap_crop, diff
@@ -125,7 +121,8 @@ basemap_uncorrected, diff_uncorrected = basemap_and_diff(along_track_correction=
 # Each right-hand panel is `basemap - real` (brightness-matched at the median) -- a strong,
 # direction-consistent color there means the basemap's predicted shading pattern doesn't match the
 # real data's; less color / more uniform noise means a better match. `mean|diff|` in each title is
-# the same brightness-matched-difference metric quoted in chat.
+# the same brightness-matched-difference metric `plotting.compute_brightness_matched_diff` provides
+# as a reusable function.
 
 # %%
 vmax = np.nanpercentile(basemap_corrected, 99.9)
