@@ -1,6 +1,6 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
-**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (12 of 18 files).**
+**Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments underway (11 done, 1 partial, of 18 files).**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
 so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
 remaining job.
@@ -158,7 +158,10 @@ truth per fact, thin index files, sensible file naming.
   intact. Verified with `trntest-lint` (`ruff format`/`ruff check`/`mypy` all clean on this file).
   No code logic touched, so no notebook re-run was needed.
 
-- `src/trntest/trn_dataset.py` (693 -> 712 lines, both `docs/history.md` citations removed):
+- **`src/trntest/trn_dataset.py` — merged as an improvement, but user review says it's not yet
+  satisfactory; don't count this file as done.** What was worse about it than the other done files
+  isn't yet specified — ask before doing further work here, don't guess at what to change. (693 ->
+  712 lines, both `docs/history.md` citations removed):
   pulled in `origin/main` first (a peer session's label-override changes to
   `plot_vs_basemap`/`plot_overlay`) before starting. Applied the what/why split consistently from
   the start (per the `cache.py` review below) rather than needing a second pass. **Also caught 4
@@ -195,9 +198,10 @@ retroactively to `camera.py`/`tasks.py`/`render.py`/`pose_alignment.py`, and car
 
 **`src/trntest/*.py` docstrings/comments — the original complaint, still mostly untouched.** 6
 files still cite `docs/history.md` (`lunaserv.py`/`isis_wac.py`/`dataset.py`/`plotting.py`/
-`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`/
-`trn_dataset.py` done, see Completed above). Rough priority order (citation count, then size, as a
-proxy for how much chatty/historical material likely needs trimming):
+`sfs_validation.py`/`config.py`/`camera.py`/`cache.py`/`tasks.py`/`render.py`/`pose_alignment.py`
+fully done; `trn_dataset.py` had its citations removed but isn't yet considered satisfactory, see
+its own Completed entry above — don't count it done). Rough priority order (citation count, then
+size, as a proxy for how much chatty/historical material likely needs trimming):
 
 | File | `docs/history.md` cites | Lines |
 |---|---|---|
