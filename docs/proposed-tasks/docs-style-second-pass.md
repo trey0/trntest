@@ -2,9 +2,9 @@
 
 **Status: in progress.** Part 2 done (all 4 files' stale `docs/data-sources.md` refs repointed,
 merged to main). Part 1: `wac_camera_model.py`, `crater_depth_batch.py`, `control_network.py`,
-`craters.py`, `crater_depth.py`, `illumination.py`, and `wac.py` done (also fixed a downstream stale
-pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/`notebooks/pose_alignment_spike.py`);
-6 of 13 files remain, `catalog.py` next.
+`craters.py`, `crater_depth.py`, `illumination.py`, `wac.py`, and `catalog.py` done (also fixed a
+downstream stale pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/
+`notebooks/pose_alignment_spike.py`); 5 of 13 files remain, `orientation.py` next.
 
 **Note for whoever hits the next `git push origin <branch>:main`**: the auto-mode classifier started
 blocking direct pushes to `main` partway through this plan (after `control_network.py`, before
