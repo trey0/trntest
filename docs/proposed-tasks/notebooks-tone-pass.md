@@ -1,6 +1,6 @@
 # Notebooks: tone/structure pass
 
-**Status: 9 of 11 notebooks done.**
+**Status: 10 of 11 notebooks done.**
 
 ## Goal
 
@@ -110,10 +110,18 @@ scope decision -- see below).
    clean (`entry.dem_ortho_result` self-heals; `grade_footprint`'s own markdown already documents
    that it grades on demand for a new candidate). Verified with `trntest-lint`; regenerated
    cleanly, no code logic touched.
-10. `reproject_spike.py` (507 lines) -- **likely obsolete, decide before rewriting**: its premise
-    is "should we build `TrnTestReprojectImage`?", but `reproject` is now fully implemented and
-    wired into `image_generation.py`'s Phase 8. May be a better fit for `old_notebooks/` (archived,
-    frozen) than a tone rewrite -- ask the user, same as the `wac_isis.py` discussion.
+10. ~~`reproject_spike.py`~~ -- done, via archival (per user direction) rather than a tone rewrite:
+    moved to `old_notebooks/reproject_spike.py`/`.ipynb`, with a new `old_notebooks/README.md`
+    section summarizing the investigation/fix and pointing to `docs/reproject-fov-investigation.md`
+    for the full trail. Frontmatter/title annotated to match the archived-pair convention (`formats:`
+    line dropped, "(archived investigation, not a tracked notebook pair)" appended), matching
+    `astropedia_check.py`'s pattern. Updated the resulting stale path references: `src/trntest/
+    trn_dataset.py`'s `_reproject_dem_ortho` docstring, `docs/reproject-fov-investigation.md` (4
+    spots, plus its own now-inaccurate "not yet merged to main" status line), and `docs/plan.md`'s
+    stale-notebook tracking. `docs/history.md`'s own references to the old path are untouched --
+    those describe what was true when written, not current state. No tone pass performed, since the
+    file is now frozen (not subject to `docs/docs-style.md` going forward, per `old_notebooks/`
+    convention).
 11. `pose_alignment_spike.py` (666 lines, largest) -- its own "on the back burner, not superseded"
     framing already matches current status (per `docs/plan.md`), so likely just needs the
     tone/citation pass, not a status correction.

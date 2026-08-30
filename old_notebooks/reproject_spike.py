@@ -1,7 +1,6 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: notebooks//ipynb,notebooks//py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
@@ -14,7 +13,8 @@
 # ---
 
 # %% [markdown]
-# # Reproject spike: `sat_sim` fed by the real WAC crop instead of the Lunaserv basemap
+# # Reproject spike: `sat_sim` fed by the real WAC crop instead of the Lunaserv basemap (archived
+# investigation, not a tracked notebook pair)
 #
 # `crop` (the real, ISIS-processed WAC image) and `hillshade` (a synthetic `sat_sim` render, textured
 # from Lunaserv/Astropedia + a synthetic Hapke hillshade) are the two implemented `TrnTestImage`

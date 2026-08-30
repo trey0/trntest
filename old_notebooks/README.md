@@ -12,8 +12,10 @@ that `.ipynb` (`jupytext --to py:percent <notebook>.ipynb`), the reverse of this
 `.py`-is-source-of-truth convention for `../notebooks/`. Neither half will be re-executed or
 re-synced; treat both as a frozen record, not a live notebook.
 
-Full narrative for both: `docs/history.md`'s Phase 26 entry (the DEM stripe/crosshatch artifact
-investigation — root cause, the false leads and why each one was ruled out, and the final fix).
+Full narrative for `stripe_debug.py`/`astropedia_check.py`: `docs/history.md`'s Phase 26 entry (the
+DEM stripe/crosshatch artifact investigation — root cause, the false leads and why each one was
+ruled out, and the final fix). `reproject_spike.py`'s own full trail is pointed to from its own
+section below instead.
 
 ## `stripe_debug.py` / `.ipynb`
 
@@ -37,3 +39,22 @@ reprojects it into the same per-camera local Orthographic working grid as everyt
 confirmed (both by inspecting the real plots and via the frequency-domain numbers) that Astropedia's
 data has none of Lunaserv's artifact — the basis for the actual fix now in `src/trntest/lunaserv.py`
 (`fetch_dem_astropedia`/`reproject_astropedia_elevation_to_local_grid`).
+
+## `reproject_spike.py` / `.ipynb`
+
+The investigation that found and fixed a real coverage gap in the `reproject` `TrnTestImage` type
+(a `sat_sim` render textured from the real WAC crop's own reflectance instead of a synthetic
+basemap): the synthetic camera's FOV didn't fully fit inside the real crop's footprint (96.3%
+valid pixels overall, as low as 53.6% at the worst corner on the default candidate). Root cause,
+confirmed by direct ray-trace math: `camera.build_camera()` calibrated the along-track FOV against
+a flat, non-perspective ground-distance target but rendered it through a real perspective model,
+plus a second coupling effect where oblique corner rays elongate both axes at once, which a
+standard 4-parameter pinhole can't fully represent. Fixed here with a deliberately over-shrunk
+`(FU_SCALE, AT_MARGIN)` corner-ray solve, validated to ~100% coverage across 4 real candidates
+spanning a wide latitude/off-nadir range. This anisotropic (`fu != fv`) fix was later superseded:
+`camera.solve_corrected_fov` now applies a simpler isotropic version directly in
+`build_camera()`, and `TrnTestReprojectImage` is a real, implemented class wired into
+`image_generation.ipynb`'s Phase 8 -- this notebook predates both and computes its own separate,
+now-superseded camera/FOV math rather than using either. Full trail (including the anisotropic
+fix's own later-found CSM residual, and why it was reverted in favor of the isotropic one):
+`docs/reproject-fov-investigation.md`.

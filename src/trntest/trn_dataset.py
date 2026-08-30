@@ -601,7 +601,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
     def _reproject_dem_ortho(self) -> DemOrthoResult:
         """The real WAC crop's own reflectance, reprojected (`isis_wac.run_cam2map_for_crop`) and
         wrapped as a `DemOrthoResult` sharing `entry.dem_ortho_result`'s own DEM -- only the imagery
-        source changes, matching `notebooks/reproject_spike.py`'s validated approach."""
+        source changes, matching `old_notebooks/reproject_spike.py`'s validated approach."""
         wac_ortho_path = isis_wac.run_cam2map_for_crop(
             self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
         )

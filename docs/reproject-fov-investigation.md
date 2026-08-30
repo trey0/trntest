@@ -1,6 +1,6 @@
 # Investigation: the `reproject` `TrnTestImage` type, and a real synthetic-camera FOV bug found along the way
 
-**Status: implemented and live-validated, still on `feature/reproject`, not yet merged to `main`.**
+**Status: implemented and merged to `main`.**
 **The FOV fix is now isotropic (`fu == fv` again) -- see "RESOLVED: reverted to an isotropic FOV,
 closing the CSM residual investigation" near the end of this doc for why and how, before reading the
 anisotropic derivation below, which is now historical (kept for the rationale, not the current
@@ -8,8 +8,7 @@ behavior).**
 
 The FOV fix is folded into `camera.build_camera()` itself (`solve_corrected_fov`) and
 `TrnTestReprojectImage(TrnTestHillshadeImage)` is a real class in `src/trntest/trn_dataset.py` --
-`notebooks/reproject_spike.py`/`.ipynb` (still on this branch, uncommitted-to-`main` by design, same
-pattern as `feature/alignment`'s `pose_alignment_spike.py`) is now superseded exploratory history,
+`old_notebooks/reproject_spike.py`/`.ipynb` (archived, per `old_notebooks/README.md`) is now superseded exploratory history,
 not the current implementation; it computes its own separate `_fovfix` camera/tsai (and the now-
 superseded anisotropic derivation, not the isotropic `f = max(fu, fv)` version) rather than using
 `build_camera()`'s built-in correction, and will not run against current code without updating (not
@@ -61,7 +60,7 @@ crop's own ISIS `campt`-based footprint corners, `entry.crop_footprint`):
 
 ## The fix that worked (on this one image)
 
-`notebooks/reproject_spike.py`'s final cells (search for `FU_SCALE`/`AT_MARGIN`):
+`old_notebooks/reproject_spike.py`'s final cells (search for `FU_SCALE`/`AT_MARGIN`):
 
 1. Shrink `fu` by `FU_SCALE` (0.93 in the tested run) -- closes the far-corner cross-track excess.
 2. Solve `fv`/`cv` independently by ray-tracing the actual *corner* (both cross-track and
@@ -80,7 +79,7 @@ Result on `M1327210646CE`: valid pixels 96.3% -> **100.0%**, worst corner 53.6% 
 
 ## Validated: the fix generalizes across 4 real images
 
-`notebooks/reproject_spike.py`'s later cells (`evaluate_reproject_coverage`, search for
+`old_notebooks/reproject_spike.py`'s later cells (`evaluate_reproject_coverage`, search for
 "Validating the fix across more images") re-ran the *same* `(FU_SCALE=0.93, AT_MARGIN=0.93)`
 constants -- unchanged, not retuned -- against 3 more real candidates already available in the
 `trn_dataset` folder (crop+hillshade already generated from the accidental `populate(limit=1)`
@@ -341,11 +340,11 @@ result: this isn't one image's overfit tuning.
   unchanged (just `crop`+`hillshade`). **Still open: only validated on this one entry through the
   real `TrnTestReprojectImage` class and the flagship notebook** (the FOV fix itself has 4-image
   coverage; the class/notebook wrapping it doesn't yet) -- dataset-scale validation across the rest
-  of the manifest is a separate follow-up, not done here. `notebooks/reproject_spike.py` itself is
-  now stale relative to `build_camera()`'s built-in correction (still computes its own separate
+  of the manifest is a separate follow-up, not done here. `old_notebooks/reproject_spike.py` itself
+  is now stale relative to `build_camera()`'s built-in correction (still computes its own separate
   `_fovfix` camera/tsai) -- not worth updating, since it already did its job (finding and validating
   the fix); the real implementation lives in `src/trntest/camera.py`/`trn_dataset.py` now, this
-  notebook is exploratory history.
+  notebook is archived exploratory history (`old_notebooks/README.md`).
 - **Still open: the FOV-corrected `Camera`'s wider ripple effects were caught reactively (via
   re-running `image_generation.ipynb`), not proactively enumerated** -- two real regressions were
   found and fixed this way (`plot_isis_comparison`/`width_km`/`height_km`, `die5_points`'s
