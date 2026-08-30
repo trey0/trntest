@@ -1,14 +1,14 @@
-"""Display-only north-up rotation for the comparison figure.
-
-Purely cosmetic: rotates already-rendered/extracted image arrays (and remaps tie-point plot
-coordinates to match) so north is approximately "up" in the notebook's comparison figure. Does
-**not** touch the sensor model, the `.tsai`, or the crop-extraction code -- kept strictly separate
-from the synthetic-camera axis convention in `camera.py` (see docs/data-sources.md): which way is
-"north" varies by pass (ascending vs. descending) and shouldn't influence the sensor model itself,
-even though both this module and `camera.boresight_rotation_k` independently need the same real,
-per-pass "forward in time" ground-track direction (from `camera.ground_track_step_km`) to get their
-own, separate rotation choices right.
+"""Display-only north-up rotation for the comparison figure -- rotates already-rendered/extracted
+image arrays (and remaps tie-point plot coordinates to match) so north is approximately "up" in the
+notebook's comparison figure. Never touches the sensor model, the `.tsai`, or the crop-extraction
+code. See docs/image-pipeline.md's "North-up display rotation" section for the full design.
 """
+# Kept strictly separate from the synthetic-camera axis convention in `camera.py`: which way is
+# "north" varies by pass (ascending vs. descending) and shouldn't influence the sensor model itself,
+# even though both this module and `camera.boresight_rotation_k` independently need the same per-pass
+# "forward in time" ground-track direction (from `camera.ground_track_step_km`) to get their own,
+# separate rotation choices right. See docs/data-sources/lroc-wac-edr-cdr.md's "Pass-dependent sensor
+# axis convention" for why that direction is pass-dependent in the first place.
 
 import dataclasses
 
@@ -31,7 +31,11 @@ class DisplayRotations:
 
 
 def north_tangent_km(ground_km: np.ndarray) -> np.ndarray:
-    """Local north-pointing tangent unit vector (toward increasing latitude) at a MOON_ME point."""
+    """Local north-pointing tangent unit vector at a MOON_ME point.
+
+    :param ground_km: Ground point, body-fixed km.
+    :returns: Unit vector toward increasing latitude.
+    """
     p_hat = ground_km / np.linalg.norm(ground_km)
     polar = np.array([0.0, 0.0, 1.0])
     north = polar - np.dot(polar, p_hat) * p_hat
@@ -39,17 +43,20 @@ def north_tangent_km(ground_km: np.ndarray) -> np.ndarray:
 
 
 def best_k_for_north_up(right_orig: np.ndarray, up_orig: np.ndarray, north: np.ndarray, candidates=(0, 1, 2, 3)):
-    """Among `candidates` (90-degree-multiple `np.rot90` rotations of the array), pick the one whose
-    resulting on-screen "up" direction is closest to true north. `right_orig`/`up_orig` are the
-    *original* (unrotated) array's screen-right/screen-up directions, as real-world unit vectors.
+    """Among `candidates`, pick the 90-degree-multiple `np.rot90` rotation whose resulting on-screen
+    "up" direction is closest to true north.
 
-    Rotating the displayed array by `np.rot90(arr, k)` physically rotates the image k*90 degrees
-    counter-clockwise; the new "up" direction (in the original right/up basis) is then
-    `sin(k*90deg)*right_orig + cos(k*90deg)*up_orig` -- verified against `np.rot90` directly (see
-    docs/data-sources.md).
-
-    Returns (best_k, deviation_deg) -- the angular deviation of that best "up" from true north.
+    :param right_orig: The original (unrotated) array's screen-right direction, real-world unit
+        vector.
+    :param up_orig: The original (unrotated) array's screen-up direction, real-world unit vector.
+    :param north: True north direction at the same point, real-world unit vector.
+    :param candidates: `np.rot90` `k` values to consider.
+    :returns: `(best_k, deviation_deg)` -- the angular deviation of that best "up" from true north.
     """
+    # Rotating the displayed array by `np.rot90(arr, k)` physically rotates the image k*90 degrees
+    # counter-clockwise; the new "up" direction (in the original right/up basis) is then
+    # `sin(k*90deg)*right_orig + cos(k*90deg)*up_orig` -- verified against `np.rot90` directly (see
+    # docs/image-pipeline.md's "North-up display rotation" section).
     best_k, best_dot, best_dev = candidates[0], -2.0, 180.0
     for k in candidates:
         theta = np.radians(90.0 * k)
@@ -61,8 +68,17 @@ def best_k_for_north_up(right_orig: np.ndarray, up_orig: np.ndarray, north: np.n
 
 
 def rotate_pixel_coords(col: float, row: float, k: int, height: int, width: int) -> tuple:
-    """Where (col, row) in an original height x width array lands after `np.rot90(arr, k)`.
-    Verified numerically against `np.rot90` directly (see docs/image-pipeline.md)."""
+    """Where `(col, row)` in an original `height x width` array lands after `np.rot90(arr, k)`.
+
+    :param col: Original column.
+    :param row: Original row.
+    :param k: `np.rot90` rotation count.
+    :param height: Original array height.
+    :param width: Original array width.
+    :returns: `(col, row)` in the rotated array.
+    """
+    # Verified numerically against `np.rot90` directly (see docs/image-pipeline.md's "North-up
+    # display rotation" section).
     k = k % 4
     h, w = height, width
     for _ in range(k):
@@ -73,8 +89,14 @@ def rotate_pixel_coords(col: float, row: float, k: int, height: int, width: int)
 def compute_display_rotations(
     camera: Camera, frame_timing: FrameTiming, config: TrntestConfig | None = None
 ) -> DisplayRotations:
-    """For each image (synthetic render, real WAC CDR crop) independently, pick the multiple of 90
-    degrees whose on-screen "up" is closest to true north -- for display only, see module docstring."""
+    """For each image (synthetic render, WAC CDR crop) independently, pick the multiple of 90
+    degrees whose on-screen "up" is closest to true north.
+
+    :param camera: The synthetic camera for this pose.
+    :param frame_timing: Frame timing for the same product.
+    :param config: Project config; `load_config()` if not given.
+    :returns: The chosen rotations, for display only (see the module docstring).
+    """
     config = config or load_config()
 
     _, r_crop_raw, _, _ = camera_pose_moon_me(frame_et(frame_timing, camera.center_frame_index))
@@ -91,11 +113,11 @@ def compute_display_rotations(
 
     crop_center_lon, crop_center_lat = crop_corners["center"]
     north_crop = north_tangent_km(tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat))
-    # "Up" for k=0 (row 0 at the top) is backward in time when wac.fetch_vis_mosaic stacked frames
-    # in their natural order, but *forward* in time when it stacked them in reverse
+    # "Up" for k=0 (row 0 at the top) is backward in time when `wac.fetch_vis_mosaic` stacked frames
+    # in their natural order, but forward in time when it stacked them in reverse
     # (`camera.reverse_crop_along_track`) -- must track whichever that module actually did for this
-    # pass, not a fixed raw-camera-axis assumption (this is genuinely pass/yaw-dependent, not
-    # hardware-fixed -- see `camera.boresight_rotation_k`'s docstring and docs/data-sources.md,
+    # pass, not a fixed raw-camera-axis assumption (pass/yaw-dependent, not hardware-fixed -- see
+    # `camera.boresight_rotation_k`'s docstring and docs/data-sources/lroc-wac-edr-cdr.md's
     # "Pass-dependent sensor axis convention").
     forward_step_km = ground_track_step_km(frame_timing, camera.center_frame_index)
     forward_in_time = forward_step_km / np.linalg.norm(forward_step_km)
