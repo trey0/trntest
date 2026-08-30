@@ -7,7 +7,7 @@ from trntest import maneuver_detection
 from trntest.config import load_config
 from trntest.maneuver_detection import DEFAULT_SIGMA_THRESHOLD, detect_discontinuities, find_maneuver_candidates
 
-GM_KM3_S2 = 4902.80007  # matches trntest.config.DEFAULT_MOON_GM_KM3_S2
+GM_KM3_S2 = 4902.80007  # matches trntest.config.MOON_GM_KM3_S2
 A_KM = 1830.0
 ECC = 0.02  # matches LRO's rough real post-2016 drift-orbit eccentricity
 DT_S = 60.0

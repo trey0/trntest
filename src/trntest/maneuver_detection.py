@@ -79,7 +79,7 @@ import numpy as np
 import spiceypy as spice
 
 from trntest import spice_kernels
-from trntest.config import TrntestConfig, load_config
+from trntest.config import MOON_GM_KM3_S2, TrntestConfig, load_config
 
 # ~117 min, LRO's rough low-lunar-orbit period across its post-2016 "drift" era (a ~1830 km) --
 # only sizes the before/after comparison window, not used for any precision astrodynamics, so
@@ -266,4 +266,4 @@ def find_maneuver_candidates(
     same as `sample_orbit_state`."""
     config = config or load_config()
     ets, r, v = sample_orbit_state(start_dt, end_dt, config, dt_s)
-    return detect_discontinuities(ets, r, v, dt_s, config.moon_gm_km3_s2, orbital_period_s, sigma_threshold)
+    return detect_discontinuities(ets, r, v, dt_s, MOON_GM_KM3_S2, orbital_period_s, sigma_threshold)
