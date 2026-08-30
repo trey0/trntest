@@ -1007,10 +1007,10 @@ def image_to_ground_points_batch(
     # `(lon, lat)`) for a ground-space (not pixel-space) residual comparison. Ground-space is the only
     # legitimate metric for this project's actual 3D control points: converting `wac_camera_model`'s
     # own forward-predicted pixel back to ground and comparing that to the trusted ground point would
-    # just re-litigate which framelet is "right" in an overlap band (see `wac_camera_model.py`'s own
-    # module docstring); this function instead only ever queries a pixel that's already been resolved
-    # by some other process (never searches for one itself), so there's nothing to litigate -- one
-    # pixel has exactly one ground point.
+    # just re-litigate which framelet is "right" in an overlap band (see
+    # `wac_camera_model.find_framelet_and_project`'s own docstring); this function instead only ever
+    # queries a pixel that's already been resolved by some other process (never searches for one
+    # itself), so there's nothing to litigate -- one pixel has exactly one ground point.
     #
     # Written to the COORDLIST file as `sample, line` (`campt.xml`'s own doc: "Expected order for image
     # coordinates: sample, line") -- opposite of `ground_to_image_pixels_batch`'s own
