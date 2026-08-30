@@ -41,6 +41,15 @@ MARKER_STYLES = {
 }
 
 
+def mathtt(name: str) -> str:
+    """A generator name (`"hillshade"`/`"crop"`/`"reproject"`), formatted as matplotlib mathtext
+    monospace for a plot title -- `image_generation.ipynb`'s own short-name title convention (e.g.
+    `r"Phase 5A: $\\mathtt{hillshade}$ vs. basemap"`), factored out for reuse by any default title
+    built in this module or `trn_dataset.py`.
+    """
+    return rf"$\mathtt{{{name}}}$"
+
+
 # ISIS special pixels (NULL/LRS/LIS/HIS/HRS) are finite but huge-magnitude (~+-3.4e38) float32
 # sentinels -- `np.isfinite` doesn't catch them. Generic threshold rather than the exact 5 bit
 # patterns, since other fill-value conventions (e.g. `wac.MISSING_CONSTANT`) are similarly
@@ -1295,7 +1304,103 @@ def plot_render_toggle(
     frame_a, width_px, height_px = _frame(filled_a, f"☑ {label_a} / ☐ {label_b}")
     frame_b, _, _ = _frame(filled_b, f"☐ {label_a} / ☑ {label_b}")
 
-    gif_b64 = _blink_gif_b64(frame_a, frame_b, show_a_first, blink_interval_ms)
+    # _blink_gif_b64(base_frame, overlay_frame, initial_visible) plays overlay_frame first when
+    # initial_visible -- so frame_b (the "overlay" slot) must be passed first here for
+    # show_a_first=True to actually play frame_a first, matching this parameter's own name.
+    gif_b64 = _blink_gif_b64(frame_b, frame_a, show_a_first, blink_interval_ms)
+    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
+    return IPython.display.HTML(html)
+
+
+def plot_zoom_blink(
+    raster_a_path,
+    raster_b_path,
+    label_a: str,
+    label_b: str,
+    crop_px: int = 200,
+    show_a_first: bool = True,
+    blink_interval_ms: int = 700,
+):
+    """`plot_render_toggle`'s blink comparator, for two geo-aligned, **map-projected** rasters
+    (different native pixel grids, e.g. `plot_overlay`'s own `overlay_raster_path` for two different
+    candidates) instead of two same-grid renders -- and restricted to a full-resolution square crop
+    from the middle of `raster_b_path`'s own footprint, since compressing a whole footprint into one
+    fixed-size figure (as `plot_overlay_toggle` does) hides real per-pixel detail.
+
+    :param raster_a_path: First map-projected raster path -- reindexed onto `raster_b_path`'s pixel
+        grid (nearest-neighbor, half-a-pixel tolerance, same as `compute_brightness_matched_diff`)
+        and brightness-matched to it.
+    :param raster_b_path: Second, reference map-projected raster path. Its own native pixel grid
+        drives both the crop window and the display resolution -- pass whichever raster's footprint
+        is trustworthy to center on (e.g. a candidate's own render/crop, not a padded basemap AOI
+        that isn't guaranteed to be centered on it).
+    :param label_a: First raster's label (e.g. `mathtt("hillshade")`, matching
+        `image_generation.ipynb`'s own short-generator-name title convention).
+    :param label_b: Second raster's label.
+    :param crop_px: Square crop width/height, `raster_b_path`'s own pixels, taken from the middle of
+        its array. Named in each frame's own `"Zoomed ({crop_px} px): ..."` title prefix.
+    :param show_a_first: Which frame plays first in the loop.
+    :param blink_interval_ms: How long each frame is shown before switching.
+    :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
+        trailing `;`), same requirement as `plot_render_toggle`/`plot_overlay_toggle`.
+    """
+    # Reuses plot_overlay_toggle's own geo-alignment (_open_raster_dataarray, reindex_like) and
+    # brightness-matching (single multiplicative scale at the median -- see _prep_overlay_rasters's
+    # docstring for why) plus _blink_gif_b64's shared-palette GIF encoding; only the windowing (a
+    # small square crop, not the whole footprint) and axis handling (real Easting/Northing km ticks,
+    # not a 0-based pixel extent -- these are already-georeferenced map-projected rasters, unlike
+    # plot_render_toggle's raw sensor-pixel arrays) differ.
+    #
+    # raster_b_path anchors the crop, not raster_a_path -- e.g. TrnTestImage.plot_zoom_blink_over
+    # always passes its own already-generated render/crop as raster_b, since that's the one raster
+    # guaranteed to be centered on the actual candidate footprint; a padded/unioned basemap AOI's own
+    # array center can sit several km off that footprint's true center (confirmed live: up to ~10km
+    # for this project's default candidate), so anchoring on it instead could crop mostly-nodata.
+    a = _open_raster_dataarray(raster_a_path)
+    b = _open_raster_dataarray(raster_b_path)
+
+    half = crop_px // 2
+    cy, cx = b.sizes["y"] // 2, b.sizes["x"] // 2
+    b_crop = b.isel(y=slice(max(0, cy - half), cy - half + crop_px), x=slice(max(0, cx - half), cx - half + crop_px))
+
+    tolerance = _cellsize_m(b) / 2.0
+    a_crop = a.reindex_like(b_crop, method="nearest", tolerance=tolerance)
+
+    b_median = np.nanmedian(b_crop.values)
+    a_median = np.nanmedian(a_crop.values)
+    if a_median and np.isfinite(a_median):
+        a_crop = a_crop * (b_median / a_median)
+
+    # vmin=0 (not an affine min-max stretch), vmax from the 99.9th percentile -- same reasoning as
+    # plot_render_vs_basemap/plot_overlay's own stretch (an affine stretch would clip genuinely
+    # dark-but-real terrain to black; a bare max lets a handful of outlier pixels wash out the rest).
+    vmin, vmax = 0, np.nanpercentile(b_crop.values, 99.9)
+    km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.1f}")
+
+    def _frame(data, title):
+        fig, ax = plt.subplots(figsize=(6, 6))
+        data.plot.imshow(ax=ax, cmap="gray", vmin=vmin, vmax=vmax, add_colorbar=False)
+        ax.xaxis.set_major_formatter(km_formatter)
+        ax.yaxis.set_major_formatter(km_formatter)
+        ax.set_xlabel("Easting (km)")
+        ax.set_ylabel("Northing (km)")
+        ax.set_title(title)
+        fig.tight_layout()
+        width_px, height_px = fig.get_size_inches() * fig.dpi
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return Image.open(buf).convert("RGB"), round(width_px), round(height_px)
+
+    prefix = f"Zoomed ({crop_px} px): "
+    frame_a, width_px, height_px = _frame(a_crop, f"{prefix}☑ {label_a} / ☐ {label_b}")
+    frame_b, _, _ = _frame(b_crop, f"{prefix}☐ {label_a} / ☑ {label_b}")
+
+    # _blink_gif_b64(base_frame, overlay_frame, initial_visible) plays overlay_frame first when
+    # initial_visible -- so frame_b (the "overlay" slot) must be passed first here for
+    # show_a_first=True to actually play frame_a first, matching this parameter's own name.
+    gif_b64 = _blink_gif_b64(frame_b, frame_a, show_a_first, blink_interval_ms)
     html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
     return IPython.display.HTML(html)
 

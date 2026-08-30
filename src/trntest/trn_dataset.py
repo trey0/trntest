@@ -369,6 +369,13 @@ class TrnTestImage(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def generator_name(self) -> str:
+        """Short generator name (`"hillshade"`/`"crop"`/`"reproject"`) -- plot titles' own default
+        label, via `plotting.mathtt`. `render_label` is the longer descriptive form for non-plot
+        contexts (e.g. `_require_generated`'s error message)."""
+
+    @property
+    @abc.abstractmethod
     def tie_point_px_key(self) -> str: ...
 
     @abc.abstractmethod
@@ -403,10 +410,12 @@ class TrnTestImage(abc.ABC):
         """Plots this image against `self.entry.dem_ortho_result.ortho` via
         `plotting.plot_render_vs_basemap`.
 
-        :param render_label: Overrides `self.render_label` in the plot's own labeling (e.g. the
-            generator name, "hillshade"/"crop", instead of this class's descriptive default).
+        :param render_label: Overrides the default label (`self.generator_name` via
+            `plotting.mathtt`, matching `image_generation.ipynb`'s own title convention) in the
+            plot's own labeling.
         """
         self._require_generated()
+        label = render_label or plotting.mathtt(self.generator_name)
         return plotting.plot_render_vs_basemap(
             plotting.read_raster_band(self.raster_path),
             self.rotation_k,
@@ -414,8 +423,8 @@ class TrnTestImage(abc.ABC):
             self.height_km,
             self.footprint_lonlat_deg,
             self.entry.dem_ortho_result.ortho,
-            title=title or f"{self.render_label} vs. basemap",
-            render_label=render_label or self.render_label,
+            title=title or f"{label} vs. basemap",
+            render_label=label,
             tie_point_results=tie_point_results,
             render_px_key=self.tie_point_px_key,
         )
@@ -431,7 +440,8 @@ class TrnTestImage(abc.ABC):
         not add a trailing `;` in a notebook cell, same requirement as calling
         `plot_overlay_toggle` directly.
 
-        :param overlay_label: See `plotting.plot_overlay_toggle`'s own docstring for the
+        :param overlay_label: Overrides the default checkbox-suffix label (`self.generator_name` via
+            `plotting.mathtt`) -- see `plotting.plot_overlay_toggle`'s own docstring for the
             checkbox-title format this switches to.
         :param layers: See `plotting.OverlayLayer`'s docstring. Each layer's geometry must already
             be in `self.entry.dem_ortho_result.ortho`'s own raster CRS and already AOI-filtered --
@@ -439,12 +449,48 @@ class TrnTestImage(abc.ABC):
         """
         # Shared by both TrnTestHillshadeImage and TrnTestCropImage with no special-casing.
         self._require_generated()
+        label = overlay_label or plotting.mathtt(self.generator_name)
         return plotting.plot_overlay_toggle(
             self.entry.dem_ortho_result.ortho,
             self._mapprojected_path(),
-            title=title or f"{self.render_label} over basemap",
-            overlay_label=overlay_label,
+            title=title or f"{label} over basemap",
+            overlay_label=label,
             layers=layers,
+        )
+
+    def plot_zoom_blink_over(
+        self, other: "TrnTestImage | None" = None, crop_px: int = 200, show_self_first: bool = True
+    ):
+        """Blink comparator (`plotting.plot_zoom_blink`) between this image's own map-projected
+        raster and `other`'s, at a full-resolution square crop from the middle of *this* image's
+        own footprint (never `other`'s -- see `plotting.plot_zoom_blink`'s own docstring for why
+        that matters for a padded basemap AOI specifically).
+
+        `other` is the blink's left-hand entry, matching `plot_overlay`'s own
+        `(base_raster_path, overlay_raster_path)` argument order -- `other` stands in for
+        `plot_overlay`'s always-implicit basemap by default.
+
+        :param other: The other `TrnTestImage` to compare against (its own already map-projected
+            raster is used directly, e.g. `entry.crop.plot_zoom_blink_over(entry.hillshade)`).
+            `None` (default) compares against `self.entry.dem_ortho_result.ortho` instead -- the
+            same render-then-reproject round trip `plot_overlay` shows, at full pixel detail.
+        :param crop_px: Square crop width/height, pixels.
+        :param show_self_first: Which frame plays first in the loop (matching `plot_overlay`'s own
+            overlay-first default).
+        """
+        self._require_generated()
+        if other is None:
+            other_path, other_label = self.entry.dem_ortho_result.ortho, "basemap"
+        else:
+            other._require_generated()
+            other_path, other_label = other._mapprojected_path(), plotting.mathtt(other.generator_name)
+        return plotting.plot_zoom_blink(
+            other_path,
+            self._mapprojected_path(),
+            label_a=other_label,
+            label_b=plotting.mathtt(self.generator_name),
+            crop_px=crop_px,
+            show_a_first=not show_self_first,
         )
 
 
@@ -481,6 +527,10 @@ class TrnTestCropImage(TrnTestImage):
     @property
     def render_label(self) -> str:
         return "Real WAC (ISIS-processed)"
+
+    @property
+    def generator_name(self) -> str:
+        return "crop"
 
     @property
     def tie_point_px_key(self) -> str:
@@ -540,6 +590,10 @@ class TrnTestHillshadeImage(TrnTestImage):
         return "Synthetic (sat_sim, SPICE-posed)"
 
     @property
+    def generator_name(self) -> str:
+        return "hillshade"
+
+    @property
     def tie_point_px_key(self) -> str:
         return "synthetic_px"
 
@@ -572,7 +626,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
 
     # Subclasses TrnTestHillshadeImage, not TrnTestImage directly: it goes through the same
     # sat_sim-render-then-mapproject shape, only the --ortho texture source differs, so raster_path/
-    # sidecar_json_path/render_label/_generate_impl are the only overrides needed --
+    # sidecar_json_path/render_label/generator_name/_generate_impl are the only overrides needed --
     # width_km/height_km/footprint_lonlat_deg/rotation_k/tie_point_px_key/_mapprojected_path are
     # all inherited unchanged.
     #
@@ -595,6 +649,10 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
     @property
     def render_label(self) -> str:
         return "Synthetic (sat_sim, real-WAC-textured)"
+
+    @property
+    def generator_name(self) -> str:
+        return "reproject"
 
     @functools.cached_property
     def _reproject_dem_ortho(self) -> DemOrthoResult:
