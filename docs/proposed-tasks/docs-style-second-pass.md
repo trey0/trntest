@@ -116,19 +116,36 @@ step.
 
 ## Scope, part 3: re-verify the other 17 "done" `src/trntest/*.py` files against the stricter bar
 
-A heuristic sweep (`grep -nE -- "-- (since|because|confirmed|matching|deliberately)"` per file,
-then checking whether each hit lands inside a docstring or an (already-fine) comment) found no
-docstring hits in any of the 17 -- every match was already in a comment. That's a good sign, but
-the heuristic only catches rationale introduced with an em dash; it won't catch a "why" clause
-phrased without one (e.g. "..., since X does Y" with a comma, not a dash). Don't treat the
-heuristic result as a clean bill of health -- it means "nothing obviously wrong found by one narrow
-grep," not "manually re-read and confirmed."
+**In progress.** Read every docstring (via `ast.get_docstring`, not a `grep` heuristic -- catches a
+"why" clause phrased with a comma instead of an em dash too) in `lunaserv.py` and `isis_wac.py`
+(the two the "if resuming" note below called out first), then scripted a broader residue-pattern
+scan (`since |because |confirmed|deliberately|substantially|worth |the reason|in order to|so
+that|...`) across the other 15. Findings and fixes so far:
 
-If resuming this part: pick one file, read every docstring in it start to finish asking "does this
-sentence explain what the function does, or does it also justify why it's built this way?" -- the
-same question that caught `trn_dataset.py`'s residue. `lunaserv.py` and `isis_wac.py` are the
-largest and were the first two reworked (under the least-refined version of the rule), so they're
-the best candidates to check first if only checking a sample rather than all 17.
+- `isis_wac.py`: clean, no changes needed.
+- `lunaserv.py`: one fix (`hapke_shade_ortho`'s `along_track_correction` param had an evaluative
+  "substantially more accurate than X" justification inline).
+- `pose_alignment.py`: the module docstring's entire backstory/validation narrative was in the
+  docstring proper, plus 4 functions had "why" clauses mixed into otherwise-interface docstrings --
+  all fixed.
+- `camera.py` (`ground_track_step_km`) and `maneuver_detection.py` (`candidate_utc`): one "why"
+  clause each -- fixed.
+- `dataset.py`, `_lint.py`, `plotting.py`, `spice_kernels.py` (2 files' worth of hits): checked and
+  confirmed legitimate interface-relevant statements, not residue.
+- `tie_points.py`'s `resolve_crop_pixels`: one small hit not yet fixed -- a "-- validated to exact
+  (0.000px) agreement with ISIS `campt` output" empirical claim embedded in the docstring, should
+  move to the function's existing body comment. Quick, do this first when resuming.
+
+**Not yet scanned at all**: `cache.py`, `config.py`, `dataset_selection.py`, `product_registry.py`,
+`render.py`, `sfs_validation.py`, `tasks.py` -- these didn't come up in the residue-pattern scan's
+own file list (the scan covered 15 of the 17; these 7 weren't included in that run for no principled
+reason, just an oversight in listing files -- re-run the same scripted scan against them, or read
+their docstrings directly).
+
+If resuming: fix `tie_points.py` first (quick), then run the residue-pattern scan (or a manual read)
+against the 7 not-yet-scanned files above. The one-doc-at-a-time question that's caught every real
+hit so far: "does this sentence explain what the function does, or does it also justify why it's
+built this way?"
 
 ## Scope, part 4: `docs/*.md`
 
