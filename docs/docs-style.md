@@ -51,6 +51,19 @@ discoverable, read exactly when it's relevant). Reserve a module-level trailing 
 that's genuinely shared context several functions rely on — e.g. a fact multiple functions'
 docstrings already point back to via "see the module docstring."
 
+## Notebooks
+
+A notebook's markdown cells are tutorial prose -- what a reader runs and why, with just enough
+rationale to explain the demo's own benefit -- not a development-history narrative. The rules above
+apply here too: no `docs/history.md` citations, cut real/genuine/actual filler, one idea per
+sentence. Rationale for a specific design choice (why this default, why this approach over another)
+is fine to keep if it's still true and still load-bearing for using the notebook; a blow-by-blow of
+how an investigation got there is not.
+
+When a notebook's whole premise goes stale -- not just a fact needing correction, but the question
+it set out to answer already settled by later work -- archiving it to `old_notebooks/` (see its own
+`README.md`) is usually the better call than rewriting it forward.
+
 ## No references to `docs/history.md` from anywhere else
 
 `docs/history.md` is a narrative development log — background reading, not a reference. Nothing

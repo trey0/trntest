@@ -44,6 +44,8 @@ this file). Then, as needed:
 - `old_notebooks/` — archived, frozen investigation notebooks (real executed `.ipynb` output kept,
   not re-run or kept in sync going forward — see its own `README.md`). Useful when a `docs/history.md`
   entry references one and you want the actual plots/reasoning trail, not just the narrative summary.
+  See `docs/docs-style.md`'s "Notebooks" section for when a live notebook belongs here instead of
+  being rewritten forward.
 - `docs/environment.md` — this repo's VPS dev environment: why spike/experimental source
   (`src/scratch/`) and large file output (outside `src/` entirely, e.g. `trntest_ws/scratch/`) must
   be kept in separate locations, and (see its "Multi-agent worktrees" section) how concurrent Claude
