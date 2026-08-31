@@ -193,11 +193,21 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   during that file's part-1 pass, which only restructured the comment, never re-checked its claims).
 
 **Not yet reworked at all** (carried over from the prior plan, still accurate):
-- `docs/plan.md` (623 lines) -- flagged as its own future index-pattern candidate (thin index +
-  split-out detail files, the same pattern `docs/data-sources.md` and `docs/generators.md` already
-  went through), never started. Also has 161 `real`/`genuine`/`actual` hits and its own stale
-  `docs/data-sources.md` reference -- whichever pass touches this file should fix that reference
-  too, not just the index-split.
+- `docs/plan.md` (623 lines) -- **deliberately deferred, at the user's own explicit call (2026-08-31)
+  after a scoping discussion mid-session**. This is a bigger job than the rest of part 4, not just an
+  index-split: its "Known open items" section (lines 86-617, over 500 of the file's 623) is mostly
+  **resolved-item narratives**, not open items -- dozens of "**Resolved**: ... confirmed live ...
+  Fixed by ..." entries, each already duplicated in `docs/history.md` (the entries themselves cite
+  it, e.g. "see `docs/history.md`'s Phase 78 entry"). The Architecture table (lines 41-65) has the
+  same problem per-module: dense Phase-number/rationale paragraphs instead of scannable one-line
+  responsibilities. A real fix means, for each "Resolved" entry: confirm the fact already lives in
+  `docs/history.md` (it should) and in relevant code comments (many already got this treatment
+  during parts 1/3 of this plan), then **delete** the narrative from `plan.md` entirely (not trim
+  it) -- keeping only genuinely-still-open items and a scannable current-state summary. Could
+  plausibly shrink the file from 623 lines to ~150-200. Also still has 161 `real`/`genuine`/`actual`
+  hits and its own stale `docs/data-sources.md` reference (5 hits) to fix along the way, not
+  separately. Given the size, this deserves its own dedicated multi-batch pass (or its own proposed-
+  tasks plan doc) rather than being squeezed into this one -- ask the user before starting it.
 - `docs/reproject-fov-investigation.md` (371 lines) -- only got mechanical link fixes during the
   split, never a content pass. High `real`/`genuine`/`actual` count (68) -- expected to some degree
   for an investigation doc describing what turned out to be real vs. spurious findings, but worth a
