@@ -38,14 +38,16 @@ mkdir -p "$workspace_root/output/$name"
 literal_gitdir="$(sed -n 's/^gitdir: //p' "$repo_root/.git")"
 literal_common_dir="$(dirname "$(dirname "$literal_gitdir")")"
 
-# Jupyter Lab port convention: 8887 + <agent number>, where the agent number is the worktree
-# name's own trailing digits (e.g. "a1" -> 8888, "a2" -> 8889) -- keeps each active worktree
-# agent's own `docker compose up` server (the normal way to run one in practice; see
-# docs/environment.md's "Multi-agent worktrees" section) off each other's port, without requiring
-# manual coordination between concurrently-running agents. Falls back to leaving
-# TRNTEST_JUPYTER_PORT unset (docker-compose.yml's own default, 8888 -- just its unvaried value,
-# not a claim that the main checkout has anything running there) if the worktree name doesn't end
-# in digits, rather than guessing.
+# Jupyter Lab port convention: 8887 + <the worktree name's own trailing digits> (e.g. "a1" -> 8888,
+# "a2" -> 8889) -- a leftover from the old terminal workflow, where the user hand-assigned each new
+# agent a small sequential number specifically to keep concurrent worktree agents' own
+# `docker compose up` servers (the normal way to run one in practice; see docs/environment.md's
+# "Multi-agent worktrees" section) off each other's port. Claude Desktop's own auto-generated
+# worktree names don't offer that same manual control, so the resulting port is now closer to
+# pseudo-random than deliberately non-colliding -- see docs/environment.md's own note not to trust
+# it for that. Falls back to leaving TRNTEST_JUPYTER_PORT unset (docker-compose.yml's own default,
+# 8888 -- just its unvaried value, not a claim that the main checkout has anything running there)
+# if the worktree name doesn't end in digits, rather than guessing.
 port_line=""
 if [[ "$name" =~ ([0-9]+)$ ]]; then
     port=$((8887 + 10#${BASH_REMATCH[1]}))
