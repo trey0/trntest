@@ -1,9 +1,9 @@
 # `docs/plan.md` cleanup: delete resolved-item narratives, trim the Architecture table
 
 **Status: in progress.** Working in worktree `docs-proposed-tasks-style-0defc6`, branch
-`claude/docs-proposed-tasks-style-0defc6`. Batch 1 done and pushed (commit `9199fb2`, not yet
-merged to `main` -- awaiting review): Architecture table rewritten to the shorter bar below (also
-added a missing `craters.py` row), two stray `docs/history.md` citations cut, and two fully-resolved
+`claude/docs-proposed-tasks-style-0defc6`. Batch 1 done and **merged to `main`** (`f93e282`):
+Architecture table rewritten to the shorter bar below (also added a missing `craters.py` row, then
+alphabetized the whole table), two stray `docs/history.md` citations cut, and two fully-resolved
 "Known open items" narratives deleted (the CK-kernel investigation, the crater-overlay/`OverlayLayer`
 implementation retelling).
 
