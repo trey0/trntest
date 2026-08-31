@@ -13,3 +13,7 @@ generated and validated together by `notebooks/image_generation.py`.
 
 Each generator's doc has the full data-source/processing detail. `docs/plan.md`'s architecture
 table covers the underlying modules (`lunaserv.py`, `render.py`, `isis_wac.py`, `trn_dataset.py`).
+
+See [`resolution-investigation.md`](resolution-investigation.md) for why `crop` used to visibly
+outresolve `hillshade`/`reproject` — largely `sat_sim`'s fixed render size, not a data-source limit —
+and how `config.DEFAULT_IMAGE_SIZE` was chosen to close most of that gap.

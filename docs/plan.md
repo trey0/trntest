@@ -518,6 +518,16 @@ short of `populate()` -- no rendering from this notebook yet.
 
   Saturated pixels bias `sfs_validation.true_albedo_map`'s recovered albedo (an already-documented residual limitation of using the quantized `uint8` output, now triggered at a different absolute reflectance threshold than before this migration) and reduce `compute_brightness_matched_diff`'s discriminating power in any clipped region. Resolving this needs an actual decision — e.g. a real multi-candidate saturation sweep to see how often/how badly it happens, then either accepting a quantified risk, widening the range, or reconsidering the Hapke-ratio clipping behavior itself — not just asserting either combination is fine.
 
+- **Resolved**: `hillshade`/`reproject` used to render at a fixed 256×256 (`config.DEFAULT_IMAGE_SIZE`),
+  regardless of footprint size — measurably 2-4x coarser than the ~100 m/px DEM/ortho inputs or the
+  real WAC crop's own ~184 m/px, and the main reason `crop` visibly outresolved them in
+  `plot_zoom_blink_over()`. `DEFAULT_IMAGE_SIZE` is now `1316`, chosen (not auto-derived per
+  candidate — the reference candidate's own footprint size) to land both axes at ~100 m/px on
+  `M1327210646CE`, the notebook's default. `reproject` shares this size with `hillshade` by design
+  (byte-identical pixel grid), even though its own real texture source (the WAC crop) caps out
+  coarser, ~184 m/px — deliberate, so the two stay pixel-aligned. See
+  `docs/resolution-investigation.md` for the full numbers and rationale.
+
 ## Development history
 
 See `docs/history.md` for the phase-by-phase narrative — what was tried, what broke, and how each
