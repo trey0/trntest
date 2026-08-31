@@ -26,24 +26,28 @@ index table).
 
 ## What a real fix looks like
 
-For each "**Resolved**" entry in "Known open items": confirm the fact already lives in
-`docs/history.md` (it should -- these entries already cite it) and, where it affects current
-behavior, in the relevant module's own code comment (many already got this treatment during
-`docs-style-second-pass.md`'s parts 1/3, and during that plan's `reproject-fov-investigation.md`/
-`wac-jigsaw-investigation.md` passes -- check there first before assuming a fact needs a new home).
-Then **delete** the narrative from `plan.md` entirely -- don't trim it, don't summarize it in
-place. Keep only:
+**Per the user's own guidance (2026-09-01): be fairly aggressive here.** For each "**Resolved**"
+entry in "Known open items," the default is to just **delete** it -- don't trim it, don't summarize
+it in place, and don't feel obligated to first confirm it's redundantly noted in `docs/history.md`
+if the entry's own enduring lessons-learned value looks low (a narrow bugfix retelling with nothing
+a future reader would need to rediscover). Reserve the "check it's preserved elsewhere first"
+caution for entries that read as genuinely reusable engineering lessons, not routine bug-and-fix
+narration. Keep only:
 - Items that are genuinely still open (not yet resolved).
 - A scannable current-state summary, if the resolved fact affects how `plan.md`'s own Architecture
   table or Status section should read today.
 
-For the Architecture table: trim each row to what a reader needs to decide whether to go read the
-module itself -- one or two sentences of responsibility, not the full design rationale. Move
-rationale into the module's own docstring/comments if it isn't already there (spot-check first;
-much of it may already be, since Parts 1 and 3 of `docs-style-second-pass.md` covered most of
-`src/trntest/`'s docstrings).
+**For the Architecture table: entries should be very short -- a module's row should generally be
+shorter than that module's own docstring, not longer.** One or two sentences of responsibility, not
+design rationale (which belongs in the module's own docstring/comments, already mostly moved there
+by Parts 1/3 of `docs-style-second-pass.md`). **If a module's own contents resist a succinct
+description -- if summarizing it keeps turning into a grab-bag of unrelated topics -- treat that as
+a signal the module's own boundaries have drifted, not a reason to write a longer table entry.**
+Flag it rather than writing around it; the fix in that case is refactoring the module to align on
+one theme, not a better-written summary of a module that's doing too many unrelated things.
 
-Could plausibly shrink the file from 623 lines to somewhere around 150-200.
+Could plausibly shrink the file from 623 lines to somewhere around 150-200, possibly less given how
+aggressive the "just delete it" default above is.
 
 ## Suggested approach
 
@@ -53,8 +57,10 @@ Reasonable batch boundaries:
 1. The stale `docs/data-sources.md` references (5 hits) -- mechanical, quick, do first.
 2. The Architecture table (lines 41-65 as originally scoped) -- one pass, module-row by
    module-row, trimming each to scannable.
-3. "Known open items" -- likely several batches given its size; work top to bottom, verifying each
-   "Resolved" entry's fact is preserved elsewhere before deleting it.
+3. "Known open items" -- likely several batches given its size; work top to bottom, defaulting to
+   delete for routine "Resolved" entries (see "What a real fix looks like" above) and only pausing
+   to verify a fact is preserved elsewhere for the rarer entry that reads as a genuine, reusable
+   lesson.
 4. A final read-through once trimmed, to confirm the file still reads as a coherent "architecture &
    status" map and not just a pruned list.
 

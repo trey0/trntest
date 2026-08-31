@@ -120,6 +120,14 @@ go read the real thing, not the thing itself. If you notice one accumulating act
 fact, a rationale, a procedure, more than a sentence of "why" — move it out to the file that topic
 already points to (or a new one) and leave behind just the pointer.
 
+`docs/plan.md`'s per-module Architecture-table entries are index entries too: a module's own row
+should generally be shorter than that module's own docstring, not longer — one or two sentences of
+responsibility, not its design rationale. If a module's contents resist a succinct description — if
+summarizing it keeps turning into a grab-bag of unrelated topics — that's a signal the module's own
+boundaries have drifted, not a reason to write a longer entry. Flag it rather than writing around
+it; the fix is refactoring the module to align on one theme, not a better-written summary of a
+module doing too many unrelated things.
+
 ## File naming
 
 A doc's filename is often the only thing a reader sees before deciding whether to open it — name it
