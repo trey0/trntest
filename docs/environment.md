@@ -111,10 +111,9 @@ automatically.
   than restructuring, so conflicts stay small and mergeable — resolving them is expected, not a sign
   something went wrong.
 - **`notebooks/dataset_manifest.csv` is shared demo-selection state, not per-agent.** Frozen since
-  the notebook that used to regenerate it was removed (see `docs/history.md`'s dated entry) — it
-  determines which real image *every* `image_generation.py` run renders, for every agent and the
-  user, not just yours. Don't commit a changed manifest unless you specifically mean to change the
-  demo's target image.
+  the notebook that used to regenerate it was removed — it determines which image *every*
+  `image_generation.py` run renders, for every agent and the user, not just yours. Don't commit a
+  changed manifest unless you specifically mean to change the demo's target image.
 - **If a merge conflict lands in a `.ipynb`, don't try to resolve it in the `.ipynb` itself** —
   its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the real source of
   truth), then regenerate the `.ipynb` from scratch with `scripts/run_notebook.sh
@@ -149,14 +148,13 @@ automatically.
   (isd_generate's write happened to complete cleanly either way, so it cost one agent a wasted
   ~4min recompute, not corruption), but a torn/partial read on the losing side is plausible if two
   agents' calls actually overlap mid-write rather than land sequentially. **Path changed
-  (2026-08-23, `docs/history.md`'s Phase 79 entry)**: this write now lives under
-  `_work/<entry>/isis/` inside each `TrnTestDataSet`'s own (per-worktree-namespaced) `output/`
-  tree, not the single cross-worktree-shared `scratch/` — so the specific *cross-agent* version of
-  this race (two different worktrees' agents both reaching the same path) is now structurally
-  impossible; the function itself still has no atomic-publish guard (unlike `crop_for_camera`/
-  `run_framestitch`, retrofitted in that same phase), so a same-dataset-folder race is still
-  possible in principle -- though since task granularity moved from `(entry, product_type)` to
-  `entry` (2026-08-24, `docs/history.md`'s dated entry), it can no longer come from two tasks of one
+  (2026-08-23)**: this write now lives under `_work/<entry>/isis/` inside each `TrnTestDataSet`'s
+  own (per-worktree-namespaced) `output/` tree, not the single cross-worktree-shared `scratch/` —
+  so the specific *cross-agent* version of this race (two different worktrees' agents both reaching
+  the same path) is now structurally impossible; the function itself still has no atomic-publish
+  guard (unlike `crop_for_camera`/`run_framestitch`, retrofitted at the same time), so a
+  same-dataset-folder race is still possible in principle -- though since task granularity moved
+  from `(entry, product_type)` to `entry` (2026-08-24), it can no longer come from two tasks of one
   `populate_via_workers()` call landing on the same entry (that's now structurally one task); only
   from two separate, already-unsupported concurrent `populate()`/`populate_via_workers()` calls
   against the same dataset folder (`docs/batch-generation.md`'s "Not safe to run concurrently with
