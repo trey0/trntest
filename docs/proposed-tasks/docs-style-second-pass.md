@@ -9,14 +9,14 @@ pointer `wac_camera_model.py`'s pass surfaced in `isis_wac.py`/`notebooks/pose_a
 Part 3: all 17 previously-"done" files re-verified against the stricter docstring bar, 5 needed
 fixes (`lunaserv.py`, `pose_alignment.py`, `camera.py`, `maneuver_detection.py`, `tie_points.py`).
 
-**Part 4 in progress** (`docs/*.md` files) -- `README.md`, `docs/caching.md`,
+**Part 4 nearly done** (`docs/*.md` files) -- `README.md`, `docs/caching.md`,
 `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` (deleted, fully implemented already),
 `docs/proposed-tasks/report-plan.md`, `docs/environment.md` (full rewrite, asked the user directly
-for current facts rather than guessing), and `docs/wac-jigsaw-investigation.md` (full content
-pass -- turned out to be a stale session-log wrapped around still-needed technical content, not a
-simple style pass) done; `docs/plan.md`, `docs/reproject-fov-investigation.md`, and the
-`AGENTS.md`/index self-consistency check remain -- see its own section below for the file list and
-what's already known about each.
+for current facts rather than guessing), `docs/wac-jigsaw-investigation.md`, and
+`docs/reproject-fov-investigation.md` (both full content passes -- turned out to be stale
+session-logs wrapped around still-needed technical content, not simple style passes) done. Only the
+`AGENTS.md`/index self-consistency check remains in this pass's own scope --
+`docs/plan.md` is deliberately deferred to its own follow-up (see its own note below for why).
 
 Workflow note: the user reviews in batches of up to 3 files via GitHub links before merging to
 main -- push each file's commit to the branch as it's done, but hold the `git push origin
@@ -191,10 +191,19 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   module comment discovered along the way (said the optimizer wasn't yet fit against real tie
   points / wired into the notebook -- both were already done; likely carried forward unverified
   during that file's part-1 pass, which only restructured the comment, never re-checked its claims).
+- `docs/reproject-fov-investigation.md` -- full content pass. Same problem as
+  `wac-jigsaw-investigation.md`: a completed investigation ("Status: implemented and merged to
+  main") structured as a session-log, most of it now redundant with `camera.py`'s own
+  `solve_corrected_fov` comment, which already explains the current algorithm/constants/rationale in
+  full. Kept the FOV-bug root cause, the fix and its 4-candidate validation table, a condensed
+  isotropic-vs-anisotropic rationale (cut the full CSM-residual forensic trail now that the
+  anisotropic path was abandoned), the genuinely-still-open items, and the reusable "key facts"
+  section. 371 -> 130 lines. No code changes needed -- no cross-reference cited a specific section
+  title, and no docs/history.md or stale docs/data-sources.md refs were present to begin with.
 
-**Not yet reworked at all** (carried over from the prior plan, still accurate):
-- `docs/plan.md` (623 lines) -- **deliberately deferred, at the user's own explicit call (2026-08-31)
-  after a scoping discussion mid-session**. This is a bigger job than the rest of part 4, not just an
+**Deliberately deferred** (not part of this pass -- see its own note for why):
+- `docs/plan.md` (623 lines) -- **deferred at the user's own explicit call (2026-08-31) after a
+  scoping discussion mid-session**. This is a bigger job than the rest of part 4, not just an
   index-split: its "Known open items" section (lines 86-617, over 500 of the file's 623) is mostly
   **resolved-item narratives**, not open items -- dozens of "**Resolved**: ... confirmed live ...
   Fixed by ..." entries, each already duplicated in `docs/history.md` (the entries themselves cite
@@ -202,17 +211,13 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   same problem per-module: dense Phase-number/rationale paragraphs instead of scannable one-line
   responsibilities. A real fix means, for each "Resolved" entry: confirm the fact already lives in
   `docs/history.md` (it should) and in relevant code comments (many already got this treatment
-  during parts 1/3 of this plan), then **delete** the narrative from `plan.md` entirely (not trim
-  it) -- keeping only genuinely-still-open items and a scannable current-state summary. Could
-  plausibly shrink the file from 623 lines to ~150-200. Also still has 161 `real`/`genuine`/`actual`
-  hits and its own stale `docs/data-sources.md` reference (5 hits) to fix along the way, not
-  separately. Given the size, this deserves its own dedicated multi-batch pass (or its own proposed-
-  tasks plan doc) rather than being squeezed into this one -- ask the user before starting it.
-- `docs/reproject-fov-investigation.md` (371 lines) -- only got mechanical link fixes during the
-  split, never a content pass. High `real`/`genuine`/`actual` count (68) -- expected to some degree
-  for an investigation doc describing what turned out to be real vs. spurious findings, but worth a
-  read, not an assumption. Check whether it's structured as a session-log the way
-  `wac-jigsaw-investigation.md` turned out to be before assuming the same treatment applies.
+  during parts 1/3 of this plan, and during `reproject-fov-investigation.md`'s own pass just above),
+  then **delete** the narrative from `plan.md` entirely (not trim it) -- keeping only
+  genuinely-still-open items and a scannable current-state summary. Could plausibly shrink the file
+  from 623 lines to ~150-200. Also still has 161 `real`/`genuine`/`actual` hits and its own stale
+  `docs/data-sources.md` reference (5 hits) to fix along the way, not separately. Given the size,
+  this deserves its own dedicated multi-batch pass (or its own proposed-tasks plan doc) rather than
+  being squeezed into this one -- ask the user before starting it.
 
 **Marked "done" by the prior plan, but with a stale `docs/data-sources.md` reference found by this
 audit**: `docs/plan.md` (5 hits -- see its own bullet above). **Correction**: `docs/environment.md`
@@ -239,7 +244,9 @@ point to, so the check doesn't have to be redone.
    `docs/docs-style.md` recipe, each stale `docs/data-sources.md` reference repointed as part of its
    own file's pass, not separately.
 3. ~~Part 3~~ Done -- all 17 files re-read via `ast.get_docstring` + a residue-pattern scan, 5 fixed.
-4. Only part 4 (`docs/*.md`) remains -- see its own section for the file list and what's known.
+4. Part 4 is nearly done -- only the `AGENTS.md`/index self-consistency check remains in scope;
+   `docs/plan.md` is deliberately deferred to its own follow-up (see its own note in part 4's
+   section for why and what a real fix looks like).
 5. Re-verify every `src/trntest/*.py` change with `trntest-lint`; re-run
    `scripts/run_notebook.sh` only if a docstring change happens to touch code logic too (none of
    this plan's work should, if scoped correctly -- confirm via `git diff` before skipping).
