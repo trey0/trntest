@@ -93,8 +93,8 @@ this file). Then, as needed:
   notebooks/<name>.py` — it regenerates `notebooks/<name>.ipynb` from the
   tracked `.py` source and re-executes it in place (via `papermill --log-output`, not a bare
   `jupyter nbconvert --execute` — streams live cell-by-cell progress/output and per-cell timing
-  instead of buffering everything until the run finishes or hangs; see docs/history.md's Phase 27
-  follow-up), so the results are immediately visible by opening that file in the user's
+  instead of buffering everything until the run finishes or hangs), so the results are immediately
+  visible by opening that file in the user's
   already-running `docker compose up` Jupyter Lab server (no scp, no separate step on their end).
   Always go through this script rather than invoking a notebook runner directly when the `.py` may
   have changed — otherwise the `.ipynb` ends up executing stale code. A per-cell timing report
@@ -106,12 +106,11 @@ this file). Then, as needed:
   internal validation check — it's slower and not worth the token cost when the user can just view
   the live notebook themselves.
 - **Notebooks are jupytext-paired and both halves are committed.** Notably:
-  `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads the checked-in, now-frozen
-  `notebooks/dataset_manifest.csv` and renders/validates the selected image; see `docs/history.md`'s
-  dated entry for why the notebook that used to regenerate that CSV was removed), and
+  `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads the checked-in, frozen
+  `notebooks/dataset_manifest.csv` and renders/validates the selected image), and
   `notebooks/wac_isis.py`/`.ipynb` (the narrower ISIS/CSM `framestitch` investigation — see
   `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
-  review/diffing/lint/IDE work; the `.ipynb` carries real, fully-executed outputs and is committed
+  review/diffing/lint/IDE work; the `.ipynb` carries fully-executed outputs and is committed
   too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,
   including images), so no separate HTML/Pages publishing step exists anymore. The two halves of a
   pair are linked via inline jupytext metadata (no `jupytext.toml`). Always edit through one of them
@@ -130,10 +129,9 @@ this file). Then, as needed:
   raw `subprocess.run`. These tools are noisy by default (progress bars, library-init messages,
   verbose logs) and inherit the calling process's own stdout/stderr, which floods a notebook cell
   with output that isn't the caller's — `run_quiet` captures it and only surfaces it on failure.
-  `render.py`, `lunaserv.py`, and `isis_wac.py` all follow this pattern; a real, painful example of
-  what happens without it is in `docs/history.md`'s notebook-warnings-cleanup entries.
+  `render.py`, `lunaserv.py`, and `isis_wac.py` all follow this pattern.
 - **Profiling**: use `cProfile`/`pstats` inside Docker (real SPICE/network) rather than guessing
-  which optimization matters — see `docs/history.md` (Phase 10) for an example. When isolating a
+  which optimization matters. When isolating a
   from-cold cost, compare **separate fresh `docker compose run` invocations**, not multiple calls
   within one script/process: SPICE's furnished-kernel tracking (`spice_kernels._loaded_kernels`) and
   `functools.cache` state persist across calls in one process, making a later call look artificially
