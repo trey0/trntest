@@ -53,7 +53,15 @@ DEFAULT_CDR_PRODUCT = "M1329714703CC"
 # chosen to land in sunlit terrain, not the shadowed start of the swath. `dataset.generate_dataset()`
 # overrides this per-image on the live, catalog-driven path.
 DEFAULT_TARGET_FRAME_INDEX = 440
-DEFAULT_IMAGE_SIZE = 256
+
+# `hillshade`/`reproject`'s fixed `sat_sim --image-size` (square, `fu == fv` -- see
+# `camera.solve_corrected_fov`). The rendered footprint's own size doesn't depend on this value (it's
+# solved from the real WAC crop's footprint first, then sampled at whatever pixel count this is), so
+# it's chosen directly as a target ground sample distance: ~100 m/px (matching the DEM/ortho inputs'
+# own resolution) on this project's reference candidate (`M1327210646CE`, ~131 km render footprint).
+# A different candidate's footprint size differs slightly with slant range/off-nadir angle -- not
+# recomputed per candidate, see docs/resolution-investigation.md.
+DEFAULT_IMAGE_SIZE = 1316
 
 # LROC EDR/CDR SIS color-mode cross-track FOV (see camera.py for the full derivation/rationale).
 DEFAULT_WAC_VIS_COLOR_FOV_DEG = 61.4
