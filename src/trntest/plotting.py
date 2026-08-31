@@ -25,7 +25,7 @@ import shapely.ops
 import xarray
 from PIL import Image
 
-from trntest import illumination, lunaserv, orientation, wac
+from trntest import illumination, lunaserv, orientation
 from trntest.camera import Camera
 from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
@@ -252,8 +252,8 @@ def _plot_tie_point_marker(ax, name, px, py, k_rotation, height, width, width_km
     :param width_km: Displayed image width, km.
     :param height_km: Displayed image height, km.
     """
-    # Shared by `plot_comparison` and `plot_isis_comparison` -- same math either way, just different
-    # height/width (px and km) per panel.
+    # Shared by `plot_isis_comparison` and `plot_render_vs_basemap` -- same math either way, just
+    # different height/width (px and km) per panel.
     style = MARKER_STYLES[name]
     px_r, py_r = orientation.rotate_pixel_coords(px, py, k_rotation, height, width)
     ax.plot(
@@ -264,77 +264,6 @@ def _plot_tie_point_marker(ax, name, px, py, k_rotation, height, width, width_km
         markeredgewidth=1.5,
         **style,
     )
-
-
-def plot_comparison(
-    camera: Camera,
-    tie_point_results: dict,
-    vis_mosaic: np.ndarray,
-    rotations: DisplayRotations,
-    rendered_tif_path,
-):
-    """Synthetic render next to the real WAC CDR mosaic (`wac.py`'s band-separated stack), north-up
-    and km-scaled, brightness-matched to the synthetic panel.
-
-    :param camera: Camera whose pose drove the synthetic render and crop sizing.
-    :param tie_point_results: From `session.select_tie_points` + tie-point resolution
-        (`{"synthetic_px", "crop_px"}` per tie-point name).
-    :param vis_mosaic: The WAC CDR mosaic array, `wac.MISSING_CONSTANT` where invalid.
-    :param rotations: North-up display rotations for each panel.
-    :param rendered_tif_path: Synthetic render GeoTIFF path.
-    :returns: The `Figure`.
-    """
-    synthetic = read_raster_band(rendered_tif_path)
-
-    valid_mask = vis_mosaic != wac.MISSING_CONSTANT
-    # Match the real WAC crop's overall brightness to the synthetic render via a single
-    # multiplicative scale at the median -- not an affine/percentile stretch, which would remap the
-    # darkest/brightest values and stop reflecting the pipeline's actual relative brightness. Both
-    # panels are then displayed on the same fixed 0-255 scale (imshow's default auto-normalize to
-    # each panel's own min/max is itself an implicit stretch -- silent, but real -- which is what
-    # made the two panels' brightness levels incomparable before).
-    scale = np.median(synthetic[valid_pixel_mask(synthetic)]) / np.median(vis_mosaic[valid_mask])
-    # Scale only the valid pixels -- vis_mosaic's invalid entries hold wac.MISSING_CONSTANT (a
-    # huge-magnitude float32 sentinel, see wac.py), which overflows float32 if multiplied by scale.
-    scaled_valid = vis_mosaic[valid_mask] * scale
-    low_fill = np.percentile(scaled_valid, 2)
-    display_mosaic = np.full_like(vis_mosaic, low_fill)  # fill missing edge columns with the low end
-    display_mosaic[valid_mask] = scaled_valid
-
-    # Both panels cover the same real square ground area (see docs/image-pipeline.md, "Current
-    # image-pipeline algorithm"), but at different native pixel resolution per axis -- plot in real
-    # km (not raw pixel index) so both display as square and are directly, visually comparable.
-    # Also apply the north-up rotation computed above
-    # (display only).
-    n_frames = camera.n_frames_for_square_crop
-    synthetic_width_km = camera.cross_track_width_km
-    crop_width_km = camera.cross_track_width_km
-    crop_height_km = n_frames * camera.km_per_frame
-
-    synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
-    mosaic_rot = np.rot90(display_mosaic, rotations.k_crop)
-    h_syn, w_syn = synthetic.shape
-    h_crop, w_crop = display_mosaic.shape
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 6))
-    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_width_km, 0])
-    axes[0].set_title("Synthetic (sat_sim, SPICE-posed, north-up)")
-    axes[1].imshow(mosaic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
-    axes[1].set_title("Real WAC CDR, band-separated (brightness-matched to synthetic, north-up)")
-    for ax in axes:
-        ax.set_xlabel("km")
-        ax.set_ylabel("km")
-
-    for name, r in tie_point_results.items():
-        px, py = r["synthetic_px"]
-        _plot_tie_point_marker(
-            axes[0], name, px, py, rotations.k_synthetic, h_syn, w_syn, synthetic_width_km, synthetic_width_km
-        )
-        col, row = r["crop_px"]
-        _plot_tie_point_marker(axes[1], name, col, row, rotations.k_crop, h_crop, w_crop, crop_width_km, crop_height_km)
-
-    fig.tight_layout()
-    return fig
 
 
 def _fill_dead_columns_for_display(band: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -748,7 +677,7 @@ def plot_overlay(
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the
     georeferenced coordinates in each file drive the plot -- genuine pixel-for-pixel geo-registration,
-    unlike `plot_comparison`'s side-by-side panels.
+    unlike `plot_isis_comparison`'s side-by-side panels.
 
     :param base_raster_path: Base raster (e.g. `DemOrthoResult.ortho`).
     :param overlay_raster_path: Overlay raster, expected to already share the same map grid as the
@@ -1077,7 +1006,7 @@ def _render_overlay_figure(
     # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
     # `lunaserv.fetch_dem_and_ortho`'s docstring for why (an isotropic-meter grid, unlike Lunaserv's
     # native unprojected geographic layer). Displayed in km (matching
-    # `plot_comparison`/`plot_isis_comparison`'s real-km scaling) via a tick formatter -- the
+    # `plot_isis_comparison`'s real-km scaling) via a tick formatter -- the
     # underlying data/geometry stay in meters (real CRS units), only the tick labels are rescaled.
     km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.0f}")
     ax.xaxis.set_major_formatter(km_formatter)
