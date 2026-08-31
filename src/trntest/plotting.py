@@ -759,7 +759,7 @@ def plot_overlay(
 def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_nodata: bool):
     """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`/`compute_brightness_matched_diff`:
     open both rasters, optionally fill the overlay's small nodata gaps for display, normalize both
-    to their own median, and compute a shared display stretch.
+    to their shared overlap region's median, and compute a shared display stretch.
 
     :param base_raster_path: Base raster path.
     :param overlay_raster_path: Overlay raster path.
@@ -776,14 +776,28 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
 
-    # Each side independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
+    # Each side's normalizing median is taken only from the region where *both* rasters have valid
+    # data, not each side's own full coverage. `base` is typically a padded AOI well beyond the
+    # overlay's own footprint (e.g. `dem_padding_fraction`'s 30%-per-side basemap padding vs. the
+    # overlay's camera-FOV-only extent), and that extra padding ring's average brightness isn't
+    # necessarily representative of the region actually being compared -- taking each side's
+    # full-frame median instead put the two "median = 1.0" baselines at visibly different absolute
+    # brightness levels whenever the padding ring and the overlap region differed, showing up as a
+    # visible mismatch right in the overlap area (the only place both sides are on screen at once).
+    # `overlay` is reindexed onto `base`'s grid first (same approach `compute_brightness_matched_diff`
+    # uses to align the two for its own diff) purely to build this overlap mask -- the actual
+    # normalization below still divides each side's own full raster by its own overlap-derived median.
+    overlay_on_base_grid = overlay.reindex_like(base, method="nearest", tolerance=_cellsize_m(base) / 2.0)
+    overlap_mask = np.isfinite(base.values) & np.isfinite(overlay_on_base_grid.values)
+
+    # Each side independently normalized to its own overlap-region median = 1.0 (`_robust_median`/
     # `_normalize_to_median`), not overlay matched to base's absolute level -- this is what makes
     # `compute_brightness_matched_diff`'s own |diff| a scale-invariant fraction-of-median number
     # (comparable across candidates at different absolute brightness levels, not base's own
     # arbitrary units), and lets the vmax below protect either side from oversaturating, not just
     # base.
-    base = _normalize_to_median(base, _robust_median(base.values))
-    overlay_display = _normalize_to_median(overlay_display, _robust_median(overlay_display.values))
+    base = _normalize_to_median(base, _robust_median(base.values[overlap_mask]))
+    overlay_display = _normalize_to_median(overlay_display, _robust_median(overlay_on_base_grid.values[overlap_mask]))
 
     # vmax is the larger of the two sides' own post-normalization 99.9th percentile, not base's
     # alone -- so a side that needed a bigger correction (e.g. a much darker overlay) still gets
