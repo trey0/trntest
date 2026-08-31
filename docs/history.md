@@ -4997,3 +4997,15 @@ figure changed visually. `tests/test_plotting.py` updated to match: two tests' e
 (one from `10.0` to `0.1`, reflecting the exact rescaling derived above; one from checking `100.0` to
 checking `1.0`), one renamed for accuracy, one gained an assertion that `base` (not just `overlay`) now
 normalizes too.
+
+## Phase 93 (2026-08-31) — Deleted `plot_comparison`
+
+Phase 92 confirmed `plot_comparison` dead (retired from the demo notebook at Phase 22, referenced
+nowhere but its own docstring and other functions' comments) and deliberately left it on the old
+brightness-matching technique rather than update code nothing calls. Per user request, deleted it
+outright instead of leaving it to keep drifting further from every other comparison function's own
+technique. Also removed the now-unused `wac` import (`wac.MISSING_CONSTANT` was `plot_comparison`'s
+only live reference to it) and fixed three stale cross-references in still-live code/docstrings
+(`_plot_tie_point_marker`'s "shared by" comment, `plot_overlay`'s docstring, `_render_overlay_figure`'s
+km-tick-formatter comment) that named it as a still-existing sibling. No notebook called it, so
+nothing to regenerate; `trntest-lint`/`pytest`/`mypy` all clean.
