@@ -4904,3 +4904,96 @@ the right thing almost everywhere -- `TrnTestEntry.camera`/`.crop_result`/`.dem_
 `TrnTestImage._require_generated()` is the fail-fast fallback. One real gap found
 (`reproject_spike.py` reading `entry.hillshade.raster_path` directly, bypassing both) -- moot once
 that notebook was archived rather than fixed forward.
+
+## Phase 91 (2026-08-30) — `plot_zoom_blink`: a full-resolution blink comparator; new Phase 5C/6C
+
+New `plotting.plot_zoom_blink`: `plot_render_toggle`'s blink mechanism (two full frames, auto-looping
+GIF), applied to two geo-aligned map-projected rasters instead of two same-grid renders, restricted to
+a full-resolution square crop (`crop_px`, default 200px) so per-pixel detail isn't compressed away the
+way `plot_overlay_toggle`'s whole-footprint figure does. `TrnTestImage.plot_zoom_blink_over` is its
+notebook-facing wrapper, live in `image_generation.ipynb` as Phase 5C/6C.
+
+Went through two real corrections mid-session, both from direct user feedback after seeing the first
+version live:
+
+1. **Crop anchor.** The first version anchored the crop window on whichever raster was passed first.
+   Checked directly against this project's own default candidate: the basemap's own array center sits
+   up to ~10km off a given candidate's actual footprint center (it's a padded/unioned AOI, not
+   footprint-centered) -- anchoring there instead of on the candidate's own render/crop risked cropping
+   mostly nodata. Fixed by always anchoring on the caller's own raster (`TrnTestImage.
+   plot_zoom_blink_over` always passes `self`'s own map-projected raster as the anchor), independent of
+   which raster ends up as the left-hand label.
+2. **Argument order.** First version made `self` the blink's left-hand ("☑ label_a / ☐ label_b")
+   entry. Per user request, switched so the *other* raster (an explicit `TrnTestImage`, or `None` for
+   the implicit basemap) is left-hand instead, matching `plot_overlay`'s own `(base_raster_path,
+   overlay_raster_path)` argument order -- `other` stands in for `plot_overlay`'s always-implicit
+   basemap by default. `plot_zoom_blink_over`'s own default (self plays first in the loop) still
+   matches `plot_overlay_toggle`'s overlay-first default.
+
+Also **found and fixed a real, independent frame-order bug** in `_blink_gif_b64` while building this:
+`show_a_first=True` was playing the *second* raster first, not the first, for both `plot_render_toggle`
+and the new `plot_zoom_blink` -- `_blink_gif_b64(base_frame, overlay_frame, initial_visible)` plays
+`overlay_frame` first when `initial_visible`, so passing `(frame_a, frame_b, show_a_first)` positionally
+had it backwards. Fixed by swapping which frame is passed first; confirmed live via extracted GIF
+frames, both before and after. `plot_overlay_toggle` itself was already correct (its own `initial_visible`
+already meant "overlay first," matching this same convention).
+
+Phase 5C/6C are `entry.hillshade.plot_zoom_blink_over()` / `entry.crop.plot_zoom_blink_over()` -- each
+one call, no separate markdown commentary, mirroring how 5A/5B and 6A/6B are each one call per
+candidate against the same phase-level markdown intro.
+
+## Phase 92 (2026-08-31) — Brightness "matching" redesigned as symmetric median-normalization; `compute_brightness_matched_diff`'s numbers are no longer comparable to pre-Phase-92 values
+
+**The problem, from the user:** every brightness comparison in `plotting.py` picked one side (`A`) as
+the reference and scaled the other (`B`) to match it, then derived the display's `vmax` from `A` alone.
+If `B` was much darker than `A`, it got scaled up a lot to match -- and nothing capped its now-inflated
+highlights from clipping past a `vmax` sized only for `A`. Not robust to a genuinely dark side.
+
+**First proposal (wrong, caught by the user): scale both sides toward a shared "target" (e.g. the
+geometric mean of their medians).** Worked through the algebra live: once `vmax` is *re-derived from the
+post-scale data* (as it already was), the absolute choice of target cancels out completely --
+`scale_a/scale_b = median_b/median_a` for *any* target, so the final displayed image is identical
+regardless of which target is picked. The real, non-moot fix for *display* is narrower: derive `vmax`
+from the max of both sides' own post-match percentile, not from `A` alone. Which side gets held fixed
+during the match is irrelevant to what's shown, as long as `vmax` accounts for both.
+
+**Second proposal (the one that shipped, from the user): normalize *both* sides independently to their
+own median = 1.0, rather than one matched to the other's absolute level.** For *display*, this is
+provably equivalent to the disproven "common target" idea (same reasoning: any per-side target is moot
+once `vmax` is re-derived) -- but for `compute_brightness_matched_diff`, a *terminal* quantity with no
+downstream re-normalization step, it's a real, coherent change: `|A/median_a - B/median_b|` is
+algebraically `|A - (median_a/median_b)*B| / median_a` -- the *old* diff, rescaled by a fixed, meaningful
+constant (dividing by `A`'s own median), not an arbitrary cancel-out. The result is a dimensionless
+fraction of each raster's own median brightness (`0.05` == "5% of typical brightness"), comparable
+across candidates at very different absolute brightness levels -- not a raw diff in one raster's own
+arbitrary units.
+
+**Implementation:** two new shared helpers, `_robust_median`/`_normalize_to_median` (guard a zero/
+non-finite/empty median the same way every prior scale computation already did, just factored out).
+Applied to `_prep_overlay_rasters` (and therefore `plot_overlay`/`plot_overlay_toggle`/
+`compute_brightness_matched_diff`, which all build on it), `plot_isis_comparison`, `plot_sfs_comparison`,
+`plot_render_toggle`, and `plot_zoom_blink`. Every one of these now derives its display `vmax` from the
+*largest* of all its panels' own post-normalization percentile, not one panel's alone.
+
+**Deliberately left untouched: `plot_comparison`.** Confirmed dead code (retired from the demo notebook
+at Phase 22, referenced nowhere but its own docstring and other functions' comments) -- not worth
+updating a function nothing calls, and its stale cross-references in other functions' comments were
+cleaned up instead of preserved.
+
+**Breaking change, not retroactively fixed:** every `compute_brightness_matched_diff` number cited
+anywhere in this file or `docs/plan.md` before this phase (e.g. Phase 72/74/78's `mean_abs_diff`
+values, in raw calibrated-reflectance units) is no longer reproducible or comparable against a fresh
+run -- the metric's own definition changed, not just its inputs. Freshly regenerated for calibration
+(`sfs_validation.ipynb`, this candidate): real WAC vs. our hillshade `mean_abs_diff=0.0848`, vs. `sfs`
+forward-render `mean_abs_diff=0.1208` -- both dimensionless fractions of median, not directly comparable
+to the old ~0.0032-0.0061 absolute-reflectance-unit range.
+
+Six notebooks touched: `image_generation.ipynb`/`hapke_hillshade.ipynb`/`real_hapke_params.ipynb`/
+`sfs_validation.ipynb`/`pose_alignment_spike.ipynb` all call an affected function directly and were
+regenerated end to end (all clean). `along_track_correction.ipynb`/`real_hapke_params.ipynb`'s own
+printed `mean|diff|` numbers are untouched -- both implement their own separate inline brightness-match
+(not this module's shared functions) -- only `real_hapke_params.ipynb`'s `plot_overlay_toggle` blink
+figure changed visually. `tests/test_plotting.py` updated to match: two tests' expected numbers changed
+(one from `10.0` to `0.1`, reflecting the exact rescaling derived above; one from checking `100.0` to
+checking `1.0`), one renamed for accuracy, one gained an assertion that `base` (not just `overlay`) now
+normalizes too.

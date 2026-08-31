@@ -62,6 +62,38 @@ def valid_pixel_mask(data: np.ndarray) -> np.ndarray:
     return np.isfinite(data) & (np.abs(data) < _FILL_VALUE_MAGNITUDE_THRESHOLD)
 
 
+def _robust_median(values) -> float:
+    """`np.nanmedian(values)`, returning `nan` for the degenerate case (empty, or a zero/
+    non-finite median) every brightness-normalization call site in this module needs to guard
+    against before dividing by it.
+
+    :param values: Input array, or an already-valid-only selection (`numpy.ndarray` or the
+        `.values` of an `xarray.DataArray`).
+    :returns: The median, or `nan` if it's zero, non-finite, or `values` is empty -- pair with
+        `_normalize_to_median`, which leaves its input unscaled on `nan` rather than dividing by it.
+    """
+    if values.size == 0:
+        return float("nan")
+    median = np.nanmedian(values)
+    return float(median) if median and np.isfinite(median) else float("nan")
+
+
+def _normalize_to_median(data, median: float):
+    """Divide `data` by `median`, or return it unchanged if `median` is `nan` (see
+    `_robust_median`) -- the per-side half of this module's shared brightness normalization: two
+    images being compared each call this independently with their own median, putting both on a
+    scale-invariant, directly-interpretable-as-fraction-of-their-own-median basis (`0.05` off ==
+    "5% of typical brightness"), rather than matching one to the other's absolute level.
+
+    :param data: Array to scale (`numpy.ndarray` or `xarray.DataArray`) -- not necessarily the same
+        selection `median` was computed over (e.g. a valid-pixels-only median applied to a
+        dead-column-filled full array).
+    :param median: From `_robust_median`.
+    :returns: `data / median`, or `data` itself if `median` is `nan`.
+    """
+    return data / median if np.isfinite(median) else data
+
+
 def read_raster_band(path, band: int = 1, window: rasterio.windows.Window | None = None) -> np.ndarray:
     """Read one band of any raster GDAL can open by path (GeoTIFF, ISIS `.cub`, ...), optionally
     windowed to a crop.
@@ -363,17 +395,17 @@ def plot_isis_comparison(
     :param window: Optional crop window into `stitched_cub_path`, if it's the full, uncropped
         stitched cube rather than an already-cropped one (`isis_wac.crop_for_camera`'s own output
         needs no further windowing).
-    :param synthetic_label: Synthetic render panel title (no rotation/brightness-match note appended).
-    :param real_label: Real WAC panel title (no rotation/brightness-match note appended).
+    :param synthetic_label: Synthetic render panel title (no rotation/normalization note appended).
+    :param real_label: Real WAC panel title (no rotation/normalization note appended).
     :returns: The `Figure`.
     """
-    # Applies the same north-up display rotation and km extent scaling `plot_comparison` uses, for
-    # the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent rotation
-    # to display north-up, and WAC's along-track/cross-track pixel GSDs differ (the crop's
+    # Applies the same north-up display rotation and km extent scaling `plot_render_toggle` uses,
+    # for the same two reasons: the sensor's fixed pixel-axis convention needs a pass-dependent
+    # rotation to display north-up, and WAC's along-track/cross-track pixel GSDs differ (the crop's
     # along-track axis is oversampled relative to cross-track -- see `crop_window_for_camera`), so a
     # plain 1:1 pixel `imshow` visibly stretches/compresses it. `rotations.k_crop` -- computed purely
-    # from SPICE geometry (`camera`/`frame_timing`), never from `wac.py`'s own pixel array -- applies
-    # equally well here: the ISIS cube shares `wac.py`'s exact line/sample convention (confirmed in
+    # from SPICE geometry (`camera`/`frame_timing`), never from a pixel array -- applies equally well
+    # here: the ISIS cube shares `wac.py`'s exact line/sample convention (confirmed in
     # `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking order and
     # `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
     # `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
@@ -384,26 +416,29 @@ def plot_isis_comparison(
     # `tie_points.resolve_crop_pixels`'s docstring) is simply absent from `tie_point_results` -- this
     # function draws whatever's present, no special handling needed for a missing point.
     #
-    # Brightness-matches the real panel to the synthetic one via the same single-multiplicative-
-    # median-scale technique `plot_comparison` uses (see its docstring for the full rationale) --
-    # necessary here for the same reason: the ISIS cube (calibrated I/F, ~0.01-0.2) and the synthetic
-    # render (a rendered-texture brightness value, ~0-255) are on entirely different numeric scales,
-    # not just different units of the same thing.
+    # Each panel independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
+    # `_normalize_to_median`, same technique `_prep_overlay_rasters` uses) rather than real matched
+    # to synthetic's absolute scale -- necessary since the ISIS cube (calibrated I/F, ~0.01-0.2) and
+    # the synthetic render (a rendered-texture brightness value, ~0-255) are on entirely different
+    # numeric scales, and matching one to the other's fixed range risks oversaturating whichever
+    # side needed the bigger correction (e.g. a much darker real crop scaled way up to match).
     synthetic = read_raster_band(rendered_tif_path)
     real = read_raster_band(stitched_cub_path, window=window)
     valid = valid_pixel_mask(real)
     real_filled = _fill_dead_columns_for_display(real, valid) if valid.any() else real
-    # Median computed over the real, un-filled valid pixels only (matching plot_comparison's
-    # technique exactly) -- the fill above is a display convenience for isolated dead columns
-    # (see _fill_dead_columns_for_display's docstring), not something that should influence the
-    # brightness match.
-    scale = np.median(synthetic[valid_pixel_mask(synthetic)]) / np.median(real[valid]) if valid.any() else 1.0
-    real_display = real_filled * scale
+
+    synthetic_valid = valid_pixel_mask(synthetic)
+    synthetic_norm = _normalize_to_median(synthetic, _robust_median(synthetic[synthetic_valid]))
+    # Median computed over the real, un-filled valid pixels (the fill above is a display convenience
+    # for isolated dead columns -- see _fill_dead_columns_for_display's docstring -- not something
+    # that should influence the brightness normalization).
+    real_median = _robust_median(real[valid]) if valid.any() else float("nan")
+    real_norm = _normalize_to_median(real_filled, real_median)
 
     h_syn, w_syn = synthetic.shape
     h_crop, w_crop = real.shape
-    synthetic_rot = np.rot90(synthetic, rotations.k_synthetic)
-    real_rot = np.rot90(real_display, rotations.k_crop)
+    synthetic_rot = np.rot90(synthetic_norm, rotations.k_synthetic)
+    real_rot = np.rot90(real_norm, rotations.k_crop)
 
     # synthetic_width_km != synthetic_height_km in general once camera.solve_corrected_fov shrinks
     # the FOV (see its docstring) -- and, independently, no longer necessarily equal to
@@ -414,11 +449,22 @@ def plot_isis_comparison(
     crop_width_km = camera.cross_track_width_km
     crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
 
+    # vmax is the larger of the two panels' own post-normalization 99.9th percentile -- not a fixed
+    # 255 sized only for the synthetic render's own native uint8 scale -- so the real panel's own
+    # highlights get enough headroom if it needed a big correction, instead of clipping against a
+    # ceiling that was never sized for it.
+    vmax = max(
+        np.nanpercentile(synthetic_norm[synthetic_valid], 99.9),
+        np.nanpercentile(real_norm[valid], 99.9) if valid.any() else 0.0,
+    )
+
     fig, axes = plt.subplots(1, 2, figsize=(11, 6))
-    axes[0].imshow(synthetic_rot, cmap="gray", vmin=0, vmax=255, extent=[0, synthetic_width_km, synthetic_height_km, 0])
+    axes[0].imshow(
+        synthetic_rot, cmap="gray", vmin=0, vmax=vmax, extent=[0, synthetic_width_km, synthetic_height_km, 0]
+    )
     axes[0].set_title(f"{synthetic_label} (north-up)")
-    axes[1].imshow(real_rot, cmap="gray", vmin=0, vmax=255, extent=[0, crop_width_km, crop_height_km, 0])
-    axes[1].set_title(f"{real_label} (brightness-matched to {synthetic_label}, north-up)")
+    axes[1].imshow(real_rot, cmap="gray", vmin=0, vmax=vmax, extent=[0, crop_width_km, crop_height_km, 0])
+    axes[1].set_title(f"{real_label} (median-normalized, north-up)")
     for ax in axes:
         ax.set_xlabel("km")
         ax.set_ylabel("km")
@@ -727,16 +773,17 @@ def plot_overlay(
     # vector-layer overlays (e.g. the Robbins crater database; see `docs/plan.md`'s open items) on
     # top of this same raster display.
     #
-    # The overlay is first brightness-matched to the base via a single multiplicative scale at the
-    # median (`_prep_overlay_rasters`) -- the same technique `plot_comparison`/`plot_isis_comparison`
-    # already use. Necessary here for the same reason it mattered there: `overlay_raster_path` and
-    # `base_raster_path` can come from different pipelines on different numeric scales (e.g. an
-    # ISIS-calibrated I/F crop vs. the hillshade-based basemap), and each panel's own independent
+    # Base and overlay are each independently normalized to their own median (`_prep_overlay_rasters`)
+    # rather than overlay matched to base's absolute level. Necessary here since `overlay_raster_path`
+    # and `base_raster_path` can come from different pipelines on different numeric scales (e.g. an
+    # ISIS-calibrated I/F crop vs. the hillshade-based basemap): each panel's own independent
     # percentile stretch doesn't guarantee the two end up looking similarly bright even though each
-    # is individually well-exposed -- distracting when `plot_overlay_toggle` blinks between them.
-    # Base and the now-brightness-matched overlay are then both displayed on the same
-    # `vmin=0`/`vmax=`99.9th-percentile linear stretch (base's own; same technique as
-    # `plot_render_vs_basemap`'s darkness fix) rather than `imshow`'s naive min/max autoscale --
+    # is individually well-exposed -- distracting when `plot_overlay_toggle` blinks between them --
+    # and matching one to the other's fixed range risks oversaturating whichever side needed the
+    # bigger correction (e.g. one side much darker than the other).
+    # Both are then displayed on the same `vmin=0`/`vmax=` linear stretch (the larger of the two
+    # sides' own 99.9th percentile -- same technique as `plot_render_vs_basemap`'s darkness fix, now
+    # protecting either side, not just base) rather than `imshow`'s naive min/max autoscale --
     # without it, a calibrated overlay's actual valid-data footprint can visually read as a thin
     # sliver near `show_overlay_outline`'s boundary line rather than the majority of the frame it
     # actually covers, since the naive-autoscaled overlay blends into the base almost invisibly at
@@ -781,35 +828,43 @@ def plot_overlay(
 
 
 def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_nodata: bool):
-    """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`: open both rasters, optionally fill
-    the overlay's small nodata gaps for display, brightness-match the overlay to the base, and
-    compute a shared display stretch.
+    """Shared data-prep for `plot_overlay`/`plot_overlay_toggle`/`compute_brightness_matched_diff`:
+    open both rasters, optionally fill the overlay's small nodata gaps for display, normalize both
+    to their own median, and compute a shared display stretch.
 
     :param base_raster_path: Base raster path.
     :param overlay_raster_path: Overlay raster path.
     :param fill_overlay_nodata: Fill the overlay's small nodata gaps for display.
-    :returns: `(base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax)`.
+    :returns: `(base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax)` --
+        `base`/`overlay_display` are the normalized (median=1.0) rasters actually used for display
+        and, by `compute_brightness_matched_diff`, for its diff; `overlay` is the original,
+        un-normalized raster (only its NaN footprint matters to `_overlay_outline_geoseries`, not
+        its brightness).
     """
-    # See `plot_overlay`'s docstring for the brightness-matching and display-stretch rationale. Split
-    # out so `plot_overlay_toggle` can do this once and reuse it for both of its two renders, rather
-    # than re-opening/re-stretching/re-scaling the same rasters twice.
+    # Split out so plot_overlay_toggle can do this once and reuse it for both of its two renders,
+    # rather than re-opening/re-normalizing the same rasters twice.
     base = _open_raster_dataarray(base_raster_path)
     overlay = _open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
-    base_vmin, base_vmax = 0, np.nanpercentile(base.values, 99.9)
-    # Single multiplicative scale at the median, same as plot_comparison/plot_isis_comparison --
-    # not an affine/percentile stretch, which would remap the darkest/brightest values and stop
-    # reflecting the pipeline's actual relative brightness. Guarded against a zero/non-finite overlay
-    # median (e.g. an all-nodata overlay) rather than dividing by it.
-    overlay_median = np.nanmedian(overlay_display.values)
-    if overlay_median and np.isfinite(overlay_median):
-        brightness_scale = np.nanmedian(base.values) / overlay_median
-        overlay_display = overlay_display * brightness_scale
-    # Both now share base's own vmin/vmax rather than each getting its own independent percentile
-    # stretch -- an independent stretch would silently re-normalize away the brightness match above,
-    # the same "implicit stretch making two panels' brightness incomparable" issue
-    # plot_comparison's own docstring describes.
-    overlay_vmin, overlay_vmax = base_vmin, base_vmax
+
+    # Each side independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
+    # `_normalize_to_median`), not overlay matched to base's absolute level -- this is what makes
+    # `compute_brightness_matched_diff`'s own |diff| a scale-invariant fraction-of-median number
+    # (comparable across candidates at different absolute brightness levels, not base's own
+    # arbitrary units), and lets the vmax below protect either side from oversaturating, not just
+    # base.
+    base = _normalize_to_median(base, _robust_median(base.values))
+    overlay_display = _normalize_to_median(overlay_display, _robust_median(overlay_display.values))
+
+    # vmax is the larger of the two sides' own post-normalization 99.9th percentile, not base's
+    # alone -- so a side that needed a bigger correction (e.g. a much darker overlay) still gets
+    # enough headroom for its own highlights, instead of clipping against a ceiling sized only for
+    # base. An independent per-side percentile stretch instead of one shared vmax would silently
+    # re-normalize the comparison away (each side re-stretched to its own visual range, hiding a
+    # real relative brightness difference that should stay visible).
+    vmax = max(np.nanpercentile(base.values, 99.9), np.nanpercentile(overlay_display.values, 99.9))
+    base_vmin, base_vmax = 0, vmax
+    overlay_vmin, overlay_vmax = 0, vmax
     return base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax
 
 
@@ -824,7 +879,13 @@ class BrightnessMatchedDiffResult:
 
 def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> BrightnessMatchedDiffResult:
     """The quantitative counterpart to `plot_overlay`'s visual comparison: a reusable
-    brightness-matched mean|diff| between two geo-aligned rasters on the same map grid.
+    brightness-normalized mean|diff| between two geo-aligned rasters on the same map grid.
+
+    Both rasters are independently normalized to their own valid-pixel median = 1.0 before diffing
+    (`_prep_overlay_rasters`) -- so `mean_abs_diff`/`median_abs_diff` are scale-invariant fractions
+    of each raster's own median brightness (`0.05` == "5% of typical brightness"), comparable
+    across candidates at different absolute brightness levels, not a raw diff in one raster's own
+    arbitrary absolute units.
 
     :param base_raster_path: Base raster (typically the full padded DEM/ortho fetch AOI).
     :param overlay_raster_path: Overlay raster, expected to share the base's CRS/pixel size but not
@@ -835,8 +896,7 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
     # investigation notebook hand-recomputing this metric ad hoc with no guarantee of matching any
     # other attempt's exact methodology.
     #
-    # Reuses `_prep_overlay_rasters`'s exact brightness-matching technique (a single multiplicative
-    # scale at the median, not an affine/percentile stretch -- see its own docstring for why) with
+    # Reuses `_prep_overlay_rasters`'s exact normalization (see its own docstring for why) with
     # `fill_overlay_nodata=False`: unlike `plot_overlay`'s display use, a quantitative diff must never
     # include interpolated/filled pixels, only real data.
     #
@@ -865,7 +925,7 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
 
 def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title: str | None = None):
     """WAC crop vs. this project's own Hapke hillshade vs. ASP `sfs`'s independent forward-render
-    (`sfs_validation.run_sfs_forward_render`), all brightness-matched to the WAC panel.
+    (`sfs_validation.run_sfs_forward_render`), each independently normalized to its own median.
 
     :param real_wac_path: WAC crop raster path.
     :param ours_path: This project's Hapke hillshade raster path.
@@ -874,32 +934,35 @@ def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title:
     :param title: Optional figure title.
     :returns: The `Figure`.
     """
-    # Brightness-matched via the same single-multiplicative-median-scale technique
-    # `_prep_overlay_rasters`/`compute_brightness_matched_diff` use (see either's docstring for why,
-    # not an affine/percentile stretch). `sfs_sim_intensity_path` must already be coverage-masked --
-    # `sfs`'s own literal-`0.0` "outside camera coverage" convention would otherwise dominate the
-    # median and wash out the brightness match entirely, the same failure mode
+    # Each panel independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
+    # `_normalize_to_median`, same technique `_prep_overlay_rasters`/`compute_brightness_matched_diff`
+    # use), not `ours`/`sim` matched to `real`'s absolute level -- a shared vmax (the largest of the
+    # three sides' own post-normalization percentile) then protects whichever panel needed the
+    # biggest correction from oversaturating, not just `real`. `sfs_sim_intensity_path` must already
+    # be coverage-masked -- `sfs`'s own literal-`0.0` "outside camera coverage" convention would
+    # otherwise dominate the median and wash out the normalization entirely, the same failure mode
     # `compute_brightness_matched_diff`'s own docstring warns a mismatched-extent raster can cause.
     real = _open_raster_dataarray(real_wac_path)
     tolerance = _cellsize_m(real) / 2.0
     ours = _open_raster_dataarray(ours_path).reindex_like(real, method="nearest", tolerance=tolerance)
     sim = _open_raster_dataarray(sfs_sim_intensity_path).reindex_like(real, method="nearest", tolerance=tolerance)
 
-    real_median = np.nanmedian(real.values)
-    vmax = np.nanpercentile(real.values, 99.5)
-
-    def brightness_matched(overlay):
-        overlay_median = np.nanmedian(overlay.values)
-        scale = real_median / overlay_median if overlay_median and np.isfinite(overlay_median) else 1.0
-        return overlay.values * scale
+    real_norm = _normalize_to_median(real, _robust_median(real.values))
+    ours_norm = _normalize_to_median(ours, _robust_median(ours.values))
+    sim_norm = _normalize_to_median(sim, _robust_median(sim.values))
+    vmax = max(
+        np.nanpercentile(real_norm.values, 99.5),
+        np.nanpercentile(ours_norm.values, 99.5),
+        np.nanpercentile(sim_norm.values, 99.5),
+    )
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 6))
-    axes[0].imshow(real.values, cmap="gray", vmin=0, vmax=vmax)
+    axes[0].imshow(real_norm.values, cmap="gray", vmin=0, vmax=vmax)
     axes[0].set_title("Real WAC (cam2map)")
-    axes[1].imshow(brightness_matched(ours), cmap="gray", vmin=0, vmax=vmax)
-    axes[1].set_title("Our Hapke hillshade\n(brightness-matched)")
-    axes[2].imshow(brightness_matched(sim), cmap="gray", vmin=0, vmax=vmax)
-    axes[2].set_title("ASP sfs forward-render\n(brightness-matched)")
+    axes[1].imshow(ours_norm.values, cmap="gray", vmin=0, vmax=vmax)
+    axes[1].set_title("Our Hapke hillshade\n(median-normalized)")
+    axes[2].imshow(sim_norm.values, cmap="gray", vmin=0, vmax=vmax)
+    axes[2].set_title("ASP sfs forward-render\n(median-normalized)")
     for ax in axes:
         ax.axis("off")
     fig.tight_layout()
@@ -972,7 +1035,7 @@ def _render_overlay_figure(
     """Build one `Figure` for `plot_overlay`/`plot_overlay_toggle`.
 
     :param base: Base `DataArray`.
-    :param overlay_display: Overlay `DataArray` (already brightness-matched/nodata-filled).
+    :param overlay_display: Overlay `DataArray` (already brightness-normalized/nodata-filled).
     :param base_vmin: Base display stretch minimum.
     :param base_vmax: Base display stretch maximum.
     :param overlay_vmin: Overlay display stretch minimum.
@@ -1236,7 +1299,7 @@ def plot_render_toggle(
     `Camera`.
 
     :param raster_a_path: First render raster path.
-    :param raster_b_path: Second render raster path, brightness-matched to the first.
+    :param raster_b_path: Second render raster path.
     :param rotation_k: North-up display rotation, shared by both (same pose, same corrected FOV --
         see `camera.solve_corrected_fov`'s docstring).
     :param width_km: Displayed width, km.
@@ -1255,11 +1318,13 @@ def plot_render_toggle(
     # the other panels in this notebook, the whole point here is the blink itself; static markers
     # didn't actually help read it and just added clutter.
     #
-    # Still brightness-matches `raster_b_path` to `raster_a_path`'s own median (the same
-    # single-multiplicative technique `plot_isis_comparison`/`plot_overlay` use) -- necessary even
-    # though both are `sat_sim` renders, since the two can land on very different absolute DN scales
-    # depending on their own texture source (e.g. an ISIS-calibrated I/F input, ~0.01-0.2, vs. a
-    # synthetic basemap texture).
+    # Each render independently normalized to its own median = 1.0 (`_robust_median`/
+    # `_normalize_to_median`, same technique `_prep_overlay_rasters` uses), not `raster_b_path`
+    # matched to `raster_a_path`'s absolute level -- necessary even though both are `sat_sim`
+    # renders, since the two can land on very different absolute DN scales depending on their own
+    # texture source (e.g. an ISIS-calibrated I/F input, ~0.01-0.2, vs. a synthetic basemap
+    # texture), and matching one to the other's fixed range risks oversaturating whichever side
+    # needed the bigger correction.
     #
     # Reuses `_blink_gif_b64` directly for the actual GIF encoding (shared 256-color palette, `<img
     # src="data:image/gif;...">`, no `<style>`/anchor links for GitHub's sanitizer to strip -- see
@@ -1280,12 +1345,15 @@ def plot_render_toggle(
     filled_a = _fill_dead_columns_for_display(data_a, valid_a) if valid_a.any() else data_a
     filled_b = _fill_dead_columns_for_display(data_b, valid_b) if valid_b.any() else data_b
 
-    median_a = np.nanmedian(filled_a[valid_a]) if valid_a.any() else 1.0
-    median_b = np.nanmedian(filled_b[valid_b]) if valid_b.any() else 1.0
-    if median_b and np.isfinite(median_b):
-        filled_b = filled_b * (median_a / median_b)
+    norm_a = _normalize_to_median(filled_a, _robust_median(filled_a[valid_a]) if valid_a.any() else float("nan"))
+    norm_b = _normalize_to_median(filled_b, _robust_median(filled_b[valid_b]) if valid_b.any() else float("nan"))
 
-    vmin, vmax = 0, np.nanpercentile(filled_a, 99.9)
+    # vmax is the larger of the two renders' own post-normalization 99.9th percentile, not raster_a's
+    # alone -- so whichever side needed the bigger correction still gets enough headroom for its own
+    # highlights.
+    vmax_a = np.nanpercentile(norm_a[valid_a], 99.9) if valid_a.any() else 0.0
+    vmax_b = np.nanpercentile(norm_b[valid_b], 99.9) if valid_b.any() else 0.0
+    vmin, vmax = 0, max(vmax_a, vmax_b)
 
     def _frame(data, title):
         fig, ax = plt.subplots(figsize=(6, 6))
@@ -1301,8 +1369,8 @@ def plot_render_toggle(
         buf.seek(0)
         return Image.open(buf).convert("RGB"), round(width_px), round(height_px)
 
-    frame_a, width_px, height_px = _frame(filled_a, f"☑ {label_a} / ☐ {label_b}")
-    frame_b, _, _ = _frame(filled_b, f"☐ {label_a} / ☑ {label_b}")
+    frame_a, width_px, height_px = _frame(norm_a, f"☑ {label_a} / ☐ {label_b}")
+    frame_b, _, _ = _frame(norm_b, f"☐ {label_a} / ☑ {label_b}")
 
     # _blink_gif_b64(base_frame, overlay_frame, initial_visible) plays overlay_frame first when
     # initial_visible -- so frame_b (the "overlay" slot) must be passed first here for
@@ -1328,8 +1396,7 @@ def plot_zoom_blink(
     fixed-size figure (as `plot_overlay_toggle` does) hides real per-pixel detail.
 
     :param raster_a_path: First map-projected raster path -- reindexed onto `raster_b_path`'s pixel
-        grid (nearest-neighbor, half-a-pixel tolerance, same as `compute_brightness_matched_diff`)
-        and brightness-matched to it.
+        grid (nearest-neighbor, half-a-pixel tolerance, same as `compute_brightness_matched_diff`).
     :param raster_b_path: Second, reference map-projected raster path. Its own native pixel grid
         drives both the crop window and the display resolution -- pass whichever raster's footprint
         is trustworthy to center on (e.g. a candidate's own render/crop, not a padded basemap AOI
@@ -1345,10 +1412,10 @@ def plot_zoom_blink(
         trailing `;`), same requirement as `plot_render_toggle`/`plot_overlay_toggle`.
     """
     # Reuses plot_overlay_toggle's own geo-alignment (_open_raster_dataarray, reindex_like) and
-    # brightness-matching (single multiplicative scale at the median -- see _prep_overlay_rasters's
-    # docstring for why) plus _blink_gif_b64's shared-palette GIF encoding; only the windowing (a
-    # small square crop, not the whole footprint) and axis handling (real Easting/Northing km ticks,
-    # not a 0-based pixel extent -- these are already-georeferenced map-projected rasters, unlike
+    # normalization (_robust_median/_normalize_to_median -- see _prep_overlay_rasters's docstring
+    # for why) plus _blink_gif_b64's shared-palette GIF encoding; only the windowing (a small square
+    # crop, not the whole footprint) and axis handling (real Easting/Northing km ticks, not a
+    # 0-based pixel extent -- these are already-georeferenced map-projected rasters, unlike
     # plot_render_toggle's raw sensor-pixel arrays) differ.
     #
     # raster_b_path anchors the crop, not raster_a_path -- e.g. TrnTestImage.plot_zoom_blink_over
@@ -1366,15 +1433,17 @@ def plot_zoom_blink(
     tolerance = _cellsize_m(b) / 2.0
     a_crop = a.reindex_like(b_crop, method="nearest", tolerance=tolerance)
 
-    b_median = np.nanmedian(b_crop.values)
-    a_median = np.nanmedian(a_crop.values)
-    if a_median and np.isfinite(a_median):
-        a_crop = a_crop * (b_median / a_median)
+    # Each side independently normalized to its own median = 1.0, not a_crop matched to b_crop's
+    # absolute level -- see _prep_overlay_rasters's own docstring for why.
+    b_crop = _normalize_to_median(b_crop, _robust_median(b_crop.values))
+    a_crop = _normalize_to_median(a_crop, _robust_median(a_crop.values))
 
-    # vmin=0 (not an affine min-max stretch), vmax from the 99.9th percentile -- same reasoning as
-    # plot_render_vs_basemap/plot_overlay's own stretch (an affine stretch would clip genuinely
-    # dark-but-real terrain to black; a bare max lets a handful of outlier pixels wash out the rest).
-    vmin, vmax = 0, np.nanpercentile(b_crop.values, 99.9)
+    # vmin=0 (not an affine min-max stretch -- an affine stretch would clip genuinely dark-but-real
+    # terrain to black), vmax the larger of the two sides' own post-normalization 99.9th percentile
+    # so whichever side needed the bigger correction still gets enough headroom for its own
+    # highlights, instead of clipping against a ceiling sized only for the other side.
+    vmin = 0
+    vmax = max(np.nanpercentile(a_crop.values, 99.9), np.nanpercentile(b_crop.values, 99.9))
     km_formatter = matplotlib.ticker.FuncFormatter(lambda x, _: f"{x / 1000:.1f}")
 
     def _frame(data, title):
