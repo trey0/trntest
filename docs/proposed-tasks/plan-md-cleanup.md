@@ -1,8 +1,23 @@
 # `docs/plan.md` cleanup: delete resolved-item narratives, trim the Architecture table
 
-**Status: not started. Scoping done (this doc, split off from `docs-style-second-pass.md` once
-that plan's other work finished); deferred at the user's own explicit call (2026-08-31) after a
-mid-session scoping discussion, since it's a bigger job than a normal docs-style pass.**
+**Status: in progress.** Working in worktree `docs-proposed-tasks-style-0defc6`, branch
+`claude/docs-proposed-tasks-style-0defc6`. Batch 1 done and pushed (commit `9199fb2`, not yet
+merged to `main` -- awaiting review): Architecture table rewritten to the shorter bar below (also
+added a missing `craters.py` row), two stray `docs/history.md` citations cut, and two fully-resolved
+"Known open items" narratives deleted (the CK-kernel investigation, the crater-overlay/`OverlayLayer`
+implementation retelling).
+
+**Remaining**: "Known open items" still has most of its resolved-narrative bulk left, worked from
+where batch 1 stopped (right after the crater-overlay deletion, before the `crater_depth.py` entry)
+down to the end of the file. The single largest remaining block is the Phase 70-79
+photometric-angle/Hapke-shading saga (one very long paragraph, currently a few hundred lines into
+"Known open items") -- likely worth its own batch given its size. Many more `docs/history.md`
+citations remain throughout this section and should be cut using the same approach as batch 1
+(state the load-bearing fact directly if any, otherwise just delete). After that, batch 4 (final
+read-through) and the still-open question of whether to add Architecture-table rows for the other 9
+modules missing from it (`wac_camera_model.py`, `control_network.py`, `crater_depth.py`,
+`crater_depth_batch.py`, `pose_alignment.py`, `subprocess_utils.py`, `report.py`, `__init__.py`,
+`_lint.py`) -- deferred, not yet asked about.
 
 ## The problem
 
