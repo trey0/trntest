@@ -1,61 +1,53 @@
-# Dev environment: ephemeral VPS, archive/restore
+# Dev environment: what persists, what doesn't
 
-This repo is developed on an hourly-billed VPS that gets torn down at the end of most work
-sessions (along with the Claude Code session itself, via `/clear`). The host provides just git and
-Docker — everything else (GDAL/ASP/SPICE, Python deps) runs inside the Docker container described
-in `README.md`, so the host stays disposable by design. A fresh session should assume no memory of
-prior sessions beyond what's written down in this repo's docs and git history.
+This repo is developed on a VPS. The compute instance itself may still be recreated between
+sessions, but `trntest_ws` (this outer workspace — this repo's own checkout, `cache/`, `output/`,
+`scratch/`, and a few dotfiles) lives on a persistent volume that gets reattached each time, so its
+contents generally survive from one session to the next without any explicit backup step. This is
+current practice, not a permanent guarantee — the workflow has changed before (an earlier phase of
+this project archived/restored a tarball by hand via `archive.sh`/`restore.sh`, now retired) and
+may change again, so don't treat "it persisted last time" as load-bearing for anything beyond this
+repo's own docs and git history. The host provides just git and Docker — everything else
+(GDAL/ASP/SPICE, Python deps) runs inside the Docker container described in `README.md`, so the
+host stays disposable by design regardless of what the underlying VPS/volume situation is at any
+given time.
 
-## What survives a teardown
+## Docker images
 
-`archive.sh` (`/root/trntest_ws/archive.sh` — not tracked in this git repo) tars
-`apt-manual-packages.txt`, `.bashrc`, `.claude`, `.claude.json`, `notes.txt`, `.ssh`, and the
-*entire* `trntest_ws` directory, then the user scp's the resulting tarball off-box. `restore.sh`
-reconstitutes it on the next VPS. `archive.sh`/`restore.sh`/`clean.sh` themselves live one level
-above this repo and aren't git-tracked, so they only persist by being swept into the tarball they
-describe.
-
-Everything under `trntest_ws` — not just the git repo — gets archived, as long as `archive.sh`
-actually gets run before teardown. So "will this survive" isn't really the question day to day;
-the question is where things belong.
-
-## Docker images don't survive either
-
-Like everything not under `trntest_ws`, the built Docker image itself isn't archived —
-`docker compose build` on a fresh VPS rebuilds it from `docker/Dockerfile` from scratch every
-session, regardless of how many times it was built on a prior (now-destroyed) VPS. Since the
-ISIS/ALE integration (`docs/history.md` Phases 13–14), this build is meaningfully heavier than it
-used to be: a `micromamba create` package solve + install (~1GB download) on top of the existing
-ASP tarball fetch. Budget real time for the first `docker compose build` of a new session — it's
-not instant. If that layer is ever touched again, note its own `micromamba clean --all --yes`
-gotcha (must run in the *same* `RUN` layer as `micromamba create`, or Docker's layered filesystem
-won't actually reclaim the space — cost a real 15.8GB→3GB image bloat the first time around; see
-the Dockerfile's own comment there).
+Each worktree builds and runs its own separately-tagged image (`TRNTEST_IMAGE_TAG`, see "Multi-agent
+worktrees" below), so a new worktree's first `docker compose build`/`run` always builds fresh —
+independent of whatever's cached from other worktrees or prior sessions, and not itself evidence
+either way about whether the underlying Docker layer cache persists across a session. Budget time
+for that first build in a new worktree: a `micromamba create` package solve + install (~1GB
+download) on top of the ASP tarball fetch makes it meaningfully heavier than a typical Docker
+build. If that layer is ever touched again, note its own `micromamba clean --all --yes` gotcha
+(must run in the *same* `RUN` layer as `micromamba create`, or Docker's layered filesystem won't
+actually reclaim the space — cost a 15.8GB→3GB image bloat the first time around; see the
+Dockerfile's own comment there).
 
 ## Where things belong: source vs. large output
 
 - **`src/trntest/`** is the git repo root — the project's public, clean, committed code. Only
   what's worth keeping in history goes here.
-- **`src/scratch/`** is for source that isn't ready to be a real commit yet — spike code,
-  exploratory scripts — but is still precious. It's outside the git repo (a different repo root
-  entirely, so nothing here needs a `.gitignore` entry to stay untracked), but it's still archived
-  along with everything else under `src/`. Nothing under `src/` — committed or not — should ever
-  be bulk-deleted.
+- **`src/scratch/`** is for source that isn't ready to be a commit yet — spike code, exploratory
+  scripts — but is still precious. It's outside the git repo (a different repo root entirely, so
+  nothing here needs a `.gitignore` entry to stay untracked), but it lives on the same persistent
+  volume as everything else under `src/`. Nothing under `src/` — committed or not — should ever be
+  bulk-deleted.
 - **`trntest_ws/scratch/`** (sibling of `src/`, `cache/`, `output/`) is for large, disposable
   spike/experiment output — rendered artifacts, big intermediate data, downloaded blobs. Kept
   distinct from `output/`, whose existing meaning (see `docs/caching.md`) is the demo's own final
   rendered artifacts, not ad hoc spike data.
 
 Everything outside `src/` — `cache/`, `output/`, `scratch/` — is explicitly fair game to be deleted
-at any time, to save space before an `archive.sh` run or just to clean up. A fresh session should
-never assume prior contents of these dirs are still there.
+at any time to save disk space or just to clean up. A fresh session should never assume prior
+contents of these dirs are still there, persistent volume or not.
 
-**One real exception worth knowing before deleting on autopilot**: `cache/astropedia/` holds a
-single ~10GB DEM file (see `docs/caching.md`'s "Astropedia GLD100 caching" section) — still safe to
-delete (it's fully re-fetchable), but re-fetching it is a genuine, non-trivial one-time cost, unlike
-the rest of `cache/`'s small, fast-to-refetch WMS tiles/kernels. Worth deciding deliberately whether
-to keep it archived (bigger tarball/scp) or delete-and-re-download-next-session, not just deleting it
-reflexively along with everything else in a space-saving pass.
+**One exception worth knowing before deleting on autopilot**: `cache/astropedia/` holds a single
+~10GB DEM file (see `docs/caching.md`'s "Astropedia GLD100 caching" section) — still safe to delete
+(it's fully re-fetchable), but re-fetching it is a non-trivial one-time cost, unlike the rest of
+`cache/`'s small, fast-to-refetch WMS tiles/kernels. Worth being deliberate about deleting it,
+not just doing so reflexively along with everything else in a space-saving pass.
 
 ## Multi-agent worktrees
 
@@ -115,19 +107,18 @@ automatically.
   `image_generation.py` run renders, for every agent and the user, not just yours. Don't commit a
   changed manifest unless you specifically mean to change the demo's target image.
 - **If a merge conflict lands in a `.ipynb`, don't try to resolve it in the `.ipynb` itself** —
-  its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the real source of
+  its JSON diff isn't worth reading. Resolve the conflict in the paired `.py` (the source of
   truth), then regenerate the `.ipynb` from scratch with `scripts/run_notebook.sh
   notebooks/<name>.py`. This is also why concurrent edits to the same notebook across agents are
   low-stakes as long as both sides touch the `.py`: whoever merges second just re-derives the
   `.ipynb`, no manual JSON surgery required.
 - **`clean.sh`/`archive.sh`/`restore.sh` (`/root/trntest_ws/*.sh`, host-level, not git-tracked) are
-  the user's own session-teardown/restore tools, run by hand after shutting down every agent** —
-  not something an agent should ever invoke. `clean.sh` in particular is nuclear and not
-  worktree-aware: it stops *every* running container, `docker system prune -a`s *every* image
-  (including every other worktree's per-agent tag), and `rm -rf`s the entire shared `cache/`,
-  `output/`, and `scratch/` — not just yours. If you think cleanup is needed, ask the user rather
-  than running these (or equivalent manual `docker system prune`/`rm -rf` on those shared dirs)
-  yourself.
+  retired session-teardown/restore tools from an earlier phase of this project** — not something an
+  agent should ever invoke regardless. `clean.sh` in particular is nuclear and not worktree-aware:
+  it stops *every* running container, `docker system prune -a`s *every* image (including every
+  other worktree's per-agent tag), and `rm -rf`s the entire shared `cache/`, `output/`, and
+  `scratch/` — not just yours. If you think cleanup is needed, ask the user rather than running
+  these (or equivalent manual `docker system prune`/`rm -rf` on those shared dirs) yourself.
 - **`cache.fetch_astropedia_gld100`'s one-time ~10GB GLD100 download is not concurrency-safe** —
   unlike every other fetch path in `cache.py` (which downloads to a uniquely-named temp file before
   an atomic rename, so concurrent cold fetches of the same small file are safe, if slightly
@@ -137,7 +128,7 @@ automatically.
   only matters once (it's cached forever after) — check `cache/astropedia/*.tif` already exists
   before kicking off a full pipeline run if you're unsure whether another agent got there first.
 - **Docker images accumulate per worktree** (`trntest-lunar-demo-<name>`, several GB each once
-  ISIS/ASP are installed — see "Docker images don't survive either" above). When a worktree's work
+  ISIS/ASP are installed — see "Docker images" above). When a worktree's work
   is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
   per-agent images don't pile up; `docker system df` shows current usage.
 - **`isis_wac.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
@@ -161,7 +152,7 @@ automatically.
   itself") — just not yet a confirmed-live one the way the cross-agent case was.
 - **A `docker compose` invocation can silently miss a worktree's own `docker/.env`, even when the
   file is present and correct on disk** — confirmed live: an early `scripts/run_notebook.sh` run in
-  a real worktree session wrote a genuine ~19GB duplicate of `cache`/`output`/`scratch` directly
+  a worktree session wrote a ~19GB duplicate of `cache`/`output`/`scratch` directly
   inside the worktree checkout itself (`.claude/worktrees/<name>/{cache,output,scratch}`), instead
   of the shared locations `TRNTEST_HOST_CACHE_DIR`/etc. are supposed to point at — Compose's own
   implicit `.env` discovery depends on exactly how/where the command was invoked (cwd, whether `-f`
@@ -176,7 +167,7 @@ automatically.
   If you ever see a populated `cache/`/`output/`/`scratch/` directory sitting inside a worktree
   checkout itself (`git status` will flag it as untracked, and it won't be small) rather than at the
   shared `trntest_ws/{cache,output,scratch}` root, that's this bug recurring — safe to delete (it's
-  a duplicate of real data that already lives correctly at the shared location, not unique data),
+  a duplicate of data that already lives correctly at the shared location, not unique data),
   but worth a quick check first that nothing currently running has that specific worktree-local copy
   actually mounted (`docker inspect <container> --format '{{ range .Mounts }}{{ .Source }} -> {{
   .Destination }}{{ "\n" }}{{ end }}'`, confirm it points at the shared paths, not the local ones).
@@ -208,13 +199,13 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 - **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
   shows: that you merged, a one-line summary of what changed, and that they should `git pull
   origin main` next time they hit a good stopping point (not mid-edit).
-- **Before kicking off anything that will fire a lot of real requests at an external host** (a
+- **Before kicking off anything that will fire a lot of requests at an external host** (a
   bulk cold-cache sweep across a wide date range, a full-year catalog query, anything else that'll
   touch many distinct not-yet-cached files/pages), message the other running agents *first*, not
   just after. `cache.py`'s request pacing (`_REQUEST_PACING_SECONDS`) is calibrated per-process —
   it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
   independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
-  API, Lunaserv) at the same time; the combined rate can still trip a real server-side limiter (see
+  API, Lunaserv) at the same time; the combined rate can still trip a server-side limiter (see
   the Phase 36 incident `cache.py` itself documents). Messaging first gives everyone a chance to
   stagger or postpone, which a message sent only after starting can't do.
 - **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
