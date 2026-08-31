@@ -100,11 +100,11 @@ print("brightness-matched diff, real WAC vs. sfs forward-render: ", diff_vs_sfs)
 # %% [markdown]
 # ## Visual comparison
 #
-# All three panels brightness-matched to the real WAC panel (single multiplicative median scale, not
-# an affine/percentile stretch -- see `plotting.compute_brightness_matched_diff`'s own docstring for
-# why). Look for whether `sfs`'s independent render agrees with the real WAC crop about as well as
-# our own hillshade does, and whether any disagreement looks like a structured geometric or
-# photometric effect rather than uniform noise.
+# All three panels independently normalized to their own median (not an affine/percentile stretch --
+# see `plotting.compute_brightness_matched_diff`'s own docstring for why). Look for whether `sfs`'s
+# independent render agrees with the real WAC crop about as well as our own hillshade does, and
+# whether any disagreement looks like a structured geometric or photometric effect rather than
+# uniform noise.
 
 # %%
 _ = plotting.plot_sfs_comparison(

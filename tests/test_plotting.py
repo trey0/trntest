@@ -67,18 +67,21 @@ def test_fill_dead_columns_nans_out_fully_invalid_row():
     assert np.array_equal(filled[1], [1.0, 2.0])
 
 
-def test_prep_overlay_rasters_brightness_matches_overlay_median_to_base(tmp_path):
+def test_prep_overlay_rasters_normalizes_both_sides_to_their_own_median(tmp_path):
     base_path, overlay_path = tmp_path / "base.tif", tmp_path / "overlay.tif"
     _write_raster(base_path, value=100.0)
-    _write_raster(overlay_path, value=20.0)  # 5x dimmer than base -- scale should correct this
+    _write_raster(overlay_path, value=20.0)  # 5x dimmer than base -- each side normalizes independently
 
     base, overlay, overlay_display, base_vmin, base_vmax, overlay_vmin, overlay_vmax = _prep_overlay_rasters(
         base_path, overlay_path, fill_overlay_nodata=False
     )
 
-    assert np.nanmedian(overlay_display.values) == pytest.approx(np.nanmedian(base.values))
-    # Both panels share the same display range post-match, not independently-normalized ones --
-    # an independent stretch would silently re-normalize the brightness match away.
+    # Both sides land at median = 1.0 -- base is normalized too, not left at its own raw 100.0 with
+    # only overlay matched to it.
+    assert np.nanmedian(base.values) == pytest.approx(1.0)
+    assert np.nanmedian(overlay_display.values) == pytest.approx(1.0)
+    # Both panels share the same display range, not independently-normalized ones -- an independent
+    # stretch would silently re-normalize the comparison away.
     assert overlay_vmin == base_vmin
     assert overlay_vmax == base_vmax
 
@@ -111,9 +114,13 @@ def test_compute_brightness_matched_diff_uniform_rasters_diff_to_zero_regardless
 
 
 def test_compute_brightness_matched_diff_reflects_real_pattern_difference_after_brightness_match(tmp_path):
-    # Same median (so brightness-match scale is exactly 1, isolating the real pattern mismatch): base
-    # alternates 90/110 around a median of 100, overlay is uniformly 100 everywhere -- the real,
-    # physically meaningful difference this metric exists to catch, not just an absolute-level offset.
+    # Same median (100 either way, so each side's own normalization is a no-op-sized correction,
+    # isolating the real pattern mismatch): base alternates 90/110 around a median of 100, overlay is
+    # uniformly 100 everywhere. After each side is independently normalized to its own median = 1.0,
+    # base alternates 0.9/1.1 and overlay is uniformly 1.0 -- so the real, physically meaningful
+    # difference this metric exists to catch comes out as 0.1, directly interpretable as "10% of
+    # median brightness" (not just an absolute-level offset, and not the raw 10.0 DN this would have
+    # been before normalization was symmetric).
     base_path, overlay_path = tmp_path / "base.tif", tmp_path / "overlay.tif"
     checkerboard = np.indices((10, 10)).sum(axis=0) % 2
     base_data = np.where(checkerboard == 0, 90.0, 110.0)
@@ -121,7 +128,7 @@ def test_compute_brightness_matched_diff_reflects_real_pattern_difference_after_
     _write_raster(overlay_path, value=100.0)
 
     result = compute_brightness_matched_diff(base_path, overlay_path)
-    assert result.mean_abs_diff == pytest.approx(10.0, abs=1e-4)
+    assert result.mean_abs_diff == pytest.approx(0.1, abs=1e-6)
     assert result.valid_pixel_count == 100
 
 
@@ -140,23 +147,24 @@ def test_compute_brightness_matched_diff_aligns_rasters_with_different_extents_b
     assert result.mean_abs_diff == pytest.approx(0.0, abs=1e-6)  # uniform rasters -> brightness match closes the gap
 
 
-def test_plot_sfs_comparison_brightness_matches_both_overlays_to_the_real_panel(tmp_path):
+def test_plot_sfs_comparison_normalizes_each_panel_to_its_own_median(tmp_path):
     real_path = tmp_path / "real.tif"
     ours_path = tmp_path / "ours.tif"
     sim_path = tmp_path / "sim.tif"
     _write_raster(real_path, value=100.0)
-    _write_raster(ours_path, value=20.0)  # 5x dimmer -- brightness match should undo this
+    _write_raster(ours_path, value=20.0)  # 5x dimmer -- normalization should undo this
     _write_raster(sim_path, value=50.0)  # 2x dimmer
 
     fig = plot_sfs_comparison(real_path, ours_path, sim_path, title="test")
 
     axes = fig.axes
     assert len(axes) == 3
-    # Each overlay panel's displayed image should be brightness-matched up to the real panel's own
-    # level (100.0), not left at its own raw 20.0/50.0 -- confirms the scaling actually ran, not just
-    # that the function returned without error.
-    np.testing.assert_allclose(axes[1].images[0].get_array(), 100.0)
-    np.testing.assert_allclose(axes[2].images[0].get_array(), 100.0)
+    # All three panels' displayed images should land at 1.0 -- each independently normalized to its
+    # own median, not `ours`/`sim` matched up to `real`'s own raw 100.0 level (confirms the
+    # normalization actually ran on all three, not just that the function returned without error).
+    np.testing.assert_allclose(axes[0].images[0].get_array(), 1.0)
+    np.testing.assert_allclose(axes[1].images[0].get_array(), 1.0)
+    np.testing.assert_allclose(axes[2].images[0].get_array(), 1.0)
 
 
 def test_plot_incidence_validation_shows_the_real_difference_field():
