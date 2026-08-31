@@ -11,11 +11,12 @@ fixes (`lunaserv.py`, `pose_alignment.py`, `camera.py`, `maneuver_detection.py`,
 
 **Part 4 in progress** (`docs/*.md` files) -- `README.md`, `docs/caching.md`,
 `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` (deleted, fully implemented already),
-`docs/proposed-tasks/report-plan.md`, and `docs/environment.md` (full rewrite, asked the user
-directly for current facts rather than guessing) done; `docs/plan.md`,
-`docs/reproject-fov-investigation.md`, `docs/wac-jigsaw-investigation.md`'s full content pass, and
-the `AGENTS.md`/index self-consistency check remain -- see its own section below for the file list
-and what's already known about each.
+`docs/proposed-tasks/report-plan.md`, `docs/environment.md` (full rewrite, asked the user directly
+for current facts rather than guessing), and `docs/wac-jigsaw-investigation.md` (full content
+pass -- turned out to be a stale session-log wrapped around still-needed technical content, not a
+simple style pass) done; `docs/plan.md`, `docs/reproject-fov-investigation.md`, and the
+`AGENTS.md`/index self-consistency check remain -- see its own section below for the file list and
+what's already known about each.
 
 Workflow note: the user reviews in batches of up to 3 files via GitHub links before merging to
 main -- push each file's commit to the branch as it's done, but hold the `git push origin
@@ -179,6 +180,17 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   and confirmed this file's own 2 `docs/data-sources.md` mentions are NOT stale (naming the file as
   a shared-state risk, not citing its content) -- the prior audit's "also has a stale reference"
   note for this file was wrong; corrected below.
+- `docs/wac-jigsaw-investigation.md` -- full content pass. Still actively cited by
+  `wac_camera_model.py`/`control_network.py`/`tie_points.py` for its ISIS bug root-cause/validation
+  trail, so this couldn't be deleted like `corrected-overlay-cam2map-plan.md` was -- but it was
+  structured as a session-log (a "written to preserve context across a session boundary" opening, a
+  "Repo state / how to resume" section with commit hashes), docs/history.md material, not a
+  technical reference. Kept the substantive content code depends on, cut the narrative wrapper
+  entirely, collapsed the completed "Remaining work" checklist into a single "Open item" for what's
+  actually still open. 249 -> 197 lines. Also fixed a stale claim in `wac_camera_model.py`'s own
+  module comment discovered along the way (said the optimizer wasn't yet fit against real tie
+  points / wired into the notebook -- both were already done; likely carried forward unverified
+  during that file's part-1 pass, which only restructured the comment, never re-checked its claims).
 
 **Not yet reworked at all** (carried over from the prior plan, still accurate):
 - `docs/plan.md` (623 lines) -- flagged as its own future index-pattern candidate (thin index +
@@ -186,12 +198,11 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   went through), never started. Also has 161 `real`/`genuine`/`actual` hits and its own stale
   `docs/data-sources.md` reference -- whichever pass touches this file should fix that reference
   too, not just the index-split.
-- `docs/reproject-fov-investigation.md` (371 lines) and `docs/wac-jigsaw-investigation.md` (246
-  lines, cites `docs/history.md` once) -- only got mechanical link fixes during the split (plus this
-  session's 2 additional stale-ref fixes for `wac-jigsaw-investigation.md`, see part 4's own
-  section above), never a content pass. Both have high `real`/`genuine`/`actual` counts (68 each) --
-  expected to some degree for investigation docs describing what turned out to be real vs. spurious
-  findings, but worth a read, not an assumption.
+- `docs/reproject-fov-investigation.md` (371 lines) -- only got mechanical link fixes during the
+  split, never a content pass. High `real`/`genuine`/`actual` count (68) -- expected to some degree
+  for an investigation doc describing what turned out to be real vs. spurious findings, but worth a
+  read, not an assumption. Check whether it's structured as a session-log the way
+  `wac-jigsaw-investigation.md` turned out to be before assuming the same treatment applies.
 
 **Marked "done" by the prior plan, but with a stale `docs/data-sources.md` reference found by this
 audit**: `docs/plan.md` (5 hits -- see its own bullet above). **Correction**: `docs/environment.md`
