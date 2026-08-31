@@ -10,12 +10,12 @@ Part 3: all 17 previously-"done" files re-verified against the stricter docstrin
 fixes (`lunaserv.py`, `pose_alignment.py`, `camera.py`, `maneuver_detection.py`, `tie_points.py`).
 
 **Part 4 in progress** (`docs/*.md` files) -- `README.md`, `docs/caching.md`,
-`docs/proposed-tasks/corrected-overlay-cam2map-plan.md` (deleted, fully implemented already), and
-`docs/proposed-tasks/report-plan.md` done; `docs/environment.md` partially done (blocked on user
-input for the rest, see its own bullet); `docs/plan.md`, `docs/reproject-fov-investigation.md`,
-`docs/wac-jigsaw-investigation.md`'s full content pass, and the `AGENTS.md`/index self-consistency
-check remain -- see its own section below for the file list and
-what's already known about each.
+`docs/proposed-tasks/corrected-overlay-cam2map-plan.md` (deleted, fully implemented already),
+`docs/proposed-tasks/report-plan.md`, and `docs/environment.md` (full rewrite, asked the user
+directly for current facts rather than guessing) done; `docs/plan.md`,
+`docs/reproject-fov-investigation.md`, `docs/wac-jigsaw-investigation.md`'s full content pass, and
+the `AGENTS.md`/index self-consistency check remain -- see its own section below for the file list
+and what's already known about each.
 
 Workflow note: the user reviews in batches of up to 3 files via GitHub links before merging to
 main -- push each file's commit to the branch as it's done, but hold the `git push origin
@@ -165,16 +165,20 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   e.g. the index page, genuinely aren't). Trimmed the "Mechanism" section's narrative journey down
   to the still-load-bearing design rationale, cut the one `docs/history.md` citation and all 19
   `real`/`genuine`/`actual` uses, depersonalized one "this session" aside.
-- `docs/environment.md` -- **partial**. Fixed the file's 2 `docs/history.md` citations that are
-  independent of its "ephemeral VPS" framing (both facts were already stated plainly in-line, so
-  the citations were pure scavenger-hunt pointers). Did **not** touch the ephemeral-VPS framing
-  itself, or filler/voice in sections built on it (~15 more `real`/`genuine`/`actual` hits remain,
-  untouched) -- the user was previously asked about a full rewrite of this file and explicitly
-  deferred it (see `[[project_trntest_vps_now_persistent]]` memory); guessing at which operational
-  claims are still true isn't safe to do unilaterally. Also: checked and confirmed this file's own
-  2 `docs/data-sources.md` mentions are NOT stale (naming the file as a shared-state risk, not
-  citing its content) -- the prior audit's "also has a stale reference" note for this file was
-  wrong; corrected below.
+- `docs/environment.md` -- **done, full rewrite**. Asked the user directly for the current
+  persistence facts (2026-08-31) rather than guessing: the VPS compute instance may still be
+  recreated between sessions, but `trntest_ws` now lives on a persistent attached volume that gets
+  reattached each time, so contents generally survive without an explicit backup step;
+  `archive.sh`/`restore.sh`/`clean.sh` are all fully retired; Docker image persistence specifically
+  is unconfirmed (the doc now says so honestly). Retitled ("ephemeral VPS, archive/restore" -> "what
+  persists, what doesn't"), rewrote the two sections built on the old model, fixed a resulting
+  internal cross-reference, and did the ordinary filler/voice pass on the rest (all ~19
+  `real`/`genuine`/`actual` hits, both `docs/history.md` citations). Also fixed `AGENTS.md`'s own
+  doc-index entry for this file (the "this is stale, pending rewrite" note it carried was itself
+  now stale). See `[[project_trntest_vps_now_persistent]]` memory for the full facts. Also: checked
+  and confirmed this file's own 2 `docs/data-sources.md` mentions are NOT stale (naming the file as
+  a shared-state risk, not citing its content) -- the prior audit's "also has a stale reference"
+  note for this file was wrong; corrected below.
 
 **Not yet reworked at all** (carried over from the prior plan, still accurate):
 - `docs/plan.md` (623 lines) -- flagged as its own future index-pattern candidate (thin index +
@@ -182,14 +186,6 @@ Checked and confirmed clean or only benign hits (factual cross-references, not e
   went through), never started. Also has 161 `real`/`genuine`/`actual` hits and its own stale
   `docs/data-sources.md` reference -- whichever pass touches this file should fix that reference
   too, not just the index-split.
-- `docs/environment.md` -- the ephemeral-VPS rewrite itself (see "Done" above for what's already
-  fixed). Needs the user's input on current facts before proceeding -- ask what to say in place of
-  the "torn down at the end of most work sessions"/`archive.sh`/`restore.sh` framing (the "What
-  survives a teardown" and "Docker images don't survive either" sections, and scattered mentions
-  elsewhere, e.g. "to save space before an archive.sh run") before touching those sections' prose.
-  The "Multi-agent worktrees" section and "Where things belong" section's core source/scratch
-  separation principle are current and just need the ordinary filler/voice pass once the
-  VPS-dependent sections are resolved.
 - `docs/reproject-fov-investigation.md` (371 lines) and `docs/wac-jigsaw-investigation.md` (246
   lines, cites `docs/history.md` once) -- only got mechanical link fixes during the split (plus this
   session's 2 additional stale-ref fixes for `wac-jigsaw-investigation.md`, see part 4's own
