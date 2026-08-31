@@ -19,9 +19,10 @@ the investigation doc for why the two directions have different risk profiles fo
 # framelet search adds an arbitrary-ground-point-to-framelet lookup on top, live-validated
 # end-to-end (forward-project a crop pixel's own ground point, round-trip through `campt`'s
 # image-to-ground: 0.00m error across a 3x3 grid spanning the crop). The pose-correction optimizer
-# is implemented and unit-tested but not yet fit against real basemap-derived tie points (only
-# synthetic/tautological data so far), and not yet wired into `notebooks/pose_alignment_spike.py` --
-# see `docs/wac-jigsaw-investigation.md`'s "Remaining work" section.
+# has been fit against basemap-derived tie points and wired into
+# `notebooks/pose_alignment_spike.py` -- see docs/wac-jigsaw-investigation.md's "Open item" section
+# for what's still unresolved (a DEM-aware shape model, the leading suspect for why the fit only
+# closes part of the gap).
 
 import dataclasses
 from pathlib import Path
