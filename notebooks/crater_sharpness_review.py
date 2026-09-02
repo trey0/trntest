@@ -17,8 +17,7 @@
 # # Crater sharpness grading: review
 #
 # Visual review of `src/trntest/crater_depth.py`/`crater_depth_batch.py`'s crater sharpness
-# grading -- see `docs/plan.md`'s crater-depth entries and `docs/data-sources.md`'s "Crater depth
-# (Breton et al. 2019 method)" section for the full design. Sharpness itself
+# grading -- see `docs/crater-grading.md` for the full design. Sharpness itself
 # (`crater_depth.sharpness_ratio`) is measured depth over Stoffler et al. 2006's reference
 # "fresh crater" depth for the same diameter (`crater_depth.stoffler_fresh_depth_km`) -- ~1.0 for a
 # crater as deep as a fresh crater of its size "should" be, well below 1.0 for a degraded one.

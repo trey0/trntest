@@ -218,7 +218,7 @@ def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> Spicei
     # The ellipsoid choice was a real, live bug, not a harmless simplification: every ground<->image
     # computation downstream of this call inherited a systematic terrain-vs-ellipsoid gap that looked
     # like a parallax/scale error at crater rims and a swath-wide altitude-offset stretch. See
-    # docs/plan.md's camera-pose-alignment item for that investigation. Costs a one-time ~2GB fetch
+    # docs/wac-jigsaw-investigation.md for that investigation. Costs a one-time ~2GB fetch
     # (`ensure_lunar_shape_model`, idempotent, shared cache) the first time any pipeline run reaches
     # this call.
     config = config or load_config()
@@ -1290,7 +1290,7 @@ def attach_dem_shape_model(crop: CropResult, config: TrntestConfig | None = None
     # Live-validated: substantial, non-constant local elevation on this project's own current default
     # candidate (+600m to +3000m across 5 test pixels vs. the ellipsoid's constant 1737400.0m), and the
     # resulting ground-point shift (up to ~1.7km) is the right order of magnitude to matter for the
-    # pose-correction fit's own ~600-900m residual gap (see docs/plan.md's status line).
+    # pose-correction fit's own ~600-900m residual gap (see docs/wac-jigsaw-investigation.md).
     config = config or load_config()
     shape_model_path = ensure_lunar_shape_model(config)
     out_path = crop.cub_path.with_name(crop.cub_path.stem + ".dem.cub")

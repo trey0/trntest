@@ -1,27 +1,49 @@
 # `docs/plan.md` cleanup: delete resolved-item narratives, trim the Architecture table
 
-**Status: in progress, awaiting review.** Working in worktree `docs-proposed-tasks-style-0defc6`,
-branch `claude/docs-proposed-tasks-style-0defc6`. Batch 1 done and **merged to `main`** (`f93e282`):
+**Status: done, awaiting review.** Working in worktree `docs-proposed-tasks-style-0defc6`, branch
+`claude/docs-proposed-tasks-style-0defc6`. Batch 1 done and **merged to `main`** (`f93e282`):
 Architecture table rewritten to the shorter bar below (also added a missing `craters.py` row, then
 alphabetized the whole table), two stray `docs/history.md` citations cut, and two fully-resolved
 "Known open items" narratives deleted (the CK-kernel investigation, the crater-overlay/`OverlayLayer`
 implementation retelling).
 
-Batch 3 done, **pushed to branch, not yet reviewed/merged**: worked "Known open items" from where
-batch 1 stopped (the `crater_depth.py` entry) down to the end of the file, including the Phase 70-79
-photometric-angle/Hapke-shading saga -- crater sharpness grading, camera-pose-alignment (DEM shape
-model fix), the tie-points die5 bug, the report prototype, the Hapke/photometric saga, the DEM
-filename-collision bug, the saturation open question, and the image-resolution fix all condensed to
-their load-bearing current-state facts, most `docs/history.md` citations along the way cut (13
-remain, each pointing at real narrative detail worth reading). File went from 536 to 369 lines.
-Lines 89-272 (batch 1's own scope, already user-reviewed and merged) deliberately left untouched.
+Batch 3 done, **pushed to branch**: worked "Known open items" from where batch 1 stopped (the
+`crater_depth.py` entry) down to the end of the file, condensing the rest of the resolved-narrative
+bulk (crater sharpness grading, camera-pose-alignment, the tie-points die5 bug, the report
+prototype, the Phase 70-79 Hapke saga, the DEM filename-collision bug, the saturation open
+question, the image-resolution fix) to their load-bearing current-state facts. Lines 89-272 (batch
+1's own scope, already user-reviewed and merged) deliberately left untouched at the time.
 
-**Remaining**: a final read-through once this batch is reviewed/merged, to confirm the file still
-reads as a coherent "architecture & status" map. The still-open question of whether to add
-Architecture-table rows for the other 9 modules missing from it (`wac_camera_model.py`,
-`control_network.py`, `crater_depth.py`, `crater_depth_batch.py`, `pose_alignment.py`,
-`subprocess_utils.py`, `report.py`, `__init__.py`, `_lint.py`) is still deferred, not yet asked
-about.
+**Final pass done, pushed to branch, not yet reviewed/merged**: the user reviewed the file and
+flagged that it was still fundamentally wrong at a higher level than wording -- "What this is"/
+"Status" described a stale premise (a single-image demo notebook as the point of the repo) when the
+actual current product is dataset population (`select_datasets.py` selects diverse entries,
+`populate()`/`populate_via_workers()` runs the generators over each one, both described in
+`docs/generators.md` rather than repeated), and "Known open items" was still misleading since most
+of its surviving entries (including the ones batch 1 chose to keep at lines 89-272) were themselves
+"Resolved," not open, in violation of `docs/docs-style.md`. Rewrote "What this is"/"Status" to state
+the real current product and its real incompleteness (report generation unfinished, no
+dataset-scale run yet); renamed "Known open items" to "Open items" and cut it to 8 genuinely-open
+entries (everything else deleted, since the load-bearing facts already lived in the relevant
+module's own docstring/comment, per `docs/docs-style.md`); resolved the previously-deferred
+Architecture-table-additions question by adding rows for the 7 substantive missing modules
+(`control_network.py`, `crater_depth.py`, `crater_depth_batch.py`, `pose_alignment.py`, `report.py`,
+`subprocess_utils.py`, `wac_camera_model.py` -- `__init__.py`/`_lint.py` skipped as pure infra).
+File is now 148 lines (was 536 before batch 1).
+
+Deleting all those "Resolved" entries orphaned ~20 code/notebook comments across 10 files that cited
+"see `docs/plan.md`'s open items" for exactly that content -- fixed each one (inlined the fact
+directly, or redirected to the real reference doc, e.g. `docs/wac-jigsaw-investigation.md`) rather
+than leave them dangling. Found and fixed two unrelated pre-existing staleness bugs surfaced along
+the way: a notebook citing a "Crater depth" section that had moved from `docs/data-sources.md` to
+`docs/crater-grading.md`, and `docs/external-tools.md`/`docs/wac-jigsaw-investigation.md` both still
+claiming the pipeline's control points are ellipsoid-only when `isis_wac.run_spiceinit`'s default
+switched to a real DEM shape model. Flagged (not fixed) a separate finding this surfaced:
+`isis_wac.attach_dem_shape_model` has zero production callers and a stale comment describing a
+pipeline default that no longer exists -- spun off as its own task.
+
+**Remaining**: none, once this final pass is reviewed and merged -- delete this plan doc then, per
+its own closing convention below.
 
 ## The problem
 
