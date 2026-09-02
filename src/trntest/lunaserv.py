@@ -76,7 +76,7 @@ DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
 # WAC_EMP's own documented i=30/e=0/g=30 normalization convention for the Hapke-ratio fix), even though
 # neither is confirmed to improve -- and the Hapke-ratio fix is confirmed to worsen -- the
 # brightness-matched diff against a WAC crop for the one candidate tested so far. That regression
-# remains open and unexplained (see `docs/plan.md`'s Open items).
+# remains open and unexplained (see `docs/proposed-tasks/open-items.md`).
 DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
 DEFAULT_REAL_HAPKE_PARAMS = True
@@ -1009,7 +1009,7 @@ def _terrain_photometric_angles(
     # the brightness-matched diff against a WAC crop measurably worse, despite the geometry itself being
     # independently confirmed correct above. Leading hypothesis, not verified: the base ortho texture is
     # already photometrically normalized by processing this project's own re-shading was never validated
-    # against. See `docs/plan.md`'s Open items.
+    # against. See `docs/proposed-tasks/open-items.md`.
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox
     x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
@@ -1166,7 +1166,7 @@ def fetch_real_hapke_params(
     # placeholder vs. ~1.5-2.2 calibrated, a ~60x difference). `hg2`/`hh` vary somewhat more within one
     # footprint, but still a smaller effect. Per-pixel sampling (reprojecting the calibration cube onto
     # the same working grid `reproject_astropedia_elevation_to_local_grid` builds the DEM/ortho on)
-    # would be a further refinement, not implemented here -- see `docs/plan.md`'s Open items.
+    # would be a further refinement, not implemented here -- see `docs/proposed-tasks/open-items.md`.
     path = _hapke_calibration_cube_path(config)
     return _sample_hapke_calibration(path, center_lon_deg, center_lat_deg, wavelength_nm)
 
@@ -1298,7 +1298,7 @@ def hapke_shade_ortho(
     # dimmed to keep it in range, is treated as the physically correct behavior here, not an artifact
     # to avoid -- but that stance was never validated against real candidates and isn't a settled
     # design decision; whether/how often this saturation actually happens, and whether it's acceptable,
-    # is an open question, see `docs/plan.md`'s Open items. Like `_terrain_photometric_angles`'s own
+    # is an open question, see `docs/proposed-tasks/open-items.md`. Like `_terrain_photometric_angles`'s own
     # normal-tilt correction, this has no opt-out parameter, despite being confirmed to worsen the
     # brightness-matched diff against a WAC crop for the one candidate tested so far.
     #
@@ -1339,7 +1339,7 @@ def stretch_reflectance_to_uint8(
     # `DISPLAY_STRETCH_REFLECTANCE_MAX = 0.30` was confirmed non-saturating for exactly one candidate,
     # not swept across others. Whether/how often input actually exceeds it (clipping to 255, with the
     # downstream effects that has -- e.g. biasing `sfs_validation.true_albedo_map`'s recovered albedo
-    # at those pixels) is an open question, not a validated non-issue -- see `docs/plan.md`'s Open items.
+    # at those pixels) is an open question, not a validated non-issue -- see `docs/proposed-tasks/open-items.md`.
     normalized = (reflectance.astype(np.float64) - lo) / (hi - lo)
     return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
 
@@ -1623,7 +1623,7 @@ def fetch_dem(
     # `dem_filled_path`'s own filename still doesn't encode this parameter (unlike
     # `ortho_shaded_filename`'s suffix discipline for its own parameters), so two calls against the
     # same output directory with different footprints can still silently disagree about "the" DEM --
-    # see `docs/plan.md`'s Open items for what a full fix would need. Not solved here: this phase only
+    # see `docs/proposed-tasks/open-items.md` for what a full fix would need. Not solved here: this phase only
     # makes the current single writer legible/auditable (`writes_product`) and its file write atomic
     # (`atomic_publish`, in `reproject_astropedia_elevation_to_local_grid`), not the filename-collision
     # gap itself -- flagged rather than silently assumed fixed.

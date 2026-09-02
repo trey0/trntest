@@ -10,7 +10,7 @@ same DEM.
 parallel. `crater_depth_m` assumes locally isotropic meters (`pixel_size_m = abs(transform.a)`),
 which only holds exactly there: away from the standard parallel, this Equidistant Cylindrical
 file's longitude-direction pixel spacing shrinks by `cos(latitude)` in real ground distance while
-the latitude-direction spacing does not (the same meridian-convergence effect `docs/plan.md`
+the latitude-direction spacing does not (the same meridian-convergence effect `docs/architecture.md`
 already documents for Lunaserv's own geographic-CRS `mapproject` round-trip -- see its "Resolved"
 item on switching to a per-camera local Orthographic CRS). `crater_depths_for_footprint`'s normal
 callers avoid this by working against a per-camera local Orthographic reprojection

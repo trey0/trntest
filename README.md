@@ -2,19 +2,14 @@
 
 Demonstrates various approaches for generating synthetic lunar satellite images for new camera
 models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories, rendered
-with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See `docs/plan.md`
-for the full approach and status, and `AGENTS.md` for how the docs in this repo are organized.
+with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See
+`docs/architecture.md` for the full approach, current status, and a map of every module/notebook,
+and `AGENTS.md` for how the docs in this repo are organized.
 
-The demo logic is the installable `trntest` Python package (`src/trntest/`); `notebooks/
-image_generation.py`/`.ipynb` drives it via a small `Session` facade, reading the checked-in
-`notebooks/dataset_manifest.csv` (a frozen selection of one favorable real LROC EDR image) and
-rendering/validating it. Tracked as a jupytext-paired pair: the `.py` (percent format) is the
-source of truth for review/diff/lint/IDE work, and the `.ipynb` (fully executed, viewable directly
-in GitHub's file browser — no separate publishing step needed) carries the outputs.
-
-`notebooks/select_datasets.py`/`.ipynb` is a separate, early-stage/exploratory notebook for picking
-*multiple* maneuver-free multi-orbit TRN-OD test datasets -- see its own module docstring and
-`docs/plan.md`.
+The demo logic is the installable `trntest` Python package (`src/trntest/`), driven from
+jupytext-paired notebooks under `notebooks/` — the `.py` (percent format) is the source of truth
+for review/diff/lint/IDE work; the `.ipynb` (fully executed) carries the outputs and renders
+natively in GitHub's file browser (see "Viewing the rendered demo" below for the convention).
 
 ## Build & run
 

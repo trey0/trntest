@@ -1,7 +1,8 @@
 # Open items
 
-Genuinely open questions/gaps in `trntest`, pointed to from [`docs/plan.md`](../plan.md)'s "Open
-items" section. Not a development log — see [`docs/history.md`](../history.md) for that.
+Genuinely open questions/gaps in `trntest`, pointed to from
+[`docs/architecture.md`](../architecture.md)'s "Open items" section. Not a development log — see
+[`docs/history.md`](../history.md) for that.
 
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.

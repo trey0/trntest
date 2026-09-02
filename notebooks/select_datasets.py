@@ -162,13 +162,13 @@ images
 #
 # `TrnTestDataSet.create()` sets up (or reuses) a self-contained dataset folder -- `manifest.csv`
 # (the resolved images above) plus empty `crop`/`hillshade`/`reproject` subfolders, ready for
-# `dataset.populate()` later (see `docs/plan.md`). Stops here -- no rendering in this
+# `dataset.populate()` later (see `docs/architecture.md`). Stops here -- no rendering in this
 # notebook.
 #
 # Uses its own `orbit_sequence_dataset` folder, separate from `image_generation.py`'s
 # `trn_dataset` -- a different dataset, at a different scale. Also writes `orbit_sequence.csv`
 # alongside `manifest.csv`: the one selected-orbit-window row this dataset's images were resolved
-# from, kept for debugging/provenance per the design in `docs/plan.md`.
+# from, kept for debugging/provenance per the design in `docs/architecture.md`.
 
 # %%
 dataset_folder = config.output_dir / "orbit_sequence_dataset"

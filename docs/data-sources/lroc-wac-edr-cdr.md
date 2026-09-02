@@ -66,7 +66,7 @@ Index: [`docs/data-sources.md`](../data-sources.md).
 ## Reference/regression-test EDR products
 
 The live default image comes from the checked-in, now-frozen `notebooks/dataset_manifest.csv` — a
-real, catalog-driven multi-orbit search's result (see `docs/plan.md`), not any single hardcoded
+real, catalog-driven multi-orbit search's result (see `docs/architecture.md`), not any single hardcoded
 product. Two specific products remain useful as known test fixtures (one per yaw state, used to
 validate the axis-convention/chirality fix above still holds for both):
 

@@ -2,7 +2,7 @@
 
 Reference for `wac_camera_model.py`'s hand-rolled WAC-VIS forward projection: why ISIS's own
 `jigsaw` bundle adjuster can't be used for this camera, and the validation trail behind the
-replacement that's used instead. See `docs/plan.md`'s Architecture table (`control_network.py`/
+replacement that's used instead. See `docs/architecture.md`'s Architecture table (`control_network.py`/
 `pose_alignment.py`/`wac_camera_model.py` rows) for the current wiring status; several functions in
 `wac_camera_model.py`/`control_network.py`/`tie_points.py` point back to this doc for the ISIS
 source citations and bug numbers below rather than repeating them.
@@ -199,5 +199,5 @@ attach_dem_shape_model` exists for exactly this (a DEM-attached copy of a crop f
 above has not been re-run against DEM-aware ground truth to check whether it closes the remaining
 gap. (Separately, the overlay/basemap alignment problem this investigation started from was fixed a
 different way — switching every real-WAC cube's *own* default shape model, not just this bundle
-adjustment's control points, to the same DEM; see `docs/plan.md`'s Architecture table,
+adjustment's control points, to the same DEM; see `docs/architecture.md`'s Architecture table,
 `isis_wac.py`'s row.)

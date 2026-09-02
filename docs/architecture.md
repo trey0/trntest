@@ -14,8 +14,7 @@ maneuver-free multi-orbit window of manifest entries (dozens of images, not one)
 TRN test image generators — see [`docs/generators.md`](generators.md) for what each one does and
 why. This is a demo/exercise in AI-assisted coding on a real geospatial engineering task.
 
-All heavy tooling/build/test happens inside a Docker container (Ubuntu 24.04), built from the
-checked-in `docker/Dockerfile`, so it's reproducible off this host.
+See [`README.md`](../README.md) for how to build/run/test it.
 
 ## Status
 
@@ -32,8 +31,6 @@ geometry checks against a real hillshade basemap, and explicit tie points compar
 directly against each other. Predates the dataset-population product above and doesn't exercise
 `populate()`/`populate_via_workers()` at scale — the reference for what "correct" looks like at the
 single-entry level.
-
-Packaged as an installable library (`src/trntest/`) with config, tests, and style tooling.
 
 ## Architecture (`src/trntest/`)
 

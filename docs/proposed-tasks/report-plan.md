@@ -9,7 +9,7 @@ report's content and adding the multi-entry index page are both explicit follow-
 ## Context
 
 `notebooks/image_generation.py` is the flagship demo notebook: one long, hand-curated, multi-phase
-walkthrough of a *single* manifest entry (`docs/plan.md`'s `TrnTestEntry`), meant to be read
+walkthrough of a *single* manifest entry (`docs/architecture.md`'s `TrnTestEntry`), meant to be read
 top-to-bottom in JupyterLab or on GitHub. There's no lightweight way to look at *many* entries side
 by side, or to generate a shareable, standalone artifact for one entry without dragging in the
 whole demo notebook's narrative.
@@ -116,7 +116,7 @@ own data — via `scripts/generate_report.sh`.
   resumability machinery `populate()` needs for expensive SPICE/`sat_sim`/ISIS calls).
 - **Interactive comparisons without the GIF-blink workaround**: `plotting.plot_overlay_toggle`'s
   auto-looping animated GIF exists specifically to survive GitHub's `.ipynb` static-viewer
-  sanitizer (see `docs/plan.md`'s `plotting.py` row) — a standalone HTML page this project fully
+  sanitizer (see `docs/architecture.md`'s `plotting.py` row) — a standalone HTML page this project fully
   controls (not viewed through GitHub's sanitizer) has no such constraint, so an `<input
   type="range">`/JS-driven alpha slider is available as a nicer future alternative for report pages
   specifically, without needing to touch the GIF mechanism `image_generation.py` still relies on.

@@ -58,7 +58,7 @@ files should be named, stored, and shared across code paths — not an implement
 
 ## `TrnTestDataSet` on-disk layout
 
-A concrete instance of the principles above. See `docs/plan.md`'s `trn_dataset.py`/`tasks.py`
+A concrete instance of the principles above. See `docs/architecture.md`'s `trn_dataset.py`/`tasks.py`
 architecture rows for the class hierarchy/task queue design.
 
 **Layout**: `<output_dir>/trn_dataset/` (not `<output_dir>/dataset/`, which is

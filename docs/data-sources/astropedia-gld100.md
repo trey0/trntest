@@ -44,7 +44,7 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   Astropedia's own product page: `Pixel Resolution: 118.45058759 m/pixel`, `Scale: 256 ppd`) exists
   only as 8 quadrangle tiles covering just ±60° latitude — narrower coverage than this 100 m/px
   file's ±79°, for a resolution gain not otherwise validated as necessary. Not pursued; see
-  `docs/plan.md`'s open items for the >±79° polar case instead (a different, better real option
+  `docs/proposed-tasks/open-items.md` for the >±79° polar case instead (a different, better real option
   exists there — LOLA-derived polar DEMs down to 5 m/px, via NASA's VIRA project).
 - **Known DEM-precision follow-up, checked and cleared**: switching from Lunaserv's float32
   planetocentric-radius encoding (~0.125 m ULP, the reason `render.DEM_HEIGHT_ERROR_TOL_M = 0.5`

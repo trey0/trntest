@@ -8,7 +8,7 @@ to render.
 
 Pipeline (each function is one notebook cell): `find_orbits` -> `add_maneuver_flags` ->
 `add_acceptable_edr_counts` -> `enumerate_candidate_datasets` -> `select_diverse_datasets` ->
-`resolve_orbit_sequence`. See `docs/plan.md`'s architecture table and the notebook's own markdown
+`resolve_orbit_sequence`. See `docs/architecture.md`'s architecture table and the notebook's own markdown
 cells for the per-step rationale (the "illuminated node" concept, the circular-mean "center"
 statistics, the greedy farthest-point diversity criterion).
 """

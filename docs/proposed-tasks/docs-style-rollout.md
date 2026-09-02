@@ -86,7 +86,7 @@ truth per fact, thin index files, sensible file naming.
   four files clean); the 3 non-`plotting.py` diffs are pure additions, no logic touched.
 - `src/trntest/sfs_validation.py` — full pass (324 -> 371 lines), including the missing-docstring
   check from the item above (all functions/classes already had one). Cross-checked against
-  `docs/plan.md`'s current status first (a peer session flagged a possibly-stale "still-open
+  `docs/architecture.md`'s current status first (a peer session flagged a possibly-stale "still-open
   regression" claim in the *notebook* counterpart, `notebooks/sfs_validation.py` — a different
   file); this module's own docstrings didn't have that problem, nothing to correct. All 4
   `docs/history.md` citations removed. Verified with `trntest-lint` (`ruff format`/`ruff
@@ -300,7 +300,7 @@ another file, the fix is the same: evict any "-- because/since/matching X" ratio
 the docstring to a body/class comment, even a short one — not just long history paragraphs.
 
 **Docs not yet reworked**:
-- `docs/plan.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
+- `docs/architecture.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
   not started. Cross-references into it were kept accurate, but its prose/length weren't addressed.
 - `docs/environment.md` — its "ephemeral VPS, archive/restore" framing is confirmed stale (the VPS
   data store now persists across sessions); a full rewrite is owed, deferred so far.

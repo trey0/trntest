@@ -104,7 +104,7 @@ automatically.
 
 ### Other sharp edges when more than one agent is active
 
-- **`docs/plan.md`/`docs/history.md`/`docs/data-sources.md` are shared narrative state.** AGENTS.md
+- **`docs/architecture.md`/`docs/history.md`/`docs/data-sources.md` are shared narrative state.** AGENTS.md
   asks every agent to update these as it works; two agents doing so concurrently on separate
   worktree branches *will* produce merge conflicts when both branches land on `main`. Keep edits to
   these additive/localized (a new dated `history.md` entry, a small targeted edit elsewhere) rather
@@ -202,7 +202,7 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
   --show-toplevel`), call `ListAgents` to see who else is currently running, then `SendMessage`
   each one a short note with your worktree/branch name and what you're about to work on. This is
   how agents learn they're not alone and avoid duplicate or conflicting work (e.g. two agents both
-  editing `docs/plan.md`, or both about to trigger the same cold cache fetch — see the GLD100 race
+  editing `docs/architecture.md`, or both about to trigger the same cold cache fetch — see the GLD100 race
   above).
 - **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
   shows: that you merged, a one-line summary of what changed, and that they should `git pull
@@ -219,7 +219,7 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 - **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
   two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
   about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),
-  you're about to touch shared narrative state (`docs/plan.md`/`docs/history.md`/
+  you're about to touch shared narrative state (`docs/architecture.md`/`docs/history.md`/
   `docs/data-sources.md`, `notebooks/dataset_manifest.csv`) and want to flag it to avoid a
   collision, or you're about to do something slow/disruptive to the shared `trntest_ws` (a long
   cold fetch, anything touching `cache/`). When in doubt, send the message — it costs little;
@@ -231,7 +231,7 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 ## Why the separation matters
 
 An in-progress spike (the ISIS/CSM `mapproject` investigation tracked as an open item in
-`docs/plan.md`) was lost when its folder was deleted in a hurry to save space — its source code
+`docs/architecture.md`) was lost when its folder was deleted in a hurry to save space — its source code
 and its large output files had been sitting in the same folder, so deleting "the big stuff" took
 the source with it. The fix isn't "be more careful when deleting" — it's keeping source (under
 `src/`, including `src/scratch/`) and large output (outside `src/`, e.g. `trntest_ws/scratch/`) in

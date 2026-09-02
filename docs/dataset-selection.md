@@ -1,6 +1,6 @@
 # Dataset selection: maneuver detection (for TRN-OD dataset selection)
 
-Architecture detail alongside `docs/plan.md`'s higher-level map of `dataset_selection.py`/
+Architecture detail alongside `docs/architecture.md`'s higher-level map of `dataset_selection.py`/
 `dataset.images_for_window()`'s orbit-search and candidate-filtering logic.
 
 For TRN-based orbit-determination testing (image-matching as the OD input), a propulsive maneuver

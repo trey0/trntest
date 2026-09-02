@@ -246,7 +246,7 @@ needs, recorded so they don't have to be re-derived.
   fundamental CSM Pushframe limitation) — `isis_wac.py` implements this as `trntest`'s real-WAC
   comparison path, using `cam2map` (ISIS's own native camera model) rather than ASP `mapproject`,
   after a separate `usgscsm` `groundToImage` bug ruled `mapproject`/CSM out for this camera; see
-  `docs/plan.md`'s `isis_wac.py` Architecture-table row.
+  `docs/architecture.md`'s `isis_wac.py` Architecture-table row.
 
 ## `usgscsm`'s `groundToImage` bug for Pushframe sensors, and the ISIS `cam2map` fix
 
@@ -542,7 +542,7 @@ scattered roughly uniformly through the image rather than concentrated anywhere 
 
 **Worth re-checking now that this project's terrain has more relief than it used to**:
 `isis_wac.run_spiceinit`'s own default shape model is no longer the ellipsoid this finding assumed
--- it now attaches ISIS's own real global lunar DEM by default (`shape=user`; see `docs/plan.md`'s
+-- it now attaches ISIS's own real global lunar DEM by default (`shape=user`; see `docs/architecture.md`'s
 `isis_wac.py` Architecture-table row), so every real-WAC cube's local surface normal already varies
 with actual terrain, not just a smooth ellipsoid. `control_network.resolve_control_points`'s own
 ground-to-image queries still go through `isis_wac.attach_dem_shape_model` separately rather than

@@ -4,9 +4,9 @@ Demo: synthetic lunar satellite imagery, posed using the real LRO SPICE trajecto
 NASA Ames Stereo Pipeline's `sat_sim` from real Lunaserv WMS DEM/imagery. Built as an AI-assisted
 coding exercise — the user is an experienced developer but new to Claude Code.
 
-**Read `docs/plan.md` first** for current architecture and status — a fast, scannable map of what
-the system does and how `src/trntest/` is organized, kept up to date as work progresses (not just
-this file). Then, as needed:
+**Read `docs/architecture.md` first** for current architecture and status — a fast, scannable map of
+what the system does and how `src/trntest/` is organized, kept up to date as work progresses (not
+just this file). Then, as needed:
 
 - `docs/data-sources.md` — a thin index (one table) into `docs/data-sources/`'s per-source files:
   endpoint URLs, WMS layer names/formats, NAIF SPICE archive layout, LROC WAC EDR/CDR access, and
@@ -75,13 +75,13 @@ this file). Then, as needed:
   Docker image cleanup) if another agent might be active at the same time. Verify your own worktree
   name yourself (`git rev-parse --show-toplevel`) rather than trusting a
   name you're told — it can be stale in a multi-agent conversation.
-- Keep `docs/plan.md`'s architecture/status current as things change, and record newly-learned facts
-  (exact product IDs, kernel filenames, gotchas) in `docs/data-sources.md` rather than only in code
-  comments or commit messages — this repo's docs are meant to carry context across sessions so a
-  fresh Claude Code session doesn't have to re-derive it. For substantial new work (a new bug found
-  and fixed, a new capability), add a dated entry to `docs/history.md` too, the same way past work is
-  recorded there — keep `plan.md`/`data-sources.md` themselves scoped to current-state facts, not
-  narrative.
+- Keep `docs/architecture.md`'s architecture/status current as things change, and record
+  newly-learned facts (exact product IDs, kernel filenames, gotchas) in `docs/data-sources.md`
+  rather than only in code comments or commit messages — this repo's docs are meant to carry context
+  across sessions so a fresh Claude Code session doesn't have to re-derive it. For substantial new
+  work (a new bug found and fixed, a new capability), add a dated entry to `docs/history.md` too, the
+  same way past work is recorded there — keep `architecture.md`/`data-sources.md` themselves scoped
+  to current-state facts, not narrative.
 - The demo logic is an installable package, `src/trntest/` (see `pyproject.toml`) — not a flat
   `scripts/` directory. Endpoints/paths/product IDs live in `src/trntest/config.py`
   (`TrntestConfig`/`load_config()`), not hard-coded; `docs/data-sources.md`/`docs/caching.md`
@@ -108,8 +108,9 @@ this file). Then, as needed:
 - **Notebooks are jupytext-paired and both halves are committed.** Notably:
   `notebooks/image_generation.py`/`.ipynb` (the flagship demo — reads the checked-in, frozen
   `notebooks/dataset_manifest.csv` and renders/validates the selected image), and
-  `notebooks/wac_isis.py`/`.ipynb` (the narrower ISIS/CSM `framestitch` investigation — see
-  `docs/plan.md`'s open items). For each, the `.py` (percent format) is the source of truth for
+  `notebooks/wac_isis.py`/`.ipynb` (a step-by-step walkthrough of ISIS3's EDR-to-`framestitch`
+  pipeline for one real WAC product — see `docs/architecture.md`'s Notebooks table). For each, the
+  `.py` (percent format) is the source of truth for
   review/diffing/lint/IDE work; the `.ipynb` carries fully-executed outputs and is committed
   too — GitHub renders `.ipynb` natively in its file browser (markdown, code, and outputs,
   including images), so no separate HTML/Pages publishing step exists anymore. The two halves of a
@@ -123,7 +124,7 @@ this file). Then, as needed:
   `TrnTestImage.generate()` — all idempotent resume-from-disk-or-fetch-fresh) rather than a raw path
   assuming a prior run, falling back to `TrnTestImage._require_generated()`'s fail-fast error only
   when that's not practical. A notebook's own markdown can go stale about what's still "open" as the
-  underlying code changes elsewhere — re-verify a specific claim against `docs/plan.md` (or by
+  underlying code changes elsewhere — re-verify a specific claim against `docs/architecture.md` (or by
   re-running the notebook) before trusting it.
 - **New subprocess calls to ASP/ISIS binaries must use `trntest.subprocess_utils.run_quiet`**, not
   raw `subprocess.run`. These tools are noisy by default (progress bars, library-init messages,

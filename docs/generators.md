@@ -11,7 +11,7 @@ generated and validated together by `notebooks/image_generation.py`.
 | [`crop`](generators/crop.md) | Real WAC EDR (LROC) | ISIS3 `lrowac2isis` -> `spiceinit` -> `lrowaccal` -> `framestitch` -> `crop` | The real spacecraft image itself, calibrated and geometrically usable |
 | [`reproject`](generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `cam2map` reproject, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
 
-Each generator's doc has the full data-source/processing detail. `docs/plan.md`'s architecture
+Each generator's doc has the full data-source/processing detail. `docs/architecture.md`'s architecture
 table covers the underlying modules (`lunaserv.py`, `render.py`, `isis_wac.py`, `trn_dataset.py`).
 
 See [`resolution-investigation.md`](resolution-investigation.md) for why `crop` used to visibly
