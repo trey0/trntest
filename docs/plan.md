@@ -72,17 +72,18 @@ via `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage`, and drives the rest of the p
 see `README.md` to run it, and AGENTS.md's "Working conventions" for how to validate changes
 against it.
 
-`notebooks/select_datasets.py` is a separate, early-stage/exploratory notebook (`dataset_selection.py`
-+ `plotting.py`'s new functions) for picking *multiple* maneuver-free multi-orbit TRN-OD test
-datasets, jointly diverse in solar hour angle -- not wired into the demo pipeline above, and doesn't
-touch `dataset_manifest.csv`. Does now bridge one selected orbit-sequence into the older EDR-list
-world, though: its last two cells call `dataset_selection.resolve_orbit_sequence` on
-`selected_datasets.iloc[0]` (one selected window, not all of them, same iterate-fast-on-one
-discipline as elsewhere in this project) and then `TrnTestDataSet.create()` on the result, into its
-own `orbit_sequence_dataset` folder -- separate from `image_generation.ipynb`'s `trn_dataset`, since
-this pipeline isn't the demo's canonical dataset yet. Also writes `orbit_sequence.csv` (the
-selected window's own row) alongside `manifest.csv` in that folder, for debugging/provenance. Stops
-short of `populate()` -- no rendering from this notebook yet.
+`notebooks/select_datasets.py` is a separate, early-stage/exploratory notebook
+(`dataset_selection.py` + `plotting.py`'s new functions) for picking *multiple* maneuver-free
+multi-orbit TRN-OD test datasets, jointly diverse in solar hour angle -- not wired into the
+demo pipeline above, and doesn't touch `dataset_manifest.csv`. Does now bridge one selected
+orbit-sequence into the older EDR-list world, though: its last two cells call
+`dataset_selection.resolve_orbit_sequence` on `selected_datasets.iloc[0]` (one selected window,
+not all of them, same iterate-fast-on-one discipline as elsewhere in this project) and then
+`TrnTestDataSet.create()` on the result, into its own `orbit_sequence_dataset` folder --
+separate from `image_generation.ipynb`'s `trn_dataset`, since this pipeline isn't the demo's
+canonical dataset yet. Also writes `orbit_sequence.csv` (the selected window's own row)
+alongside `manifest.csv` in that folder, for debugging/provenance. Stops short of `populate()`
+-- no rendering from this notebook yet.
 
 ## Known open items (resolve as encountered, record findings in `docs/data-sources.md`)
 
