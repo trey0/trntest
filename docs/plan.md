@@ -78,21 +78,21 @@ it's for and where its output goes.
 
 | Notebook | Purpose |
 |---|---|
-| [`image_generation.py`](../notebooks/image_generation.ipynb) | The single-entry reference: all three generators plus two independent geometry validations against a real basemap, run against [`dataset_manifest.csv`](../notebooks/dataset_manifest.csv)'s one frozen entry — see [`README.md`](../README.md) to run it. |
-| [`select_datasets.py`](../notebooks/select_datasets.ipynb) | The dataset-population product's entry point: selects a diverse, maneuver-free multi-orbit window and creates a `TrnTestDataSet` folder from it — see [`docs/batch-generation.md`](batch-generation.md) for the next step (`populate()`). |
+| [`image_generation.ipynb`](../notebooks/image_generation.ipynb) | The single-entry reference: all three generators plus two independent geometry validations against a real basemap, run against [`dataset_manifest.csv`](../notebooks/dataset_manifest.csv)'s one frozen entry — see [`README.md`](../README.md) to run it. |
+| [`select_datasets.ipynb`](../notebooks/select_datasets.ipynb) | The dataset-population product's entry point: selects a diverse, maneuver-free multi-orbit window and creates a `TrnTestDataSet` folder from it — see [`docs/batch-generation.md`](batch-generation.md) for the next step (`populate()`). |
 
 ### Other notebooks
 
 | Notebook | Purpose |
 |---|---|
-| [`along_track_correction.py`](../notebooks/along_track_correction.ipynb) | Validates `lunaserv.hapke_shade_ortho`'s along-track motion correction against the frozen-camera-position fallback. |
-| [`crater_sharpness_review.py`](../notebooks/crater_sharpness_review.ipynb) | Visual review of crater sharpness grading for one candidate's footprint — see [`docs/crater-grading.md`](crater-grading.md). |
-| [`hapke_hillshade.py`](../notebooks/hapke_hillshade.ipynb) | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback. |
-| [`pose_alignment_spike.py`](../notebooks/pose_alignment_spike.ipynb) | Exercises the camera-pose-alignment tooling (`pose_alignment.py` row above) — see [`docs/wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md). |
-| [`real_hapke_params.py`](../notebooks/real_hapke_params.ipynb) | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
+| [`along_track_correction.ipynb`](../notebooks/along_track_correction.ipynb) | Validates `lunaserv.hapke_shade_ortho`'s along-track motion correction against the frozen-camera-position fallback. |
+| [`crater_sharpness_review.ipynb`](../notebooks/crater_sharpness_review.ipynb) | Visual review of crater sharpness grading for one candidate's footprint — see [`docs/crater-grading.md`](crater-grading.md). |
+| [`hapke_hillshade.ipynb`](../notebooks/hapke_hillshade.ipynb) | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback. |
+| [`pose_alignment_spike.ipynb`](../notebooks/pose_alignment_spike.ipynb) | Exercises the camera-pose-alignment tooling (`pose_alignment.py` row above) — see [`docs/wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md). |
+| [`real_hapke_params.ipynb`](../notebooks/real_hapke_params.ipynb) | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
 | [`report_template.py`](../notebooks/report_template.py) | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself) — see `report.py` row above. |
-| [`sfs_validation.py`](../notebooks/sfs_validation.ipynb) | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
-| [`wac_isis.py`](../notebooks/wac_isis.ipynb) | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
+| [`sfs_validation.ipynb`](../notebooks/sfs_validation.ipynb) | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
+| [`wac_isis.ipynb`](../notebooks/wac_isis.ipynb) | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
 ## Open items
 
