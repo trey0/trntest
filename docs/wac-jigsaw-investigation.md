@@ -2,10 +2,10 @@
 
 Reference for `wac_camera_model.py`'s hand-rolled WAC-VIS forward projection: why ISIS's own
 `jigsaw` bundle adjuster can't be used for this camera, and the validation trail behind the
-replacement that's used instead. See `docs/plan.md`'s "camera-pose alignment" open item for the
-higher-level status; several functions in `wac_camera_model.py`/`control_network.py`/`tie_points.py`
-point back to this doc for the ISIS source citations and bug numbers below rather than repeating
-them.
+replacement that's used instead. See `docs/plan.md`'s Architecture table (`control_network.py`/
+`pose_alignment.py`/`wac_camera_model.py` rows) for the current wiring status; several functions in
+`wac_camera_model.py`/`control_network.py`/`tie_points.py` point back to this doc for the ISIS
+source citations and bug numbers below rather than repeating them.
 
 ## The approach
 
@@ -181,8 +181,8 @@ see `docs/external-tools.md`'s "Patching a cube's cached pointing via tabledump/
 so the existing, unmodified `cam2map`/`plotting.plot_overlay_toggle` path reprojects and displays
 it, wired into `notebooks/pose_alignment_spike.py`. **Not a full win**: the fit only closes ~24% of
 the gap (~813m → ~618m of residual at this crop's own ~184m/px native GSD, vs. the homography
-spike's own ~150-165m) — see `docs/plan.md`'s status line for the full writeup and the leading
-suspect (ellipsoid-only ground truth, no DEM elevation) motivating the open item below.
+spike's own ~150-165m) — the leading suspect (ellipsoid-only ground truth, no DEM elevation)
+motivating the open item below.
 
 Also batched `control_network.resolve_control_points`'s per-point `campt` calls
 (`isis_wac.ground_to_image_pixels_batch`, ~230s → ~3s on the 767-point set — see
@@ -193,5 +193,11 @@ same notebook, unrelated to the alignment question itself.
 
 A DEM-aware shape model (replacing the current ellipsoid-only ground truth) is the leading suspect
 for why the fit above only closes ~24% of the gap — the ellipsoid-vs-terrain gap is worst exactly at
-the high-relief features (crater rims) this investigation is ultimately about. Not started; see
-`docs/plan.md`'s status line.
+the high-relief features (crater rims) this investigation is ultimately about. `isis_wac.
+attach_dem_shape_model` exists for exactly this (a DEM-attached copy of a crop for
+`control_network.resolve_control_points`'s ground-to-image queries) but has no caller yet — the fit
+above has not been re-run against DEM-aware ground truth to check whether it closes the remaining
+gap. (Separately, the overlay/basemap alignment problem this investigation started from was fixed a
+different way — switching every real-WAC cube's *own* default shape model, not just this bundle
+adjustment's control points, to the same DEM; see `docs/plan.md`'s Architecture table,
+`isis_wac.py`'s row.)

@@ -61,7 +61,7 @@ negligible next to this pipeline's other costs (network fetches, ISIS calibratio
 This isn't auto-derived per candidate. The render footprint size varies slightly with each
 candidate's own slant range/off-nadir angle, so a truly matched `image_size` would too — deliberately
 not chased here; `1316` is a fixed constant picked from one reference candidate, close enough for
-every candidate in practice (`docs/plan.md`'s open-items entry, and see Caveat below).
+every candidate in practice (see Caveat below).
 
 `reproject` shares this same `image_size` with `hillshade` by design — the two are meant to render
 through byte-identical camera intrinsics for future pixel-grid comparison — even though `reproject`'s

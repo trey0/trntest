@@ -113,7 +113,7 @@ def query_craters_in_bbox(bbox_lonlat_deg: tuple, config: TrntestConfig | None =
     :param config: Project config; `load_config()` if not given.
     :returns: Matching craters.
     """
-    # Two-stage filter (see docs/plan.md's open items for why this matters at ~1.3M rows): `bbox=`
+    # Two-stage filter (this database has ~1.3M rows total, so a full materialization matters): `bbox=`
     # pushes down to GDAL's own spatial index (`ensure_geopackage`'s GeoPackage `rtree`) so the full
     # database is never materialized in Python, then `.cx[]` (geopandas' own index-backed accessor)
     # trims to the exact box -- `bbox=`'s own filtering is a fast prefilter, not guaranteed
@@ -143,9 +143,9 @@ def _ellipse_polygon(
     #
     # `angle_deg`'s rotation reference (measured from which axis, which direction) isn't documented
     # in the PDS4 label, but this interpretation is visually confirmed against crater rims in the
-    # hillshade basemap once wired into the notebook (`notebooks/image_generation.py`'s Phase 5B/6B,
-    # see docs/plan.md) -- ellipses land tightly on rims throughout, including elongated
-    # (non-circular) craters matching their ellipse's long axis, not perpendicular to it.
+    # hillshade basemap once wired into the notebook (`notebooks/image_generation.py`'s Phase 5B/6B)
+    # -- ellipses land tightly on rims throughout, including elongated (non-circular) craters
+    # matching their ellipse's long axis, not perpendicular to it.
     unit_circle = shapely.geometry.Point(0, 0).buffer(1.0, quad_segs=32)
     semi_major_m, semi_minor_m = major_km * 500.0, minor_km * 500.0  # km -> m, then diameter -> radius
     ellipse = shapely.affinity.scale(unit_circle, semi_major_m, semi_minor_m)
@@ -173,8 +173,7 @@ def raster_bbox_deg(raster_path) -> tuple:
     # project's own lon/lat convention throughout `lunaserv.py`) are 0-360 deg Positive-East. Not
     # unwrapped across the seam here: an AOI that straddles the 0/360 meridian would still come out
     # with `minlon > maxlon` after this -- a known, unhandled edge case (no camera footprint used by
-    # this project currently lands there; see docs/plan.md's open items if this ever needs
-    # revisiting).
+    # this project currently lands there).
     with rasterio.open(raster_path) as src:
         raster_crs, raster_bounds = src.crs, src.bounds
     geo_crs = lunaserv.geographic_crs(MOON_RADIUS_M)

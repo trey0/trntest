@@ -59,6 +59,6 @@ for how this database is used to grade crater sharpness.
   `shapely.affinity.scale`/`.rotate`/`.translate` on a unit circle centered at the ellipse-fit
   center, in the same local-meters CRS the rest of `plotting.py`'s overlay drawing already uses.
   Since the CSV has no native spatial index at all, `geopandas.read_file(..., bbox=...)`'s
-  read-time pushdown (see `docs/plan.md`'s open items for why this matters at ~1.3M rows) requires
-  first converting to an indexed format (GeoPackage/FlatGeobuf) once — there's no shipped index to
-  reuse, unlike a real GIS format might have.
+  read-time pushdown (this database has ~1.3M rows total, so a full materialization matters)
+  requires first converting to an indexed format (GeoPackage/FlatGeobuf) once — there's no shipped
+  index to reuse, unlike a real GIS format might have.

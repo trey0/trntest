@@ -96,8 +96,10 @@ An alternative/complement to `wac.py`'s manual framelet-stacking approach: repro
 swath onto the DEM via ISIS/CSM (`mapproject`) and re-render it from a synthetic pose (`sat_sim
 --ortho`). The earlier part of the chain (EDR fetch through `framestitch`) is implemented for real as
 `src/trntest/isis_wac.py`; the `mapproject`/`sat_sim --ortho` half was only ever run in a throwaway
-container and isn't part of `trntest` (see `docs/plan.md`'s open items for current status) — these
-are the durable tool facts either path needs, recorded so they don't have to be re-derived.
+container and isn't part of `trntest` — `docs/generators.md`'s `reproject` row is the generator that
+eventually implemented this idea's actual goal (isolating texture source from geometry), via
+`cam2map` rather than `mapproject`/`sat_sim --ortho`. These are the durable tool facts either path
+needs, recorded so they don't have to be re-derived.
 
 - **Install**: `mamba create -n isis --override-channels -c usgs-astrogeology -c conda-forge
   --channel-priority flexible isis ale` — the plain `-c usgs-astro` channel name from older docs
@@ -239,11 +241,12 @@ are the durable tool facts either path needs, recorded so they don't have to be 
   frame: a few minutes total (dominated by the ~1min `mamba create`, `EDR` fetch, and two ~23s
   `mapproject` calls) — fast enough that per-product cost isn't a practical concern.
 - **Net verdict**: the chain is technically real and works end-to-end on this project's actual
-  reference product, but isn't yet a clean drop-in replacement for `wac.py` — the framelet-boundary
-  striping is a genuine, visible quality problem (not just ASP being cautious in its docs), and a
-  usable comparison needs both parities mosaicked plus a correctly-sized AOI, neither of which is
-  spelled out in ASP's own WAC example. See `docs/plan.md`'s open items for whether/how to integrate
-  this into `trntest` itself.
+  reference product. The framelet-boundary striping turned out to be mostly a methodological
+  artifact (mosaicking both parities before mapprojecting resolves the vast majority of it, not a
+  fundamental CSM Pushframe limitation) — `isis_wac.py` implements this as `trntest`'s real-WAC
+  comparison path, using `cam2map` (ISIS's own native camera model) rather than ASP `mapproject`,
+  after a separate `usgscsm` `groundToImage` bug ruled `mapproject`/CSM out for this camera; see
+  `docs/plan.md`'s `isis_wac.py` Architecture-table row.
 
 ## `usgscsm`'s `groundToImage` bug for Pushframe sensors, and the ISIS `cam2map` fix
 
@@ -537,15 +540,16 @@ intersection search (DOI-USGS/ISIS3 GitHub issue #4256) — a known numerical fr
 PushFrame geometry, not a bug introduced by this project's code, and consistent with failures
 scattered roughly uniformly through the image rather than concentrated anywhere in particular.
 
-**Not currently a concern for terrain-relief bias, but worth re-checking once it would be**: this
-project's control points are still ellipsoid-only (`isis_wac.run_spiceinit`'s `shape=ellipsoid`, see
-`control_network.py`'s own docstring for why) — a smooth ellipsoid's local surface normal varies only
-slowly with position, so there's no real steep-terrain trigger for the local-normal bug to hit yet.
-If/when a real DEM-aware shape model is added (a planned follow-up, see `docs/plan.md`'s open items),
-this failure mode could plausibly get *worse* specifically at high-relief features like crater rims —
-exactly the terrain the user's own visual parallax observation (motivating the whole 3D-alignment
-investigation) depends on. Re-run this same edge-distance/failure-kind check against real terrain
-once that lands, rather than assuming the ellipsoid-only finding still holds.
+**Worth re-checking now that this project's terrain has more relief than it used to**:
+`isis_wac.run_spiceinit`'s own default shape model is no longer the ellipsoid this finding assumed
+-- it now attaches ISIS's own real global lunar DEM by default (`shape=user`; see `docs/plan.md`'s
+`isis_wac.py` Architecture-table row), so every real-WAC cube's local surface normal already varies
+with actual terrain, not just a smooth ellipsoid. `control_network.resolve_control_points`'s own
+ground-to-image queries still go through `isis_wac.attach_dem_shape_model` separately rather than
+inheriting this default directly (see `docs/wac-jigsaw-investigation.md`'s "Open item"), but the
+underlying local-normal bug's steep-terrain trigger this section is about is live pipeline-wide now.
+Re-run this same edge-distance/failure-kind check against real terrain rather than assuming the
+older ellipsoid-only finding still holds.
 
 ## `campt`'s `USECOORDLIST` batch mode: real gotchas, and why it matters here
 

@@ -6,13 +6,12 @@ fit a 2D correction from the matches, and apply it to the source raster's own ge
 Works entirely in 2D image/map space: match two already map-projected, same-CRS rasters directly (no
 camera model, no ISIS control network), fit a 2D correction, and apply it to the source raster's own
 affine transform. Validated but not wired into the main pipeline -- see the closing note below and
-`docs/plan.md`'s open items ("camera-pose alignment"). `notebooks/pose_alignment_spike.py` exercises
-this module end-to-end against the current default dataset candidate.
+`docs/wac-jigsaw-investigation.md`. `notebooks/pose_alignment_spike.py` exercises this module
+end-to-end against the current default dataset candidate.
 """
 # Exists because the real-WAC overlay is visibly not perfectly aligned with the basemap (small,
-# "not huge" per direct user observation) -- see docs/plan.md's open items for the full research
-# trail this module is the result of, including why the two most obvious approaches don't apply
-# here: ASP's own `bundle_adjust`/`pc_align`/`image_align` route corrects cameras via ASP's
+# "not huge" per direct user observation). The two most obvious fixes don't apply here: ASP's own
+# `bundle_adjust`/`pc_align`/`image_align` route corrects cameras via ASP's
 # `mapproject`, which is the CSM/Pushframe path already abandoned elsewhere in this project for a
 # confirmed severe bug; and ISIS's own `jigsaw` + `findfeatures` (the architecturally "right" tool,
 # USGS-documented practice for single-image space resection against a basemap) hits an unresolved
@@ -31,17 +30,24 @@ this module end-to-end against the current default dataset candidate.
 # project, added as a dependency specifically for this module.
 
 import functools
+import warnings
 from pathlib import Path
 
 import affine
 import cv2
-import lightglue
-import lightglue.utils
 import numpy as np
 import rasterio
 import rasterio.warp
 import rasterio.windows
 import torch
+
+with warnings.catch_warnings():
+    # LightGlue's own import triggers a `torch.jit.script` deprecation `FutureWarning` (upstream,
+    # not this project's code) -- silenced here rather than printed to every notebook cell that
+    # imports this module.
+    warnings.simplefilter("ignore", FutureWarning)
+    import lightglue
+    import lightglue.utils
 
 from trntest.lunaserv import pad_bbox
 

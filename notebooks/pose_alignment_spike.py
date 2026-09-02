@@ -20,11 +20,11 @@
 # the basemap) used to be visibly not perfectly aligned with it. That turned out to be mostly a
 # ground-truth bug, not a camera-pose one: `isis_wac.run_spiceinit` hardcoded `shape=ellipsoid` for
 # every real-WAC cube, when the fix was attaching ISIS's own real global lunar DEM
-# (`shape=user`) instead -- see `docs/plan.md`'s dated entry. That fix now lives in the main
+# (`shape=user`) instead -- see `docs/wac-jigsaw-investigation.md`. That fix now lives in the main
 # pipeline (every real-WAC cube gets the real DEM by default), so this notebook no longer compares
 # DEM against ellipsoid -- there's nothing left running through the ellipsoid.
 #
-# **On the back burner, not superseded** (the user's own framing, see `docs/plan.md`): the DEM fix
+# **On the back burner, not superseded** (the user's own framing): the DEM fix
 # closed the specific gap visible on this candidate, but the capability this notebook exercises --
 # measuring alignment statistics, independent of whether a correction actually gets applied --
 # stays valuable. There's no guarantee a future WAC product's initial SPICE-derived registration will

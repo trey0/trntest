@@ -613,8 +613,8 @@ def _fill_overlay_nodata_for_display(overlay_da, max_search_distance: int = 10):
 @dataclasses.dataclass
 class OverlayLayer:
     """One optional vector-data annotation layer for `plot_overlay`/`plot_overlay_toggle` -- e.g.
-    Robbins crater database ellipses, the concrete case this was added for (see `docs/plan.md`'s open
-    items).
+    `craters.crater_overlay_layer`'s Robbins crater database ellipses, the concrete case this was
+    added for.
 
     :ivar geoseries: Must already be in the same CRS as the base/overlay raster and already filtered
         down to the relevant AOI -- this module stays consumption-only (no fetch/filter/reprojection
@@ -698,8 +698,8 @@ def plot_overlay(
     # `overlay_cmap` defaults to `"gray"` (matching the base) since the overlay is typically also an
     # image, not categorical/scalar data -- a high-chroma colormap like `"inferno"` visually
     # exaggerates what's actually a mild brightness gradient (e.g. a sun-lit hillshade) into a
-    # distracting "rainbow" look. `show_overlay_outline` is also useful as a template for future
-    # vector-layer overlays (e.g. the Robbins crater database; see `docs/plan.md`'s open items) on
+    # distracting "rainbow" look. `show_overlay_outline` is also the template `OverlayLayer` (e.g.
+    # `craters.crater_overlay_layer`'s Robbins crater ellipses) draws vector-layer overlays with, on
     # top of this same raster display.
     #
     # Base and overlay are each independently normalized to their own median (`_prep_overlay_rasters`)

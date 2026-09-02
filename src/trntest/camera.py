@@ -304,9 +304,9 @@ def compute_n_frames_for_square_crop(
     frame_timing: FrameTiming, frame_index: int | None = None, config: TrntestConfig | None = None
 ) -> dict:
     """How many consecutive frames of the WAC CDR (full 704-sample width) are needed so the
-    along-track distance covered matches the cross-track swath width -- a square crop, per the
-    demo's objective (see docs/plan.md). Self-contained: furnishes SPICE kernels and computes the
-    pose itself, so callers only need a FrameTiming."""
+    along-track distance covered matches the cross-track swath width -- a square crop, per
+    `docs/generators.md`'s `crop` generator. Self-contained: furnishes SPICE kernels and computes
+    the pose itself, so callers only need a FrameTiming."""
     config = config or load_config()
     if frame_index is None:
         frame_index = config.target_frame_index

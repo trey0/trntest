@@ -1,7 +1,7 @@
 """Bridges `pose_alignment`'s 2D map-space tie points into ISIS control points for a `jigsaw` bundle
 adjustment -- the prerequisite step for the projection-aware (3D camera pose) alignment
-`pose_alignment.py`'s 2D homography spike was deliberately left short of (see `docs/plan.md`'s open
-items, "camera-pose alignment").
+`pose_alignment.py`'s 2D homography spike was deliberately left short of (see
+`docs/wac-jigsaw-investigation.md`).
 
 `resolve_control_points` converts `pose_alignment.match_features`/`match_features_lightglue`'s
 matched map-pixel positions into what `jigsaw` needs per tie point: the pixel it was actually
@@ -20,7 +20,7 @@ observed at in the original, pre-`cam2map` WAC cube, and a trusted 3D ground loc
 # `resolve_control_points` samples elevation for it via `isis_wac.sample_lunar_dem_radii_batch` -- the
 # same DEM `isis_wac.run_spiceinit` attaches to every WAC cube by default (was `shape=ellipsoid`; this
 # DEM/ellipsoid mismatch was the root cause of a parallax-like effect at crater edges in the blink
-# overlay that originally motivated this 3D-fit work -- see `docs/plan.md`'s dated entry). The
+# overlay that originally motivated this 3D-fit work -- see `docs/wac-jigsaw-investigation.md`). The
 # function's own return value, `ground_lonlat`, is still `(lon, lat)` only, no elevation -- that side
 # comes straight from the basemap's own map-pixel georeferencing, which has none to sample. A caller
 # building a 3D ground point from `ground_lonlat` must sample elevation from the *same* shape model

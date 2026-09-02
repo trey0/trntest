@@ -2,7 +2,8 @@
 Pipeline's `sfs` tool, run purely as a forward renderer (`--save-sim-intensity-only`, no DEM
 refinement) -- a fully independent ray-DEM intersection and Hapke reflectance implementation, given
 the same inputs `hapke_shade_ortho` itself uses (the fetched DEM, the same ISIS-calibration-sourced
-Hapke parameters). See `docs/plan.md`'s open items for what's still unverified.
+Hapke parameters). See `docs/plan.md`'s Open items (the real-WAC-crop/hillshade brightness-match
+entry) for what this cross-check does and doesn't resolve.
 """
 # `sfs` rejects the WAC crop's own native ISIS camera model outright, so this module attaches this
 # project's own reconstructed CSM Frame camera instead (`_camera_cub_for_sfs`) -- which, unlike
