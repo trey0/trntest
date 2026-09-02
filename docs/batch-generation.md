@@ -21,11 +21,12 @@ is a drop-in replacement for `populate()` from the caller's side, just backed by
 
 There's no per-dataset setting for this — `product_types` is a plain parameter on every call
 (`populate()`, `populate_via_workers()`, `status()`, `truncate()`), defaulting to
-`trn_dataset.PRODUCT_TYPES = ("crop", "hillshade")`. To include `reproject` (implemented but
-opt-in — see `trn_dataset.py`'s module docstring), pass it explicitly:
+`trn_dataset.PRODUCT_TYPES = ("crop", "hillshade", "report")`. `report` (the per-entry HTML report,
+see `docs/proposed-tasks/report-plan.md`) is on by default; `reproject` is implemented but opt-in
+(see `trn_dataset.py`'s module docstring) -- pass it explicitly:
 
 ```python
-PRODUCT_TYPES = ("crop", "hillshade", "reproject")
+PRODUCT_TYPES = ("crop", "hillshade", "report", "reproject")
 
 dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4)
 dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
@@ -33,8 +34,14 @@ dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
 
 **Pass the same `product_types` to every call in a given workflow.** It isn't remembered between
 calls — `status()`/`truncate()` after a `populate_via_workers(product_types=(..., "reproject"))` run
-will silently only look at `crop`/`hillshade` unless you pass `product_types=PRODUCT_TYPES` there
-too, making `reproject`'s real state invisible rather than raising anything.
+will silently only look at `crop`/`hillshade`/`report` unless you pass `product_types=PRODUCT_TYPES`
+there too, making `reproject`'s real state invisible rather than raising anything.
+
+`populate()`/`populate_via_workers()` also take `write_index: bool = True`: after their task-queue
+loop, they write `<dataset_folder>/status.csv` and `<dataset_folder>/reports/index.html` (a nav bar
+across every entry's own report) via `TrnTestDataSet.write_index()` -- cheap, pure Python, safe to
+leave on; pass `write_index=False` to skip it (e.g. in a tight `populate(limit=N)` loop where you'd
+rather refresh it once at the end yourself).
 
 ## Recommended workflow
 
@@ -46,7 +53,7 @@ config = trntest.load_config()
 images = trntest.read_manifest("notebooks/dataset_manifest.csv")
 dataset = trn_dataset.TrnTestDataSet.create(config.output_dir / "trn_dataset", images, config)
 
-PRODUCT_TYPES = ("crop", "hillshade")  # add "reproject" once you actually want it too
+PRODUCT_TYPES = ("crop", "hillshade", "report")  # add "reproject" once you actually want it too
 
 # 1. Warm the cache with a small, conservative run first -- see "Cold-cache concurrent fetch
 #    races" below for why. workers=1 here is deliberate.
