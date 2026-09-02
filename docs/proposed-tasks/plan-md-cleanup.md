@@ -14,7 +14,7 @@ prototype, the Phase 70-79 Hapke saga, the DEM filename-collision bug, the satur
 question, the image-resolution fix) to their load-bearing current-state facts. Lines 89-272 (batch
 1's own scope, already user-reviewed and merged) deliberately left untouched at the time.
 
-**Final pass done, pushed to branch, not yet reviewed/merged**: the user reviewed the file and
+**Final content pass done and merged to `main`** (`e55292b`): the user reviewed the file and
 flagged that it was still fundamentally wrong at a higher level than wording -- "What this is"/
 "Status" described a stale premise (a single-image demo notebook as the point of the repo) when the
 actual current product is dataset population (`select_datasets.py` selects diverse entries,
@@ -29,7 +29,6 @@ module's own docstring/comment, per `docs/docs-style.md`); resolved the previous
 Architecture-table-additions question by adding rows for the 7 substantive missing modules
 (`control_network.py`, `crater_depth.py`, `crater_depth_batch.py`, `pose_alignment.py`, `report.py`,
 `subprocess_utils.py`, `wac_camera_model.py` -- `__init__.py`/`_lint.py` skipped as pure infra).
-File is now 148 lines (was 536 before batch 1).
 
 Deleting all those "Resolved" entries orphaned ~20 code/notebook comments across 10 files that cited
 "see `docs/plan.md`'s open items" for exactly that content -- fixed each one (inlined the fact
@@ -42,8 +41,18 @@ switched to a real DEM shape model. Flagged (not fixed) a separate finding this 
 `isis_wac.attach_dem_shape_model` has zero production callers and a stale comment describing a
 pipeline default that no longer exists -- spun off as its own task.
 
-**Remaining**: none, once this final pass is reviewed and merged -- delete this plan doc then, per
-its own closing convention below.
+**Structural pass done, pushed to branch, not yet reviewed/merged**: per further user request, added
+a "Notebooks" section (`## Notebooks (\`notebooks/\`)`, two tables -- "Primary notebooks"
+(`image_generation.py`/`select_datasets.py`) and "Other notebooks" (the remaining 8) -- replacing
+the two prose paragraphs that used to describe the two primary ones only), spun "Open items" out
+into its own file (`docs/proposed-tasks/open-items.md`, `plan.md` now just points to it), and
+hyperlinked every Architecture-table module name (to its `src/trntest/` source), every Notebooks
+entry (to its `.ipynb`, or `.py` for the one unpaired template), and every `docs/*.md` cross-reference
+throughout both tables and the surrounding prose. `docs/plan.md` is now 107 lines (was 536 before
+batch 1).
+
+**Remaining**: none, once this structural pass is reviewed and merged -- delete this plan doc then,
+per its own closing convention below.
 
 ## The problem
 
