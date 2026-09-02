@@ -9,7 +9,7 @@ import pytest
 from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import TaskException
 
-from trntest import tasks, trn_dataset
+from trntest import report, tasks, trn_dataset
 from trntest.config import TrntestConfig
 
 
@@ -119,7 +119,7 @@ def test_create_writes_manifest_and_subfolders(tmp_path):
     images = _minimal_manifest(["P1", "P2"])
     ds = trn_dataset.TrnTestDataSet.create(folder, images, TrntestConfig())
 
-    for sub in ("crop", "hillshade", "reproject", "_work"):
+    for sub in ("crop", "hillshade", "reproject", "reports", "_work"):
         assert (folder / sub).is_dir()
     assert (folder / "manifest.csv").is_file()
     assert len(ds) == 2
@@ -319,7 +319,9 @@ def test_populate_drives_every_task_to_done(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
 
-    ds.populate()
+    # product_types scoped to crop/hillshade -- "report" (PRODUCT_TYPES' third default member) isn't
+    # faked here and would otherwise attempt a real jupytext/papermill/nbconvert pipeline.
+    ds.populate(product_types=("crop", "hillshade"))
 
     status = ds.status()
     assert (status[["crop", "hillshade"]] == "done").all(axis=None)
@@ -330,7 +332,7 @@ def test_populate_marks_failed_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
 
-    ds.populate()
+    ds.populate(product_types=("crop", "hillshade"))  # see test_populate_drives_every_task_to_done
 
     status = ds.status().set_index("product_id")
     assert status.loc["P1", "crop"] == "failed"
@@ -343,11 +345,11 @@ def test_populate_retry_failed_clears_errors_and_reruns(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    ds.populate()
+    ds.populate(product_types=("crop", "hillshade"))  # see test_populate_drives_every_task_to_done
     assert ds.status().set_index("product_id").loc["P1", "crop"] == "failed"
 
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
-    ds.populate(retry_failed=True)
+    ds.populate(product_types=("crop", "hillshade"), retry_failed=True)
 
     assert ds.status().set_index("product_id").loc["P1", "crop"] == "done"
 
@@ -356,17 +358,18 @@ def test_populate_limit_stops_after_n_entries_and_is_resumable(tmp_path, monkeyp
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2", "P3"]), TrntestConfig())
+    product_types = ("crop", "hillshade")  # see test_populate_drives_every_task_to_done
 
-    ds.populate(limit=2)
+    ds.populate(product_types=product_types, limit=2)
 
-    status = ds.status().set_index("product_id")
+    status = ds.status(product_types=product_types).set_index("product_id")
     assert (status.loc["P1"] == "done").all()
     assert (status.loc["P2"] == "done").all()
     assert (status.loc["P3"] == "pending").all()
 
-    ds.populate(limit=2)  # a later worker resumes against the same folder
+    ds.populate(product_types=product_types, limit=2)  # a later worker resumes against the same folder
 
-    status = ds.status().set_index("product_id")
+    status = ds.status(product_types=product_types).set_index("product_id")
     assert (status.loc["P3"] == "done").all()
 
 
@@ -375,7 +378,7 @@ def test_populate_limit_zero_does_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
 
-    ds.populate(limit=0)
+    ds.populate(product_types=("crop", "hillshade"), limit=0)
 
     assert (ds.status()[["crop", "hillshade"]] == "pending").all(axis=None)
 
@@ -384,14 +387,15 @@ def test_populate_limit_does_not_count_already_done_entries(tmp_path, monkeypatc
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
-    ds.populate(limit=1)
-    assert (ds.status().set_index("product_id").loc["P1"] == "done").all()
+    product_types = ("crop", "hillshade")  # see test_populate_drives_every_task_to_done
+    ds.populate(product_types=product_types, limit=1)
+    assert (ds.status(product_types=product_types).set_index("product_id").loc["P1"] == "done").all()
 
     # P1 is already fully done -- a fresh call with limit=1 should skip straight past it (free) and
     # do new work on P2, not stop having "used up" its budget on P1 again.
-    ds.populate(limit=1)
+    ds.populate(product_types=product_types, limit=1)
 
-    assert (ds.status().set_index("product_id").loc["P2"] == "done").all()
+    assert (ds.status(product_types=product_types).set_index("product_id").loc["P2"] == "done").all()
 
 
 # -- truncate() -----------------------------------------------------------------------------------
@@ -401,12 +405,13 @@ def test_truncate_single_entry_reverts_to_pending_and_leaves_others_alone(tmp_pa
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
-    ds.populate()
+    product_types = ("crop", "hillshade")  # see test_populate_drives_every_task_to_done
+    ds.populate(product_types=product_types)
     assert ds[0].crop.exists() and ds[0].hillshade.exists()
 
-    ds.truncate(ds[0])
+    ds.truncate(ds[0], product_types=product_types)
 
-    status = ds.status().set_index("product_id")
+    status = ds.status(product_types=product_types).set_index("product_id")
     assert (status.loc["P1"] == "pending").all()
     assert (status.loc["P2"] == "done").all()
     assert not ds[0].crop.raster_path.exists()
@@ -418,7 +423,7 @@ def test_truncate_none_reverts_every_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
-    ds.populate()
+    ds.populate(product_types=("crop", "hillshade"))  # see test_populate_drives_every_task_to_done
 
     ds.truncate()
 
@@ -435,17 +440,18 @@ def test_truncate_then_populate_actually_regenerates(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", counting_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", counting_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
-    ds.populate()
+    product_types = ("crop", "hillshade")  # see test_populate_drives_every_task_to_done
+    ds.populate(product_types=product_types)
     assert call_count["n"] == 2  # crop + hillshade
 
-    ds.populate()  # already done -- no new calls
+    ds.populate(product_types=product_types)  # already done -- no new calls
     assert call_count["n"] == 2
 
-    ds.truncate(ds[0])
-    ds.populate(limit=1)
+    ds.truncate(ds[0], product_types=product_types)
+    ds.populate(product_types=product_types, limit=1)
 
     assert call_count["n"] == 4  # crop + hillshade regenerated
-    assert (ds.status().set_index("product_id").loc["P1"] == "done").all()
+    assert (ds.status(product_types=product_types).set_index("product_id").loc["P1"] == "done").all()
 
 
 def test_truncate_clears_stored_results_from_both_queues(tmp_path, monkeypatch):
@@ -488,7 +494,8 @@ def test_populate_via_workers_drives_every_task_to_done(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
 
-    ds.populate_via_workers()
+    # product_types scoped to crop/hillshade -- see test_populate_drives_every_task_to_done
+    ds.populate_via_workers(product_types=("crop", "hillshade"))
 
     status = ds.status(huey_instance=tasks.huey_parallel)
     assert (status[["crop", "hillshade"]] == "done").all(axis=None)
@@ -500,7 +507,7 @@ def test_populate_via_workers_marks_failed_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
 
-    ds.populate_via_workers()
+    ds.populate_via_workers(product_types=("crop", "hillshade"))  # see test_populate_drives_every_task_to_done
 
     status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
     assert status.loc["P1", "crop"] == "failed"
@@ -526,17 +533,18 @@ def test_populate_via_workers_limit_stops_after_n_entries_and_is_resumable(tmp_p
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2", "P3"]), TrntestConfig())
+    product_types = ("crop", "hillshade")  # see test_populate_drives_every_task_to_done
 
-    ds.populate_via_workers(limit=2)
+    ds.populate_via_workers(product_types=product_types, limit=2)
 
-    status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
+    status = ds.status(product_types=product_types, huey_instance=tasks.huey_parallel).set_index("product_id")
     assert (status.loc["P1"] == "done").all()
     assert (status.loc["P2"] == "done").all()
     assert (status.loc["P3"] == "pending").all()
 
-    ds.populate_via_workers(limit=2)
+    ds.populate_via_workers(product_types=product_types, limit=2)
 
-    status = ds.status(huey_instance=tasks.huey_parallel).set_index("product_id")
+    status = ds.status(product_types=product_types, huey_instance=tasks.huey_parallel).set_index("product_id")
     assert (status.loc["P3"] == "done").all()
 
 
@@ -562,6 +570,103 @@ def test_populate_via_workers_does_not_start_a_consumer_when_nothing_pending(tmp
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest([]), TrntestConfig())
 
     ds.populate_via_workers()  # no entries at all -- nothing to enqueue
+
+
+# -- TrnTestReport / write_index() ---------------------------------------------------------------
+
+
+def _fake_report_generate_impl(image) -> None:
+    """Monkeypatch target for `TrnTestReport._generate_impl` -- skips the real hillshade dependency
+    check and jupytext/papermill/nbconvert pipeline, just touches raster_path/sidecar_json_path
+    like `_fake_generate_impl` above does for crop/hillshade."""
+    image.raster_path.parent.mkdir(parents=True, exist_ok=True)
+    image.raster_path.write_text("<html>fake report</html>")
+    image.sidecar_json_path.write_text("{}")
+
+
+def test_report_plugs_into_task_queue_generically(tmp_path, monkeypatch):
+    """`report` isn't special-cased anywhere in the task queue -- `task_state`/`truncate`/
+    `populate` all already treat it like any other product type once `TrnTestReport` is registered
+    on `images_by_type`."""
+    monkeypatch.setattr(trn_dataset.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+
+    assert trn_dataset.task_state(entry, "report") == "pending"
+
+    ds.populate(product_types=("report",))
+    assert trn_dataset.task_state(entry, "report") == "done"
+    assert entry.report.exists()
+
+    ds.truncate(entry, product_types=("report",))
+    assert trn_dataset.task_state(entry, "report") == "pending"
+    assert not entry.report.exists()
+
+
+def test_report_backfills_an_already_populated_entry(tmp_path, monkeypatch):
+    """An entry whose crop/hillshade were already done before `report` existed as a product type
+    gets its report generated on the next `populate()` call, without regenerating crop/hillshade --
+    `_enqueue_pending` only enqueues an entry's still-pending product types, so this falls out of
+    the existing task-queue logic for free (see docs/proposed-tasks/report-plan.md)."""
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    ds.populate(product_types=("crop", "hillshade"))
+    assert trn_dataset.task_state(ds[0], "report") == "pending"
+
+    ds.populate()  # default PRODUCT_TYPES now includes "report"
+
+    status = ds.status().set_index("product_id")
+    assert (status.loc["P1"] == "done").all()
+
+
+def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    images = pd.DataFrame(
+        {
+            "product_id": ["P1", "P2"],
+            "edr_product": ["P1", "P2"],
+            "sun_elevation_deg": [3.0, 45.0],  # P1 low enough to trip the heuristic flag
+        }
+    )
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", images, TrntestConfig())
+
+    ds.populate()
+
+    status_csv = (ds.folder / "status.csv").read_text()
+    assert "P1" in status_csv
+    assert "P2" in status_csv
+    assert "low sun elevation" in status_csv
+
+    index_html = (ds.folder / "reports" / "index.html").read_text()
+    assert "P1/report.html" in index_html
+    assert "P2/report.html" in index_html
+
+
+def test_populate_write_index_false_skips_status_csv_and_index_html(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_dataset.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+
+    ds.populate(write_index=False)
+
+    assert not (ds.folder / "status.csv").exists()
+
+
+def test_problem_flags_low_sun_elevation(tmp_path):
+    entry = trn_dataset.TrnTestEntry(
+        pd.Series({"product_id": "P1", "edr_product": "P1", "sun_elevation_deg": 2.0}), tmp_path, TrntestConfig()
+    )
+    assert any("low sun elevation" in flag for flag in report.problem_flags(entry))
+
+
+def test_problem_flags_tolerates_a_missing_column(tmp_path):
+    entry = trn_dataset.TrnTestEntry(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
+    assert report.problem_flags(entry) == []
 
 
 # -- Real `huey_consumer -k process` subprocess (trntest.tasks.start_consumer/stop_consumer) ------

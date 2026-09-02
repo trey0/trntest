@@ -32,7 +32,7 @@ from trntest.render import RenderResult, read_csm_state, run_sat_sim
 from trntest.session import Session
 from trntest.spice_kernels import fetch_and_furnish
 from trntest.tie_points import resolve_crop_pixels, select_tie_points
-from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry, TrnTestImage
+from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry, TrnTestImage, TrnTestProduct, TrnTestReport
 from trntest.wac import fetch_vis_mosaic
 
 __all__ = [
@@ -64,5 +64,7 @@ __all__ = [
     "report",
     "TrnTestDataSet",
     "TrnTestEntry",
+    "TrnTestProduct",
     "TrnTestImage",
+    "TrnTestReport",
 ]

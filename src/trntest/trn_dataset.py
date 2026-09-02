@@ -1,12 +1,15 @@
 """A self-contained, resumable dataset folder: `TrnTestDataSet` (a manifest + typed `crop`/
-`hillshade`/`reproject` subfolders), `TrnTestEntry` (one manifest row's shared, cached state), and
-`TrnTestImage` (one product type of one entry, e.g. `entry.crop`/`entry.hillshade`).
+`hillshade`/`reproject`/`reports` subfolders), `TrnTestEntry` (one manifest row's shared, cached
+state), and `TrnTestProduct` (one product type of one entry). `TrnTestImage` (a `TrnTestProduct`
+subclass) adds plot-comparison geometry for the three raster types (`entry.crop`/`entry.hillshade`/
+`entry.reproject`); `TrnTestReport` (`entry.report`) is the rendered per-entry HTML report and
+doesn't need that geometry, so it subclasses `TrnTestProduct` directly.
 
 **Only one `populate()` call should run against a given dataset folder at a time** -- for
 multi-worker parallel population, use `populate_via_workers()` instead.
 
-`PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade")`; `reproject` is
-implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
+`PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade", "report")`;
+`reproject` is implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
 """
 # An incrementally/resumably populated alternative to dataset.generate_dataset()'s flat,
 # all-at-once output layout, driven by trntest.tasks's huey task queue -- see that module's
@@ -21,6 +24,12 @@ implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
 # Lunaserv/Astropedia basemap, through the same camera as hillshade) is kept opt-in until it's
 # wired into a notebook and validated at dataset scale, not just the one image
 # docs/reproject-fov-investigation.md cross-validated -- see that doc for reproject's own history.
+#
+# report (TrnTestReport, see src/trntest/report.py) is default-on, unlike reproject: it's cheap
+# (no SPICE/ISIS/sat_sim of its own) and self-ensures its own dependency
+# (TrnTestReport._generate_impl calls entry.hillshade.generate() itself) rather than relying on
+# callers passing product_types in a particular order -- same reasoning TrnTestReprojectImage
+# already applies via entry.crop_result's cached_property chain.
 
 import abc
 import functools
@@ -40,8 +49,9 @@ from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
-PRODUCT_TYPES = ("crop", "hillshade")  # "reproject" is implemented (TrnTestReprojectImage) but opt-in
-# only -- pass product_types=("crop", "hillshade", "reproject") explicitly; see module docstring.
+PRODUCT_TYPES = ("crop", "hillshade", "report")  # "reproject" is implemented
+# (TrnTestReprojectImage) but opt-in only -- pass product_types=(..., "reproject") explicitly; see
+# module docstring.
 
 
 class TrnTestEntry:
@@ -135,9 +145,13 @@ class TrnTestEntry:
     def reproject(self) -> "TrnTestReprojectImage":
         return TrnTestReprojectImage(self)
 
+    @functools.cached_property
+    def report(self) -> "TrnTestReport":
+        return TrnTestReport(self)
+
     @property
-    def images_by_type(self) -> dict[str, "TrnTestImage"]:
-        return {"crop": self.crop, "hillshade": self.hillshade, "reproject": self.reproject}
+    def images_by_type(self) -> dict[str, "TrnTestProduct"]:
+        return {"crop": self.crop, "hillshade": self.hillshade, "reproject": self.reproject, "report": self.report}
 
 
 class TrnTestDataSet:
@@ -157,11 +171,11 @@ class TrnTestDataSet:
     @classmethod
     def create(cls, folder: Path | str, images: pd.DataFrame, config: TrntestConfig | None = None) -> "TrnTestDataSet":
         """Idempotent: (re)writes `manifest.csv` from `images`, ensures `crop`/`hillshade`/
-        `reproject`/`_work` exist. Never touches already-generated product files -- those live
+        `reproject`/`reports`/`_work` exist. Never touches already-generated product files -- those live
         under `crop`/`hillshade`, untouched by this call."""
         config = config or load_config()
         folder = Path(folder)
-        for sub in ("crop", "hillshade", "reproject", "_work"):
+        for sub in ("crop", "hillshade", "reproject", "reports", "_work"):
             (folder / sub).mkdir(parents=True, exist_ok=True)
         dataset.write_manifest(images, folder / "manifest.csv")
         return cls(folder, images, config)
@@ -200,6 +214,7 @@ class TrnTestDataSet:
         product_types: tuple[str, ...] = PRODUCT_TYPES,
         retry_failed: bool = False,
         limit: int | None = None,
+        write_index: bool = True,
     ) -> None:
         """Drives the task queue sequentially, entry by entry: for each entry with any pending
         product type, generates its pending subset of `product_types` and waits for it before
@@ -209,6 +224,8 @@ class TrnTestDataSet:
             done or failed doesn't count against it). Call `populate(limit=N)` repeatedly to split
             a large dataset's population across several calls -- each pass picks up wherever the
             last one left off.
+        :param write_index: Refresh `status.csv`/`reports/index.html` (see `write_index()`) after
+            this call -- cheap, pure Python, safe to leave on.
         """
         # Task granularity is per-entry, not per `(entry, product_type)` -- see
         # `tasks._generate_entry`'s own comment for why. `huey`'s default `immediate=True` (see
@@ -230,6 +247,8 @@ class TrnTestDataSet:
         # after collecting them all is equivalent to waiting right after each one, not a behavior change.
         for result in _enqueue_pending(self, product_types, limit, tasks.huey, tasks.generate_product):
             _await_result(result)
+        if write_index:
+            self.write_index(product_types)
 
     def populate_via_workers(
         self,
@@ -237,11 +256,12 @@ class TrnTestDataSet:
         retry_failed: bool = False,
         limit: int | None = None,
         workers: int = 4,
+        write_index: bool = True,
     ) -> None:
-        """`populate()`'s multi-worker equivalent: same `product_types`/`retry_failed`/`limit`
-        semantics, but runs `workers` worker processes in parallel instead of sequentially. Blocks
-        until the whole batch finishes; manages its own consumer subprocess for the call's
-        duration, so there's no separate terminal/process to set up first.
+        """`populate()`'s multi-worker equivalent: same `product_types`/`retry_failed`/`limit`/
+        `write_index` semantics, but runs `workers` worker processes in parallel instead of
+        sequentially. Blocks until the whole batch finishes; manages its own consumer subprocess
+        for the call's duration, so there's no separate terminal/process to set up first.
 
         :param workers: Number of parallel worker processes.
         """
@@ -268,15 +288,15 @@ class TrnTestDataSet:
                     _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 
         results = _enqueue_pending(self, product_types, limit, tasks.huey_parallel, tasks.generate_product_parallel)
-        if not results:
-            return
-
-        consumer = tasks.start_consumer(workers)
-        try:
-            for result in results:
-                _await_result(result)
-        finally:
-            tasks.stop_consumer(consumer)
+        if results:
+            consumer = tasks.start_consumer(workers)
+            try:
+                for result in results:
+                    _await_result(result)
+            finally:
+                tasks.stop_consumer(consumer)
+        if write_index:
+            self.write_index(product_types)
 
     def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
         """Per-entry, per-product-type status: `done`/`failed`/`pending` (see `task_state`).
@@ -290,6 +310,28 @@ class TrnTestDataSet:
             for entry in self
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
+
+    def write_index(self, product_types: tuple[str, ...] = PRODUCT_TYPES) -> None:
+        """Writes `<folder>/status.csv` (`status()` plus a `problems` column, see
+        `report.problem_flags`) and `<folder>/reports/index.html` (a nav bar linking to each
+        entry's own `reports/<edr_product>/report.html`, alongside the same status/problem info) --
+        covers every entry in the dataset, not just ones touched by whatever call (if any)
+        triggered this.
+
+        Cheap and pure Python (no subprocess) -- safe to call on its own to refresh the index
+        without a full `populate()` pass. Like `populate()`/`populate_via_workers()`, not safe to
+        run concurrently with itself against the same dataset folder (writes shared files).
+        """
+        from trntest import report  # noqa: PLC0415 -- circular otherwise (report.py imports
+        # TrnTestDataSet/TrnTestEntry from this module)
+
+        # mkdir here rather than relying on create() having already run -- some callers (e.g. this
+        # project's own tests) construct a TrnTestDataSet directly.
+        (self.folder / "reports").mkdir(parents=True, exist_ok=True)
+        status_df = self.status(product_types)
+        status_df["problems"] = ["; ".join(report.problem_flags(entry)) for entry in self]
+        status_df.to_csv(self.folder / "status.csv", index=False)
+        report.write_index_html(self, status_df)
 
     def truncate(
         self,
@@ -332,9 +374,11 @@ class TrnTestDataSet:
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 
 
-class TrnTestImage(abc.ABC):
-    """One product type of one entry (`crop`/`hillshade`/`reproject`). Owns the shared
-    generate/plot logic; subclasses supply the type-specific pieces below."""
+class TrnTestProduct(abc.ABC):
+    """One product type of one entry (`crop`/`hillshade`/`reproject`/`report`) -- generated once,
+    on demand, and tracked by the task queue via `exists()`/`generate()`. `TrnTestImage` (below)
+    adds the plot-comparison geometry the three raster types need; `TrnTestReport` doesn't need it
+    and subclasses this directly."""
 
     def __init__(self, entry: TrnTestEntry):
         self.entry = entry
@@ -346,6 +390,30 @@ class TrnTestImage(abc.ABC):
     @property
     @abc.abstractmethod
     def sidecar_json_path(self) -> Path: ...
+
+    @property
+    @abc.abstractmethod
+    def generator_name(self) -> str:
+        """Short generator name (`"crop"`/`"hillshade"`/`"reproject"`/`"report"`) -- `TrnTestImage`
+        subclasses also use this as plot titles' own default label, via `plotting.mathtt`."""
+
+    @abc.abstractmethod
+    def _generate_impl(self) -> None:
+        """Produce + copy `raster_path`/`sidecar_json_path` into place. Only called by `generate()`
+        when `exists()` is already false, so implementations don't need their own idempotency check."""
+
+    def exists(self) -> bool:
+        return self.raster_path.exists() and self.sidecar_json_path.exists()
+
+    def generate(self) -> Path:
+        if not self.exists():
+            self._generate_impl()
+        return self.raster_path
+
+
+class TrnTestImage(TrnTestProduct):
+    """A `TrnTestProduct` that's also a plottable/comparable raster (`crop`/`hillshade`/
+    `reproject`) -- adds the geometry `plot_vs_basemap`/`plot_overlay`/`plot_zoom_blink_over` need."""
 
     @property
     @abc.abstractmethod
@@ -365,37 +433,19 @@ class TrnTestImage(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def render_label(self) -> str: ...
-
-    @property
-    @abc.abstractmethod
-    def generator_name(self) -> str:
-        """Short generator name (`"hillshade"`/`"crop"`/`"reproject"`) -- plot titles' own default
-        label, via `plotting.mathtt`. `render_label` is the longer descriptive form for non-plot
-        contexts (e.g. `_require_generated`'s error message)."""
+    def render_label(self) -> str:
+        """Longer descriptive form of `generator_name`, for non-plot contexts (e.g.
+        `_require_generated`'s error message)."""
 
     @property
     @abc.abstractmethod
     def tie_point_px_key(self) -> str: ...
 
     @abc.abstractmethod
-    def _generate_impl(self) -> None:
-        """Produce + copy `raster_path`/`sidecar_json_path` into place. Only called by `generate()`
-        when `exists()` is already false, so implementations don't need their own idempotency check."""
-
-    @abc.abstractmethod
     def _mapprojected_path(self) -> Path:
         """The type-specific mapproject/`cam2map` step `plot_overlay` needs."""
         # Not cached on the instance, since it's only ever called from plot_overlay (display-only,
         # not part of exists()/the task queue's done/pending state).
-
-    def exists(self) -> bool:
-        return self.raster_path.exists() and self.sidecar_json_path.exists()
-
-    def generate(self) -> Path:
-        if not self.exists():
-            self._generate_impl()
-        return self.raster_path
 
     def _require_generated(self) -> None:
         if not self.exists():
@@ -668,6 +718,44 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
         self.raster_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(render_result.rendered_tif, self.raster_path)
         shutil.copy(render_result.csm_json, self.sidecar_json_path)
+
+
+class TrnTestReport(TrnTestProduct):
+    """The rendered per-entry HTML report (`notebooks/report_template.py`, via
+    `report.generate_report`): `reports/<edr_product>/report.html` + its executed notebook."""
+
+    # Not a TrnTestImage: a report isn't itself a comparable raster, so it has no
+    # rotation_k/width_km/footprint_lonlat_deg/etc. to supply.
+
+    @property
+    def report_dir(self) -> Path:
+        return self.entry.dataset_folder / "reports" / self.entry.edr_product
+
+    @property
+    def raster_path(self) -> Path:
+        return self.report_dir / "report.html"
+
+    @property
+    def sidecar_json_path(self) -> Path:
+        return self.report_dir / "report.ipynb"  # not JSON -- reuses the "second generated file"
+        # slot every other product type has, for the executed notebook rather than an ISD sidecar.
+
+    @property
+    def generator_name(self) -> str:
+        return "report"
+
+    def exists(self) -> bool:
+        return self.raster_path.exists()  # report.html is the deliverable; the .ipynb is a byproduct
+
+    def _generate_impl(self) -> None:
+        self.entry.hillshade.generate()  # self-ensures its own dependency (report_template.py
+        # displays entry.hillshade's raster) rather than relying on callers passing product_types
+        # in a particular order -- same reasoning TrnTestReprojectImage already applies via
+        # entry.crop_result's cached_property chain. A no-op if hillshade is already done.
+        from trntest import report  # noqa: PLC0415 -- circular otherwise (report.py imports
+        # TrnTestDataSet/TrnTestEntry from this module)
+
+        report.generate_report(str(self.entry.dataset_folder), self.entry.edr_product, self.report_dir)
 
 
 # -- Task queue: backed by trntest.tasks's huey instances, no filesystem lock/error files of our

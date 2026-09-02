@@ -18,12 +18,11 @@ See [`README.md`](../README.md) for how to build/run/test it.
 
 ## Status
 
-**Incomplete and untested at dataset scale.** Per-entry report generation
-(`src/trntest/report.py`/`notebooks/report_template.py`) is a first prototype, not the full
-multi-entry design calls for — see
+**Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
+`notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
+`populate_via_workers()`, but its own content is still a first-pass minimal template — see
 [`docs/proposed-tasks/report-plan.md`](proposed-tasks/report-plan.md). A real population run across
-a full selected dataset is deliberately deferred until report completeness improves, so there's no
-dataset-scale validation yet.
+a full selected dataset hasn't happened yet, so there's no dataset-scale validation.
 
 `notebooks/image_generation.py` validates the full per-entry pipeline in detail, on one manifest
 entry (`notebooks/dataset_manifest.csv`, checked in, frozen): all three generators, two independent
@@ -55,14 +54,14 @@ single-entry level.
 | [`pose_alignment.py`](../src/trntest/pose_alignment.py) | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
 | [`product_registry.py`](../src/trntest/product_registry.py) | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](intermediate-product-discipline.md). |
 | [`render.py`](../src/trntest/render.py) | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`](../src/trntest/report.py) | Per-entry HTML report helpers (`load_entry`/`summary`/...) for `notebooks/report_template.py` — see [`docs/proposed-tasks/report-plan.md`](proposed-tasks/report-plan.md). First prototype, not the full multi-entry design. |
+| [`report.py`](../src/trntest/report.py) | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below — see [`docs/proposed-tasks/report-plan.md`](proposed-tasks/report-plan.md). Report content itself is still a first-pass minimal template. |
 | [`session.py`](../src/trntest/session.py) | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_validation.py`](../src/trntest/sfs_validation.py) | Cross-checks `lunaserv.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
 | [`spice_kernels.py`](../src/trntest/spice_kernels.py) | Selects/downloads the minimal SPICE kernel set for a date and furnishes it (`fetch_and_furnish`) — see [`docs/data-sources/spice-kernels-isis.md`](data-sources/spice-kernels-isis.md)/[`spice-kernels-naif.md`](data-sources/spice-kernels-naif.md). |
 | [`subprocess_utils.py`](../src/trntest/subprocess_utils.py) | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
 | [`tasks.py`](../src/trntest/tasks.py) | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`](../src/trntest/tie_points.py) | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
-| [`trn_dataset.py`](../src/trntest/trn_dataset.py) | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestImage` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. |
+| [`trn_dataset.py`](../src/trntest/trn_dataset.py) | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestProduct` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. `TrnTestProduct` covers all four product types (`TrnTestImage` subclasses `crop`/`hillshade`/`reproject`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
 | [`wac.py`](../src/trntest/wac.py) | Extracts a band-separated VIS mosaic from a WAC CDR product via manual byte offsets (`fetch_vis_mosaic`) — superseded by `isis_wac.py` as the demo's real-WAC comparison method, kept for its own test coverage. |
 | [`wac_camera_model.py`](../src/trntest/wac_camera_model.py) | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
 
