@@ -141,9 +141,3 @@ via real `populate()` runs against the current `trn_dataset`, not a design risk.
   *locations* for overlay plotting, no image-based comparison), and the footprint-geometry check
   described above, once each has a cheap-enough path (a persisted value or a lightweight query, not
   a fresh SPICE/camera rebuild or GLD100 fetch per entry per `write_index()` call).
-- **Interactive comparisons without the GIF-blink workaround**: `plotting.plot_overlay_toggle`'s
-  auto-looping animated GIF exists specifically to survive GitHub's `.ipynb` static-viewer
-  sanitizer (see `docs/architecture.md`'s `plotting.py` row) — a standalone HTML page this project
-  fully controls (not viewed through GitHub's sanitizer) has no such constraint, so an `<input
-  type="range">`/JS-driven alpha slider is available as a nicer future alternative for report pages
-  specifically, without needing to touch the GIF mechanism `image_generation.py` still relies on.
