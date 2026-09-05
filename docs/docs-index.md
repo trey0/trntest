@@ -16,7 +16,7 @@ up front; this is the complete list.
 | [`crater-grading.md`](crater-grading.md) | Crater depth measurement (Breton et al. 2019) and its batch precompute — the input to crater sharpness grading. |
 | [`reproject-fov-investigation.md`](reproject-fov-investigation.md) | Investigation (resolved, merged) behind the `reproject` generator and a synthetic-camera FOV bug fix. |
 | [`resolution-investigation.md`](resolution-investigation.md) | Investigation (resolved) into why `crop` used to visibly outresolve `hillshade`/`reproject`, and the fix. |
-| [`wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md) | Investigation behind the hand-rolled WAC-VIS camera-pose-alignment fallback, and why ISIS `jigsaw` can't be used for this camera. |
+| [`pose-alignment.md`](pose-alignment.md) | Investigation behind the hand-rolled WAC-VIS camera-pose-alignment fallback, and why ISIS `jigsaw` can't be used for this camera. |
 | [`docs-style.md`](docs-style.md) | How to write docs and docstrings in this repo — brevity, docstring scope, voice. |
 | [`collaboration.md`](collaboration.md) | How a session should collaborate with the user: commit/merge timing, handling ad hoc spikes, presenting findings, branch cleanup at closeout. |
 | [`environment.md`](environment.md) | This repo's VPS dev environment: what persists across sessions, and multi-agent worktree conventions. |

@@ -116,9 +116,8 @@ file, not a per-request sliver (see `docs/data-sources/astropedia-gld100.md` for
 Cloud-Optimized GeoTIFF, so a windowed remote read pulls full-width row strips, too slow to repeat
 per-camera).
 
-Not built on `cached_get` — a stable partial-file path with `curl -C -`-based resume, and the
-partial file is kept (not deleted) on failure so a retry resumes from the interrupted byte offset
-rather than starting over. See `cache.fetch_astropedia_gld100`'s own docstring for the mechanics.
+Not built on `cached_get` — see `docs/data-sources/astropedia-gld100.md`'s "Caching" bullet for the
+resume mechanism, or `cache.fetch_astropedia_gld100`'s own docstring.
 
 ## LightGlue/DISK pretrained-weight caching
 

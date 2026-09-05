@@ -188,7 +188,7 @@ lint's notebook checks).
 | [`along_track_correction.ipynb`][along_track_correction.ipynb] | Validates `lunaserv.hapke_shade_ortho`'s along-track motion correction against the frozen-camera-position fallback. |
 | [`crater_sharpness_review.ipynb`][crater_sharpness_review.ipynb] | Visual review of crater sharpness grading for one candidate's footprint — see [`docs/crater-grading.md`](docs/crater-grading.md). |
 | [`hapke_hillshade.ipynb`][hapke_hillshade.ipynb] | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback. |
-| [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment.py` row below) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). |
+| [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment.py` row below) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). |
 | [`real_hapke_params.ipynb`][real_hapke_params.ipynb] | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
@@ -213,7 +213,7 @@ lint's notebook checks).
 | [`camera.py`][camera.py] | Poses the synthetic camera from SPICE trajectory/orientation data (`build_camera`) and solves its corrected FOV (`solve_corrected_fov`) — see [`docs/reproject-fov-investigation.md`](docs/reproject-fov-investigation.md). |
 | [`catalog.py`][catalog.py] | PDS ODE REST API client — lists EDR/CDR products by time range, matches EDR↔CDR pairs (`list_products`, `find_matching_cdr`). |
 | [`config.py`][config.py] | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
-| [`control_network.py`][control_network.py] | Converts `pose_alignment.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+| [`control_network.py`][control_network.py] | Converts `pose_alignment.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`crater_depth.py`][crater_depth.py] | Robbins-crater depth measurement off a DEM (Breton et al. 2019) and the Stoffler et al. 2006 fresh-crater reference depth, for a `sharpness_ratio` grade — see [`docs/crater-grading.md`](docs/crater-grading.md). |
 | [`crater_depth_batch.py`][crater_depth_batch.py] | Whole-database crater-depth precompute, tiled for cache coherence — see [`docs/crater-grading.md`](docs/crater-grading.md). Not yet run across the full database. |
 | [`craters.py`][craters.py] | Robbins craters catalog overlay: fetches/caches the PDS4 CSV, builds a spatially-indexed GeoPackage, and returns ellipse polygons for a raster's footprint (`crater_overlay_layer`) — see [`docs/data-sources/robbins-craters.md`](docs/data-sources/robbins-craters.md). |
@@ -225,7 +225,7 @@ lint's notebook checks).
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | [`plotting.py`][plotting.py] | Comparison-figure plotting: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`), a quantitative brightness diff (`compute_brightness_matched_diff`), and dataset-selection scatter plots. |
-| [`pose_alignment.py`][pose_alignment.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+| [`pose_alignment.py`][pose_alignment.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_registry.py`][product_registry.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
 | [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content itself is still a first-pass minimal template. |
@@ -237,7 +237,7 @@ lint's notebook checks).
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
 | [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestProduct` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. `TrnTestProduct` covers all four product types (`TrnTestImage` subclasses `crop`/`hillshade`/`reproject`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
 | [`wac.py`][wac.py] | Extracts a band-separated VIS mosaic from a WAC CDR product via manual byte offsets (`fetch_vis_mosaic`) — superseded by `isis_wac.py` as the demo's real-WAC comparison method, kept for its own test coverage. |
-| [`wac_camera_model.py`][wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+| [`wac_camera_model.py`][wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 
 [cache.py]: src/trntest/cache.py
 [camera.py]: src/trntest/camera.py

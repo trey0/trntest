@@ -1,7 +1,7 @@
 """Hand-rolled ground-to-image (forward) projection for WAC-VIS band 1, replicating ISIS's own
 camera model. Built because ISIS's own `jigsaw` (`PushFrameCameraGroundMap::SetGround`) has a
 confirmed framelet-search bug that makes bundle adjustment against WAC unusable in stock ISIS -- see
-`docs/wac-jigsaw-investigation.md` for the investigation and each formula's ISIS source citation.
+`docs/pose-alignment.md` for the investigation and each formula's ISIS source citation.
 
 Three pieces: the optics chain (`project_in_known_framelet`), the framelet search
 (`find_framelet_and_project`, a 2D containment check rather than `jigsaw`'s own heuristic search),
@@ -20,7 +20,7 @@ the investigation doc for why the two directions have different risk profiles fo
 # end-to-end (forward-project a crop pixel's own ground point, round-trip through `campt`'s
 # image-to-ground: 0.00m error across a 3x3 grid spanning the crop). The pose-correction optimizer
 # has been fit against basemap-derived tie points and wired into
-# `notebooks/pose_alignment_spike.py` -- see docs/wac-jigsaw-investigation.md's "Open item" section
+# `notebooks/pose_alignment_spike.py` -- see docs/pose-alignment.md's "Open item" section
 # for what's still unresolved (a DEM-aware shape model, the leading suspect for why the fit only
 # closes part of the gap).
 
@@ -73,7 +73,7 @@ def _distort(ux_mm: float, uy_mm: float, max_iter: int = 50, tol: float = 1e-9) 
     :returns: Distorted `(x_mm, y_mm)`.
     """
     # No closed form exists for the inverse of the radial polynomial `SetFocalPlane` applies -- see
-    # docs/wac-jigsaw-investigation.md for the exact ISIS source this is ported from.
+    # docs/pose-alignment.md for the exact ISIS source this is ported from.
     xt, yt = ux_mm, uy_mm
     for _ in range(max_iter):
         rr = xt * xt + yt * yt
@@ -100,7 +100,7 @@ def project_in_known_framelet(
     # Standard pinhole (BORESIGHT = (0, 0, 1), from the IK), then ISIS's own radial distortion and
     # affine focal-plane/detector maps, in the same order ISIS itself applies them. Validated to
     # exact (0.000px) agreement with `campt` output given the correct framelet -- see
-    # docs/wac-jigsaw-investigation.md for the validation run. Does not search for the framelet
+    # docs/pose-alignment.md for the validation run. Does not search for the framelet
     # itself -- see `find_framelet_and_project`.
     look_me = ground_me_m - camera_position_me_m
     look_cam = r_cam_to_me.T @ look_me
@@ -127,7 +127,7 @@ def calibrate_et_per_crop_line(cub_path: Path, n_lines: int) -> tuple[float, flo
     # queries at the center lines of the crop's first and last framelets, rather than hand-deriving
     # `crop_window_for_camera`'s row-offset/flip bookkeeping to relate a crop line back to
     # `camera.frame_et`'s own full-swath `frame_index` -- keeps the sign/offset surface area small
-    # (see docs/wac-jigsaw-investigation.md). A pushframe sensor's per-framelet ET is exactly affine
+    # (see docs/pose-alignment.md). A pushframe sensor's per-framelet ET is exactly affine
     # in framelet index (each framelet advances by the same `interframe_delay_s`), so two points
     # fully determine it; this isn't a fit to noisy data. Any fixed, valid sample column works for
     # the ET query (`EphemerisTime` depends only on which framelet a line falls in, not the sample
@@ -211,7 +211,7 @@ def find_framelet_and_project(
         the point (it's outside the crop's coverage).
     """
     # Two-stage search, deliberately not `jigsaw`'s own spacecraft-distance-minimizing heuristic (the
-    # confirmed site of its bug -- see the module docstring and docs/wac-jigsaw-investigation.md):
+    # confirmed site of its bug -- see the module docstring and docs/pose-alignment.md):
     #
     # 1. Discrete integer-framelet bisection, using `project_in_known_framelet`'s own
     #    `within_framelet_line` as the monotonic search signal (a fixed ground point's image line

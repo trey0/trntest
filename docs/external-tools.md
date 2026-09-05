@@ -546,7 +546,7 @@ scattered roughly uniformly through the image rather than concentrated anywhere 
 `isis_wac.py` Source-files-table row), so every real-WAC cube's local surface normal already varies
 with actual terrain, not just a smooth ellipsoid. `control_network.resolve_control_points`'s own
 ground-to-image queries still go through `isis_wac.attach_dem_shape_model` separately rather than
-inheriting this default directly (see `docs/wac-jigsaw-investigation.md`'s "Open item"), but the
+inheriting this default directly (see `docs/pose-alignment.md`'s "Open item"), but the
 underlying local-normal bug's steep-terrain trigger this section is about is live pipeline-wide now.
 Re-run this same edge-distance/failure-kind check against real terrain rather than assuming the
 older ellipsoid-only finding still holds.

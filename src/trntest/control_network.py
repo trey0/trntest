@@ -1,7 +1,7 @@
 """Bridges `pose_alignment`'s 2D map-space tie points into ISIS control points for a `jigsaw` bundle
 adjustment -- the prerequisite step for the projection-aware (3D camera pose) alignment
 `pose_alignment.py`'s 2D homography spike was deliberately left short of (see
-`docs/wac-jigsaw-investigation.md`).
+`docs/pose-alignment.md`).
 
 `resolve_control_points` converts `pose_alignment.match_features`/`match_features_lightglue`'s
 matched map-pixel positions into what `jigsaw` needs per tie point: the pixel it was actually
@@ -13,14 +13,14 @@ observed at in the original, pre-`cam2map` WAC cube, and a trusted 3D ground loc
 # sensor (`PushFrameCameraGroundMap::GetLocalNormal` landing outside the correct framelet, a known
 # upstream ISIS bug, DOI-USGS/ISIS3#4256, not an edge-of-crop artifact -- see
 # docs/external-tools.md's campt failure-rate section), the same underlying bug class that made
-# `jigsaw` itself unusable for this camera (see docs/wac-jigsaw-investigation.md). This matches
+# `jigsaw` itself unusable for this camera (see docs/pose-alignment.md). This matches
 # `tie_points.resolve_crop_pixels`'s own precedent.
 #
 # This needs a 3D ground point (not just `(lon, lat)`) for the WAC-side matched pixel, so
 # `resolve_control_points` samples elevation for it via `isis_wac.sample_lunar_dem_radii_batch` -- the
 # same DEM `isis_wac.run_spiceinit` attaches to every WAC cube by default (was `shape=ellipsoid`; this
 # DEM/ellipsoid mismatch was the root cause of a parallax-like effect at crater edges in the blink
-# overlay that originally motivated this 3D-fit work -- see `docs/wac-jigsaw-investigation.md`). The
+# overlay that originally motivated this 3D-fit work -- see `docs/pose-alignment.md`). The
 # function's own return value, `ground_lonlat`, is still `(lon, lat)` only, no elevation -- that side
 # comes straight from the basemap's own map-pixel georeferencing, which has none to sample. A caller
 # building a 3D ground point from `ground_lonlat` must sample elevation from the *same* shape model

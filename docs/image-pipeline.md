@@ -11,7 +11,10 @@ so it matches a real WAC swath — architecture detail alongside `../README.md`'
   ground advance (chord distance between consecutive-frame boresight ground points), and picks
   `n_frames = round(cross_track_width_km / km_per_frame)` so the real CDR crop and the synthetic
   image cover the same real ground area — square in real km, not necessarily square in pixels
-  (cross-track and along-track have different native GSD).
+  (cross-track and along-track have different native GSD). `build_camera()` then applies a further
+  correction to that FOV so the synthetic camera's render fully covers the crop's real footprint —
+  see [`reproject-fov-investigation.md`](reproject-fov-investigation.md)'s "The correction lives in
+  `build_camera()`, shared by every product type" section for why and how.
 - **Pose epoch**: the synthetic camera is posed at the crop's own **temporal midpoint**
   (`center_frame_index = start_frame + n_frames/2`), not its start — so both images are centered on
   the same ground point. `camera.build_camera()` derives `n_frames`/`center_frame_index` together.

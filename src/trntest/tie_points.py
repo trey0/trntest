@@ -419,7 +419,7 @@ def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: T
     # sensor on this project's default candidate -- a known upstream ISIS bug
     # (PushFrameCameraGroundMap::GetLocalNormal, DOI-USGS/ISIS3#4256), not an edge-of-crop artifact.
     # find_framelet_and_project sidesteps it with a from-scratch containment check instead of ISIS's
-    # own buggy solve. See docs/wac-jigsaw-investigation.md for the full investigation.
+    # own buggy solve. See docs/pose-alignment.md for the full investigation.
     #
     # Converts (sample, line) from ISIS's 1-based, pixel-center convention to this project's 0-based,
     # pixel-corner convention (- 0.5), matching project_ground_to_synthetic_pixel's pinhole formulas,

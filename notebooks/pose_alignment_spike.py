@@ -20,7 +20,7 @@
 # the basemap) used to be visibly not perfectly aligned with it. That turned out to be mostly a
 # ground-truth bug, not a camera-pose one: `isis_wac.run_spiceinit` hardcoded `shape=ellipsoid` for
 # every real-WAC cube, when the fix was attaching ISIS's own real global lunar DEM
-# (`shape=user`) instead -- see `docs/wac-jigsaw-investigation.md`. That fix now lives in the main
+# (`shape=user`) instead -- see `docs/pose-alignment.md`. That fix now lives in the main
 # pipeline (every real-WAC cube gets the real DEM by default), so this notebook no longer compares
 # DEM against ellipsoid -- there's nothing left running through the ellipsoid.
 #
@@ -279,7 +279,7 @@ plotting.plot_overlay_toggle(
 # conflate real camera-pose error with a shape-model mismatch.
 #
 # `wac_camera_model.py`'s hand-rolled forward projection stands in for `jigsaw`, which hit a
-# root-caused, unfixable bug in its PushFrame framelet search (see `docs/wac-jigsaw-investigation.md`
+# root-caused, unfixable bug in its PushFrame framelet search (see `docs/pose-alignment.md`
 # for the full trail). Its optics chain is validated to exact (0.000px) agreement with real `campt`
 # output, and its framelet search is validated to 0.00m ground error round-tripped through `campt`'s
 # trusted inverse. `n_framelets`/`et0`/`et_per_line` are pure camera-timing calibration -- independent

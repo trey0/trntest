@@ -57,6 +57,10 @@ overfit tuning.
 
 ## The correction lives in `build_camera()`, shared by every product type
 
+See [`image-pipeline.md`](image-pipeline.md)'s "Crop sizing" section for how `build_camera()` derives
+the *uncorrected* FOV from WAC's real cross-track FOV in the first place — this section covers the
+correction applied on top of that.
+
 Settled by the requirement that `reproject` and `hillshade` stay pixel-grid-identical
 (`(fu,fv,cu,cv)` byte-for-byte, for future SSIM/diff-style scoring between them) — only possible if
 the correction lives inside `build_camera()` itself, applied once, not a `reproject`-specific
@@ -97,7 +101,7 @@ patch) was deleted as dead code.
 Reverting to isotropic did shift die5 tie-point placement enough to expose a separate, pre-existing
 bug: `campt`'s own ground-to-image solve has a scattered ~38% failure rate for WAC's Pushframe
 sensor (a known upstream ISIS bug, unrelated to this FOV change — see
-`docs/wac-jigsaw-investigation.md`), which one of the 5 tie points happened to land in after the
+`docs/pose-alignment.md`), which one of the 5 tie points happened to land in after the
 footprint shrank. Fixed once `wac_camera_model.find_framelet_and_project` (which sidesteps that bug
 entirely) landed and `tie_points.resolve_crop_pixels` switched to it.
 

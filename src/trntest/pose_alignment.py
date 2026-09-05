@@ -6,7 +6,7 @@ fit a 2D correction from the matches, and apply it to the source raster's own ge
 Works entirely in 2D image/map space: match two already map-projected, same-CRS rasters directly (no
 camera model, no ISIS control network), fit a 2D correction, and apply it to the source raster's own
 affine transform. Validated but not wired into the main pipeline -- see the closing note below and
-`docs/wac-jigsaw-investigation.md`. `notebooks/pose_alignment_spike.py` exercises this module
+`docs/pose-alignment.md`. `notebooks/pose_alignment_spike.py` exercises this module
 end-to-end against the current default dataset candidate.
 """
 # Exists because the real-WAC overlay is visibly not perfectly aligned with the basemap (small,
