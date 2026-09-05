@@ -63,16 +63,3 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   `sfs_validation.true_albedo_map`'s recovered albedo and reduce
   `compute_brightness_matched_diff`'s discriminating power in any clipped region. Resolving this
   needs an actual multi-candidate saturation sweep, not just asserting either combination is fine.
-
-## Source code reorganization (done)
-
-A 2026-09-05 naming/organization review found three oversized modules (`lunaserv.py`, `isis_wac.py`,
-`plotting.py`), several confusing module-name groups, and two self-documented circular-import
-workarounds plus a third, undocumented one. Six tasks addressed this, followed by a full notebook
-re-execution pass to fix the stale references the renames/splits left behind (each task ran with
-the usual per-change `scripts/run_notebook.sh` discipline deliberately suspended, per the user's
-2026-09-05 direction, until that final pass). All done — see `docs/history.md`'s Phase 94 (`isis_wac.py`
-split), 96 (`lunaserv.py` split), 97 (`wac.py` deletion + `dataset.py`/`product_registry.py` renames),
-98 (`plotting.py` split), 99 (`trn_dataset.py` product-class split), 100 (`pose_alignment/` subpackage),
-and 101 (final notebook pass) entries for what shipped in each. Normal per-change notebook discipline
-resumed after Phase 101.
