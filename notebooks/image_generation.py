@@ -36,7 +36,7 @@
 #
 # This notebook drives the installed `trntest` package (see `../src/trntest/`) rather than
 # duplicating its logic -- each cell is close to a one-line call into the package. See
-# `../docs/architecture.md` for the package's architecture.
+# `../README.md` for the package's architecture.
 #
 # **Which image**: this notebook reads `dataset_manifest.csv`, a small file checked into this repo
 # alongside this notebook -- a frozen result of a catalog-driven dataset search. To render a
@@ -60,7 +60,7 @@ session = trntest.Session()
 # ## Phase 2: generate the selected image + SPICE-derived camera pose
 #
 # `trntest.TrnTestDataSet.create(...)` sets up (or reuses) a self-contained dataset folder for the
-# whole manifest above (see `../docs/architecture.md`'s `trn_dataset.py` row). `dataset.truncate(dataset[0])`
+# whole manifest above (see `../README.md`'s `trn_dataset.py` row). `dataset.truncate(dataset[0])`
 # resets the manifest's first entry to `pending` so this always renders fresh, then
 # `dataset.populate(limit=1)` drives it through the pipeline: a pinhole camera posed from LRO's real
 # position/orientation (`MOON_ME` frame) at that row's timestamp, the DEM/ortho fetch, and both

@@ -2,7 +2,7 @@
 
 Reference for `wac_camera_model.py`'s hand-rolled WAC-VIS forward projection: why ISIS's own
 `jigsaw` bundle adjuster can't be used for this camera, and the validation trail behind the
-replacement that's used instead. See `docs/architecture.md`'s Architecture table (`control_network.py`/
+replacement that's used instead. See `../README.md`'s Source files table (`control_network.py`/
 `pose_alignment.py`/`wac_camera_model.py` rows) for the current wiring status; several functions in
 `wac_camera_model.py`/`control_network.py`/`tie_points.py` point back to this doc for the ISIS
 source citations and bug numbers below rather than repeating them.
@@ -123,7 +123,7 @@ FRAMELET_HEIGHT`) — deliberately not `jigsaw`'s own distance-minimization heur
 `EphemerisTime` queries at the first/last framelet centers, rather than hand-deriving
 `crop_window_for_camera`'s row-offset/flip bookkeeping.
 
-**Overlap confirmed to actually occur**: adjacent framelets' `within_framelet_line` advances by ~9.9
+**Overlap confirmed to occur**: adjacent framelets' `within_framelet_line` advances by ~9.9
 lines per framelet step, not the full `FRAMELET_HEIGHT`=14 — a ~29% ground-coverage overlap,
 corroborated by `docs/external-tools.md`'s "`usgscsm`'s `groundToImage` bug for Pushframe sensors"
 section, which independently found that adjacent Pushframe exposures overlap. This is not a
@@ -199,5 +199,5 @@ attach_dem_shape_model` exists for exactly this (a DEM-attached copy of a crop f
 above has not been re-run against DEM-aware ground truth to check whether it closes the remaining
 gap. (Separately, the overlay/basemap alignment problem this investigation started from was fixed a
 different way — switching every real-WAC cube's *own* default shape model, not just this bundle
-adjustment's control points, to the same DEM; see `docs/architecture.md`'s Architecture table,
+adjustment's control points, to the same DEM; see `../README.md`'s Source files table,
 `isis_wac.py`'s row.)

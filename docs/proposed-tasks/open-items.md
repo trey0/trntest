@@ -1,7 +1,7 @@
 # Open items
 
 Genuinely open questions/gaps in `trntest`, pointed to from
-[`docs/architecture.md`](../architecture.md)'s "Open items" section. Not a development log — see
+[`README.md`](../../README.md)'s "Open items" section. Not a development log — see
 [`docs/history.md`](../history.md) for that.
 
 When one of these resolves, delete it — state any fact still needed directly where it's needed,

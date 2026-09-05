@@ -23,7 +23,7 @@ sharply (top 100%, bottom 53-58%).
 Root cause, confirmed via direct ray-trace math against the crop's own `campt`-based footprint
 corners, had two coupled parts:
 1. `camera.build_camera()`'s `fv = fu`: `cross_track_width_km` (what `fu` is built from) is a
-   ray-traced ground chord at the pose's actual off-nadir geometry, but the along-track extent
+   ray-traced ground chord at the pose's off-nadir geometry, but the along-track extent
    `fv` should represent came from a flat, non-perspective calculation (`n_frames * km_per_frame`,
    no foreshortening). Using the same angle for both axes calibrates the along-track FOV to a flat
    target but renders it through a perspective (ray-sphere-intersection) model.
@@ -82,7 +82,7 @@ Frame model-state JSON (`cam_gen`) cost three bugs along the way: `cam_gen` sile
 regression above; and a small, never-fully-explained ~1-8px constant residual between `mapproject
 -t csm` and `-t pinhole` reprojections of the same corrected camera, confirmed invariant to how the
 anisotropy is encoded across the CSM state's fields (three mathematically-equivalent encodings all
-gave the identical residual) — a genuine quirk in compiled `usgscsm`'s handling of an anisotropic
+gave the identical residual) — a quirk in compiled `usgscsm`'s handling of an anisotropic
 Frame model, not fixable without its source.
 
 The anisotropy was only ever a nice-to-have (more of the crop's margin used, not a correctness
@@ -107,8 +107,8 @@ entirely) landed and `tie_points.resolve_crop_pixels` switched to it.
   (`camera.build_camera()`'s `look_at_rotation` re-aiming) is modeled as a rotation of the whole
   camera frame. This investigation's own FOV fix uses a `cv`/`cu` bias (not a rotation) for a
   different problem (FOV shape) — the same reasoning may apply to the boresight correction itself
-  (model it as a `cv` bias, since that's closer to what WAC-VIS's real boresight offset actually
-  is), but revisiting that is a separate, bigger change, not started.
+  (model it as a `cv` bias, since that's closer to what WAC-VIS's boresight offset is), but
+  revisiting that is a separate, bigger change, not started.
 - **Dataset-scale validation**: the FOV fix itself has 4-image coverage; `TrnTestReprojectImage`
   end-to-end has only been validated on one entry through the flagship notebook. Validating across
   the rest of the manifest is a separate follow-up.

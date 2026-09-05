@@ -13,7 +13,7 @@ multi-worker parallel population, use `populate_via_workers()` instead.
 """
 # An incrementally/resumably populated alternative to dataset.generate_dataset()'s flat,
 # all-at-once output layout, driven by trntest.tasks's huey task queue -- see that module's
-# docstring for the full design, and docs/architecture.md's trn_dataset.py/tasks.py rows for the current
+# docstring for the full design, and README.md's trn_dataset.py/tasks.py rows for the current
 # architecture summary.
 #
 # populate_via_workers() routes through a separate huey queue plus a huey_consumer subprocess it

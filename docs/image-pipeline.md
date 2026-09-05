@@ -1,7 +1,7 @@
 # Image-pipeline algorithm: square crop, pose epoch, boresight, comparison figure
 
 How `camera.build_camera()` and the surrounding pipeline pose the synthetic camera and size the crop
-so it matches a real WAC swath — architecture detail alongside `docs/architecture.md`'s higher-level map.
+so it matches a real WAC swath — architecture detail alongside `../README.md`'s higher-level map.
 
 - **Crop sizing**: the synthetic camera's `fu=fv` is derived directly from WAC's real color-mode
   cross-track FOV — **61.4°**, from the SIS (`spice.getfov` on the WAC-VIS IK returns the wrong,
