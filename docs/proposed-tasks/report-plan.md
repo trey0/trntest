@@ -2,7 +2,7 @@
 
 **Status: report is now a fourth product type, wired into `TrnTestDataSet.populate()`/
 `populate_via_workers()`.** `notebooks/report_template.py` + `TrnTestReport`
-(`src/trntest/trn_dataset.py`) + `trntest.report.generate_report` produce one entry's report as
+(`src/trntest/trn_products.py`) + `trntest.report.generate_report` produce one entry's report as
 part of normal dataset population; `TrnTestDataSet.write_index()` writes a dataset-wide
 `status.csv` and `reports/index.html` nav bar. Growing the report's own content (beyond the
 hillshade render + a couple of manifest fields) is the remaining explicit follow-up.
@@ -55,7 +55,7 @@ render_template`) for the one job none of those three tools does:
    notebook` (→ `<report_dir>/report.ipynb`) → `papermill` (executes that notebook in place) — all
    via `subprocess_utils.run_quiet`, in-process, no `docker compose run` wrapper (the caller already
    runs inside the container). `notebooks/report_template.py` itself is only ever read, never
-   written to or executed. `TrnTestReport._generate_impl` (`src/trntest/trn_dataset.py`) is the
+   written to or executed. `TrnTestReport._generate_impl` (`src/trntest/trn_products.py`) is the
    normal caller — see "Report as a product type" below; `scripts/generate_report.sh <edr_product>
    [dataset_folder] [report_dir]` calls the same function for manual single-entry regeneration.
 3. **HTML export**: `jupyter nbconvert --to html <report_dir>/report.ipynb
@@ -72,7 +72,7 @@ render_template`) for the one job none of those three tools does:
 
 ## Report as a product type
 
-`TrnTestReport` (`src/trntest/trn_dataset.py`) is a `TrnTestProduct` alongside `TrnTestCropImage`/
+`TrnTestReport` (`src/trntest/trn_products.py`) is a `TrnTestProduct` alongside `TrnTestCropImage`/
 `TrnTestHillshadeImage`/`TrnTestReprojectImage` — `entry.report`, `"report"` in `PRODUCT_TYPES`
 (default-on, unlike opt-in `reproject`). This isn't a bolt-on: `task_state`/`truncate`/`status`
 already treat any `images_by_type` entry generically, so plugging `report` in there gets its

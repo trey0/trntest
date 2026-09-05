@@ -47,7 +47,7 @@ DEFAULT_EDR_DOY = "2019334"
 DEFAULT_EDR_PRODUCT = "M1329714703CE"
 
 # Frame index (0-based) within the reference product's `nframes` framelets to pose the camera at --
-# chosen to land in sunlit terrain, not the shadowed start of the swath. `dataset.generate_dataset()`
+# chosen to land in sunlit terrain, not the shadowed start of the swath. `candidate_window.generate_dataset()`
 # overrides this per-image on the live, catalog-driven path.
 DEFAULT_TARGET_FRAME_INDEX = 440
 

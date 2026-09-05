@@ -2,7 +2,7 @@
 
 `hillshade`'s exact camera (same pose, same corrected FOV), textured from `crop`'s calibrated
 imagery instead of the Lunaserv/Astropedia basemap — isolates the effect of texture source alone,
-with geometry held fixed. `trn_dataset.TrnTestReprojectImage`.
+with geometry held fixed. `trn_products.TrnTestReprojectImage`.
 
 ## Data sources
 

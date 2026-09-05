@@ -43,8 +43,8 @@ fails immediately instead of blocking indefinitely. Every real request (never a 
 by a small fixed delay, and all requests in one process share one `requests.Session`.
 
 Once attempts are exhausted, `cached_get` raises `cache.FetchError` rather than the raw exception, so
-a caller sweeping many items in a loop (`dataset._evaluate_illuminated_candidates`,
-`dataset.generate_dataset`) can tell a systemic failure apart from an ordinary per-item one and abort
+a caller sweeping many items in a loop (`candidate_window._evaluate_illuminated_candidates`,
+`candidate_window.generate_dataset`) can tell a systemic failure apart from an ordinary per-item one and abort
 the whole operation instead of firing hundreds more requests at a server that's already refusing
 them -- the failure mode that motivated this: an unpaced ~1600-request sweep against PDS triggered a
 1-hour IP ban after the old catch-and-continue loop kept firing through the first 429.

@@ -120,7 +120,7 @@ def problem_flags(entry: TrnTestEntry) -> list[str]:
     a closer look, not an authoritative quality signal.
 
     Silently skips a check whose manifest column isn't present (`entry.row.get`, not `[]`) rather
-    than raising -- a real manifest always has `dataset.DATASET_COLUMNS`, but a hand-built or
+    than raising -- a real manifest always has `candidate_window.DATASET_COLUMNS`, but a hand-built or
     minimal one (e.g. in tests) may not, and a missing column here just means "nothing to flag,"
     not a bug.
     """

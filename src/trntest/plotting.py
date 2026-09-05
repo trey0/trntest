@@ -49,7 +49,7 @@ def mathtt(name: str) -> str:
     """A generator name (`"hillshade"`/`"crop"`/`"reproject"`), formatted as matplotlib mathtext
     monospace for a plot title -- `image_generation.ipynb`'s own short-name title convention (e.g.
     `r"Phase 5A: $\\mathtt{hillshade}$ vs. basemap"`), factored out for reuse by any default title
-    built in this module or `trn_dataset.py`.
+    built in this module or `trn_products.py`.
     """
     return rf"$\mathtt{{{name}}}$"
 

@@ -5236,3 +5236,60 @@ movement, no tests added or removed). `tests/test_plotting.py`'s two `plot_sfs_c
 `plot_incidence_validation` tests moved to new `tests/test_sfs_plotting.py`; no prior test coverage
 existed for either dataset-selection scatter plot, so no test file was needed for
 `dataset_selection_plots.py`.
+
+## Phase 99 (2026-09-05) — Split `trn_dataset.py`'s product classes into `trn_products.py`
+
+Task 5 of the source-code reorganization (`docs/proposed-tasks/open-items.md`'s "Source code
+reorganization" section; tasks 1-4 were Phases 94/96/97/98). Same `feature/refactor` branch, same
+suspended per-change notebook discipline.
+
+`trn_dataset.py` (868 lines) held two concerns along an already-clean seam: `TrnTestEntry`/
+`TrnTestDataSet` (dataset-folder structure, task-queue orchestration) and `TrnTestProduct`/
+`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport`
+(the per-generator product classes). Moved the six product classes to new `trn_products.py` (413
+lines); `trn_dataset.py` (476 lines) keeps `TrnTestEntry`/`TrnTestDataSet` plus the module-level
+task-queue helpers (`task_state`, `_enqueue_pending`, etc.).
+
+**The circular import**: `TrnTestEntry.crop`/`hillshade`/`reproject`/`report` properties construct
+`trn_products.TrnTestCropImage(self)` etc. for real, so `trn_dataset.py` needs a normal top-level
+import of `trn_products`. In the other direction, `TrnTestProduct.__init__(self, entry:
+TrnTestEntry)` only ever reads `self.entry`'s attributes -- never constructs or isinstance-checks a
+`TrnTestEntry` -- so `trn_products.py` uses `from __future__ import annotations` +
+`TYPE_CHECKING` for that one import, the same pattern established at Phase 94. Confirmed via the
+usual Docker import test (39 modules, both bulk and sole-first-import) -- no manual hand-tracing
+needed this time, the pattern is now familiar enough to get right on the first attempt.
+
+`TrnTestReport._generate_impl`'s existing lazy `from trntest import report` (`noqa: PLC0415`)
+stays lazy, but for a different, more indirect reason than its own comment used to state: `report.py`
+imports `TrnTestDataSet`/`TrnTestEntry` from `trn_dataset.py` (unchanged), which now imports
+`trn_products.py` for real (to construct product instances) -- so a top-level `report` import inside
+`trn_products.py` would close that loop. Comment rewritten to state the actual chain.
+
+**Also fixed while sweeping for real `trn_dataset.TrnTestX` references** (all now `trn_products.`):
+`render.py`'s `run_mapproject_image` doc comment, `isis_campt.py`'s ISD-sidecar comment, `plotting.py`'s
+`mathtt` docstring, README's source table (new `trn_products.py` row, `trn_dataset.py`'s row narrowed
+to just `TrnTestDataSet`/`TrnTestEntry`), and four `docs/generators*.md`/`docs/reproject-fov-
+investigation.md` cross-references. `tests/test_trn_dataset.py`'s `_FakeImage` class and its own
+"Exact path naming"/"TrnTestImage shared base-class logic" test sections (5 tests total) moved to new
+`tests/test_trn_products.py`, mirroring the source split; the task-queue/populate/truncate tests that
+merely monkeypatch product classes' `_generate_impl` as a fast stand-in stayed in
+`tests/test_trn_dataset.py`, since they're really testing `TrnTestDataSet`'s own orchestration, not
+the product classes.
+
+**Also found and fixed, unrelated to this task**: task 3's own reference sweep (Phase 97, `dataset.py`
+→ `candidate_window.py`) had checked `src`/`tests`/current-state docs but missed several real
+`dataset.X` comment references in files it hadn't touched for other reasons --
+`tie_points.py`/`render.py`/`report.py`/`spice_kernels.py` (x2)/`cache.py` (x2)/`config.py`, plus
+`docs/intermediate-product-discipline.md` (x2)/`docs/dataset-selection.md` (x2)/`docs/caching.md`
+(x2). Found by accident while grepping this task's own file list for stale references, not by a
+deliberate audit -- all fixed here since they were real, present-tense inaccuracies, not merely
+adjacent to this task's scope. Two more, in `notebooks/select_datasets.py`'s markdown cells, are
+notebook content and so deferred to the final notebook pass like every other notebook staleness this
+reorganization has found -- new bullet added to `open-items.md`'s deferred list.
+
+**Verification**: same method as Phases 94/96/97/98 -- fresh Docker build, all 39 modules import
+cleanly both together and as the sole first import in a fresh process, `trntest-lint --all` clean
+(one `ruff format` fixup for trailing blank lines from the file split, one `UP037` auto-fix for a
+type annotation that no longer needed quotes once `from __future__ import annotations` was in
+scope), full `pytest` clean (358 passed, unchanged -- pure code movement, no tests added or removed
+net of the test-file split above).

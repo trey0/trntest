@@ -58,11 +58,11 @@ files should be named, stored, and shared across code paths — not an implement
 
 ## `TrnTestDataSet` on-disk layout
 
-A concrete instance of the principles above. See `../README.md`'s `trn_dataset.py`/`tasks.py`
-rows for the class hierarchy/task queue design.
+A concrete instance of the principles above. See `../README.md`'s `trn_dataset.py`/`trn_products.py`/
+`tasks.py` rows for the dataset-folder/class-hierarchy/task-queue design.
 
 **Layout**: `<output_dir>/trn_dataset/` (not `<output_dir>/dataset/`, which is
-`dataset.generate_dataset()`'s own, separate flat per-`product_id` layout — the two don't collide in
+`candidate_window.generate_dataset()`'s own, separate flat per-`product_id` layout — the two don't collide in
 meaning or content) holds `manifest.csv` plus `crop/<edr_product>_crop.{cub,json}`,
 `hillshade/<edr_product>_hillshade.{tif,json}`, an empty reserved `reproject/`, per-entry
 intermediates under `_work/<edr_product>/` (`.tsai`, DEM/ortho tiles, pre-copy render output — kept
@@ -72,7 +72,7 @@ databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_wo
 worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s
 module docstring. Filenames key on `edr_product` (`M1327210646CE` →
 `crop/M1327210646CE_crop.cub`), matching `isis_wac.py`'s own scratch-dir convention; row lookup
-(`TrnTestDataSet[key]`) keys on `product_id` instead, matching `dataset.generate_dataset()`'s
+(`TrnTestDataSet[key]`) keys on `product_id` instead, matching `candidate_window.generate_dataset()`'s
 existing per-image folder convention — the two are always equal in today's real manifest, so this
 split is currently low-risk, just future-proofing.
 

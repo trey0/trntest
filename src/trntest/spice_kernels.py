@@ -75,7 +75,7 @@ class KernelRef:
 # unload ones no longer needed before furnishing a new date's set -- SPICE's kernel pool has a
 # fixed-size character-value buffer that can fill (SPICE(KERNELPOOLFULL)) if many distinct kernels
 # accumulate across a long-running process without ever being unloaded, e.g.
-# dataset.images_for_window() evaluating hundreds of candidate images spanning several kernel
+# candidate_window.images_for_window() evaluating hundreds of candidate images spanning several kernel
 # date-ranges in one process. Process-global by necessity: SPICE's own kernel pool is itself global
 # per-process state, so this just mirrors it, rather than introducing new global state on top of a
 # purely-functional design.
@@ -191,7 +191,7 @@ def select_isis_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> li
     covers `target_dt`.
 
     :returns: `[]` if none of the resolved kernels cover `target_dt` (e.g. `target_dt` falls outside
-        that one product's own coverage window, as happens for `dataset.images_for_window()`'s
+        that one product's own coverage window, as happens for `candidate_window.images_for_window()`'s
         multi-candidate sweeps) -- `select_kernels_for` falls back to the deprecated NAIF path for
         that case.
     """

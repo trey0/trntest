@@ -2,7 +2,7 @@
 
 **Status: implemented and merged to `main`.** The fix lives in `camera.py`'s `solve_corrected_fov`
 (see its own docstring/comment for the current algorithm and constants) and
-`trn_dataset.TrnTestReprojectImage`. This doc keeps the diagnostic trail and validation data behind
+`trn_products.TrnTestReprojectImage`. This doc keeps the diagnostic trail and validation data behind
 that fix, and the items still open. `old_notebooks/reproject_spike.py`/`.ipynb` (archived) is
 superseded exploratory history, not the current implementation.
 

@@ -24,6 +24,11 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   `plotting.plot_sfs_comparison`/`plotting.plot_incidence_validation` — all four moved to
   `dataset_selection_plots.py`/`sfs_plotting.py` respectively (task 4, `docs/history.md`'s Phase 98
   entry). Same deferred-until-the-final-pass treatment as the bullets above, for the same reason.
+- `notebooks/select_datasets.py`'s markdown cells (2 spots, around its "Resolving one selected
+  dataset into an image list" section) still say `dataset.DATASET_COLUMNS`/`dataset.images_for_window`
+  -- stale from task 3's `dataset.py` → `candidate_window.py` rename (`docs/history.md`'s Phase 97
+  entry), missed by that task's own reference sweep since it only checked `src`/`tests`/current-state
+  docs, not notebooks. Same deferred-until-the-final-pass treatment as the bullets above.
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
@@ -112,8 +117,11 @@ import the old `lunaserv` module, from task 2).
 **Task 4 (splitting `plotting.py` into `plotting.py`/`sfs_plotting.py`/`dataset_selection_plots.py`)
 is done** — see `docs/history.md`'s Phase 98 entry.
 
-Tasks 5-6 below are intentionally left light, since their exact boundaries depend on decisions made
-while tackling the earlier ones.
+**Task 5 (splitting `trn_dataset.py`'s product classes into `trn_products.py`) is done** — see
+`docs/history.md`'s Phase 99 entry.
+
+Task 6 below is intentionally left light, since its exact boundaries depend on decisions made while
+tackling the earlier tasks.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
 the usual per-change `scripts/run_notebook.sh` re-execution discipline (`AGENTS.md`'s notebook
@@ -141,7 +149,7 @@ actually done, not before.
 | `trn_dataset.py` | `trn_dataset.py` (unchanged) | only confusing in contrast to `dataset.py`; now that's renamed this one reads fine as "the `TrnTestDataSet` module" |
 | `product_registry.py` **(done)** | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
 | `plotting.py` **(done)** | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
-| `trn_dataset.py`'s product classes | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
+| `trn_dataset.py`'s product classes **(done)** | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
 | `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files — see task 6 below; `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
 
 Not renamed: `wac_camera_model.py`'s own basename (distinguishable enough once the legacy `wac.py` is
@@ -149,16 +157,6 @@ gone entirely rather than just renamed); any notebook. `notebooks/wac_isis.py` h
 word-order mismatch against `isis_wac.py` that motivated some of the source renames above, but a
 notebook rename is a jupytext-pair regeneration plus a README table edit for cosmetic gain only —
 not worth doing as part of this reorganization.
-
-**Task 3 (`wac.py` deletion + rename cleanup) is done** — see `docs/history.md`'s Phase 97 entry.
-
-### Task 5: split `trn_dataset.py`'s product classes into `trn_products.py`
-
-Under the 1000-line guideline (855) but has a clean seam already: `TrnTestEntry`/`TrnTestDataSet`
-(dataset/filesystem structure) vs. `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/
-`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` (the per-generator product classes —
-`docs/generators.md`'s three generators plus the report). Low urgency; do opportunistically or once
-the file grows further.
 
 ### Task 6: group the back-burner trio into `pose_alignment/`
 

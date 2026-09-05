@@ -1,7 +1,7 @@
 # `crop`
 
 The real WAC image itself: a footprint-matched crop of the same LROC WAC EDR `hillshade`/`reproject`
-are posed against, calibrated and made geometrically usable via ISIS3. `trn_dataset.TrnTestCropImage`;
+are posed against, calibrated and made geometrically usable via ISIS3. `trn_products.TrnTestCropImage`;
 entry points `isis_wac.run_pipeline`/`crop_for_camera`.
 
 ## Data sources

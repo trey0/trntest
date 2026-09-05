@@ -143,7 +143,7 @@ def run_isd_generate_for_crop(
     :returns: An `IsdGenerateResult` for the crop-sized ISD.
     """
     # So the resulting JSON's image dimensions/frame count are read from, and correctly reflect, the
-    # crop's real size, for `trn_dataset.TrnTestCropImage`'s sidecar (see docs/external-tools.md's
+    # crop's real size, for `trn_products.TrnTestCropImage`'s sidecar (see docs/external-tools.md's
     # "The crop ISD sidecar's real accuracy" section). Not a substitute for `run_isd_generate`'s
     # full-cube ISD, and not usable for actual reprojection -- like any Pushframe ISD in this codebase,
     # `usgscsm`'s `groundToImage` isn't reliable enough for that (see isis_wac.py's module docstring);

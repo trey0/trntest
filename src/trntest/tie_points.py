@@ -124,7 +124,7 @@ def crop_footprint_corners_for_camera(
     # edge-region numerical limitation in the tool itself.
     #
     # By the time this runs (from select_tie_points/orientation.compute_display_rotations/
-    # dataset.generate_dataset, all after camera.build_camera(), which already runs run_pipeline
+    # candidate_window.generate_dataset, all after camera.build_camera(), which already runs run_pipeline
     # internally to re-aim the synthetic boresight), the stitched cube already exists; crop_for_camera
     # is a cheap plain ISIS `crop`, idempotently reused if already run for this product.
     config = config or load_config()

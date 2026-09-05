@@ -1,7 +1,7 @@
 # Dataset selection: maneuver detection (for TRN-OD dataset selection)
 
 Architecture detail alongside `../README.md`'s higher-level map of `dataset_selection.py`/
-`dataset.images_for_window()`'s orbit-search and candidate-filtering logic.
+`candidate_window.images_for_window()`'s orbit-search and candidate-filtering logic.
 
 For TRN-based orbit-determination testing (image-matching as the OD input), a propulsive maneuver
 between two dataset images corrupts the OD solve — but there's no known public source for LRO's
@@ -54,6 +54,6 @@ gap:
   tangential-dominant, alternating sign, ~2h38m apart — matching the paper's "~3 hours" and 2-burn
   posigrade/retrograde description almost exactly), cleanly separated from momentum-unload-scale
   candidates in the same window. Wired into `dataset_selection.add_maneuver_flags` (flags a whole
-  orbit-level table at once) — not into `dataset.images_for_window()`'s own per-candidate filtering;
+  orbit-level table at once) — not into `candidate_window.images_for_window()`'s own per-candidate filtering;
   also usable standalone (`find_maneuver_candidates(start_dt, end_dt, config)`) for vetting a
   candidate date range by hand.

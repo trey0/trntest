@@ -131,7 +131,7 @@ def run_mapproject_image(
     # The shared low-level worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM
     # sidecar) and `isis_campt.run_mapproject` (the WAC cube's ALE-derived ISD) use -- currently dead
     # code, no live caller for either. Kept generic (`camera_type`) rather than hardcoded, as good
-    # hygiene, even though its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`)
+    # hygiene, even though its live caller (`trn_products.TrnTestHillshadeImage._mapprojected_path`)
     # always uses the default `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV
     # (`camera.solve_corrected_fov`) once made `cam_gen`'s CSM Frame conversion measurably wrong
     # here (silently averaging `fu`/`fv` into one isotropic `m_focalLength`, a ~5%
@@ -171,7 +171,7 @@ def run_mapproject(
     # `run_sat_sim` rendered from -- letting outputs be overlaid directly with no separate
     # reprojection/alignment step. This round trip aligns terrain features pixel-precisely, as
     # expected for going forward and back through one consistent camera model. Opt-in/on-demand
-    # (not part of `dataset.generate_dataset`'s default pipeline) -- a ~4s subprocess call not
+    # (not part of `candidate_window.generate_dataset`'s default pipeline) -- a ~4s subprocess call not
     # every run needs.
     config = config or load_config()
     camera_stem = render_result.rendered_tif.stem

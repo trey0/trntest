@@ -2,7 +2,7 @@
 
 Synthetic image rendered by ASP's `sat_sim` from real terrain data, posed by the real LRO SPICE
 trajectory, at a fixed `config.image_size` (~100 m/px on the reference candidate — see
-[`../resolution-investigation.md`](../resolution-investigation.md)). `trn_dataset.TrnTestHillshadeImage`;
+[`../resolution-investigation.md`](../resolution-investigation.md)). `trn_products.TrnTestHillshadeImage`;
 entry point `render.run_sat_sim`.
 
 ## Data sources

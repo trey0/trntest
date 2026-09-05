@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-# A from-cold `dataset.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
+# A from-cold `candidate_window.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
 # sequential loop with no pacing between requests -- confirmed enough on its own, no concurrent
 # caller needed, to trip a server-side rate limiter (~3.5 req/s sustained for ~8 minutes; see
 # docs/caching.md's "Retry/backoff/pacing policy"). This fixed floor between requests (never applied
@@ -51,8 +51,8 @@ class FetchError(Exception):
     """
 
     # Signals a systemic problem (server down, rate-limited, network unreachable) rather than a
-    # single bad input, so a caller sweeping many items (`dataset._evaluate_illuminated_candidates`,
-    # `dataset.generate_dataset`) must let this propagate and abort the whole operation instead of
+    # single bad input, so a caller sweeping many items (`candidate_window._evaluate_illuminated_candidates`,
+    # `candidate_window.generate_dataset`) must let this propagate and abort the whole operation instead of
     # catching it alongside ordinary per-item errors and skipping past it -- see docs/caching.md's
     # "Retry/backoff/pacing policy" for the incident that anti-pattern caused.
 

@@ -243,7 +243,8 @@ lint's notebook checks).
 | [`subprocess_utils.py`][subprocess_utils.py] | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
-| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestProduct` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. `TrnTestProduct` covers all four product types (`TrnTestImage` subclasses `crop`/`hillshade`/`reproject`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
+| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
+| [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all four product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). Split out of `trn_dataset.py`. |
 | [`wac_camera_model.py`][wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
@@ -282,6 +283,7 @@ lint's notebook checks).
 [tasks.py]: src/trntest/tasks.py
 [tie_points.py]: src/trntest/tie_points.py
 [trn_dataset.py]: src/trntest/trn_dataset.py
+[trn_products.py]: src/trntest/trn_products.py
 [wac_camera_model.py]: src/trntest/wac_camera_model.py
 [wac_format.py]: src/trntest/wac_format.py
 
