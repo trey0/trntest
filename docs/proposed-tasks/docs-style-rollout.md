@@ -2,8 +2,9 @@
 
 **Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done (18 of 18 files) -- every `docs/history.md` citation is out of `src/trntest/*.py`.**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, and
-both halves are now largely done. Four docs remain unreviewed against the style rules: see "Not yet
-done" below.
+both halves are now largely done. One doc (`docs/environment.md`) remains unreviewed and open to
+pick up; one more (`docs/proposed-tasks/report-plan.md`) is blocked on another agent's in-flight
+work — see "Not yet done" below.
 
 ## Goal
 
@@ -326,6 +327,15 @@ not treated as a violation worth splitting out. No edits made.
   docstrings, so the narrative itself stayed; this pass only touched filler wording, not content or
   the "Still open"/status claims.
 
+- `docs/wac-jigsaw-investigation.md` — no `docs/history.md` citations to begin with. Cut the one
+  bare-intensifier `actually` ("confirmed to actually occur" → "confirmed to occur"); every other
+  `real`/`actual` occurrence was a legitimate contrast (real SN vs. the broken `"Unknown"` return,
+  real vs. synthetic-test candidates, "real control points" vs. the earlier tautological/synthetic
+  validation, and the established "real-WAC" compound term) — left as is. Same scope as the other
+  investigation docs: filler wording only, not the diagnostic-trail content or the "Open item"
+  status, which is this doc's designated purpose per `docs/docs-style.md`'s own carve-out for
+  material that belongs in an overview/tutorial doc rather than a docstring.
+
 **Docs not yet reworked**:
 - `docs/environment.md` — its content was rewritten separately for the VPS-persistence change (no
   longer "ephemeral VPS, archive/restore"), but that rewrite wasn't done as a `docs/docs-style.md`
@@ -333,17 +343,20 @@ not treated as a violation worth splitting out. No edits made.
   itself, with a "Multi-agent worktrees" section full of incident narrative ("confirmed live", dated
   fixes) that may be legitimate given the doc's own operational-gotchas purpose, but hasn't been
   checked line-by-line against the voice/filler rules the way the `src/trntest/*.py` files were.
-- `docs/wac-jigsaw-investigation.md`, `docs/proposed-tasks/report-plan.md` — not reviewed against
-  `docs/docs-style.md` at all yet.
+- `docs/proposed-tasks/report-plan.md` — not reviewed against `docs/docs-style.md` at all yet.
+  **Hands off for now (2026-09-05): a separate agent is working this file's "Future work" section —
+  don't touch it until that lands**, to avoid a collision on the same file.
 
 ## If resuming
 
-1. `src/trntest/*.py`, `docs/architecture.md`, `README.md`, and `docs/reproject-fov-investigation.md`
-   are done; work through the remaining "Docs not yet reworked" list one doc at a time (per the
-   user's request, two at a time unless one's too big on its own — `docs/environment.md` at 239
-   lines is a likely single-doc batch). Re-verify any `src/trntest/*.py` docstring change with
-   `trntest-lint` and, if it touches a function a notebook exercises, `scripts/run_notebook.sh` on
-   the relevant notebook before committing. A pure docstring/comment edit with no code-logic change
-   (confirm via `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
+1. `src/trntest/*.py`, `docs/architecture.md`, `README.md`, `docs/reproject-fov-investigation.md`,
+   and `docs/wac-jigsaw-investigation.md` are done; `docs/environment.md` is the only doc left open
+   to pick up solo (per the user's request, two at a time unless one's too big on its own — at 239
+   lines this one's a likely single-doc batch). `docs/proposed-tasks/report-plan.md` is blocked on
+   another agent's in-flight work (see above) — check whether that's landed before touching it.
+   Re-verify any `src/trntest/*.py` docstring change with `trntest-lint` and, if it touches a
+   function a notebook exercises, `scripts/run_notebook.sh` on the relevant notebook before
+   committing. A pure docstring/comment edit with no code-logic change (confirm via `git diff`)
+   doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
 2. Delete this plan once the remaining docs above have had their pass, or fold whatever's left into
    a narrower follow-up.

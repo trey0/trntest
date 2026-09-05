@@ -123,7 +123,7 @@ FRAMELET_HEIGHT`) — deliberately not `jigsaw`'s own distance-minimization heur
 `EphemerisTime` queries at the first/last framelet centers, rather than hand-deriving
 `crop_window_for_camera`'s row-offset/flip bookkeeping.
 
-**Overlap confirmed to actually occur**: adjacent framelets' `within_framelet_line` advances by ~9.9
+**Overlap confirmed to occur**: adjacent framelets' `within_framelet_line` advances by ~9.9
 lines per framelet step, not the full `FRAMELET_HEIGHT`=14 — a ~29% ground-coverage overlap,
 corroborated by `docs/external-tools.md`'s "`usgscsm`'s `groundToImage` bug for Pushframe sensors"
 section, which independently found that adjacent Pushframe exposures overlap. This is not a
