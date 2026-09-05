@@ -2,26 +2,26 @@
 
 Reference for `wac_camera_model.py`'s hand-rolled WAC-VIS forward projection: why ISIS's own
 `jigsaw` bundle adjuster can't be used for this camera, and the validation trail behind the
-replacement that's used instead. See `../README.md`'s Source files table (`control_network.py`/
-`pose_alignment.py`/`wac_camera_model.py` rows) for the current wiring status; several functions in
+replacement that's used instead. See `../README.md`'s Source files table (`pose_alignment/` package's `control_network.py`/
+`tie_point_matching.py`/`wac_camera_model.py` rows) for the current wiring status; several functions in
 `wac_camera_model.py`/`control_network.py`/`tie_points.py` point back to this doc for the ISIS
 source citations and bug numbers below rather than repeating them.
 
 ## The approach
 
-Convert matched tie points into 3D ground control (`src/trntest/control_network.py`) and fit a 6-DOF
+Convert matched tie points into 3D ground control (`src/trntest/pose_alignment/control_network.py`) and fit a 6-DOF
 camera pose correction (3 position + 3 attitude, frozen/degree-0) against them, using each point's
 reprojection error as the residual. The natural tool is ISIS's own `jigsaw` bundle adjuster, but it
 has a confirmed bug for this instrument (see "The `jigsaw` bug" below), so the fallback is a
 hand-rolled Python forward-projection + `scipy.optimize.least_squares` fit, reusing `camera.py`'s
 already-validated SPICE pose machinery, validated hard against `campt` before being trusted for
-anything (see `pose_alignment.py`'s own module comment for why that validation step is
+anything (see `tie_point_matching.py`'s own module comment for why that validation step is
 non-negotiable, not optional polish — an earlier hand-rolled `findfeatures` reimplementation in this
 project wasn't trustworthy).
 
 ## `control_network.py`
 
-Converts `pose_alignment`'s matched map-space tie points into ISIS control points:
+Converts `tie_point_matching`'s matched map-space tie points into ISIS control points:
 
 - `resolve_control_points`: for each matched tie point, un-warps the WAC-side map pixel back to its
   observed pixel in the *original* (pre-`cam2map`) crop cube (via
@@ -97,7 +97,7 @@ projection reusing `camera.py`'s already-validated SPICE pose machinery, built n
 
 ## The hand-rolled forward projection
 
-`src/trntest/wac_camera_model.py` implements WAC-VIS band 1's optics chain — camera-frame pinhole
+`src/trntest/pose_alignment/wac_camera_model.py` implements WAC-VIS band 1's optics chain — camera-frame pinhole
 projection → `LroWideAngleCameraDistortionMap`'s radial distortion (iterative undistort-to-distort)
 → `CameraFocalPlaneMap`'s affine focal-plane/detector transform → the sample/line offsets
 (`COLOR_SAMPLE_OFFSET=160`, `BAND_START_LINE=703`) — with every constant and formula pulled directly

@@ -7,8 +7,9 @@ import numpy as np
 import pytest
 import rasterio
 
-from trntest import control_network, isis_campt, isis_wac, wac_camera_model
+from trntest import isis_campt, isis_wac
 from trntest.config import TrntestConfig
+from trntest.pose_alignment import control_network, wac_camera_model
 
 _ORTHO_CRS = "+proj=ortho +lon_0=0 +lat_0=0 +R=1737400 +units=m +no_defs"
 
@@ -101,7 +102,7 @@ def test_write_control_network_writes_a_correct_csv_and_invokes_the_isis_python_
     out_path = tmp_path / "out.net"
 
     with patch.object(isis_campt, "cube_serial_number", return_value="TEST_SN"):
-        with patch("trntest.control_network.subprocess.run") as mock_run:
+        with patch("trntest.pose_alignment.control_network.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             result = control_network.write_control_network(
                 observed_pixels, ground_lonlat, Path("/fake/crop.cub"), out_path, TrntestConfig()
@@ -132,7 +133,7 @@ def test_write_control_network_raises_on_writer_failure(tmp_path, monkeypatch):
     ground_lonlat = np.array([[10.0, 20.0]])
 
     with patch.object(isis_campt, "cube_serial_number", return_value="TEST_SN"):
-        with patch("trntest.control_network.subprocess.run") as mock_run:
+        with patch("trntest.pose_alignment.control_network.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
             with pytest.raises(subprocess.CalledProcessError):
                 control_network.write_control_network(

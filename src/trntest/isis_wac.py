@@ -44,8 +44,8 @@ from trntest.subprocess_utils import run_quiet
 from trntest.wac_format import SAMPLES, VIS_BLOCK_HEIGHT
 
 if TYPE_CHECKING:
-    from trntest import wac_camera_model
     from trntest.camera import Camera, FrameTiming
+    from trntest.pose_alignment import wac_camera_model
 
 _BASE_KERNEL_INCLUDE = "{kernels/lsk/**,kernels/pck/**,kernels/sclk/**,kernels/fk/**,kernels/ik/**,kernels/iak/**}"
 

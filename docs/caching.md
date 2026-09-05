@@ -121,7 +121,7 @@ resume mechanism, or `cache.fetch_astropedia_gld100`'s own docstring.
 
 ## LightGlue/DISK pretrained-weight caching
 
-`pose_alignment.match_features_lightglue` (`docs/external-tools.md`'s "LightGlue tie-point matching"
+`tie_point_matching.match_features_lightglue` (`docs/external-tools.md`'s "LightGlue tie-point matching"
 section) loads two pretrained-weight files on first use — LightGlue's own weights (via
 `torch.hub.load_state_dict_from_url`) and DISK's extractor weights (via
 `kornia.feature.DISK.from_pretrained`, also routing through `torch.hub`) — tens of MB total, not an

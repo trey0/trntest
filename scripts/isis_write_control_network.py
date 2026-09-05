@@ -1,5 +1,5 @@
 """Writes a real ISIS control network (`.net`) file from a CSV of control points -- the actual
-binary-writing step behind `trntest.control_network.write_control_network`.
+binary-writing step behind `trntest.pose_alignment.control_network.write_control_network`.
 
 **Runs under the ISIS conda environment's own Python, not this project's `uv` venv.** `plio`
 (DOI-USGS's ISIS control-network read/write library) ships bundled with the `isis` conda package

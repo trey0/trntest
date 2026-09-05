@@ -1,9 +1,9 @@
-"""Bridges `pose_alignment`'s 2D map-space tie points into ISIS control points for a `jigsaw` bundle
-adjustment -- the prerequisite step for the projection-aware (3D camera pose) alignment
-`pose_alignment.py`'s 2D homography spike was deliberately left short of (see
+"""Bridges `tie_point_matching`'s 2D map-space tie points into ISIS control points for a `jigsaw`
+bundle adjustment -- the prerequisite step for the projection-aware (3D camera pose) alignment
+`tie_point_matching.py`'s 2D homography spike was deliberately left short of (see
 `docs/pose-alignment.md`).
 
-`resolve_control_points` converts `pose_alignment.match_features`/`match_features_lightglue`'s
+`resolve_control_points` converts `tie_point_matching.match_features`/`match_features_lightglue`'s
 matched map-pixel positions into what `jigsaw` needs per tie point: the pixel it was actually
 observed at in the original, pre-`cam2map` WAC cube, and a trusted 3D ground location.
 `write_control_network` writes the result to ISIS's own `.net` control-network format.
@@ -40,11 +40,12 @@ import rasterio
 import rasterio.errors
 import rasterio.warp
 
-from trntest import geo_utils, isis_campt, isis_wac, wac_camera_model
+from trntest import geo_utils, isis_campt, isis_wac
 from trntest.config import TrntestConfig, load_config
+from trntest.pose_alignment import wac_camera_model
 from trntest.tie_points import lonlat_to_ground_km
 
-_WRITER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "isis_write_control_network.py"
+_WRITER_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "isis_write_control_network.py"
 
 
 def map_points_to_lonlat(
@@ -52,7 +53,7 @@ def map_points_to_lonlat(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert `(x, y)` map coordinates to `(lon_deg, lat_deg)` arrays.
 
-    :param points_map: `(N, 2)` `(x, y)` map coordinates, e.g. `pose_alignment.pixel_points_to_map`'s
+    :param points_map: `(N, 2)` `(x, y)` map coordinates, e.g. `tie_point_matching.pixel_points_to_map`'s
         output.
     :param crs: The CRS `points_map` is in (this pipeline's shared local Orthographic CRS -- every
         camera's own is constructed the same way, see `dem_ortho.DemOrthoResult`'s docstring).
@@ -84,7 +85,7 @@ def resolve_control_points(
     adjustment.
 
     :param wac_points_map: `(N, 2)` matched WAC-side map coordinates (via
-        `pose_alignment.pixel_points_to_map`), same CRS and length as `basemap_points_map`.
+        `tie_point_matching.pixel_points_to_map`), same CRS and length as `basemap_points_map`.
     :param basemap_points_map: `(N, 2)` matched basemap-side map coordinates, same CRS and length as
         `wac_points_map`.
     :param map_crs: The shared CRS both point arrays are in.

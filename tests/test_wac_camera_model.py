@@ -9,7 +9,8 @@ import rasterio
 from scipy.spatial.transform import Rotation
 
 import trntest
-from trntest import tie_points, wac_camera_model
+from trntest import tie_points
+from trntest.pose_alignment import wac_camera_model
 
 
 def test_distort_is_a_small_near_identity_perturbation_for_small_inputs():

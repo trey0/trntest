@@ -4,7 +4,7 @@ import pytest
 import rasterio
 import rasterio.transform
 
-from trntest import pose_alignment
+from trntest.pose_alignment import tie_point_matching
 
 
 def _write_raster(path, data, transform, crs="+proj=ortho +lon_0=0 +lat_0=0 +R=1737400 +units=m +no_defs", nodata=None):
@@ -45,7 +45,7 @@ def test_to_uint8_for_matching_marks_invalid_pixels(tmp_path):
     path = tmp_path / "raster.tif"
     _write_raster(path, data, rasterio.transform.from_origin(0, 20, 1, 1))
 
-    image, valid = pose_alignment.to_uint8_for_matching(path)
+    image, valid = tie_point_matching.to_uint8_for_matching(path)
 
     assert image.dtype == np.uint8
     assert not valid[:5, :5].any()
@@ -66,7 +66,7 @@ def test_crop_to_footprint_crops_to_padded_bounds(tmp_path):
     footprint_path = tmp_path / "footprint.tif"
     _write_raster(footprint_path, footprint, rasterio.transform.from_origin(0, 100, 1, 1))
 
-    out_path = pose_alignment.crop_to_footprint(
+    out_path = tie_point_matching.crop_to_footprint(
         reference_path, footprint_path, tmp_path / "cropped.tif", pad_fraction=0.1
     )
 
@@ -89,7 +89,7 @@ def test_match_features_recovers_a_known_pixel_shift():
     from_image = texture[dy : dy + 200, dx : dx + 200]
     from_valid = np.ones_like(from_image, dtype=bool)
 
-    from_points, to_points = pose_alignment.match_features(from_image, from_valid, to_image, to_valid)
+    from_points, to_points = tie_point_matching.match_features(from_image, from_valid, to_image, to_valid)
 
     assert len(from_points) >= 4
     implied_shift = np.median(to_points - from_points, axis=0)
@@ -109,7 +109,7 @@ def test_match_features_lightglue_recovers_a_known_pixel_shift():
     from_image = texture[dy : dy + 200, dx : dx + 200]
     from_valid = np.ones_like(from_image, dtype=bool)
 
-    from_points, to_points = pose_alignment.match_features_lightglue(from_image, from_valid, to_image, to_valid)
+    from_points, to_points = tie_point_matching.match_features_lightglue(from_image, from_valid, to_image, to_valid)
 
     assert len(from_points) >= 4
     implied_shift = np.median(to_points - from_points, axis=0)
@@ -121,7 +121,7 @@ def test_pixel_points_to_map_applies_the_affine_transform():
     transform = rasterio.transform.from_origin(100, 200, 2, 2)  # pixel (0,0) -> map (100, 200)
     points_px = np.array([[0.0, 0.0], [5.0, 5.0]])
 
-    points_map = pose_alignment.pixel_points_to_map(points_px, transform)
+    points_map = tie_point_matching.pixel_points_to_map(points_px, transform)
 
     assert points_map[0] == pytest.approx([100, 200])
     assert points_map[1] == pytest.approx([110, 190])  # +5px*2 east, -5px*2 north (y decreases downward)
@@ -137,7 +137,7 @@ def test_fit_similarity_correction_recovers_a_known_transform_and_flags_outliers
     to_points_with_outliers = to_points.copy()
     to_points_with_outliers[:5] += rng.uniform(500, 1000, (5, 2))
 
-    correction, inliers, residuals_m = pose_alignment.fit_similarity_correction(
+    correction, inliers, residuals_m = tie_point_matching.fit_similarity_correction(
         from_points, to_points_with_outliers, ransac_threshold_m=10.0
     )
 
@@ -160,7 +160,7 @@ def test_fit_affine_correction_recovers_a_known_transform_and_flags_outliers():
     to_points_with_outliers = to_points.copy()
     to_points_with_outliers[:5] += rng.uniform(500, 1000, (5, 2))
 
-    correction, inliers, residuals_m = pose_alignment.fit_affine_correction(
+    correction, inliers, residuals_m = tie_point_matching.fit_affine_correction(
         from_points, to_points_with_outliers, ransac_threshold_m=10.0
     )
 
@@ -187,7 +187,7 @@ def test_fit_homography_correction_recovers_a_known_transform_and_flags_outliers
     to_points_with_outliers = to_points.copy()
     to_points_with_outliers[:5] += rng.uniform(500, 1000, (5, 2))
 
-    homography, inliers, residuals_m = pose_alignment.fit_homography_correction(
+    homography, inliers, residuals_m = tie_point_matching.fit_homography_correction(
         from_points, to_points_with_outliers, ransac_threshold_m=10.0
     )
 
@@ -207,7 +207,7 @@ def test_native_wac_gsd_m_returns_the_coarser_axis():
     # Cross-track: 70.4 km / 704 samples = 100 m/px. Along-track: 2.1 km / 14 lines = 150 m/px.
     camera = _FakeCamera(cross_track_width_km=70.4, km_per_frame=2.1)
 
-    assert pose_alignment.native_wac_gsd_m(camera) == pytest.approx(150.0)
+    assert tie_point_matching.native_wac_gsd_m(camera) == pytest.approx(150.0)
 
 
 def test_downsample_to_gsd_halves_dimensions_and_preserves_bright_region_mean(tmp_path):
@@ -218,7 +218,7 @@ def test_downsample_to_gsd_halves_dimensions_and_preserves_bright_region_mean(tm
     src_path = tmp_path / "src.tif"
     _write_raster(src_path, data, transform, nodata=-3.4028235e38)
 
-    out_path = pose_alignment.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
+    out_path = tie_point_matching.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
 
     with rasterio.open(out_path) as src:
         out = src.read(1)
@@ -240,7 +240,7 @@ def test_downsample_to_gsd_handles_uint8_raster_with_no_nodata(tmp_path):
     src_path = tmp_path / "src.tif"
     _write_raster(src_path, data, transform, nodata=None)
 
-    out_path = pose_alignment.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
+    out_path = tie_point_matching.downsample_to_gsd(src_path, target_gsd_m=2.0, out_path=tmp_path / "down.tif")
 
     with rasterio.open(out_path) as src:
         out = src.read(1)
@@ -255,7 +255,7 @@ def test_downsample_to_gsd_rejects_upsampling(tmp_path):
     _write_raster(src_path, data, rasterio.transform.from_origin(0, 10, 2, 2))
 
     with pytest.raises(ValueError):
-        pose_alignment.downsample_to_gsd(src_path, target_gsd_m=1.0, out_path=tmp_path / "up.tif")
+        tie_point_matching.downsample_to_gsd(src_path, target_gsd_m=1.0, out_path=tmp_path / "up.tif")
 
 
 def test_apply_correction_shifts_a_known_marker_pixel(tmp_path):
@@ -266,7 +266,7 @@ def test_apply_correction_shifts_a_known_marker_pixel(tmp_path):
     _write_raster(src_path, data, transform, nodata=0.0)
 
     correction = affine.Affine.translation(10, -5)  # +10 east, -5 north (map units == pixels here)
-    out_path = pose_alignment.apply_correction(src_path, correction, tmp_path / "corrected.tif")
+    out_path = tie_point_matching.apply_correction(src_path, correction, tmp_path / "corrected.tif")
 
     with rasterio.open(out_path) as src:
         out = src.read(1)
@@ -290,7 +290,7 @@ def test_apply_homography_correction_shifts_a_known_marker_pixel(tmp_path):
     # marker location as test_apply_correction_shifts_a_known_marker_pixel's equivalent translation,
     # confirming the two application paths agree on their shared (affine) subset.
     homography = np.array([[1.0, 0.0, 10.0], [0.0, 1.0, -5.0], [0.0, 0.0, 1.0]])
-    out_path = pose_alignment.apply_homography_correction(src_path, homography, tmp_path / "corrected.tif")
+    out_path = tie_point_matching.apply_homography_correction(src_path, homography, tmp_path / "corrected.tif")
 
     with rasterio.open(out_path) as src:
         out = src.read(1)

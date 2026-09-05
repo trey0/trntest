@@ -31,7 +31,7 @@ import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import geo_utils, isis_campt, isis_wac, wac_camera_model, wac_format
+from trntest import geo_utils, isis_campt, isis_wac, wac_format
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -40,6 +40,7 @@ from trntest.camera import (
     ray_sphere_intersect_range,
 )
 from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
+from trntest.pose_alignment import wac_camera_model
 
 CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")  # polygon winding order
 

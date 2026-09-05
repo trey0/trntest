@@ -6,9 +6,10 @@ import pytest
 import rasterio
 from matplotlib.path import Path as MplPath
 
-from trntest import isis_campt, isis_wac, tie_points, wac_camera_model
+from trntest import isis_campt, isis_wac, tie_points
 from trntest.camera import Camera
 from trntest.config import TrntestConfig
+from trntest.pose_alignment import wac_camera_model
 
 
 def test_intersect_bbox_overlapping():

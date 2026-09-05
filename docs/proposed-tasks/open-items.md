@@ -13,7 +13,12 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   source-code-reorganization effort (see this file's own "Source code reorganization" section) is
   running with the usual per-change notebook-re-execution discipline suspended, one full notebook
   pass planned right before that work merges to `main`. Fix this notebook's `.py` and regenerate its
-  `.ipynb` as part of that pass, not before.
+  `.ipynb` as part of that pass, not before. Task 6 (`docs/history.md`'s Phase 100 entry) added much
+  more staleness on top: its whole `from trntest import control_network, isis_wac, plotting,
+  pose_alignment, tie_points, wac_camera_model` import line and every qualified
+  `pose_alignment.X`/`control_network.X`/`wac_camera_model.X` call throughout now need
+  `tie_point_matching`/`trntest.pose_alignment` updates, plus two module-path comments citing the old
+  flat file locations. Same deferred-until-the-final-pass treatment, for the same reason.
 - `notebooks/along_track_correction.py`/`real_hapke_params.py`/`crater_sharpness_review.py`/
   `sfs_validation.py`/`hapke_hillshade.py` still `from trntest import lunaserv` and call functions now
   split across `dem_gld100`/`ortho_wac_emp`/`lunaserv_wms`/`hapke`/`dem_ortho`/`geo_utils` (see
@@ -120,8 +125,11 @@ is done** — see `docs/history.md`'s Phase 98 entry.
 **Task 5 (splitting `trn_dataset.py`'s product classes into `trn_products.py`) is done** — see
 `docs/history.md`'s Phase 99 entry.
 
-Task 6 below is intentionally left light, since its exact boundaries depend on decisions made while
-tackling the earlier tasks.
+**Task 6 (grouping `control_network.py`/`pose_alignment.py`/`wac_camera_model.py` into a
+`pose_alignment/` subpackage) is done** — see `docs/history.md`'s Phase 100 entry. This closes out
+the six-task reorganization plan; the notebook staleness it (and every earlier task) left behind is
+tracked in this file's main list above, resolved together in the final notebook-re-execution pass
+before `feature/refactor` merges to `main`.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
 the usual per-change `scripts/run_notebook.sh` re-execution discipline (`AGENTS.md`'s notebook
@@ -150,7 +158,7 @@ actually done, not before.
 | `product_registry.py` **(done)** | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
 | `plotting.py` **(done)** | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
 | `trn_dataset.py`'s product classes **(done)** | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
-| `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files — see task 6 below; `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
+| `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` **(done)** | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files (`docs/history.md`'s Phase 100 entry); `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
 
 Not renamed: `wac_camera_model.py`'s own basename (distinguishable enough once the legacy `wac.py` is
 gone entirely rather than just renamed); any notebook. `notebooks/wac_isis.py` has the same
@@ -158,23 +166,3 @@ word-order mismatch against `isis_wac.py` that motivated some of the source rena
 notebook rename is a jupytext-pair regeneration plus a README table edit for cosmetic gain only —
 not worth doing as part of this reorganization.
 
-### Task 6: group the back-burner trio into `pose_alignment/`
-
-Checked before committing to this grouping (2026-09-05), since a `stuff_not_wired_in_yet`-flavored
-subpackage with a name that doesn't actually mean anything would be worse than not grouping at all:
-`control_network.py`, `pose_alignment.py`, and `wac_camera_model.py` are a real chain, confirmed via
-[`docs/pose-alignment.md`](../pose-alignment.md) and their own docstrings, not just three unrelated
-modules that happen to share "not wired in" status. `pose_alignment.py` produces 2D matched tie
-points; `control_network.py` converts them into 3D ISIS control points and directly imports
-`wac_camera_model` for ground-to-image lookups; `wac_camera_model.py` supplies the hand-rolled camera
-model both `control_network.py` and the eventual pose-correction fit need, built specifically because
-ISIS's `jigsaw` bundle adjuster has a confirmed bug for this camera. All three cite
-`docs/pose-alignment.md` as their shared reference doc, which is itself titled around this one
-investigation, not a grab-bag. `pose_alignment/` is an accurate name for the whole activity, not a
-euphemism for "unfinished."
-
-Moving them into a `pose_alignment/` subpackage (naming table above; `pose_alignment.py` itself
-becomes `pose_alignment/tie_point_matching.py` to avoid colliding with the package's own name) makes
-the active-vs-experimental boundary visible in the directory tree instead of only in prose. Doesn't
-reduce their cross-references to core modules (`camera`, `isis_wac`/`isis_campt`, `tie_points` are
-all still needed) — this is purely a discoverability win.

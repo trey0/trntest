@@ -61,7 +61,7 @@ packages = ["src/trntest"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # "heavy" tests need live network access -- SPICE kernels (e.g. maneuver_detection.py's real-SPK
-# tests) or a pretrained-weight download (e.g. pose_alignment.py's LightGlue tests, first-run only,
+# tests) or a pretrained-weight download (e.g. tie_point_matching.py's LightGlue tests, first-run only,
 # cached under TORCH_HOME after) -- excluded by default so plain `pytest` stays fast/host-runnable
 # (see README's Tests section); run them with `scripts/run_heavy_tests.sh` (inside Docker) or
 # `pytest -m heavy` directly, which overrides this default (a later -m wins over addopts' earlier

@@ -469,7 +469,7 @@ matrix is the transpose of this project's own `R_A_to_B` convention (`v_B = R_A_
 
 ## LightGlue tie-point matching
 
-`src/trntest/pose_alignment.py`'s `match_features_lightglue` is a second feature-matcher option
+`src/trntest/pose_alignment/tie_point_matching.py`'s `match_features_lightglue` is a second feature-matcher option
 alongside the module's original SIFT-based `match_features` — a deep-learned local-feature
 extractor (DISK) + learned matcher (LightGlue) pair, tried specifically to push match count/quality
 higher for more challenging future EDRs (shadowed terrain, low texture) than classical SIFT can

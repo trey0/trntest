@@ -5293,3 +5293,74 @@ cleanly both together and as the sole first import in a fresh process, `trntest-
 type annotation that no longer needed quotes once `from __future__ import annotations` was in
 scope), full `pytest` clean (358 passed, unchanged -- pure code movement, no tests added or removed
 net of the test-file split above).
+
+## Phase 100 (2026-09-05) — Grouped `control_network.py`/`pose_alignment.py`/`wac_camera_model.py` into a `pose_alignment/` subpackage
+
+Task 6, the last task of the source-code reorganization (`docs/proposed-tasks/open-items.md`'s
+"Source code reorganization" section; tasks 1-5 were Phases 94/96-99). Same `feature/refactor`
+branch, same suspended per-change notebook discipline.
+
+Confirmed before committing to the grouping (2026-09-05, same day as the review) that these three
+back-burner, not-wired-in-yet modules are a real chain, not just three unrelated files sharing
+"not wired in" status: `pose_alignment.py` produced 2D matched tie points; `control_network.py`
+converted them into 3D ISIS control points and imported `wac_camera_model` for ground-to-image
+lookups; `wac_camera_model.py` supplied the hand-rolled camera model both `control_network.py` and
+the eventual pose-correction fit needed, built specifically because ISIS's `jigsaw` bundle adjuster
+has a confirmed bug for this camera. All three cite `docs/pose-alignment.md` as one shared
+investigation doc, not a grab-bag.
+
+**The move**: `git mv` each file into new `src/trntest/pose_alignment/`, renaming `pose_alignment.py`
+itself to `tie_point_matching.py` to avoid colliding with the package's own name (per the naming
+table decided back at the start of this reorganization). New `pose_alignment/__init__.py` holds only
+a package-level docstring -- no re-exports, matching this project's existing style of importing a
+specific sibling module directly (e.g. `dem_ortho.py`'s data-source imports) rather than a
+re-exporting package `__init__`. `control_network.py`'s own `from trntest import wac_camera_model`
+became `from trntest.pose_alignment import wac_camera_model` (a sibling-module import, still
+absolute per this codebase's no-relative-imports convention); `isis_wac.py`'s and `tie_points.py`'s
+real/`TYPE_CHECKING` imports of `wac_camera_model` updated the same way. No new circular-import risk:
+none of these three modules were ever imported by anything upstream of `trntest/__init__.py`, so
+nesting them one level deeper changed no import direction, only the path.
+
+**One real, easy-to-miss bug caught before it shipped**: `control_network.py`'s own
+`_WRITER_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / ...` computed the repo root by
+counting parent directories from `__file__` -- correct at the old `src/trntest/control_network.py`
+depth, but now one level too shallow at `src/trntest/pose_alignment/control_network.py`, silently
+pointing `_WRITER_SCRIPT` at completely the wrong directory. Not caught by any automated check --
+mypy has no way to validate a runtime filesystem path, and the fast test suite mocks out the
+subprocess call this path feeds (`patch("trntest.pose_alignment.control_network.subprocess.run")`)
+entirely, so it would never have exercised the real path either. Fixed to `parents[3]` and confirmed
+live: `_WRITER_SCRIPT.exists()` now resolves `True` inside the container, where a stale `parents[2]`
+would have silently resolved to a wrong-but-existing-looking path one directory up from the real repo
+root (`/workspace` itself, not `/workspace/scripts/...`) -- the kind of bug that surfaces as a
+confusing `FileNotFoundError` only the first time real ISIS control-network writing actually runs,
+not at import time or under any mocked test.
+
+**Every real cross-reference updated**: `isis_wac.py`'s `TYPE_CHECKING`-guarded import,
+`tie_points.py`'s real import, both `tests/test_control_network.py`'s import and its two
+string-target `patch("trntest.control_network.subprocess.run")` calls (also now
+`trntest.pose_alignment.control_network...`), `tests/test_isis_wac_dem.py`/
+`tests/test_tie_points_geometry.py`/`tests/test_wac_camera_model.py`'s imports, `pyproject.toml`'s
+own comment, `scripts/isis_write_control_network.py`'s docstring, `README.md`'s source-files table
+(the three rows regrouped together under `pose_alignment/` instead of scattered by old basename
+across the alphabet), and `docs/pose-alignment.md`/`docs/external-tools.md`/`docs/caching.md`'s
+module-path citations. `tests/test_pose_alignment.py` renamed to `tests/test_tie_point_matching.py`
+to match the source rename, with every `pose_alignment.X` call updated to `tie_point_matching.X`.
+
+**Deferred, per the same suspended-notebook-discipline policy as every prior phase**:
+`notebooks/pose_alignment_spike.py` is the most heavily affected notebook yet -- its whole `from
+trntest import control_network, isis_wac, plotting, pose_alignment, tie_points, wac_camera_model`
+import line and every qualified call throughout need updating, plus two module-path comments. Folded
+into this file's existing `pose_alignment_spike.py` deferred bullet rather than a new one, since it's
+the same notebook.
+
+**Verification**: same method as every prior phase in this reorganization -- fresh Docker build, all
+40 modules (three now nested under `pose_alignment/`) import cleanly both together and as the sole
+first import in a fresh process, `trntest-lint --all` clean (one `ruff check --fix` for import
+ordering inside the `TYPE_CHECKING` block), full `pytest` clean (358 passed, unchanged -- pure code
+movement). `_WRITER_SCRIPT.exists()` spot-checked live in the container after the fix, since no
+existing test would have caught a regression there.
+
+This closes out the six-task source-code reorganization plan. `docs/proposed-tasks/open-items.md`'s
+"Source code reorganization" section is now all `(done)` except the deliberately-deferred notebook
+staleness bullets, which resolve together in the reorganization's final notebook-re-execution pass
+before `feature/refactor` merges to `main`.
