@@ -219,23 +219,25 @@ lint's notebook checks).
 | [`crater_depth_batch.py`][crater_depth_batch.py] | Whole-database crater-depth precompute, tiled for cache coherence — see [`docs/crater-grading.md`](docs/crater-grading.md). Not yet run across the full database. |
 | [`craters.py`][craters.py] | Robbins craters catalog overlay: fetches/caches the PDS4 CSV, builds a spatially-indexed GeoPackage, and returns ellipse polygons for a raster's footprint (`crater_overlay_layer`) — see [`docs/data-sources/robbins-craters.md`](docs/data-sources/robbins-craters.md). |
 | [`dataset_selection.py`][dataset_selection.py] | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `candidate_window.py`. |
+| [`dataset_selection_plots.py`][dataset_selection_plots.py] | `notebooks/select_datasets.py`'s own scatter plots (`plot_sun_elevation_vs_edr_count`, `plot_illuminated_node_scatter`) — split out of `plotting.py` since `dataset_selection.py`'s orbit-level candidate geometry is the only reason this depends on `illumination.py`. |
 | [`dem_gld100.py`][dem_gld100.py] | Live default DEM source: fetches/caches USGS Astropedia's flat-file GLD100 DEM and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md). |
 | [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
 | [`geo_utils.py`][geo_utils.py] | Generic CRS/bbox/reprojection math (`geographic_crs`, `local_orthographic_crs`, `pad_bbox`, `reproject_raster_to_local_grid`, ...) shared by every DEM/ortho data-source module — dependency-free by design. |
 | [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need. |
-| [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`plotting.py` use. |
+| [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`dataset_selection_plots.py` use. |
 | [`isis_campt.py`][isis_campt.py] | ISIS `campt`-based ground-truth ground↔image queries against an already-processed WAC cube (`ground_to_image_pixel`/`ground_point_at_pixel`/`resolve_ground_to_image_model`), plus the CSM ISD generation those queries depend on. |
 | [`isis_wac.py`][isis_wac.py] | Steps a WAC EDR through ISIS3's own pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`) as this project's real-WAC comparison path — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
 | [`lunaserv_wms.py`][lunaserv_wms.py] | Deprecated fallback DEM source: Lunaserv's own WMS-served DTM layer, in its native unprojected geographic CRS — superseded by `dem_gld100.py`, kept for comparison and a few one-off diagnostics. See [`docs/data-sources/lunaserv-wms.md`](docs/data-sources/lunaserv-wms.md). |
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | [`ortho_wac_emp.py`][ortho_wac_emp.py] | Live default ortho/texture source: fetches/caches WAC_EMP's own PDS4 archive tile directly (no Lunaserv WMS display stretch) and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
-| [`plotting.py`][plotting.py] | Comparison-figure plotting: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`), a quantitative brightness diff (`compute_brightness_matched_diff`), and dataset-selection scatter plots. |
+| [`plotting.py`][plotting.py] | Generic raster-display primitives (`plot_raster`, `read_raster_band`) plus generator-comparison figures: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`) and a quantitative brightness diff (`compute_brightness_matched_diff`). |
 | [`pose_alignment.py`][pose_alignment.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
 | [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content itself is still a first-pass minimal template. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
+| [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
 | [`spice_kernels.py`][spice_kernels.py] | Selects/downloads the minimal SPICE kernel set for a date and furnishes it (`fetch_and_furnish`) — see [`docs/data-sources/spice-kernels-isis.md`](docs/data-sources/spice-kernels-isis.md)/[`spice-kernels-naif.md`](docs/data-sources/spice-kernels-naif.md). |
 | [`subprocess_utils.py`][subprocess_utils.py] | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
@@ -255,6 +257,7 @@ lint's notebook checks).
 [crater_depth_batch.py]: src/trntest/crater_depth_batch.py
 [craters.py]: src/trntest/craters.py
 [dataset_selection.py]: src/trntest/dataset_selection.py
+[dataset_selection_plots.py]: src/trntest/dataset_selection_plots.py
 [dem_gld100.py]: src/trntest/dem_gld100.py
 [dem_ortho.py]: src/trntest/dem_ortho.py
 [geo_utils.py]: src/trntest/geo_utils.py
@@ -272,6 +275,7 @@ lint's notebook checks).
 [render.py]: src/trntest/render.py
 [report.py]: src/trntest/report.py
 [session.py]: src/trntest/session.py
+[sfs_plotting.py]: src/trntest/sfs_plotting.py
 [sfs_validation.py]: src/trntest/sfs_validation.py
 [spice_kernels.py]: src/trntest/spice_kernels.py
 [subprocess_utils.py]: src/trntest/subprocess_utils.py

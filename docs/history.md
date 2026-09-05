@@ -5189,3 +5189,50 @@ together and as the sole first import in a fresh process, `trntest-lint --all` c
 fix above), full `pytest` clean (358 passed, down from 362 by exactly the 4 tests removed with
 `wac.py` — 1 from `test_session.py`, 3 from the deleted `test_wac_unpacking.py` — and unchanged again
 after the pure renames, as expected).
+
+## Phase 98 (2026-09-05) — Split `plotting.py` into three: `plotting.py`, `sfs_plotting.py`, `dataset_selection_plots.py`
+
+Task 4 of the source-code reorganization (`docs/proposed-tasks/open-items.md`'s "Source code
+reorganization" section; tasks 1/2/3 were Phases 94/96/97). Same `feature/refactor` branch, same
+suspended per-change notebook discipline.
+
+`plotting.py` (1633 lines) mixed four audiences: generic raster-display primitives
+(`plot_raster`/`read_raster_band`/`valid_pixel_mask`/...), the generator-comparison figures
+`image_generation.py`/reports actually need (`plot_render_vs_basemap`, `plot_overlay*`,
+`plot_zoom_blink`, `compute_brightness_matched_diff`), two SFS-validation-only plots
+(`plot_sfs_comparison`, `plot_incidence_validation`), and two dataset-selection scatter plots
+(`plot_sun_elevation_vs_edr_count`, `plot_illuminated_node_scatter` + its private
+`_underline_segments` helper) — the only reason this file depended on `illumination.py` at all. Kept
+the first two audiences in `plotting.py` (1392 lines); moved the SFS pair to new `sfs_plotting.py`
+(93 lines) and the dataset-selection pair to new `dataset_selection_plots.py` (175 lines).
+
+**The one real complication**: `plot_sfs_comparison` needs four of `plotting.py`'s own raster-display
+helpers (`_open_raster_dataarray`, `_cellsize_m`, `_normalize_to_median`, `_robust_median`), all four
+still genuinely shared with functions staying in `plotting.py` (`_prep_overlay_rasters`,
+`compute_brightness_matched_diff`, `plot_render_toggle`, `plot_zoom_blink`) — a real cross-module
+dependency, not something to duplicate. This codebase's own convention (established at Phase 96,
+`geo_utils.reproject_raster_to_local_grid`) is that a leading underscore means module-private, so a
+helper crossing a module boundary for real loses it: all four renamed public
+(`open_raster_dataarray`/`cellsize_m`/`normalize_to_median`/`robust_median`), every internal call
+site in `plotting.py` updated to match, and `sfs_plotting.py` imports them from `trntest.plotting`
+normally. `plot_incidence_validation` and both dataset-selection plots needed no such treatment —
+fully self-contained apart from `illumination.unwrap_relative_deg` (already a real, public,
+cross-module call).
+
+Also dropped from `plotting.py`, now unused once their only two callers moved out: `import pandas as
+pd`, `from datetime import datetime`, and `from trntest import illumination`.
+
+**Deferred, per the same suspended-notebook-discipline policy as Phases 94/96**:
+`notebooks/select_datasets.py` still calls `plotting.plot_sun_elevation_vs_edr_count`/
+`plotting.plot_illuminated_node_scatter`, and `notebooks/sfs_validation.py` still calls
+`plotting.plot_sfs_comparison`/`plotting.plot_incidence_validation` — both notebooks' stale
+references tracked in `docs/proposed-tasks/open-items.md`'s deferred-notebooks list, fixed only in
+this reorganization's final notebook-re-execution pass.
+
+**Verification**: same method as Phases 94/96/97 — fresh Docker build, all 38 modules import cleanly
+both together and as the sole first import in a fresh process, `trntest-lint --all` clean on the
+first attempt (no fixups needed this time), full `pytest` clean (358 passed, unchanged -- pure code
+movement, no tests added or removed). `tests/test_plotting.py`'s two `plot_sfs_comparison`/
+`plot_incidence_validation` tests moved to new `tests/test_sfs_plotting.py`; no prior test coverage
+existed for either dataset-selection scatter plot, so no test file was needed for
+`dataset_selection_plots.py`.

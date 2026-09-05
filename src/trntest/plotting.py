@@ -1,18 +1,22 @@
-"""Matplotlib display helpers for the notebook. No SPICE/network/subprocess calls -- pure
-consumption of already-computed values, reading image files by path where needed."""
+"""Matplotlib display helpers for the notebook: generic raster-display primitives
+(`plot_raster`/`read_raster_band`/`valid_pixel_mask`) plus the generator-comparison figures
+`image_generation.py`/reports need (`plot_render_vs_basemap`, `plot_overlay*`, `plot_zoom_blink`,
+`compute_brightness_matched_diff`). SFS-validation-only plots live in `sfs_plotting.py`;
+dataset-selection scatter plots live in `dataset_selection_plots.py` -- both split out since neither
+audience touches the generator-comparison/report path this module serves. No SPICE/network/
+subprocess calls -- pure consumption of already-computed values, reading image files by path where
+needed."""
 
 import base64
 import dataclasses
 import io
 import warnings
-from datetime import datetime
 
 import geopandas
 import IPython.display
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
-import pandas as pd
 import rasterio
 import rasterio.errors
 import rasterio.features
@@ -25,7 +29,7 @@ import shapely.ops
 import xarray
 from PIL import Image
 
-from trntest import geo_utils, illumination, orientation
+from trntest import geo_utils, orientation
 from trntest.camera import Camera
 from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
@@ -61,7 +65,7 @@ def valid_pixel_mask(data: np.ndarray) -> np.ndarray:
     return np.isfinite(data) & (np.abs(data) < _FILL_VALUE_MAGNITUDE_THRESHOLD)
 
 
-def _robust_median(values) -> float:
+def robust_median(values) -> float:
     """`np.nanmedian(values)`, returning `nan` for the degenerate case (empty, or a zero/
     non-finite median) every brightness-normalization call site in this module needs to guard
     against before dividing by it.
@@ -69,7 +73,7 @@ def _robust_median(values) -> float:
     :param values: Input array, or an already-valid-only selection (`numpy.ndarray` or the
         `.values` of an `xarray.DataArray`).
     :returns: The median, or `nan` if it's zero, non-finite, or `values` is empty -- pair with
-        `_normalize_to_median`, which leaves its input unscaled on `nan` rather than dividing by it.
+        `normalize_to_median`, which leaves its input unscaled on `nan` rather than dividing by it.
     """
     if values.size == 0:
         return float("nan")
@@ -77,9 +81,9 @@ def _robust_median(values) -> float:
     return float(median) if median and np.isfinite(median) else float("nan")
 
 
-def _normalize_to_median(data, median: float):
+def normalize_to_median(data, median: float):
     """Divide `data` by `median`, or return it unchanged if `median` is `nan` (see
-    `_robust_median`) -- the per-side half of this module's shared brightness normalization: two
+    `robust_median`) -- the per-side half of this module's shared brightness normalization: two
     images being compared each call this independently with their own median, putting both on a
     scale-invariant, directly-interpretable-as-fraction-of-their-own-median basis (`0.05` off ==
     "5% of typical brightness"), rather than matching one to the other's absolute level.
@@ -87,7 +91,7 @@ def _normalize_to_median(data, median: float):
     :param data: Array to scale (`numpy.ndarray` or `xarray.DataArray`) -- not necessarily the same
         selection `median` was computed over (e.g. a valid-pixels-only median applied to a
         dead-column-filled full array).
-    :param median: From `_robust_median`.
+    :param median: From `robust_median`.
     :returns: `data / median`, or `data` itself if `median` is `nan`.
     """
     return data / median if np.isfinite(median) else data
@@ -344,8 +348,8 @@ def plot_isis_comparison(
     # `tie_points.resolve_crop_pixels`'s docstring) is simply absent from `tie_point_results` -- this
     # function draws whatever's present, no special handling needed for a missing point.
     #
-    # Each panel independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
-    # `_normalize_to_median`, same technique `_prep_overlay_rasters` uses) rather than real matched
+    # Each panel independently normalized to its own valid-pixel median = 1.0 (`robust_median`/
+    # `normalize_to_median`, same technique `_prep_overlay_rasters` uses) rather than real matched
     # to synthetic's absolute scale -- necessary since the ISIS cube (calibrated I/F, ~0.01-0.2) and
     # the synthetic render (a rendered-texture brightness value, ~0-255) are on entirely different
     # numeric scales, and matching one to the other's fixed range risks oversaturating whichever
@@ -356,12 +360,12 @@ def plot_isis_comparison(
     real_filled = _fill_dead_columns_for_display(real, valid) if valid.any() else real
 
     synthetic_valid = valid_pixel_mask(synthetic)
-    synthetic_norm = _normalize_to_median(synthetic, _robust_median(synthetic[synthetic_valid]))
+    synthetic_norm = normalize_to_median(synthetic, robust_median(synthetic[synthetic_valid]))
     # Median computed over the real, un-filled valid pixels (the fill above is a display convenience
     # for isolated dead columns -- see _fill_dead_columns_for_display's docstring -- not something
     # that should influence the brightness normalization).
-    real_median = _robust_median(real[valid]) if valid.any() else float("nan")
-    real_norm = _normalize_to_median(real_filled, real_median)
+    real_median = robust_median(real[valid]) if valid.any() else float("nan")
+    real_norm = normalize_to_median(real_filled, real_median)
 
     h_syn, w_syn = synthetic.shape
     h_crop, w_crop = real.shape
@@ -521,7 +525,7 @@ def plot_render_vs_basemap(
     return fig
 
 
-def _cellsize_m(raster_da) -> float:
+def cellsize_m(raster_da) -> float:
     """Pixel size, meters, from `raster_da`'s own `x` coordinate spacing.
 
     :param raster_da: A `rioxarray`-opened `DataArray`.
@@ -534,7 +538,7 @@ def _cellsize_m(raster_da) -> float:
     return float(abs(raster_da.x.values[1] - raster_da.x.values[0]))
 
 
-def _open_raster_dataarray(path):
+def open_raster_dataarray(path):
     """Open `path` as a single-band `xarray.DataArray` via `rioxarray`.
 
     :param path: Raster file path.
@@ -781,8 +785,8 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
     """
     # Split out so plot_overlay_toggle can do this once and reuse it for both of its two renders,
     # rather than re-opening/re-normalizing the same rasters twice.
-    base = _open_raster_dataarray(base_raster_path)
-    overlay = _open_raster_dataarray(overlay_raster_path)
+    base = open_raster_dataarray(base_raster_path)
+    overlay = open_raster_dataarray(overlay_raster_path)
     overlay_display = _fill_overlay_nodata_for_display(overlay) if fill_overlay_nodata else overlay
 
     # Each side's normalizing median is taken only from the region where *both* rasters have valid
@@ -796,17 +800,17 @@ def _prep_overlay_rasters(base_raster_path, overlay_raster_path, fill_overlay_no
     # `overlay` is reindexed onto `base`'s grid first (same approach `compute_brightness_matched_diff`
     # uses to align the two for its own diff) purely to build this overlap mask -- the actual
     # normalization below still divides each side's own full raster by its own overlap-derived median.
-    overlay_on_base_grid = overlay.reindex_like(base, method="nearest", tolerance=_cellsize_m(base) / 2.0)
+    overlay_on_base_grid = overlay.reindex_like(base, method="nearest", tolerance=cellsize_m(base) / 2.0)
     overlap_mask = np.isfinite(base.values) & np.isfinite(overlay_on_base_grid.values)
 
-    # Each side independently normalized to its own overlap-region median = 1.0 (`_robust_median`/
-    # `_normalize_to_median`), not overlay matched to base's absolute level -- this is what makes
+    # Each side independently normalized to its own overlap-region median = 1.0 (`robust_median`/
+    # `normalize_to_median`), not overlay matched to base's absolute level -- this is what makes
     # `compute_brightness_matched_diff`'s own |diff| a scale-invariant fraction-of-median number
     # (comparable across candidates at different absolute brightness levels, not base's own
     # arbitrary units), and lets the vmax below protect either side from oversaturating, not just
     # base.
-    base = _normalize_to_median(base, _robust_median(base.values[overlap_mask]))
-    overlay_display = _normalize_to_median(overlay_display, _robust_median(overlay_on_base_grid.values[overlap_mask]))
+    base = normalize_to_median(base, robust_median(base.values[overlap_mask]))
+    overlay_display = normalize_to_median(overlay_display, robust_median(overlay_on_base_grid.values[overlap_mask]))
 
     # vmax is the larger of the two sides' own post-normalization 99.9th percentile, not base's
     # alone -- so a side that needed a bigger correction (e.g. a much darker overlay) still gets
@@ -862,7 +866,7 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
     base, _, overlay_display, *_ = _prep_overlay_rasters(
         base_raster_path, overlay_raster_path, fill_overlay_nodata=False
     )
-    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=_cellsize_m(base) / 2.0)
+    overlay_aligned = overlay_display.reindex_like(base, method="nearest", tolerance=cellsize_m(base) / 2.0)
 
     a = base.values.astype(np.float64)
     b = overlay_aligned.values.astype(np.float64)
@@ -873,89 +877,6 @@ def compute_brightness_matched_diff(base_raster_path, overlay_raster_path) -> Br
         median_abs_diff=float(np.median(diffs)) if diffs.size else float("nan"),
         valid_pixel_count=int(valid.sum()),
     )
-
-
-def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title: str | None = None):
-    """WAC crop vs. this project's own Hapke hillshade vs. ASP `sfs`'s independent forward-render
-    (`sfs_validation.run_sfs_forward_render`), each independently normalized to its own median.
-
-    :param real_wac_path: WAC crop raster path.
-    :param ours_path: This project's Hapke hillshade raster path.
-    :param sfs_sim_intensity_path: `sfs`'s forward-render intensity raster path, already
-        coverage-masked (`sfs_validation.mask_sfs_uncovered`).
-    :param title: Optional figure title.
-    :returns: The `Figure`.
-    """
-    # Each panel independently normalized to its own valid-pixel median = 1.0 (`_robust_median`/
-    # `_normalize_to_median`, same technique `_prep_overlay_rasters`/`compute_brightness_matched_diff`
-    # use), not `ours`/`sim` matched to `real`'s absolute level -- a shared vmax (the largest of the
-    # three sides' own post-normalization percentile) then protects whichever panel needed the
-    # biggest correction from oversaturating, not just `real`. `sfs_sim_intensity_path` must already
-    # be coverage-masked -- `sfs`'s own literal-`0.0` "outside camera coverage" convention would
-    # otherwise dominate the median and wash out the normalization entirely, the same failure mode
-    # `compute_brightness_matched_diff`'s own docstring warns a mismatched-extent raster can cause.
-    real = _open_raster_dataarray(real_wac_path)
-    tolerance = _cellsize_m(real) / 2.0
-    ours = _open_raster_dataarray(ours_path).reindex_like(real, method="nearest", tolerance=tolerance)
-    sim = _open_raster_dataarray(sfs_sim_intensity_path).reindex_like(real, method="nearest", tolerance=tolerance)
-
-    real_norm = _normalize_to_median(real, _robust_median(real.values))
-    ours_norm = _normalize_to_median(ours, _robust_median(ours.values))
-    sim_norm = _normalize_to_median(sim, _robust_median(sim.values))
-    vmax = max(
-        np.nanpercentile(real_norm.values, 99.5),
-        np.nanpercentile(ours_norm.values, 99.5),
-        np.nanpercentile(sim_norm.values, 99.5),
-    )
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 6))
-    axes[0].imshow(real_norm.values, cmap="gray", vmin=0, vmax=vmax)
-    axes[0].set_title("Real WAC (cam2map)")
-    axes[1].imshow(ours_norm.values, cmap="gray", vmin=0, vmax=vmax)
-    axes[1].set_title("Our Hapke hillshade\n(median-normalized)")
-    axes[2].imshow(sim_norm.values, cmap="gray", vmin=0, vmax=vmax)
-    axes[2].set_title("ASP sfs forward-render\n(median-normalized)")
-    for ax in axes:
-        ax.axis("off")
-    fig.tight_layout()
-    if title:
-        fig.suptitle(title, y=1.05)
-    return fig
-
-
-def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg: np.ndarray, title: str | None = None):
-    """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check: `sfs`'s own
-    independently ray-traced incidence field, `hapke.real_geometry_photometric_angles`'s own
-    field, and their difference.
-
-    :param incidence_sfs_deg: `sfs`'s incidence field, degrees, NaN outside camera coverage
-        (see `incidence_deg_from_lambertian_sim_intensity`).
-    :param incidence_ours_deg: This project's incidence field, degrees, same shape.
-    :param title: Optional figure title.
-    :returns: The `Figure`.
-    """
-    # Both plain arrays, not raster paths, since both are already in-memory by the time a caller has
-    # something to compare.
-    diff_deg = incidence_sfs_deg - incidence_ours_deg
-    vmin = float(np.nanmin([np.nanmin(incidence_sfs_deg), np.nanmin(incidence_ours_deg)]))
-    vmax = float(np.nanmax([np.nanmax(incidence_sfs_deg), np.nanmax(incidence_ours_deg)]))
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    im0 = axes[0].imshow(incidence_sfs_deg, cmap="viridis", vmin=vmin, vmax=vmax)
-    axes[0].set_title("incidence, from sfs\n(Lambertian-mode inversion)")
-    fig.colorbar(im0, ax=axes[0], fraction=0.046)
-    im1 = axes[1].imshow(incidence_ours_deg, cmap="viridis", vmin=vmin, vmax=vmax)
-    axes[1].set_title("incidence, ours\n(real_geometry_photometric_angles)")
-    fig.colorbar(im1, ax=axes[1], fraction=0.046)
-    im2 = axes[2].imshow(diff_deg, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
-    axes[2].set_title("sfs - ours (deg)")
-    fig.colorbar(im2, ax=axes[2], fraction=0.046)
-    for ax in axes:
-        ax.axis("off")
-    fig.tight_layout()
-    if title:
-        fig.suptitle(title, y=1.05)
-    return fig
 
 
 def _overlay_outline_geoseries(overlay):
@@ -1315,8 +1236,8 @@ def plot_render_toggle(
     # the other panels in this notebook, the whole point here is the blink itself; static markers
     # didn't actually help read it and just added clutter.
     #
-    # Each render independently normalized to its own median = 1.0 (`_robust_median`/
-    # `_normalize_to_median`, same technique `_prep_overlay_rasters` uses), not `raster_b_path`
+    # Each render independently normalized to its own median = 1.0 (`robust_median`/
+    # `normalize_to_median`, same technique `_prep_overlay_rasters` uses), not `raster_b_path`
     # matched to `raster_a_path`'s absolute level -- necessary even though both are `sat_sim`
     # renders, since the two can land on very different absolute DN scales depending on their own
     # texture source (e.g. an ISIS-calibrated I/F input, ~0.01-0.2, vs. a synthetic basemap
@@ -1342,8 +1263,8 @@ def plot_render_toggle(
     filled_a = _fill_dead_columns_for_display(data_a, valid_a) if valid_a.any() else data_a
     filled_b = _fill_dead_columns_for_display(data_b, valid_b) if valid_b.any() else data_b
 
-    norm_a = _normalize_to_median(filled_a, _robust_median(filled_a[valid_a]) if valid_a.any() else float("nan"))
-    norm_b = _normalize_to_median(filled_b, _robust_median(filled_b[valid_b]) if valid_b.any() else float("nan"))
+    norm_a = normalize_to_median(filled_a, robust_median(filled_a[valid_a]) if valid_a.any() else float("nan"))
+    norm_b = normalize_to_median(filled_b, robust_median(filled_b[valid_b]) if valid_b.any() else float("nan"))
 
     # vmax is the larger of the two renders' own post-normalization 99.9th percentile, not raster_a's
     # alone -- so whichever side needed the bigger correction still gets enough headroom for its own
@@ -1408,8 +1329,8 @@ def plot_zoom_blink(
     :returns: An `IPython.display.HTML` object -- same requirements/caveats as
         `plot_overlay_toggle`'s own `:returns:` (bare last expression, GIF-rendering viewer needed).
     """
-    # Reuses plot_overlay_toggle's own geo-alignment (_open_raster_dataarray, reindex_like) and
-    # normalization (_robust_median/_normalize_to_median -- see _prep_overlay_rasters's docstring
+    # Reuses plot_overlay_toggle's own geo-alignment (open_raster_dataarray, reindex_like) and
+    # normalization (robust_median/normalize_to_median -- see _prep_overlay_rasters's docstring
     # for why) plus _blink_gif_b64's shared-palette GIF encoding; only the windowing (a small square
     # crop, not the whole footprint) and axis handling (real Easting/Northing km ticks, not a
     # 0-based pixel extent -- these are already-georeferenced map-projected rasters, unlike
@@ -1420,20 +1341,20 @@ def plot_zoom_blink(
     # guaranteed to be centered on the actual candidate footprint; a padded/unioned basemap AOI's own
     # array center can sit several km off that footprint's true center (confirmed live: up to ~10km
     # for this project's default candidate), so anchoring on it instead could crop mostly-nodata.
-    a = _open_raster_dataarray(raster_a_path)
-    b = _open_raster_dataarray(raster_b_path)
+    a = open_raster_dataarray(raster_a_path)
+    b = open_raster_dataarray(raster_b_path)
 
     half = crop_px // 2
     cy, cx = b.sizes["y"] // 2, b.sizes["x"] // 2
     b_crop = b.isel(y=slice(max(0, cy - half), cy - half + crop_px), x=slice(max(0, cx - half), cx - half + crop_px))
 
-    tolerance = _cellsize_m(b) / 2.0
+    tolerance = cellsize_m(b) / 2.0
     a_crop = a.reindex_like(b_crop, method="nearest", tolerance=tolerance)
 
     # Each side independently normalized to its own median = 1.0, not a_crop matched to b_crop's
     # absolute level -- see _prep_overlay_rasters's own docstring for why.
-    b_crop = _normalize_to_median(b_crop, _robust_median(b_crop.values))
-    a_crop = _normalize_to_median(a_crop, _robust_median(a_crop.values))
+    b_crop = normalize_to_median(b_crop, robust_median(b_crop.values))
+    a_crop = normalize_to_median(a_crop, robust_median(a_crop.values))
 
     # vmin=0 (not an affine min-max stretch -- an affine stretch would clip genuinely dark-but-real
     # terrain to black), vmax the larger of the two sides' own post-normalization 99.9th percentile
@@ -1469,165 +1390,3 @@ def plot_zoom_blink(
     gif_b64 = _blink_gif_b64(frame_b, frame_a, show_a_first, blink_interval_ms)
     html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
     return IPython.display.HTML(html)
-
-
-def plot_sun_elevation_vs_edr_count(
-    orbits_df: pd.DataFrame,
-    period_start: datetime,
-    period_end: datetime,
-    sun_elev_bin_width_deg: float = 10.0,
-    figsize: tuple[float, float] = (10, 7),
-) -> None:
-    """2D histogram (`notebooks/select_datasets.py`): how much sun elevation at the illuminated node
-    buys you, in terms of acceptable-EDR yield.
-
-    :param orbits_df: `dataset_selection.find_orbits`'s rows.
-    :param period_start: Period start (for the title).
-    :param period_end: Period end (for the title).
-    :param sun_elev_bin_width_deg: Sun-elevation bin width, degrees (0-90).
-    :param figsize: Figure size.
-    """
-    # x = sun-elevation bin, y = exact acceptable-EDR count (`orbits_df["acceptable_edr_count"]`, one
-    # bin per integer value), colored by orbit count per cell.
-    sun_elev_bins = np.arange(0, 91, sun_elev_bin_width_deg)
-    max_edr_count = int(orbits_df["acceptable_edr_count"].max())
-    edr_count_bins = np.arange(-0.5, max_edr_count + 1.5, 1)  # one bin per integer count, 0..max_edr_count
-
-    fig, ax = plt.subplots(figsize=figsize)
-    _, _, _, hist_image = ax.hist2d(
-        orbits_df["illum_sun_elev_deg"],
-        orbits_df["acceptable_edr_count"],
-        bins=[sun_elev_bins, edr_count_bins],
-        cmap="viridis",
-    )
-    fig.colorbar(hist_image, ax=ax, label="orbit count")
-
-    ax.set_xticks(sun_elev_bins)
-    ax.set_yticks(np.arange(0, max_edr_count + 1, 1))
-    ax.set_xlabel("sun elevation at illuminated node (deg)")
-    ax.set_ylabel("acceptable WAC EDR count")
-    ax.set_title(f"Sun elevation vs. acceptable EDR count, {period_start.date()}–{period_end.date()}")
-    fig.tight_layout()
-
-
-def _underline_segments(
-    start_lon: float, start_y: float, end_lon: float, end_y: float
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Segments for a line from `(start_lon, start_y)` to `(end_lon, end_y)`, broken at the +/-180
-    wraparound rather than drawn as one line straight across the plot.
-
-    :param start_lon: Start longitude, degrees.
-    :param start_y: Start y-value.
-    :param end_lon: End longitude, degrees.
-    :param end_y: End y-value.
-    :returns: One or two line segments, each `((x0, y0), (x1, y1))`.
-    """
-    # See `plot_illuminated_node_scatter`'s own trailing comment for why this exists.
-    end_lon_unwrapped = illumination.unwrap_relative_deg(start_lon, end_lon)
-    if end_lon_unwrapped == start_lon:
-        return [((start_lon, start_y), (end_lon, end_y))]
-
-    boundary = 180.0 if end_lon_unwrapped > start_lon else -180.0
-    crosses = min(start_lon, end_lon_unwrapped) <= boundary <= max(start_lon, end_lon_unwrapped)
-    if not crosses:
-        return [((start_lon, start_y), (end_lon, end_y))]
-
-    frac = (boundary - start_lon) / (end_lon_unwrapped - start_lon)
-    y_at_boundary = start_y + frac * (end_y - start_y)
-    return [
-        ((start_lon, start_y), (boundary, y_at_boundary)),
-        ((-boundary, y_at_boundary), (end_lon, end_y)),
-    ]
-
-
-def plot_illuminated_node_scatter(
-    orbits_df: pd.DataFrame,
-    period_start: datetime,
-    period_end: datetime,
-    selected_datasets: pd.DataFrame | None = None,
-    figsize: tuple[float, float] = (20, 6),
-    underline_offset_deg: float = 4.0,
-    dataset_group_size: int = 10,
-    dataset_group_colors: tuple[str, str] = ("#000000", "#808080"),
-) -> None:
-    """One marker per orbit (`notebooks/select_datasets.py`): x = illuminated-node longitude, y =
-    solar hour angle at that node.
-
-    :param orbits_df: `dataset_selection.find_orbits`'s rows.
-    :param period_start: Period start (for the title).
-    :param period_end: Period end (for the title).
-    :param selected_datasets: `dataset_selection.select_diverse_datasets`'s output; if given, each
-        selected dataset gets an "underline" marking its span.
-    :param figsize: Figure size.
-    :param underline_offset_deg: Vertical offset of the underline below the orbit markers.
-    :param dataset_group_size: Number of `selected_datasets` picks (by pick order) in the first
-        underline color group; the rest use the second.
-    :param dataset_group_colors: `(first_group_color, rest_color)`.
-    """
-    # Circles colored by acceptable-EDR count (viridis -- perceptually uniform and varies in hue as
-    # well as lightness, easier to read a value back off a marker's color than a ramp that only
-    # varies in lightness, and its dark-purple low end is never invisible against the white figure
-    # background either); a red X overrides the circle for any orbit flagged as containing a
-    # maneuver. No connecting line between orbits -- markers stay individually resolvable at ~13
-    # orbits/day, so consecutive orbits are already easy to associate visually without one.
-    #
-    # Each underline reads as marking a dataset's own span on the plot rather than sitting on top of
-    # (and hiding) the markers themselves. Broken at the +/-180 wraparound via
-    # `illumination.unwrap_relative_deg` (`_underline_segments`) -- draw in an unwrapped coordinate,
-    # then clip/split wherever that crosses +/-180, rather than drawing one spurious line across the
-    # whole plot. `dataset_group_colors` (black/medium-grey by default) was chosen to read
-    # unambiguously at a glance and stay clearly distinct from viridis's own purple/teal/green/yellow
-    # gamut and from the red maneuver X's (an earlier orange/magenta pairing was hard to tell apart).
-    x = orbits_df["illum_lon_deg"].to_numpy()
-    y = orbits_df["hour_angle_deg"].to_numpy()
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    no_maneuver = ~orbits_df["has_maneuver"].to_numpy()
-    scatter = ax.scatter(
-        x[no_maneuver],
-        y[no_maneuver],
-        c=orbits_df["acceptable_edr_count"].to_numpy()[no_maneuver],
-        cmap="viridis",
-        s=6,
-        linewidths=0,
-        zorder=2,
-    )
-    count_cbar = fig.colorbar(scatter, ax=ax, orientation="horizontal", pad=0.14, aspect=60, shrink=0.6)
-    count_cbar.set_label("acceptable WAC EDR count (marker)")
-
-    maneuver = orbits_df["has_maneuver"].to_numpy()
-    ax.scatter(
-        x[maneuver], y[maneuver], marker="x", color="#e34948", s=55, linewidths=1.8, zorder=4, label="maneuver in orbit"
-    )
-
-    if selected_datasets is not None:
-        group_labeled = [False, False]
-        n = len(selected_datasets)
-        for i, row in selected_datasets.iterrows():
-            start_orbit = orbits_df.iloc[row["start_idx"]]
-            end_orbit = orbits_df.iloc[row["end_idx"]]
-            group = 0 if i < dataset_group_size else 1
-            label = None
-            if not group_labeled[group]:
-                label = f"dataset 1-{dataset_group_size}" if group == 0 else f"dataset {dataset_group_size + 1}-{n}"
-                group_labeled[group] = True
-            for (x0, y0), (x1, y1) in _underline_segments(
-                start_orbit["illum_lon_deg"],
-                start_orbit["hour_angle_deg"] - underline_offset_deg,
-                end_orbit["illum_lon_deg"],
-                end_orbit["hour_angle_deg"] - underline_offset_deg,
-            ):
-                ax.plot([x0, x1], [y0, y1], color=dataset_group_colors[group], linewidth=2.5, zorder=3, label=label)
-                label = None  # only the first segment of the first dataset in each group gets a legend entry
-
-    ax.set_xlim(-180, 180)
-    ax.set_ylim(-90, 90)
-    ax.set_xticks(np.arange(-180, 181, 45))
-    ax.set_yticks(np.arange(-90, 91, 30))
-    ax.set_xlabel("longitude of illuminated node (deg)")
-    ax.set_ylabel("solar hour angle at illuminated node (deg)")
-    ax.set_title(f"LRO orbits, {period_start.date()}–{period_end.date()}: illuminated-node geometry")
-    ax.axhline(0, color="0.85", lw=0.8, zorder=0)
-    ax.legend(loc="upper right")
-    fig.tight_layout()

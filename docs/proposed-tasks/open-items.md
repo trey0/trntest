@@ -19,6 +19,11 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   split across `dem_gld100`/`ortho_wac_emp`/`lunaserv_wms`/`hapke`/`dem_ortho`/`geo_utils` (see
   `docs/history.md`'s Phase 96 entry). Same deferred-until-the-final-pass treatment as the bullet
   above, for the same reason.
+- `notebooks/select_datasets.py` calls `plotting.plot_sun_elevation_vs_edr_count`/
+  `plotting.plot_illuminated_node_scatter`, and `notebooks/sfs_validation.py` calls
+  `plotting.plot_sfs_comparison`/`plotting.plot_incidence_validation` — all four moved to
+  `dataset_selection_plots.py`/`sfs_plotting.py` respectively (task 4, `docs/history.md`'s Phase 98
+  entry). Same deferred-until-the-final-pass treatment as the bullets above, for the same reason.
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
@@ -104,7 +109,10 @@ import the old `lunaserv` module, from task 2).
 **Task 3 (`wac.py` deletion, `dataset.py` → `candidate_window.py`, `product_registry.py` →
 `product_io.py`) is done** — see `docs/history.md`'s Phase 97 entry.
 
-Tasks 4-6 below are intentionally left light, since their exact boundaries depend on decisions made
+**Task 4 (splitting `plotting.py` into `plotting.py`/`sfs_plotting.py`/`dataset_selection_plots.py`)
+is done** — see `docs/history.md`'s Phase 98 entry.
+
+Tasks 5-6 below are intentionally left light, since their exact boundaries depend on decisions made
 while tackling the earlier ones.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
@@ -132,7 +140,7 @@ actually done, not before.
 | `dataset_selection.py` | `dataset_selection.py` (unchanged) | names the purpose (which datasets to select), not the technical approach (orbit-level) — keep it |
 | `trn_dataset.py` | `trn_dataset.py` (unchanged) | only confusing in contrast to `dataset.py`; now that's renamed this one reads fine as "the `TrnTestDataSet` module" |
 | `product_registry.py` **(done)** | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
-| `plotting.py` | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
+| `plotting.py` **(done)** | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
 | `trn_dataset.py`'s product classes | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
 | `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files — see task 6 below; `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
 
@@ -143,17 +151,6 @@ notebook rename is a jupytext-pair regeneration plus a README table edit for cos
 not worth doing as part of this reorganization.
 
 **Task 3 (`wac.py` deletion + rename cleanup) is done** — see `docs/history.md`'s Phase 97 entry.
-
-### Task 4: split `plotting.py`
-
-1634 lines, docstring-described as "matplotlib display helpers for the notebook" but actually four
-distinct audiences: generic raster-display primitives, generator-comparison figures
-(`plot_render_vs_basemap`/`plot_overlay*`/`plot_zoom_blink`/`compute_brightness_matched_diff` — what
-`image_generation.py`/reports need), SFS-validation-only plots (`plot_sfs_comparison`/
-`plot_incidence_validation`), and dataset-selection scatter plots (`plot_sun_elevation_vs_edr_count`/
-`plot_illuminated_node_scatter`, the only reason this file depends on `illumination.py` at all). Keep
-the first two audiences in `plotting.py`; move the other two to `sfs_plotting.py`/
-`dataset_selection_plots.py` per the naming table.
 
 ### Task 5: split `trn_dataset.py`'s product classes into `trn_products.py`
 
