@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import spiceypy as spice
 
-from trntest import cache, dataset
+from trntest import cache, candidate_window
 from trntest.config import TrntestConfig
 
 
@@ -17,7 +17,7 @@ def test_throttle_by_time_keeps_first_and_filters_close_followers():
             "product_id": ["a", "b", "c", "d"],
         }
     )
-    throttled = dataset.throttle_by_time(images, min_gap_minutes=5.0)
+    throttled = candidate_window.throttle_by_time(images, min_gap_minutes=5.0)
     assert list(throttled["product_id"]) == ["a", "c"]
 
 
@@ -29,7 +29,7 @@ def test_throttle_by_time_sorts_before_throttling():
             "product_id": ["late", "early"],
         }
     )
-    throttled = dataset.throttle_by_time(images, min_gap_minutes=5.0)
+    throttled = candidate_window.throttle_by_time(images, min_gap_minutes=5.0)
     assert list(throttled["product_id"]) == ["early", "late"]
 
 
@@ -40,7 +40,7 @@ def test_prefilter_by_catalog_metadata_keeps_only_plausible_sun_elevation():
     candidates = pd.DataFrame(
         {"product_id": ["dark", "bright", "borderline"], "incidence_angle_deg": [80.0, 70.0, 78.0]}
     )
-    result = dataset._prefilter_by_catalog_metadata(
+    result = candidate_window._prefilter_by_catalog_metadata(
         candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=None, margin_deg=5.0
     )
     assert list(result["product_id"]) == ["bright", "borderline"]
@@ -55,13 +55,13 @@ def test_prefilter_by_catalog_metadata_emission_angle_is_opt_in():
         }
     )
     # None (default) -- emission angle not enforced, both kept.
-    no_filter = dataset._prefilter_by_catalog_metadata(
+    no_filter = candidate_window._prefilter_by_catalog_metadata(
         candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=None, margin_deg=5.0
     )
     assert list(no_filter["product_id"]) == ["nadir", "off_nadir"]
 
     # Given a real cutoff, the clearly-off-nadir one (30deg, well past 15+5 margin) is dropped.
-    with_filter = dataset._prefilter_by_catalog_metadata(
+    with_filter = candidate_window._prefilter_by_catalog_metadata(
         candidates, min_sun_elevation_deg=15.0, max_emission_angle_deg=15.0, margin_deg=5.0
     )
     assert list(with_filter["product_id"]) == ["nadir"]
@@ -93,12 +93,12 @@ def test_write_read_manifest_round_trip(tmp_path):
                 "center_lon_deg": 228.5,
             }
         ],
-        columns=dataset.DATASET_COLUMNS,
+        columns=candidate_window.DATASET_COLUMNS,
     )
 
     path = tmp_path / "manifest.csv"
-    dataset.write_manifest(images, path)
-    round_tripped = dataset.read_manifest(path)
+    candidate_window.write_manifest(images, path)
+    round_tripped = candidate_window.read_manifest(path)
 
     assert list(round_tripped.columns) == list(images.columns)
     assert round_tripped.loc[0, "product_id"] == "M1TEST"
@@ -124,10 +124,10 @@ def test_evaluate_illuminated_candidates_lets_fetch_error_abort_the_whole_sweep(
             "sun_elevation_deg": 20.0,
         }
 
-    monkeypatch.setattr(dataset, "evaluate_candidate_image", fake_evaluate)
+    monkeypatch.setattr(candidate_window, "evaluate_candidate_image", fake_evaluate)
 
     with pytest.raises(cache.FetchError):
-        dataset._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
+        candidate_window._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
 
 
 def test_evaluate_illuminated_candidates_skips_only_the_two_anticipated_exception_types(monkeypatch):
@@ -148,9 +148,9 @@ def test_evaluate_illuminated_candidates_skips_only_the_two_anticipated_exceptio
             "sun_elevation_deg": 20.0,
         }
 
-    monkeypatch.setattr(dataset, "evaluate_candidate_image", fake_evaluate)
+    monkeypatch.setattr(candidate_window, "evaluate_candidate_image", fake_evaluate)
 
-    result = dataset._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
+    result = candidate_window._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
 
     assert list(result["product_id"]) == ["c"]
 
@@ -164,10 +164,10 @@ def test_evaluate_illuminated_candidates_lets_other_errors_abort_the_sweep(monke
     def fake_evaluate(edr_row, config, min_sun_elevation_deg):
         raise KeyError("simulated real bug, e.g. a typo'd dict key")
 
-    monkeypatch.setattr(dataset, "evaluate_candidate_image", fake_evaluate)
+    monkeypatch.setattr(candidate_window, "evaluate_candidate_image", fake_evaluate)
 
     with pytest.raises(KeyError):
-        dataset._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
+        candidate_window._evaluate_illuminated_candidates(edr_candidates, config=None, min_sun_elevation_deg=10.0)
 
 
 def test_generate_dataset_lets_fetch_error_abort_the_whole_batch(monkeypatch):
@@ -186,10 +186,12 @@ def test_generate_dataset_lets_fetch_error_abort_the_whole_batch(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(dataset.camera, "build_camera", mock.Mock(side_effect=cache.FetchError("simulated rate limit")))
+    monkeypatch.setattr(
+        candidate_window.camera, "build_camera", mock.Mock(side_effect=cache.FetchError("simulated rate limit"))
+    )
 
     with pytest.raises(cache.FetchError):
-        dataset.generate_dataset(images, config=TrntestConfig())
+        candidate_window.generate_dataset(images, config=TrntestConfig())
 
 
 def test_generate_dataset_still_records_the_anticipated_dem_coverage_value_error(monkeypatch):
@@ -210,10 +212,10 @@ def test_generate_dataset_still_records_the_anticipated_dem_coverage_value_error
         ]
     )
     monkeypatch.setattr(
-        dataset.camera, "build_camera", mock.Mock(side_effect=ValueError("simulated DEM coverage problem"))
+        candidate_window.camera, "build_camera", mock.Mock(side_effect=ValueError("simulated DEM coverage problem"))
     )
 
-    results = dataset.generate_dataset(images, config=TrntestConfig())
+    results = candidate_window.generate_dataset(images, config=TrntestConfig())
 
     assert results == []
 
@@ -236,8 +238,10 @@ def test_generate_dataset_lets_other_errors_abort_the_batch(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        dataset.camera, "build_camera", mock.Mock(side_effect=KeyError("simulated real bug, e.g. a typo'd dict key"))
+        candidate_window.camera,
+        "build_camera",
+        mock.Mock(side_effect=KeyError("simulated real bug, e.g. a typo'd dict key")),
     )
 
     with pytest.raises(KeyError):
-        dataset.generate_dataset(images, config=TrntestConfig())
+        candidate_window.generate_dataset(images, config=TrntestConfig())

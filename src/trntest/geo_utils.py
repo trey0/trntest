@@ -1,7 +1,7 @@
 """Generic CRS/bbox/reprojection math shared by every DEM/ortho data-source module
 (`dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`) and by `isis_wac.py`'s own DEM sampling --
 none of it is specific to any one data source. Deliberately dependency-free (no other `trntest`
-module beyond `config`/`product_registry`), so nothing here can create an import cycle.
+module beyond `config`/`product_io`), so nothing here can create an import cycle.
 """
 
 import math
@@ -13,7 +13,7 @@ from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import Resampling, reproject
 
 from trntest.config import MOON_RADIUS_M
-from trntest.product_registry import atomic_publish
+from trntest.product_io import atomic_publish
 
 # A small pad applied before checking/fetching a data source's own coverage, accounting for a
 # resampling kernel needing neighbor samples just past the destination edge -- shared by

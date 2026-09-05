@@ -52,7 +52,7 @@ import pandas as pd
 from huey import SqliteHuey
 from huey.exceptions import TaskException
 
-from trntest import cache, crater_depth, craters, dem_gld100, dem_ortho, geo_utils, product_registry, tasks
+from trntest import cache, crater_depth, craters, dem_gld100, dem_ortho, geo_utils, product_io, tasks
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 
 _config = load_config()
@@ -181,7 +181,7 @@ def _crater_ellipse_fits(polygon_local, dst_bbox_m: tuple, buffer_m: float) -> b
     return outer_minx >= minx and outer_miny >= miny and outer_maxx <= maxx and outer_maxy <= maxy
 
 
-@product_registry.writes_product("crater_depth_tile")
+@product_io.writes_product("crater_depth_tile")
 def grade_tile(
     lon_min: float,
     lat_min: float,
@@ -452,7 +452,7 @@ def _grade_and_publish_tile(
         padded_tile_size_deg=padded_tile_size_deg,
         target_gsd_m=target_gsd_m,
     )
-    with product_registry.atomic_publish(dest) as tmp:
+    with product_io.atomic_publish(dest) as tmp:
         df.to_csv(tmp, index=False)
     return str(dest)
 
@@ -564,7 +564,7 @@ def grade_database_via_workers(
     return len(to_enqueue)
 
 
-@product_registry.reads_product("crater_depth_tile")
+@product_io.reads_product("crater_depth_tile")
 def load_graded_database(output_dir: Path) -> pd.DataFrame:
     """Concatenate every tile's CSV file under `output_dir` into one `DataFrame`.
 
@@ -581,7 +581,7 @@ def load_graded_database(output_dir: Path) -> pd.DataFrame:
     return pd.concat([pd.read_csv(p) for p in tile_paths], ignore_index=True)
 
 
-@product_registry.writes_product("robbins_with_depth")
+@product_io.writes_product("robbins_with_depth")
 def consolidate_graded_geopackage(
     config: TrntestConfig | None = None,
     output_dir: Path | None = None,
@@ -639,6 +639,6 @@ def consolidate_graded_geopackage(
     joined["sharpness"] = crater_depth.sharpness_ratio(joined["depth_m"], joined["DIAM_CIRC_IMG"])
 
     dest = output_dir / "robbins_with_depth.gpkg"
-    with product_registry.atomic_publish(dest) as tmp:
+    with product_io.atomic_publish(dest) as tmp:
         joined.to_file(tmp, driver="GPKG")
     return dest

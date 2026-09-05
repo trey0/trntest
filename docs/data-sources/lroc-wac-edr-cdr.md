@@ -57,10 +57,11 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   `camera.boresight_rotation_k(r_cam_to_me_raw, forward_step_me_km)` measures, per-pose, which raw
   axis "forward in time" actually projects onto via real SPICE trajectory data, instead of assuming
   a constant; `camera.Camera.reverse_crop_along_track` (derived from it) tells
-  `wac.fetch_vis_mosaic` to reverse along-track frame-stacking order (`vis[::-1]`) when this pass's
-  real ground-track direction doesn't match the original reference convention. `tie_points.py`
-  (`reverse` parameter) and `orientation.py` (crop `up_orig`) both stay consistent with whichever
-  stacking order `wac.py` used for a given pose. `crop_footprint_corners` needs no such handling —
+  `isis_wac.run_pipeline`'s `flip` parameter to reverse along-track frame order (`framestitch`'s
+  FLIP) when this pass's real ground-track direction doesn't match the original reference
+  convention. `tie_points.py` (`reverse` parameter) and `orientation.py` (crop `up_orig`) both stay
+  consistent with whichever stacking order applied for a given pose. `crop_footprint_corners` needs
+  no such handling —
   it's pure ground geometry (lon/lat), independent of pixel row/reversal.
 
 ## Reference/regression-test EDR products

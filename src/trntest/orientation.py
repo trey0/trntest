@@ -113,10 +113,10 @@ def compute_display_rotations(
 
     crop_center_lon, crop_center_lat = crop_corners["center"]
     north_crop = north_tangent_km(tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat))
-    # "Up" for k=0 (row 0 at the top) is backward in time when `wac.fetch_vis_mosaic` stacked frames
-    # in their natural order, but forward in time when it stacked them in reverse
-    # (`camera.reverse_crop_along_track`) -- must track whichever that module actually did for this
-    # pass, not a fixed raw-camera-axis assumption (pass/yaw-dependent, not hardware-fixed -- see
+    # "Up" for k=0 (row 0 at the top) is backward in time when the crop's frames stack in their
+    # natural order, but forward in time when `camera.reverse_crop_along_track` stacks them in
+    # reverse -- must track whichever direction actually applies for this pass, not a fixed
+    # raw-camera-axis assumption (pass/yaw-dependent, not hardware-fixed -- see
     # `camera.boresight_rotation_k`'s docstring and docs/data-sources/lroc-wac-edr-cdr.md's
     # "Pass-dependent sensor axis convention").
     forward_step_km = ground_track_step_km(frame_timing, camera.center_frame_index)

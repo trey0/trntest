@@ -211,14 +211,14 @@ lint's notebook checks).
 |---|---|
 | [`cache.py`][cache.py] | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see [`docs/caching.md`](docs/caching.md). |
 | [`camera.py`][camera.py] | Poses the synthetic camera from SPICE trajectory/orientation data (`build_camera`) and solves its corrected FOV (`solve_corrected_fov`) — see [`docs/reproject-fov-investigation.md`](docs/reproject-fov-investigation.md). |
+| [`candidate_window.py`][candidate_window.py] | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
 | [`catalog.py`][catalog.py] | PDS ODE REST API client — lists EDR/CDR products by time range, matches EDR↔CDR pairs (`list_products`, `find_matching_cdr`). |
 | [`config.py`][config.py] | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
 | [`control_network.py`][control_network.py] | Converts `pose_alignment.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`crater_depth.py`][crater_depth.py] | Robbins-crater depth measurement off a DEM (Breton et al. 2019) and the Stoffler et al. 2006 fresh-crater reference depth, for a `sharpness_ratio` grade — see [`docs/crater-grading.md`](docs/crater-grading.md). |
 | [`crater_depth_batch.py`][crater_depth_batch.py] | Whole-database crater-depth precompute, tiled for cache coherence — see [`docs/crater-grading.md`](docs/crater-grading.md). Not yet run across the full database. |
 | [`craters.py`][craters.py] | Robbins craters catalog overlay: fetches/caches the PDS4 CSV, builds a spatially-indexed GeoPackage, and returns ellipse polygons for a raster's footprint (`crater_overlay_layer`) — see [`docs/data-sources/robbins-craters.md`](docs/data-sources/robbins-craters.md). |
-| [`dataset.py`][dataset.py] | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
-| [`dataset_selection.py`][dataset_selection.py] | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `dataset.py`. |
+| [`dataset_selection.py`][dataset_selection.py] | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `candidate_window.py`. |
 | [`dem_gld100.py`][dem_gld100.py] | Live default DEM source: fetches/caches USGS Astropedia's flat-file GLD100 DEM and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md). |
 | [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
 | [`geo_utils.py`][geo_utils.py] | Generic CRS/bbox/reprojection math (`geographic_crs`, `local_orthographic_crs`, `pad_bbox`, `reproject_raster_to_local_grid`, ...) shared by every DEM/ortho data-source module — dependency-free by design. |
@@ -232,7 +232,7 @@ lint's notebook checks).
 | [`ortho_wac_emp.py`][ortho_wac_emp.py] | Live default ortho/texture source: fetches/caches WAC_EMP's own PDS4 archive tile directly (no Lunaserv WMS display stretch) and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
 | [`plotting.py`][plotting.py] | Comparison-figure plotting: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`), a quantitative brightness diff (`compute_brightness_matched_diff`), and dataset-selection scatter plots. |
 | [`pose_alignment.py`][pose_alignment.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
-| [`product_registry.py`][product_registry.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
+| [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
 | [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content itself is still a first-pass minimal template. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
@@ -242,18 +242,18 @@ lint's notebook checks).
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
 | [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestProduct` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. `TrnTestProduct` covers all four product types (`TrnTestImage` subclasses `crop`/`hillshade`/`reproject`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
-| [`wac.py`][wac.py] | Extracts a band-separated VIS mosaic from a WAC CDR product via manual byte offsets (`fetch_vis_mosaic`) — superseded by `isis_wac.py` as the demo's real-WAC comparison method, kept for its own test coverage. |
 | [`wac_camera_model.py`][wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
+| [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
 [cache.py]: src/trntest/cache.py
 [camera.py]: src/trntest/camera.py
+[candidate_window.py]: src/trntest/candidate_window.py
 [catalog.py]: src/trntest/catalog.py
 [config.py]: src/trntest/config.py
 [control_network.py]: src/trntest/control_network.py
 [crater_depth.py]: src/trntest/crater_depth.py
 [crater_depth_batch.py]: src/trntest/crater_depth_batch.py
 [craters.py]: src/trntest/craters.py
-[dataset.py]: src/trntest/dataset.py
 [dataset_selection.py]: src/trntest/dataset_selection.py
 [dem_gld100.py]: src/trntest/dem_gld100.py
 [dem_ortho.py]: src/trntest/dem_ortho.py
@@ -268,7 +268,7 @@ lint's notebook checks).
 [ortho_wac_emp.py]: src/trntest/ortho_wac_emp.py
 [plotting.py]: src/trntest/plotting.py
 [pose_alignment.py]: src/trntest/pose_alignment.py
-[product_registry.py]: src/trntest/product_registry.py
+[product_io.py]: src/trntest/product_io.py
 [render.py]: src/trntest/render.py
 [report.py]: src/trntest/report.py
 [session.py]: src/trntest/session.py
@@ -278,8 +278,8 @@ lint's notebook checks).
 [tasks.py]: src/trntest/tasks.py
 [tie_points.py]: src/trntest/tie_points.py
 [trn_dataset.py]: src/trntest/trn_dataset.py
-[wac.py]: src/trntest/wac.py
 [wac_camera_model.py]: src/trntest/wac_camera_model.py
+[wac_format.py]: src/trntest/wac_format.py
 
 ## Development history
 

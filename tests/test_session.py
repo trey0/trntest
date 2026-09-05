@@ -82,16 +82,6 @@ def test_compute_display_rotations_delegates_with_config():
     assert result == "rotations-sentinel"
 
 
-def test_fetch_vis_mosaic_delegates_with_config():
-    config = TrntestConfig()
-    session = Session(config=config)
-    with mock.patch("trntest.session.wac.fetch_vis_mosaic") as mock_fn:
-        mock_fn.return_value = "mosaic-sentinel"
-        result = session.fetch_vis_mosaic("camera-sentinel")
-    mock_fn.assert_called_once_with("camera-sentinel", config=config)
-    assert result == "mosaic-sentinel"
-
-
 def test_fetch_and_furnish_delegates_with_config():
     config = TrntestConfig()
     session = Session(config=config)

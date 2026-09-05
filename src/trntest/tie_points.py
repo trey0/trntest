@@ -31,7 +31,7 @@ import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import geo_utils, isis_campt, isis_wac, wac, wac_camera_model
+from trntest import geo_utils, isis_campt, isis_wac, wac_camera_model, wac_format
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -130,7 +130,7 @@ def crop_footprint_corners_for_camera(
     config = config or load_config()
     stitched = isis_wac.run_pipeline(camera.reverse_crop_along_track, frame_timing, config)
     crop = isis_wac.crop_for_camera(stitched, camera, config)
-    height = camera.n_frames_for_square_crop * isis_wac.VIS_BLOCK_HEIGHT
+    height = camera.n_frames_for_square_crop * wac_format.VIS_BLOCK_HEIGHT
     m = _CROP_EDGE_MARGIN_PX
 
     def real_ground(sample: float, line: float) -> tuple:
@@ -138,10 +138,10 @@ def crop_footprint_corners_for_camera(
 
     return {
         "top_left": real_ground(1 + m, 1 + m),
-        "top_right": real_ground(isis_wac.SAMPLES - m, 1 + m),
-        "bottom_right": real_ground(isis_wac.SAMPLES - m, height - m),
+        "top_right": real_ground(wac_format.SAMPLES - m, 1 + m),
+        "bottom_right": real_ground(wac_format.SAMPLES - m, height - m),
         "bottom_left": real_ground(1 + m, height - m),
-        "center": real_ground(isis_wac.SAMPLES / 2.0, height / 2.0),
+        "center": real_ground(wac_format.SAMPLES / 2.0, height / 2.0),
     }
 
 
@@ -169,18 +169,18 @@ def _crop_pixel_at_frame(
     Cross-track column (pinhole formula, cross-track = camera Y) + row (linear frame-to-row mapping)
     for a ground point, given the along-track-matching frame index has already been found.
 
-    :param reverse: must match `wac.fetch_vis_mosaic`'s `camera_pose.reverse_crop_along_track` for
-        this product/pose -- when the mosaic's frames were stacked in reverse along-track order, row
-        is measured from the far end (`start_frame + n_frames`) instead of `start_frame`.
+    :param reverse: must match `camera_pose.reverse_crop_along_track` for this product/pose --
+        when frames are stacked in reverse along-track order, row is measured from the far end
+        (`start_frame + n_frames`) instead of `start_frame`.
     """
     et = frame_et(frame_timing, frame_index)
     c_m, r_cam_to_me, _, _ = camera_pose_moon_me(et)
     v_cam = r_cam_to_me.T @ (ground_km - c_m / 1000.0)
-    fu_real = (wac.SAMPLES / 2.0) / np.tan(half_angle_rad)
-    cu_real = wac.SAMPLES / 2.0
+    fu_real = (wac_format.SAMPLES / 2.0) / np.tan(half_angle_rad)
+    cu_real = wac_format.SAMPLES / 2.0
     col = fu_real * (v_cam[1] / v_cam[2]) + cu_real
     offset = frame_index - start_frame
-    row = (n_frames - offset if reverse else offset) * wac.VIS_BLOCK_HEIGHT
+    row = (n_frames - offset if reverse else offset) * wac_format.VIS_BLOCK_HEIGHT
     return col, row
 
 

@@ -11,7 +11,7 @@ multi-worker parallel population, use `populate_via_workers()` instead.
 `PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade", "report")`;
 `reproject` is implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
 """
-# An incrementally/resumably populated alternative to dataset.generate_dataset()'s flat,
+# An incrementally/resumably populated alternative to candidate_window.generate_dataset()'s flat,
 # all-at-once output layout, driven by trntest.tasks's huey task queue -- see that module's
 # docstring for the full design, and README.md's trn_dataset.py/tasks.py rows for the current
 # architecture summary.
@@ -43,7 +43,18 @@ from huey.api import Result, TaskWrapper
 from huey.exceptions import TaskException
 
 from trntest import camera as camera_module
-from trntest import dataset, dem_ortho, hapke, isis_campt, isis_wac, orientation, plotting, render, tasks, tie_points
+from trntest import (
+    candidate_window,
+    dem_ortho,
+    hapke,
+    isis_campt,
+    isis_wac,
+    orientation,
+    plotting,
+    render,
+    tasks,
+    tie_points,
+)
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
@@ -76,7 +87,9 @@ class TrnTestEntry:
 
     @functools.cached_property
     def per_image_config(self) -> TrntestConfig:
-        return dataset._per_image_config(self.row, self.config, self.dataset_folder / "_work" / self.edr_product)
+        return candidate_window._per_image_config(
+            self.row, self.config, self.dataset_folder / "_work" / self.edr_product
+        )
 
     @functools.cached_property
     def frame_timing(self) -> FrameTiming:
@@ -159,7 +172,7 @@ class TrnTestDataSet:
     subfolders. Iterating/indexing yields `TrnTestEntry` objects; `populate()` drives the task
     queue until nothing's left `pending`."""
 
-    # manifest.csv matches dataset.DATASET_COLUMNS' shape (dataset.write_manifest/read_manifest).
+    # manifest.csv matches candidate_window.DATASET_COLUMNS' shape (candidate_window.write_manifest/read_manifest).
     # Task-queue state itself lives outside the dataset folder -- see trntest.tasks's docstring for
     # why.
 
@@ -177,7 +190,7 @@ class TrnTestDataSet:
         folder = Path(folder)
         for sub in ("crop", "hillshade", "reproject", "reports", "_work"):
             (folder / sub).mkdir(parents=True, exist_ok=True)
-        dataset.write_manifest(images, folder / "manifest.csv")
+        candidate_window.write_manifest(images, folder / "manifest.csv")
         return cls(folder, images, config)
 
     @classmethod
@@ -185,7 +198,7 @@ class TrnTestDataSet:
         """Reads `manifest.csv` from an existing folder -- no `images` needed."""
         config = config or load_config()
         folder = Path(folder)
-        images = dataset.read_manifest(folder / "manifest.csv")
+        images = candidate_window.read_manifest(folder / "manifest.csv")
         return cls(folder, images, config)
 
     def __len__(self) -> int:

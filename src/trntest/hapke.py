@@ -21,7 +21,7 @@ from rasterio.warp import transform
 from trntest import illumination, isis_wac
 from trntest.config import MOON_RADIUS_M, TrntestConfig
 from trntest.geo_utils import geographic_crs, local_orthographic_crs, moon_geocentric_crs
-from trntest.product_registry import atomic_publish
+from trntest.product_io import atomic_publish
 from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:

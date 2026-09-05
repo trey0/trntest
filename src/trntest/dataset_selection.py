@@ -1,5 +1,5 @@
 """Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`) -- distinct from
-`dataset.py`'s catalog-driven *single-image* evaluation (`images_for_window()`/`generate_dataset()`,
+`candidate_window.py`'s catalog-driven *single-image* evaluation (`images_for_window()`/`generate_dataset()`,
 the live demo pipeline's own EDR picker), which `resolve_orbit_sequence` below hands an
 already-selected orbit-sequence window to resolve, not the other way around. This module answers a
 different question: which *multi-day spans of consecutive orbits* make good maneuver-free TRN
@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import spiceypy as spice
 
-from trntest import catalog, dataset, illumination, maneuver_detection, spice_kernels, tie_points
+from trntest import candidate_window, catalog, illumination, maneuver_detection, spice_kernels, tie_points
 from trntest.config import TrntestConfig
 
 
@@ -258,8 +258,8 @@ def resolve_orbit_sequence(
     throttle_minutes: float | None = None,
 ) -> pd.DataFrame:
     """Turns one selected orbit sequence (one row of `select_diverse_datasets`' output -- needs
-    `start_utc`/`end_utc`) into an images table ready for `TrnTestDataSet` (`dataset.
-    DATASET_COLUMNS`). Thin wrapper around `dataset.images_for_window`.
+    `start_utc`/`end_utc`) into an images table ready for `TrnTestDataSet` (`candidate_window.
+    DATASET_COLUMNS`). Thin wrapper around `candidate_window.images_for_window`.
 
     :param max_emission_angle_deg: matches `add_acceptable_edr_counts`'s own default -- enforces the
         same nadir/"typical mapping mode" criterion that made this orbit sequence's source window
@@ -272,22 +272,21 @@ def resolve_orbit_sequence(
     # selected sequences at once.
     #
     # Does not fetch full EDR pixel data (.IMG) for any candidate, only small per-candidate XML
-    # labels (see dataset.evaluate_candidate_image), paced at cache.py's usual
+    # labels (see candidate_window.evaluate_candidate_image), paced at cache.py's usual
     # _REQUEST_PACING_SECONDS -- and a cheap catalog-metadata pre-filter
-    # (dataset._prefilter_by_catalog_metadata) runs first, so most of a raw window's candidates
+    # (candidate_window._prefilter_by_catalog_metadata) runs first, so most of a raw window's candidates
     # never reach that per-candidate step at all (confirmed necessary: an early resolve attempt
     # without this pre-filter, several hundred raw candidates, tripped a rate limit on the LROC EDR
     # host).
     #
-    # attach_cdr=False: wac.py is the only consumer of the cdr_* columns anywhere in this codebase,
-    # and it's superseded by isis_wac.py (see _finalize_images's docstring) --
-    # TrnTestEntry/TrnTestImage never read them, so this skips that extra per-candidate network
-    # round-trip.
+    # attach_cdr=False: nothing in this codebase consumes the cdr_* columns (see
+    # _finalize_images's docstring) -- TrnTestEntry/TrnTestImage never read them either, so this
+    # skips that extra per-candidate network round-trip.
     #
     # throttle_minutes=None differs from the older, now-removed select_dataset()'s own 5-minute
     # default: thinning here isn't obviously wanted (an orbit-sequence window was already chosen for
     # being densely acceptable, not searched fresh), so it's left to the caller to opt in.
-    return dataset.images_for_window(
+    return candidate_window.images_for_window(
         orbit_sequence["start_utc"],
         orbit_sequence["end_utc"],
         config,

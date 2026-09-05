@@ -4,7 +4,7 @@ Pattern: mirror the remote source's own folder structure under a cache root, and
 path that's already present locally. See docs/caching.md for the rationale.
 
 Low-level module: takes plain scalars (cache roots, base URLs), not a `TrntestConfig` -- callers
-(spice_kernels.py, dem_ortho.py, camera.py, wac.py) source those values from a resolved config and
+(spice_kernels.py, dem_ortho.py, camera.py, isis_wac.py) source those values from a resolved config and
 pass them down explicitly.
 """
 

@@ -92,7 +92,8 @@ just code comments) when a concrete choice changes.
 
 ## ISIS Pushframe pipeline: install, `lrowac2isis`/`framestitch`, `cam2map`
 
-An alternative/complement to `wac.py`'s manual framelet-stacking approach: reproject a real WAC CDR
+An alternative/complement to this project's original manual framelet-stacking extraction (later
+removed once `isis_wac.py` superseded it): reproject a real WAC CDR
 swath onto the DEM via ISIS/CSM (`mapproject`) and re-render it from a synthetic pose (`sat_sim
 --ortho`). The earlier part of the chain (EDR fetch through `framestitch`) is implemented for real as
 `src/trntest/isis_wac.py`; the `mapproject`/`sat_sim --ortho` half was only ever run in a throwaway
@@ -131,16 +132,16 @@ needs, recorded so they don't have to be re-derived.
   (`*.uv.even.cub`, `*.vis.even.cub`, `*.uv.odd.cub`, `*.vis.odd.cub`). Confirmed via `catlab`:
   `vis.even.cub` is **704 samples × 7532 lines × 5 bands** — the 5 VIS filters come out as 5
   distinct ISIS cube bands already correctly separated, no manual byte-offset extraction needed
-  (unlike `wac.py`'s current hand-picked `VIS_BLOCK_OFFSET`).
+  (unlike this project's earlier manual extraction, which needed a hand-picked `VIS_BLOCK_OFFSET`).
   **Line count, confirmed empirically (`isis_wac.crop_window_for_camera`)**: the cube preserves
-  **14 lines per original EDR frame** — exactly `wac.VIS_BLOCK_HEIGHT`, *not* 1 line/frame (an
-  earlier, wrong assumption briefly shipped in `crop_window_for_camera` before this was checked
+  **14 lines per original EDR frame** — exactly `wac_format.VIS_BLOCK_HEIGHT`, *not* 1 line/frame
+  (an earlier, wrong assumption briefly shipped in `crop_window_for_camera` before this was checked
   against real data). Confirmed on two real products: `M1327210646CE` measures exactly `258 frames
   × 14 = 3612` lines (its EDR label's own `nframes`, cross-checked directly), and
   `M1329714703CE` measures exactly `538 × 14 = 7532` lines. `lrowac2isis` does *not* TDI-sum each
-  frame down to a single output line — it keeps the same per-frame line structure `wac.py`'s own
-  raw-CDR byte-layout code already assumes, it just separates the 5 VIS bands automatically instead
-  of needing a manual byte offset. `even`/`odd` individually already carry the *full* frame count's
+  frame down to a single output line — it keeps the raw WAC frame format's own per-frame line
+  structure, it just separates the 5 VIS bands automatically instead of needing a manual byte
+  offset. `even`/`odd` individually already carry the *full* frame count's
   worth of lines each (not half) — `framestitch` deinterlaces/merges them into correct along-track
   order, it doesn't concatenate two half-height inputs into a full-height one (confirmed: `stitched`
   measures the same height as `even`/`odd` individually).

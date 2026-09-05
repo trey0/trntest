@@ -14,7 +14,7 @@ import numpy as np
 import spiceypy as spice
 
 from trntest.config import TrntestConfig, load_config
-from trntest.product_registry import atomic_publish_path, atomic_publish_prefix, writes_product
+from trntest.product_io import atomic_publish_path, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:

@@ -27,7 +27,7 @@ from trntest.hapke import (
     despeckle_and_shade_ortho,
 )
 from trntest.ortho_wac_emp import fetch_wac_emp_reflectance, reproject_wac_emp_reflectance_to_local_grid
-from trntest.product_registry import atomic_publish_prefix, writes_product
+from trntest.product_io import atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:
@@ -165,7 +165,7 @@ def fetch_dem(
     :param extra_footprint_lonlat_deg: Extra corners to union into the AOI before padding, if given.
     :returns: A `DemFetchResult` for the fetched, hole-filled DEM.
     """
-    # Split out of the old combined `fetch_dem_and_ortho` so `product_registry` has exactly one
+    # Split out of the old combined `fetch_dem_and_ortho` so `product_io` has exactly one
     # legible, checkable writer for the `"dem_filled"` label (principle 2), decoupled from the
     # ortho-shading concern (`fetch_and_shade_ortho`, an intentional variant family -- multiple valid
     # shaded orthos by design, principle 1) that used to be fused into the same function.
@@ -370,7 +370,7 @@ def fetch_dem_and_ortho(
     :returns: A `DemOrthoResult` for the fetched DEM/ortho pair.
     """
     # See `fetch_dem`/`fetch_and_shade_ortho`'s own docstrings for what's now individually
-    # `product_registry`-decorated, and for the DEM filename-collision gap that split doesn't itself
+    # `product_io`-decorated, and for the DEM filename-collision gap that split doesn't itself
     # close.
     dem = fetch_dem(camera, config, extra_footprint_lonlat_deg)
     return fetch_and_shade_ortho(

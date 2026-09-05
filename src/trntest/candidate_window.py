@@ -262,12 +262,11 @@ def _finalize_images(
     # Split out from `images_for_window()` on its own merits (a plain, reusable finishing step),
     # though it's currently only called from there.
     #
-    # `attach_cdr=False` skips one network round-trip per candidate -- `wac.py` is the only consumer
-    # of the `cdr_*` columns anywhere in this codebase, and `wac.py` is itself already superseded by
-    # `isis_wac.py` as the live WAC comparison method (kept only for its own test coverage, not called
-    # by either notebook). `TrnTestEntry`/`TrnTestImage` never read `cdr_*` at all. Still included as
-    # `DATASET_COLUMNS`-shaped `None`s (not dropped from the schema) so callers that do want CDR
-    # fields and callers that don't (`dataset_selection.resolve_orbit_sequence`, the default
+    # `attach_cdr=False` skips one network round-trip per candidate -- nothing in this codebase
+    # consumes the `cdr_*` columns any more (`isis_wac.py` is the live WAC comparison method, working
+    # from the EDR, not the CDR). `TrnTestEntry`/`TrnTestImage` never read `cdr_*` at all. Still
+    # included as `DATASET_COLUMNS`-shaped `None`s (not dropped from the schema) so callers that do
+    # want CDR fields and callers that don't (`dataset_selection.resolve_orbit_sequence`, the default
     # everywhere else) share one manifest schema.
     images = throttle_by_time(illuminated, throttle_minutes) if throttle_minutes is not None else illuminated
     if attach_cdr:
@@ -369,21 +368,21 @@ def _per_image_config(row: pd.Series, config: TrntestConfig, output_dir: Path) -
     """Build one manifest row's per-image config.
 
     :param row: A manifest row (needs `edr_volume`/`edr_subdir`/`edr_doy`/`edr_product`/
-        `cdr_volume`/`cdr_product`/`start_frame`).
+        `start_frame`).
     :param config: Base project config.
     :param output_dir: This image's own output directory.
     :returns: `config`, with the row's fields applied via `dataclasses.replace`.
     """
     # Shared by `generate_dataset()`'s loop (`output_dir=<its own output_dir>/product_id`) and
     # `trn_dataset.TrnTestEntry.per_image_config` (`output_dir=dataset_folder/"_work"/edr_product`).
+    # `row`'s own `cdr_volume`/`cdr_product` (if present) aren't applied here -- `TrntestConfig` has
+    # no such fields, since nothing in this codebase consumes them any more.
     return dataclasses.replace(
         config,
         edr_volume=row["edr_volume"],
         edr_subdir=row["edr_subdir"],
         edr_doy=str(row["edr_doy"]),
         edr_product=row["edr_product"],
-        cdr_volume=row["cdr_volume"],
-        cdr_product=row["cdr_product"],
         target_frame_index=round(row["start_frame"]),
         output_dir=output_dir,
     )

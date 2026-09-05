@@ -7,13 +7,12 @@ methods are one-line delegators.
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from trntest import camera, dataset, dem_ortho, orientation, render, spice_kernels, tie_points, wac
+from trntest import camera, candidate_window, dem_ortho, orientation, render, spice_kernels, tie_points
 from trntest.camera import Camera, FrameTiming
+from trntest.candidate_window import GenerationResult
 from trntest.config import TrntestConfig, load_config
-from trntest.dataset import GenerationResult
 from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
 from trntest.render import RenderResult
@@ -73,14 +72,10 @@ class Session:
     def compute_display_rotations(self, camera: Camera, frame_timing: FrameTiming) -> DisplayRotations:
         return orientation.compute_display_rotations(camera, frame_timing, config=self.config)
 
-    @_inherit_doc(wac.fetch_vis_mosaic)
-    def fetch_vis_mosaic(self, camera: Camera) -> np.ndarray:
-        return wac.fetch_vis_mosaic(camera, config=self.config)
-
     @_inherit_doc(spice_kernels.fetch_and_furnish)
     def fetch_and_furnish(self, target_dt: datetime) -> list[str]:
         return spice_kernels.fetch_and_furnish(target_dt, config=self.config)
 
-    @_inherit_doc(dataset.generate_dataset)
+    @_inherit_doc(candidate_window.generate_dataset)
     def generate_dataset(self, images: pd.DataFrame, limit: int | None = None, **kwargs) -> list[GenerationResult]:
-        return dataset.generate_dataset(images, config=self.config, limit=limit, **kwargs)
+        return candidate_window.generate_dataset(images, config=self.config, limit=limit, **kwargs)

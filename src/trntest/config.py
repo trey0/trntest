@@ -35,10 +35,9 @@ DEFAULT_LUNASERV_SRS_TEMPLATE = "IAU2000:30166,9001,{c_lon:.6f},{c_lat:.6f}"
 DEFAULT_LUNASERV_ORTHO_LAYER = "luna_wac_normalized_reflectance"
 DEFAULT_LROC_BASE_URL = "https://pds.lroc.im-ldi.com/data/"
 DEFAULT_LROC_EDR_DATASET = "LRO-L-LROC-2-EDR-V1.0"
-DEFAULT_LROC_CDR_DATASET = "LRO-L-LROC-3-CDR-V1.0"
 DEFAULT_ODE_BASE_URL = "https://oderest.rsl.wustl.edu/live2/"
 
-# Reference/regression-test WAC EDR/CDR product -- not the live default image (that's the
+# Reference/regression-test WAC EDR product -- not the live default image (that's the
 # checked-in, frozen `dataset_manifest.csv`; see docs/environment.md's "Multi-agent worktrees"
 # section); this is a known-good fallback/test fixture for TrntestConfig()'s built-in defaults. See
 # docs/data-sources/lroc-wac-edr-cdr.md, "Reference/regression-test EDR products".
@@ -46,8 +45,6 @@ DEFAULT_EDR_VOLUME = "LROLRC_0041C"
 DEFAULT_EDR_SUBDIR = "ESM4"
 DEFAULT_EDR_DOY = "2019334"
 DEFAULT_EDR_PRODUCT = "M1329714703CE"
-DEFAULT_CDR_VOLUME = "LROLRC_1041C"
-DEFAULT_CDR_PRODUCT = "M1329714703CC"
 
 # Frame index (0-based) within the reference product's `nframes` framelets to pose the camera at --
 # chosen to land in sunlit terrain, not the shadowed start of the swath. `dataset.generate_dataset()`
@@ -159,22 +156,19 @@ class TrntestConfig:
     wac_ck_source: str = DEFAULT_WAC_CK_SOURCE  # "isis_resolved" | "naif_metakernel" (deprecated)
     lroc_base_url: str = DEFAULT_LROC_BASE_URL
     lroc_edr_dataset: str = DEFAULT_LROC_EDR_DATASET
-    lroc_cdr_dataset: str = DEFAULT_LROC_CDR_DATASET
     ode_base_url: str = DEFAULT_ODE_BASE_URL
 
-    # `edr_*`/`cdr_*` field names keep their literal PDS terminology -- exact identifiers into the
-    # PDS archive's own EDR/CDR catalog (docs/data-sources/lroc-wac-edr-cdr.md), for a more
-    # detail-oriented audience than a caller of `camera.fetch_frame_timing()`/`wac.fetch_vis_mosaic()`.
-    # EDR ("Experiment Data Record") and CDR ("Calibrated Data Record") are two processing levels of
-    # the same LROC acquisition: `fetch_frame_timing()` reads only the EDR product's metadata label
-    # (frame timing); the pixel data used for visual comparison comes from the CDR counterpart via
-    # `wac.fetch_vis_mosaic()`.
+    # `edr_*` field names keep their literal PDS terminology -- exact identifiers into the PDS
+    # archive's own EDR catalog (docs/data-sources/lroc-wac-edr-cdr.md). EDR ("Experiment Data
+    # Record") is what `camera.fetch_frame_timing()`/`isis_wac.py`'s pipeline both work from; the CDR
+    # ("Calibrated Data Record") counterpart `candidate_window.py` still matches against
+    # (`catalog.find_matching_cdr`) for manifest provenance has no fetch path or config fields of its
+    # own -- nothing in this project fetches CDR pixel data any more, only `isis_wac.py`'s
+    # EDR-based ISIS pipeline.
     edr_volume: str = DEFAULT_EDR_VOLUME
     edr_subdir: str = DEFAULT_EDR_SUBDIR
     edr_doy: str = DEFAULT_EDR_DOY
     edr_product: str = DEFAULT_EDR_PRODUCT
-    cdr_volume: str = DEFAULT_CDR_VOLUME
-    cdr_product: str = DEFAULT_CDR_PRODUCT
 
     target_frame_index: int = DEFAULT_TARGET_FRAME_INDEX
     image_size: int = DEFAULT_IMAGE_SIZE

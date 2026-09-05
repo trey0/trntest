@@ -285,7 +285,7 @@ def test_find_framelet_and_project_round_trips_real_ground_points_through_real_c
 
     # 3x3 grid spanning the crop's real extent, inset 10% from each edge to stay well clear of
     # any single-framelet-edge ambiguity (matching the original investigation's own grid).
-    n_samples = 704  # trntest.wac.SAMPLES, matching wac_camera_model's own import
+    n_samples = 704  # trntest.wac_format.SAMPLES, matching wac_camera_model's own import
     sample_grid = [n_samples * f for f in (0.1, 0.5, 0.9)]
     line_grid = [n_lines * f for f in (0.1, 0.5, 0.9)]
 

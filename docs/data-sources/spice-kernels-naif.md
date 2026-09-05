@@ -74,7 +74,7 @@ for the alternate, live-default ISIS/S3 kernel source this project actually uses
 - **`functools.cache`-on-`TrntestConfig` gotcha**: `spice_kernels.latest_metakernel_url` is
   `@functools.cache`d on `(year, naif_base_url: str)` — keyed on just that one field, not a whole
   `TrntestConfig`, deliberately. A whole-config cache key silently breaks memoization whenever a
-  caller varies the config per-item (e.g. `dataset.py`'s per-candidate `dataclasses.replace`) but
+  caller varies the config per-item (e.g. `candidate_window.py`'s per-candidate `dataclasses.replace`) but
   the cached function only actually reads one field of it — every distinct config value becomes a
   cache miss even though the field that matters never changed. Prefer keying `functools.cache` on
   the specific field(s) a function actually uses, not a whole config object, whenever callers might

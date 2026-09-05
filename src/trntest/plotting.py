@@ -52,8 +52,7 @@ def mathtt(name: str) -> str:
 
 # ISIS special pixels (NULL/LRS/LIS/HIS/HRS) are finite but huge-magnitude (~+-3.4e38) float32
 # sentinels -- `np.isfinite` doesn't catch them. Generic threshold rather than the exact 5 bit
-# patterns, since other fill-value conventions (e.g. `wac.MISSING_CONSTANT`) are similarly
-# huge-magnitude, not just ISIS's.
+# patterns, since other fill-value conventions are similarly huge-magnitude, not just ISIS's.
 _FILL_VALUE_MAGNITUDE_THRESHOLD = 1e37
 
 
@@ -138,8 +137,8 @@ def plot_raster(
     # look at a raster file.
     #
     # `stretch=True`'s percentile calculation excludes fill-value sentinels (ISIS's NULL/LOW/HIGH
-    # special pixels are finite but ~+-3.4e38, similar in spirit to `wac.MISSING_CONSTANT` --
-    # `np.isfinite` alone doesn't catch them): calibrated I/F values are small floats near zero, so
+    # special pixels are finite but ~+-3.4e38 -- `np.isfinite` alone doesn't catch them): calibrated
+    # I/F values are small floats near zero, so
     # leaving them in wrecks the stretch (and, upstream, any `mean`/`sum` reduction can silently
     # overflow).
     data = read_raster_band(path, band=band, window=window)
@@ -334,10 +333,10 @@ def plot_isis_comparison(
     # along-track axis is oversampled relative to cross-track -- see `crop_window_for_camera`), so a
     # plain 1:1 pixel `imshow` visibly stretches/compresses it. `rotations.k_crop` -- computed purely
     # from SPICE geometry (`camera`/`frame_timing`), never from a pixel array -- applies equally well
-    # here: the ISIS cube shares `wac.py`'s exact line/sample convention (confirmed in
-    # `crop_window_for_camera`'s docstring), and both `wac.py`'s stacking order and
-    # `isis_wac.run_pipeline`'s `framestitch` FLIP are driven by the same
-    # `camera.reverse_crop_along_track` signal `k_crop` itself depends on.
+    # here: the ISIS cube's own line/sample convention is exactly the raw WAC frame layout
+    # (confirmed in `crop_window_for_camera`'s docstring), and `isis_wac.run_pipeline`'s
+    # `framestitch` FLIP is driven by the same `camera.reverse_crop_along_track` signal `k_crop`
+    # itself depends on.
     #
     # `tie_points.py`'s "crop_px" is a `campt` ground-to-image query against `stitched_cub_path`
     # itself (see that module's docstring), so its row/col origin already matches this exact cube

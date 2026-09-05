@@ -33,7 +33,7 @@ from scipy.spatial.transform import Rotation
 
 from trntest import isis_campt
 from trntest.camera import camera_pose_moon_me
-from trntest.wac import SAMPLES
+from trntest.wac_format import SAMPLES
 
 # A large, fixed residual used when a candidate pose correction makes a control point's ground point
 # project outside the crop's coverage entirely -- keeps `scipy.optimize.least_squares`'s residual

@@ -5,7 +5,7 @@ approximates the FOV of that part of the real swath.
 `config.target_frame_index` is the START of the along-track crop; the actual pose epoch is that
 crop's own temporal midpoint (see `build_camera`). Its default (440, see
 `config.DEFAULT_TARGET_FRAME_INDEX`) is only meaningful for this repo's original single-demo
-product -- the live default path, `trntest.dataset.images_for_window`/`generate_dataset`, sets it
+product -- the live default path, `trntest.candidate_window.images_for_window`/`generate_dataset`, sets it
 per-product instead, anchored at each product's own temporal midpoint and filtered by illumination
 there.
 """
@@ -36,8 +36,8 @@ PDS_NS = {
 # agree, this isn't a WAC-vs-NAC choice).
 #
 # Between k=1 and k=3: pick whichever makes +py increase in the same temporal sense as the archived
-# WAC image's row axis (rows increase forward in time, by construction of how
-# wac.fetch_vis_mosaic stacks frames). This is pass/yaw-state-dependent, not a fixed hardware
+# WAC image's row axis (rows increase forward in time, by construction of the raw WAC frame
+# format's own per-frame ordering). This is pass/yaw-state-dependent, not a fixed hardware
 # property -- LRO's WAC is body-fixed (no gimbal) and undergoes periodic 180-degree yaw flips that
 # rotate the whole instrument frame, including which raw axis "forward in time" projects onto -- so
 # `boresight_rotation_k` below measures it fresh from SPICE trajectory data for every pose, instead
@@ -65,9 +65,9 @@ class FrameTiming:
     """Per-frame acquisition timing, parsed from the EDR product's PDS4 label: start time,
     spacecraft clock, interframe delay, frame count. See `fetch_frame_timing`."""
 
-    # This is the only role EDR data plays in this pipeline; no EDR pixel data is read. Pixel data
-    # for visual comparison against the synthetic render comes from the CDR counterpart of the same
-    # acquisition -- see `trntest.wac.fetch_vis_mosaic`.
+    # `FrameTiming` itself only ever carries this EDR label metadata, never pixel data -- the EDR's
+    # own pixel data (`.IMG`) is what `isis_wac.py`'s ISIS pipeline processes for the real-WAC
+    # comparison.
     start_time: datetime
     sclk_start: str
     interframe_delay_s: float
@@ -108,10 +108,10 @@ class Camera:
         """True when this pass's "forward in time" ground-track direction is dominant +X in the raw
         WAC-VIS camera frame (see `boresight_rotation_k`) -- opposite of the original reference
         product's convention."""
-        # `wac.fetch_vis_mosaic` must then stack CDR frames in reverse along-track order (and
-        # `tie_points`/`orientation` must correspondingly flip their row/up-direction conventions)
-        # for the crop's pixel-space chirality to keep matching the synthetic image's -- see
-        # docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention": a
+        # `isis_wac.run_pipeline`'s own `flip` parameter must then match this exactly (`framestitch`'s
+        # FLIP), and `tie_points`/`orientation` must correspondingly flip their row/up-direction
+        # conventions, for the crop's pixel-space chirality to keep matching the synthetic image's --
+        # see docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention": a
         # pass-dependent mirror, not just a rotation.
         return self.boresight_rotation_k == _REVERSED_TIME_K
 

@@ -1,7 +1,7 @@
 """ISIS3 real-WAC reprojection -- steps a real WAC EDR through ISIS's own pipeline
-(`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`) as a camera-model alternative to
-`wac.py`'s manual framelet-stacking, then reprojects the cropped result onto the map via ISIS's own
-native Pushframe camera model and `cam2map` (`crop_for_camera`/`run_cam2map_for_crop`) -- not ALE's
+(`lrowac2isis` -> `spiceinit web=yes` -> `lrowaccal` -> `framestitch`), then reprojects the cropped
+result onto the map via ISIS's own native Pushframe camera model and `cam2map`
+(`crop_for_camera`/`run_cam2map_for_crop`) -- not ALE's
 CSM ISD + ASP's `mapproject`, which `render.py` uses for the synthetic render. `isis_campt.py` covers
 ground-truth ground<->image queries against an already-processed cube, and the CSM ISD generation
 those queries (and a possible future CSM reprojection path) depend on.
@@ -39,9 +39,9 @@ import rasterio.windows
 from trntest import cache, geo_utils
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
-from trntest.product_registry import atomic_publish_path, writes_product
+from trntest.product_io import atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
-from trntest.wac import SAMPLES, VIS_BLOCK_HEIGHT
+from trntest.wac_format import SAMPLES, VIS_BLOCK_HEIGHT
 
 if TYPE_CHECKING:
     from trntest import wac_camera_model
@@ -122,8 +122,8 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
     :param config: Project config; `load_config()` if not given.
     :returns: An `EdrFetchResult` for the fetched file.
     """
-    # Not its `.xml` label, which `camera.fetch_frame_timing()` already fetches, and not the CDR
-    # `.IMG`, which `wac.fetch_vis_mosaic()` already fetches -- `lrowac2isis` needs the EDR.
+    # Not its `.xml` label, which `camera.fetch_frame_timing()` already fetches -- `lrowac2isis`
+    # needs the EDR's own `.IMG`, not the label.
     config = config or load_config()
     img_path = cache.fetch_lroc_file(
         config.lroc_edr_dataset,
@@ -508,11 +508,11 @@ def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
     :param camera: The camera whose footprint determines the crop window.
     :returns: The crop `Window`, in the stitched cube's own pixel space.
     """
-    # The stitched cube preserves `wac.VIS_BLOCK_HEIGHT` (14) lines per original EDR frame, not 1 --
-    # `lrowac2isis` does not TDI-sum each frame down to one line, it keeps the same per-frame line
-    # structure `wac.py`'s raw CDR byte-layout code already assumes. So both
+    # The stitched cube preserves `wac_format.VIS_BLOCK_HEIGHT` (14) lines per original EDR frame,
+    # not 1 -- `lrowac2isis` does not TDI-sum each frame down to one line, it keeps the same
+    # per-frame line structure the raw WAC frame format itself has. So both
     # `camera.center_frame_index` and `camera.n_frames_for_square_crop` need to be scaled by that
-    # factor to land on the same footprint `wac.fetch_vis_mosaic`'s own crop covers.
+    # factor to land on the crop this camera pose's own FOV covers.
     height = camera.n_frames_for_square_crop * VIS_BLOCK_HEIGHT
     center_line = camera.center_frame_index * VIS_BLOCK_HEIGHT
     line_start = round(center_line - height / 2)

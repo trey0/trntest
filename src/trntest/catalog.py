@@ -1,7 +1,7 @@
 """PDS Geosciences Node Orbital Data Explorer (ODE) REST API client -- discovers LROC WAC EDR/CDR
 products by time range without downloading each product's individual label. Low-level, takes plain
 scalars/config the same way `cache.py` does. Lists of products are `pandas.DataFrame`s rather than a
-list of dataclasses -- simpler grouping/filtering downstream (see `dataset.py`) and free, readable
+list of dataclasses -- simpler grouping/filtering downstream (see `candidate_window.py`) and free, readable
 table display in the notebook.
 """
 

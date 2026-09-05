@@ -19,6 +19,13 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   split across `dem_gld100`/`ortho_wac_emp`/`lunaserv_wms`/`hapke`/`dem_ortho`/`geo_utils` (see
   `docs/history.md`'s Phase 96 entry). Same deferred-until-the-final-pass treatment as the bullet
   above, for the same reason.
+- **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
+  `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
+  consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
+  works from the EDR, not the CDR) as part of the source-code reorganization's task 3 — `TrnTestEntry`/
+  `TrnTestImage` never read these columns either. Not removed here: deciding whether to drop the whole
+  feature (vs. keeping it for manifest provenance/a future consumer) is a separate call from "delete
+  the dead module that used it," out of scope for that task.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
@@ -94,7 +101,10 @@ their own bullets in this file's main list above: `notebooks/pose_alignment_spik
 `real_hapke_params.py`/`crater_sharpness_review.py`/`sfs_validation.py`/`hapke_hillshade.py` (still
 import the old `lunaserv` module, from task 2).
 
-Tasks 3-6 below are intentionally left light, since their exact boundaries depend on decisions made
+**Task 3 (`wac.py` deletion, `dataset.py` → `candidate_window.py`, `product_registry.py` →
+`product_io.py`) is done** — see `docs/history.md`'s Phase 97 entry.
+
+Tasks 4-6 below are intentionally left light, since their exact boundaries depend on decisions made
 while tackling the earlier ones.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
@@ -117,11 +127,11 @@ actually done, not before.
 |---|---|---|
 | `isis_wac.py` **(done)** | `isis_wac.py` (unchanged) + new `isis_campt.py` | split by concern — see task 1's own doc |
 | `lunaserv.py` **(done)** | `dem_ortho.py` (orchestration) + new `dem_gld100.py`, `ortho_wac_emp.py`, `lunaserv_wms.py`, `hapke.py`, `geo_utils.py` | file is named for the one data source (Lunaserv WMS) that's now the deprecated fallback, not the live GLD100/WAC_EMP path it mostly contains |
-| `wac.py` | deleted; `SAMPLES`/`VIS_BLOCK_HEIGHT` move to new `wac_format.py` | `fetch_vis_mosaic` and its CDR-byte-layout constants (`PDS3_HEADER_BYTES`/`FRAME_BYTES`/`VIS_BLOCK_OFFSET`/`MISSING_CONSTANT`/`LINES_PER_FRAME`) are dead — superseded by `isis_wac.py`, only self-referenced. `SAMPLES`/`VIS_BLOCK_HEIGHT` are real WAC-VIS sensor-geometry constants `isis_wac.py`/`wac_camera_model.py`/`tie_points.py` still import for real code, not just comments — they need the tiny dependency-free home below, not to go down with the rest of the file |
-| `dataset.py` | `candidate_window.py` | matches its own `images_for_window()`; frees the word "dataset" from a name collision with `trn_dataset.py` |
+| `wac.py` **(done)** | deleted; `SAMPLES`/`VIS_BLOCK_HEIGHT` moved to new `wac_format.py` | `fetch_vis_mosaic` and its CDR-byte-layout constants (`PDS3_HEADER_BYTES`/`FRAME_BYTES`/`VIS_BLOCK_OFFSET`/`MISSING_CONSTANT`/`LINES_PER_FRAME`) are dead — superseded by `isis_wac.py`, only self-referenced. `SAMPLES`/`VIS_BLOCK_HEIGHT` are real WAC-VIS sensor-geometry constants `isis_wac.py`/`wac_camera_model.py`/`tie_points.py` still import for real code, not just comments — they need the tiny dependency-free home below, not to go down with the rest of the file |
+| `dataset.py` **(done)** | `candidate_window.py` | matches its own `images_for_window()`; frees the word "dataset" from a name collision with `trn_dataset.py` |
 | `dataset_selection.py` | `dataset_selection.py` (unchanged) | names the purpose (which datasets to select), not the technical approach (orbit-level) — keep it |
-| `trn_dataset.py` | `trn_dataset.py` (unchanged) | only confusing in contrast to `dataset.py`; once that's renamed this one reads fine as "the `TrnTestDataSet` module" |
-| `product_registry.py` | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
+| `trn_dataset.py` | `trn_dataset.py` (unchanged) | only confusing in contrast to `dataset.py`; now that's renamed this one reads fine as "the `TrnTestDataSet` module" |
+| `product_registry.py` **(done)** | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
 | `plotting.py` | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
 | `trn_dataset.py`'s product classes | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
 | `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files — see task 6 below; `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
@@ -132,21 +142,7 @@ word-order mismatch against `isis_wac.py` that motivated some of the source rena
 notebook rename is a jupytext-pair regeneration plus a README table edit for cosmetic gain only —
 not worth doing as part of this reorganization.
 
-### Task 3: `wac.py` deletion + rename cleanup
-
-**`wac.py`**: delete `fetch_vis_mosaic` and its CDR-byte-layout-specific constants outright (dead,
-per the naming table); move `SAMPLES`/`VIS_BLOCK_HEIGHT` to a new `wac_format.py` (just the two
-constants, no imports of its own) first, then delete the file. Update the three real importers
-(`isis_wac.py`, `wac_camera_model.py`, `tie_points.py` — note `tie_points.py` currently reaches
-these constants both directly as `wac.SAMPLES` and indirectly as `isis_wac.SAMPLES`'s re-export;
-route both call sites to `wac_format.py` instead of preserving either). Drop `session.py`'s
-`fetch_vis_mosaic` delegator, `__init__.py`'s re-export, and `tests/test_wac_unpacking.py`; drop the
-`fetch_vis_mosaic`-specific parts of `tests/test_session.py`.
-
-**Pure renames** (no behavior change beyond the name): `dataset.py` → `candidate_window.py`,
-`product_registry.py` → `product_io.py`. Update `README.md`'s source-files table, docstrings, and
-every importer for both parts of this task. Independent of tasks 1/2/4/5/6; can be done in any order
-relative to them.
+**Task 3 (`wac.py` deletion + rename cleanup) is done** — see `docs/history.md`'s Phase 97 entry.
 
 ### Task 4: split `plotting.py`
 

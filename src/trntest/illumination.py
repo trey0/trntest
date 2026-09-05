@@ -224,7 +224,7 @@ def find_node_crossings(start_et: float, end_et: float, config: TrntestConfig) -
     # per a single, fixed `config.edr_product`, and for a date far from that product's own narrow
     # window its filename-encoded date range can nominally overlap the query epoch while the file's
     # actual `ckcov` coverage doesn't, tripping `fetch_and_furnish`'s own trust-but-verify check.
-    # `dataset.py`'s per-candidate sweep already avoids this the other way (forcing
+    # `candidate_window.py`'s per-candidate sweep already avoids this the other way (forcing
     # `wac_ck_source="naif_metakernel"`) precisely because `isis_resolved` isn't meant for sweeping
     # many distinct dates -- not needing CK at all here sidesteps the question entirely.
     spice_kernels.furnish_spk_range(et_to_datetime(start_et), et_to_datetime(end_et), config)

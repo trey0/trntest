@@ -248,7 +248,7 @@ def mask_sfs_uncovered(sim_intensity_path: Path, out_path: Path) -> Path:
     :returns: `out_path`.
     """
     # This project's DEM/ortho AOI is deliberately padded beyond the camera's footprint
-    # (`dataset.py`'s own footprint-union padding), so a large fraction of `sim_intensity_path`'s own
+    # (`candidate_window.py`'s own footprint-union padding), so a large fraction of `sim_intensity_path`'s own
     # pixels are this "no coverage" zero, not zero-intensity ground truth (~68-72% of the raster, for
     # this project's current default candidate) -- without masking, downstream brightness-matching/
     # diffing (`plotting.compute_brightness_matched_diff`, `plotting.plot_sfs_comparison`) is

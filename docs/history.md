@@ -5128,3 +5128,64 @@ five notebooks (`along_track_correction.py`, `real_hapke_params.py`, `crater_sha
 `sfs_validation.py`, `hapke_hillshade.py`) still import the old `lunaserv` module and are deliberately
 left for the reorganization's final notebook pass, per the same suspended-discipline policy as
 Phase 94's one deferred notebook.
+
+## Phase 97 (2026-09-05) — Deleted `wac.py`; renamed `dataset.py` → `candidate_window.py` and `product_registry.py` → `product_io.py`
+
+Task 3 of the source-code reorganization (`docs/proposed-tasks/open-items.md`'s "Source code
+reorganization" section; tasks 1/2 were Phases 94/96). Same `feature/refactor` branch, same suspended
+per-change notebook discipline.
+
+**Deleted `wac.py`**: `fetch_vis_mosaic` (manual byte-offset VIS mosaic extraction from a WAC CDR
+product) and its CDR-byte-layout constants (`PDS3_HEADER_BYTES`, `FRAME_BYTES`, `VIS_BLOCK_OFFSET`,
+`MISSING_CONSTANT`, `LINES_PER_FRAME`) were dead — superseded by `isis_wac.py`'s ISIS pipeline, only
+self-referenced. The two real WAC-VIS sensor-geometry constants it also held, `SAMPLES` and
+`VIS_BLOCK_HEIGHT` (still imported for real by `isis_wac.py`/`wac_camera_model.py`/`tie_points.py`),
+moved to a new, dependency-free `wac_format.py` first. `tie_points.py` had been reaching these two
+constants two different ways — directly as `wac.SAMPLES` and indirectly via `isis_wac.py`'s own
+re-export of `wac.SAMPLES`/`wac.VIS_BLOCK_HEIGHT` — both call sites now route to `wac_format.py`
+directly, per the user's explicit instruction not to preserve either indirection. Also dropped:
+`session.py`'s `fetch_vis_mosaic` delegator, `__init__.py`'s re-export, `tests/test_wac_unpacking.py`
+(3 tests), and the `fetch_vis_mosaic`-specific test in `tests/test_session.py`.
+
+Deleting `wac.py` also retired the `TrntestConfig` fields only it consumed
+(`lroc_cdr_dataset`/`cdr_volume`/`cdr_product` and their `DEFAULT_*` constants). Removing them
+surfaced a real, active-path bug: `dataset.py`'s `_per_image_config` (the per-entry config builder
+used by both `generate_dataset()` and `TrnTestEntry.per_image_config` — i.e. the whole pipeline's own
+config derivation) was still passing `cdr_volume=`/`cdr_product=` into
+`dataclasses.replace(config, ...)`, which would have raised at runtime for every entry. Caught by
+`trntest-lint --all`'s mypy pass (`Unexpected keyword argument "cdr_volume"`), not by grep (which only
+checked attribute-access patterns, missing the keyword-argument form) — fixed by dropping both kwargs
+and updating the docstring. This is the strongest evidence yet in this reorganization for running the
+full lint+test pass rather than trusting a grep sweep alone.
+
+Left deliberately unremoved, flagged instead as a new deferred open item: `dataset.py`'s
+`attach_cdr`/`catalog.find_matching_cdr`/`cdr_*`-manifest-column feature is now fully vestigial with
+`wac.py` gone (nothing else ever read those columns), but deciding whether to drop the whole feature
+(vs. keeping it for manifest provenance) is a separate call from "delete the dead module that used
+it" — out of scope for this task, per the user's own instruction to keep the CSM dead code (a related,
+not identical, "keep dead-but-meaningful code" judgment call raised in the same review round) rather
+than deleting things reflexively.
+
+**Renamed `dataset.py` → `candidate_window.py`** (matches its own `images_for_window()`; frees the
+word "dataset" from a name collision with `trn_dataset.py`) and **`product_registry.py` →
+`product_io.py`** (it's atomic-publish/read/write helpers, not a registry data structure) — pure
+renames, no behavior change. Every real importer updated (`session.py`, `dataset_selection.py`,
+`trn_dataset.py`, `illumination.py`, `sfs_validation.py`, `camera.py`, `catalog.py`, `config.py`,
+`__init__.py` for the first; `geo_utils.py`, `render.py`, `isis_wac.py`, `dem_ortho.py`, `hapke.py`,
+`crater_depth_batch.py` for the second), along with every dangling comment/docstring reference across
+`src/`, two docs (`docs/data-sources/lroc-wac-edr-cdr.md`, `docs/external-tools.md`,
+`docs/data-sources/spice-kernels-naif.md`, `docs/batch-generation.md`), and `README.md`'s source-files
+table (added a `wac_format.py` row, removed the `wac.py` row, renamed the `dataset.py`/
+`product_registry.py` rows and re-alphabetized). `tests/test_dataset.py` → `test_candidate_window.py`,
+`tests/test_product_registry.py` → `test_product_io.py`, both with internal references updated to
+match.
+
+Also fixed, while sweeping for `wac.py` references: `camera.py`'s comment claiming pixel data for the
+real-WAC comparison "comes from the CDR counterpart" — stale even before this phase, since
+`isis_wac.py` has worked from the EDR directly since task 1. Rewritten to state the current fact.
+
+**Verification**: same method as Phases 94/96 — fresh Docker build, all 36 modules import cleanly both
+together and as the sole first import in a fresh process, `trntest-lint --all` clean (after the mypy
+fix above), full `pytest` clean (358 passed, down from 362 by exactly the 4 tests removed with
+`wac.py` — 1 from `test_session.py`, 3 from the deleted `test_wac_unpacking.py` — and unchanged again
+after the pure renames, as expected).
