@@ -1,3 +1,10 @@
+# Always build this via `docker compose build` (or `docker compose run --rm demo ...`, which builds
+# implicitly), never a raw `docker build` -- this host has no `buildx` installed, so plain
+# `docker build` silently falls back to the legacy, non-BuildKit builder and won't share the
+# BuildKit cache `docker compose build` uses (confirmed: a raw `docker build` of this same,
+# already-built image re-did the ~1GB conda/ISIS install from scratch). See
+# docs/environment.md's "Docker images" section.
+
 FROM ghcr.io/astral-sh/uv:latest AS uv
 
 FROM ubuntu:24.04
@@ -68,8 +75,18 @@ RUN uv venv "${VIRTUAL_ENV}"
 RUN uv pip install --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 WORKDIR /workspace
-COPY . /workspace
-RUN uv pip install --no-cache -e '.[dev]'
+
+# Dependency-warming layer: install pyproject.toml's `dependencies`/`[dev]` extras against a stub
+# package directory, *before* copying our own source. Not formally necessary -- the real `uv pip
+# install -e '.[dev]'` after COPY below installs everything correctly on its own -- but every
+# worktree's COPY has at least slightly different content (different branch), which invalidates that
+# and every later layer regardless of whether dependencies actually changed. Warming the install here
+# means that ~1GB reinstall only happens when pyproject.toml/README.md themselves change, not on
+# every source edit; the real install after COPY then finds everything already satisfied and is fast.
+COPY pyproject.toml README.md ./
+RUN mkdir -p src/trntest && touch src/trntest/__init__.py \
+    && uv pip install --no-cache -e '.[dev]'
+
 # LightGlue itself: pinned to a specific commit (its own pyproject.toml has no released version,
 # `version = "0.0"`, so a git ref is the only reproducible way to pin it) rather than the plain
 # PyPI index, since there is no official `lightglue` PyPI package -- the upstream-recommended
@@ -80,13 +97,21 @@ RUN uv pip install --no-cache -e '.[dev]'
 # project's own `opencv-python-headless` (both provide the `cv2` import, colliding on install) and a
 # separately-pinned `kornia`/`torch`/`torchvision`. Everything `import lightglue` actually needs at
 # runtime is already satisfied by this project's own pyproject.toml dependencies (torch/torchvision/
-# kornia/numpy/matplotlib) plus `opencv-python-headless` for `cv2`.
+# kornia/numpy/matplotlib) plus `opencv-python-headless` for `cv2`. Independent of our own source, so
+# it belongs up here with the other external dependencies, not after COPY.
 RUN uv pip install --no-cache --no-deps \
         'lightglue @ git+https://github.com/cvg/LightGlue.git@eb42fee2d71449efb0aa5c10549752b5d75384d8'
 
 # Suppresses JupyterLab's own "what's new" announcements popup/dialog -- purely a UI annoyance in
-# this always-latest, single-user container, not something worth seeing on every fresh build.
+# this always-latest, single-user container, not something worth seeing on every fresh build. Also
+# independent of our own source.
 RUN jupyter labextension disable "@jupyterlab/apputils-extension:announcements"
+
+COPY . /workspace
+# The real install: identical command to the warming step above, but now against our actual source.
+# Since everything is already satisfied from the warming layer, this only does real work when
+# pyproject.toml's dependencies changed since then.
+RUN uv pip install --no-cache -e '.[dev]'
 
 # Redirects torch.hub's pretrained-weight cache (LightGlue's matcher weights, DISK's extractor
 # weights via kornia.feature.DISK.from_pretrained -- both real network fetches on first use, tens of

@@ -15,15 +15,31 @@ given time.
 ## Docker images
 
 Each worktree builds and runs its own separately-tagged image (`TRNTEST_IMAGE_TAG`, see "Multi-agent
-worktrees" below), so a new worktree's first `docker compose build`/`run` always builds fresh —
-independent of whatever's cached from other worktrees or prior sessions, and not itself evidence
-either way about whether the underlying Docker layer cache persists across a session. Budget time
-for that first build in a new worktree: a `micromamba create` package solve + install (~1GB
-download) on top of the ASP tarball fetch makes it meaningfully heavier than a typical Docker
-build. If that layer is ever touched again, note its own `micromamba clean --all --yes` gotcha
-(must run in the *same* `RUN` layer as `micromamba create`, or Docker's layered filesystem won't
-actually reclaim the space — cost a 15.8GB→3GB image bloat the first time around; see the
-Dockerfile's own comment there).
+worktrees" below) via `docker compose build`/`run`, which uses BuildKit. BuildKit's build cache is
+content-addressed, not tag-scoped, and this host has one shared Docker engine — so a new worktree's
+first build reuses whatever
+earlier worktrees already built for every layer whose instructions/inputs are unchanged, rather than
+rebuilding ~15GB from scratch per worktree. In practice that means the ~11GB of layers before the
+Dockerfile's `COPY . /workspace` (base image, `apt-get install`, the ASP tarball, the
+`micromamba create` ISIS env, the CPU-only torch/torchvision install) are effectively built once and
+shared; only the small delta after `COPY` (the repo's actual content, which does differ per worktree)
+is genuinely per-worktree, and the Dockerfile's dependency-warming layer right before that `COPY`
+keeps even that delta small (the real `uv pip install -e '.[dev]'` after `COPY` finds everything
+already satisfied and finishes in under a second, instead of reinstalling ~1GB of dependencies on
+every source change).
+
+**This only holds for `docker compose build`/`run` — never invoke a raw `docker build`/`docker run`
+here.** This host has no `buildx` installed, so plain `docker build` silently falls back to the
+legacy, non-BuildKit builder and won't share the cache above at all (confirmed: it re-did the
+~1GB conda/ISIS install from scratch even for an image `docker compose build` had just built).
+Mixing entry points wastes both rebuild time and disk — always go through Compose.
+
+Even with cache sharing, budget time for a genuinely cold engine (no prior worktree has built yet):
+a `micromamba create` package solve + install (~1GB download) on top of the ASP tarball fetch makes
+that first build meaningfully heavier than a typical Docker build. If that layer is ever touched
+again, note its own `micromamba clean --all --yes` gotcha (must run in the *same* `RUN` layer as
+`micromamba create`, or Docker's layered filesystem won't actually reclaim the space — cost a
+15.8GB→3GB image bloat the first time around; see the Dockerfile's own comment there).
 
 ## Where things belong: source vs. large output
 
