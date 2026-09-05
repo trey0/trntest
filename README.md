@@ -1,15 +1,38 @@
 # trntest — lunar remote sensing demo
 
-Demonstrates various approaches for generating synthetic lunar satellite images for new camera
-models from real LROC WAC imagery, Lunaserv WMS maps, and LRO SPICE trajectories, rendered
-with NASA's Ames Stereo Pipeline tools (like `sat_sim` and `mapproject`). See
-`docs/architecture.md` for the full approach, current status, and a map of every module/notebook,
-and `AGENTS.md` for how the docs in this repo are organized.
+Explores techniques for generating candidate test imagery for terrain-relative navigation (TRN)
+testing (hence the repo name) — synthetic lunar satellite images that could stand in for real
+spacecraft imagery when testing a TRN algorithm, rendered with NASA's Ames Stereo Pipeline tools
+(`sat_sim`, `mapproject`) from real lunar source data. Camera pose for every generated image comes
+from the **real LRO spacecraft trajectory** (NAIF SPICE kernels), so each candidate's geometry can
+be validated against a real basemap rather than just asserted.
+
+The main product is a populated **dataset**: `notebooks/select_datasets.py` selects a diverse,
+maneuver-free multi-orbit window of manifest entries (dozens of images, not one), then
+`TrnTestDataSet.populate()`/`populate_via_workers()` runs each entry through three interchangeable
+TRN test image generators — see [`docs/generators.md`](docs/generators.md) for what each one is
+built from, does, and why. This is a demo/exercise in AI-assisted coding on a real geospatial
+engineering task; see [`AGENTS.md`](AGENTS.md) for how this repo's docs are organized.
 
 The demo logic is the installable `trntest` Python package (`src/trntest/`), driven from
 jupytext-paired notebooks under `notebooks/` — the `.py` (percent format) is the source of truth
 for review/diff/lint/IDE work; the `.ipynb` (fully executed) carries the outputs and renders
-natively in GitHub's file browser (see "Viewing the rendered demo" below for the convention).
+natively in GitHub's file browser (see "Notebooks" below for the convention).
+
+## Status
+
+**Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
+`notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
+`populate_via_workers()`, but its own content is still a first-pass minimal template — see
+[`docs/proposed-tasks/report-plan.md`](docs/proposed-tasks/report-plan.md). A real population run
+across a full selected dataset hasn't happened yet, so there's no dataset-scale validation.
+
+See the "Primary notebooks" table below for what's demonstrated and validated today, at the
+single-entry level.
+
+## Open items
+
+See [`docs/proposed-tasks/open-items.md`](docs/proposed-tasks/open-items.md) for the current list.
 
 ## Build & run
 
@@ -32,9 +55,8 @@ ssh -L 8888:localhost:8888 <this-host>
 
 then open `http://localhost:8888` in a browser. Open `notebooks/image_generation.py` — the bundled
 `jupyterlab-jupytext` extension renders it as a live, editable notebook (equivalent to opening its
-paired `.ipynb` directly). After making changes, run `scripts/run_notebook.sh notebooks/<name>.py`
-to regenerate and re-execute the `.ipynb` before committing (see "Viewing the rendered demo"
-below).
+paired `.ipynb` directly). After making changes, regenerate and re-execute the `.ipynb` before
+committing — see "Notebooks" below.
 
 For one-off commands instead of the notebook server:
 
@@ -119,11 +141,15 @@ scripts/run_heavy_tests.sh -k maneuver  # or narrow with normal pytest args
 
 ## Git pre-commit hook
 
-This repo ships a pre-commit hook (`githooks/pre-commit`) that runs `trntest-lint` against
-staged `.py` files (`ruff format --check`, `ruff check`, `mypy`) and staged notebook `.py`/`.ipynb`
-pairs (jupytext structural-sync check — see "Viewing the rendered demo" below) before each commit.
-It uses git's built-in `core.hooksPath` mechanism (no external `pre-commit` framework, no symlinks
-to set up). Enable it once per clone:
+This repo ships a pre-commit hook (`githooks/pre-commit`) that runs `trntest-lint` against staged
+`.py` files (`ruff format --check`, `ruff check`, `mypy`) and staged notebook `.py`/`.ipynb` pairs
+before each commit — checking that the pair is staged together, that their code/markdown content
+matches, and that the `.ipynb`'s `execution_count`s look like a single clean top-to-bottom run (the
+shape `scripts/run_notebook.sh` produces). It can't cheaply verify that a notebook's outputs are
+*fresh* relative to its code (that needs re-execution, which is slow: SPICE/WMS/`sat_sim` calls),
+so always run `scripts/run_notebook.sh notebooks/<name>.py` after a code change rather than relying
+on the hook alone. It uses git's built-in `core.hooksPath` mechanism (no external `pre-commit`
+framework, no symlinks to set up). Enable it once per clone:
 
 ```sh
 git config core.hooksPath githooks
@@ -133,26 +159,79 @@ If `trntest-lint` is on your `PATH` (host venv with the dev dependencies install
 directly; otherwise the hook falls back to running it inside Docker automatically, so it works on
 any clone with just Docker installed -- no host-side Python setup required.
 
-## Viewing the rendered demo
+## Notebooks (`notebooks/`)
 
-The git-tracked `notebooks/image_generation.ipynb` carries fully-executed outputs and renders
-natively in GitHub's file browser (markdown, code, and outputs, including images) — just
-click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
-
-`notebooks/image_generation.py` (jupytext percent format, paired with its own `.ipynb` via inline
-metadata) is what you edit, what gets `ruff`/`mypy`-checked, and what stays diffable — the
-`.ipynb`'s own diff will always be noisy since it carries outputs. After editing the notebook,
-regenerate and re-execute its `.ipynb` before committing:
+Each notebook's own markdown holds the full tutorial; the tables below just index what each one
+covers. Every notebook is a jupytext-paired `.py`/`.ipynb`: the `.py` (percent format) is what you
+edit, lint, and diff; the `.ipynb` carries fully-executed outputs and renders natively in GitHub's
+file browser (markdown, code, and images) — no separate publishing step. After editing a
+notebook's `.py`, regenerate and re-execute its `.ipynb` before committing:
 
 ```sh
-scripts/run_notebook.sh notebooks/image_generation.py
+scripts/run_notebook.sh notebooks/<name>.py
 ```
 
-The pre-commit hook checks that the `.py`/`.ipynb` pair is staged together, that their code/
-markdown content matches, and that the `.ipynb`'s `execution_count`s look like a single clean
-top-to-bottom run (the shape this script produces) — but it can't cheaply verify that the outputs
-are *fresh* relative to the code (that needs re-execution, which is slow: SPICE/WMS/`sat_sim`
-calls). Always run the script above after a code change rather than relying on the hook alone.
+### Primary notebooks
+
+| Notebook | Purpose |
+|---|---|
+| [`image_generation.ipynb`](notebooks/image_generation.ipynb) | Demonstrates and validates the three TRN test image generators (see [`docs/generators.md`](docs/generators.md)) on a single, real LRO WAC EDR — two independent geometry checks against a real basemap, plus explicit tie points comparing the candidates against each other. |
+| [`select_datasets.ipynb`](notebooks/select_datasets.ipynb) | Demonstrates selecting multiple TRN testing datasets — each covers 24 consecutive, maneuver-free orbits, and the selected datasets are jointly diverse in lunar longitude and solar hour angle. See [`docs/batch-generation.md`](docs/batch-generation.md) for the next step (`populate()`). |
+
+### Other notebooks
+
+| Notebook | Purpose |
+|---|---|
+| [`along_track_correction.ipynb`](notebooks/along_track_correction.ipynb) | Validates `lunaserv.hapke_shade_ortho`'s along-track motion correction against the frozen-camera-position fallback. |
+| [`crater_sharpness_review.ipynb`](notebooks/crater_sharpness_review.ipynb) | Visual review of crater sharpness grading for one candidate's footprint — see [`docs/crater-grading.md`](docs/crater-grading.md). |
+| [`hapke_hillshade.ipynb`](notebooks/hapke_hillshade.ipynb) | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback. |
+| [`pose_alignment_spike.ipynb`](notebooks/pose_alignment_spike.ipynb) | Exercises the camera-pose-alignment tooling (`pose_alignment.py` row below) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). |
+| [`real_hapke_params.ipynb`](notebooks/real_hapke_params.ipynb) | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
+| [`report_template.py`](notebooks/report_template.py) | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself) — see `report.py` row below. |
+| [`sfs_validation.ipynb`](notebooks/sfs_validation.ipynb) | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
+| [`wac_isis.ipynb`](notebooks/wac_isis.ipynb) | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
+
+## Source files (`src/trntest/`)
+
+| Module | Responsibility |
+|---|---|
+| [`cache.py`](src/trntest/cache.py) | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see [`docs/caching.md`](docs/caching.md). |
+| [`camera.py`](src/trntest/camera.py) | Poses the synthetic camera from SPICE trajectory/orientation data (`build_camera`) and solves its corrected FOV (`solve_corrected_fov`) — see [`docs/reproject-fov-investigation.md`](docs/reproject-fov-investigation.md). |
+| [`catalog.py`](src/trntest/catalog.py) | PDS ODE REST API client — lists EDR/CDR products by time range, matches EDR↔CDR pairs (`list_products`, `find_matching_cdr`). |
+| [`config.py`](src/trntest/config.py) | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
+| [`control_network.py`](src/trntest/control_network.py) | Converts `pose_alignment.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+| [`crater_depth.py`](src/trntest/crater_depth.py) | Robbins-crater depth measurement off a DEM (Breton et al. 2019) and the Stoffler et al. 2006 fresh-crater reference depth, for a `sharpness_ratio` grade — see [`docs/crater-grading.md`](docs/crater-grading.md). |
+| [`crater_depth_batch.py`](src/trntest/crater_depth_batch.py) | Whole-database crater-depth precompute, tiled for cache coherence — see [`docs/crater-grading.md`](docs/crater-grading.md). Not yet run across the full database. |
+| [`craters.py`](src/trntest/craters.py) | Robbins craters catalog overlay: fetches/caches the PDS4 CSV, builds a spatially-indexed GeoPackage, and returns ellipse polygons for a raster's footprint (`crater_overlay_layer`) — see [`docs/data-sources/robbins-craters.md`](docs/data-sources/robbins-craters.md). |
+| [`dataset.py`](src/trntest/dataset.py) | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
+| [`dataset_selection.py`](src/trntest/dataset_selection.py) | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `dataset.py`. |
+| [`illumination.py`](src/trntest/illumination.py) | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`plotting.py` use. |
+| [`isis_wac.py`](src/trntest/isis_wac.py) | Steps a WAC EDR through ISIS3's own pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`) as this project's real-WAC comparison path — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
+| [`lunaserv.py`](src/trntest/lunaserv.py) | Fetches DEM (Astropedia GLD100) + ortho (WAC_EMP PDS4) imagery for a camera's footprint and preps both for `sat_sim`, including Hapke-relit hillshade blending — see the module docstring and [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md)/[`wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
+| [`maneuver_detection.py`](src/trntest/maneuver_detection.py) | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
+| [`orientation.py`](src/trntest/orientation.py) | Notebook-display-only north-up rotation (does not touch the sensor model). |
+| [`plotting.py`](src/trntest/plotting.py) | Comparison-figure plotting: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`), a quantitative brightness diff (`compute_brightness_matched_diff`), and dataset-selection scatter plots. |
+| [`pose_alignment.py`](src/trntest/pose_alignment.py) | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+| [`product_registry.py`](src/trntest/product_registry.py) | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
+| [`render.py`](src/trntest/render.py) | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
+| [`report.py`](src/trntest/report.py) | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below — see [`docs/proposed-tasks/report-plan.md`](docs/proposed-tasks/report-plan.md). Report content itself is still a first-pass minimal template. |
+| [`session.py`](src/trntest/session.py) | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
+| [`sfs_validation.py`](src/trntest/sfs_validation.py) | Cross-checks `lunaserv.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
+| [`spice_kernels.py`](src/trntest/spice_kernels.py) | Selects/downloads the minimal SPICE kernel set for a date and furnishes it (`fetch_and_furnish`) — see [`docs/data-sources/spice-kernels-isis.md`](docs/data-sources/spice-kernels-isis.md)/[`spice-kernels-naif.md`](docs/data-sources/spice-kernels-naif.md). |
+| [`subprocess_utils.py`](src/trntest/subprocess_utils.py) | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
+| [`tasks.py`](src/trntest/tasks.py) | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
+| [`tie_points.py`](src/trntest/tie_points.py) | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
+| [`trn_dataset.py`](src/trntest/trn_dataset.py) | `TrnTestDataSet`/`TrnTestEntry`/`TrnTestProduct` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes. `TrnTestProduct` covers all four product types (`TrnTestImage` subclasses `crop`/`hillshade`/`reproject`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
+| [`wac.py`](src/trntest/wac.py) | Extracts a band-separated VIS mosaic from a WAC CDR product via manual byte offsets (`fetch_vis_mosaic`) — superseded by `isis_wac.py` as the demo's real-WAC comparison method, kept for its own test coverage. |
+| [`wac_camera_model.py`](src/trntest/wac_camera_model.py) | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/wac-jigsaw-investigation.md`](docs/wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
+
+## Development history
+
+See [`docs/history.md`](docs/history.md) for the phase-by-phase narrative — what was tried, what
+broke, and how each design decision (framelet timing, sensor axis convention, catalog-driven
+selection, the perf fixes in the sweep) was actually reached. Background/curiosity reading, not
+required before making a change; this README and [`docs/data-sources.md`](docs/data-sources.md)/
+[`docs/external-tools.md`](docs/external-tools.md) describe current behavior.
 
 ## About this project
 

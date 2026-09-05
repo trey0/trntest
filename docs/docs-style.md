@@ -67,7 +67,7 @@ it set out to answer already settled by later work -- archiving it to `old_noteb
 ## No references to `docs/history.md` from anywhere else
 
 `docs/history.md` is a narrative development log — background reading, not a reference. Nothing
-outside `docs/history.md` itself (and `docs/architecture.md`'s "if you're curious" pointer to it) should cite
+outside `docs/history.md` itself (and `README.md`'s "if you're curious" pointer to it) should cite
 it, and especially not "see `docs/history.md`'s dated entry" — a dated entry in a 4000+ line file is
 close to unsearchable and sends a reader on a scavenger hunt for something that, per `AGENTS.md`,
 was never meant to be required to understand current behavior in the first place.
@@ -113,14 +113,14 @@ in one), not "see `docs/data-sources.md`" with no further hint, forcing a scan o
 
 ## Keep index files thin
 
-`AGENTS.md` and `docs/architecture.md` exist so an agent can tell which files it actually needs to read
+`AGENTS.md` and `README.md` exist so an agent can tell which files it actually needs to read
 before reading them — their entire value is being cheap to read in full, since nearly every session
 pays that cost. They should hold only enough about each topic to tell a reader whether they need to
 go read the real thing, not the thing itself. If you notice one accumulating actual content — a
 fact, a rationale, a procedure, more than a sentence of "why" — move it out to the file that topic
 already points to (or a new one) and leave behind just the pointer.
 
-`docs/architecture.md`'s per-module Architecture-table entries are index entries too: a module's own row
+`README.md`'s per-module Source-files-table entries are index entries too: a module's own row
 should generally be shorter than that module's own docstring, not longer — one or two sentences of
 responsibility, not its design rationale. If a module's contents resist a succinct description — if
 summarizing it keeps turning into a grab-bag of unrelated topics — that's a signal the module's own
