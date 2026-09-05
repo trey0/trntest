@@ -23,9 +23,12 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 
 **Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
 `notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
-`populate_via_workers()`, but its own content is still a first-pass minimal template. A real
-population run across a full selected dataset hasn't happened yet, so there's no dataset-scale
-validation.
+`populate_via_workers()`; its content is a title (dataset name, entry index, entry id), a one-line
+summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle and
+full-resolution zoom blink against the basemap, but is still short of the full site described in
+`docs/proposed-tasks/report-plan.md`'s "Future work" section (nav bar, overview map). A real
+population run across a full selected dataset hasn't happened yet, so there's no
+dataset-scale validation.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -236,7 +239,7 @@ lint's notebook checks).
 | [`pose_alignment/wac_camera_model.py`][pose_alignment/wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content itself is still a first-pass minimal template. |
+| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content is a title, a sun-geometry summary, and `reproject`'s overlay-toggle/zoom-blink against the basemap; still short of the full site in `docs/proposed-tasks/report-plan.md`. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from IPython.display import Markdown, display
 
-from trntest.plotting import plot_raster
+from trntest import illumination
+from trntest.config import load_config
 from trntest.session import Session
 from trntest.subprocess_utils import run_quiet
 from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry
@@ -34,35 +35,65 @@ def render_template(text: str, params: dict[str, str]) -> str:
     return _PLACEHOLDER_RE.sub(lambda m: params[m.group(1)], text)
 
 
-def load_entry(dataset_folder: str, edr_product: str) -> TrnTestEntry:
-    """Open a dataset and look up one entry by product ID.
+def load_entry(dataset_folder: str, entry_index: int) -> TrnTestEntry:
+    """Open a dataset and look up one entry by its positional index.
 
     :param dataset_folder: Dataset folder path.
-    :param edr_product: EDR product ID.
+    :param entry_index: The entry's position in the dataset (0-based) -- `TrnTestDataSet.images` is
+        reset to a dense `0..n-1` index at construction, so this is always a stable short id
+        regardless of how the entry was originally looked up (see `TrnTestEntry.index`). Searching by
+        EDR product ID instead would also be possible (`TrnTestDataSet.__getitem__` already supports
+        it), but isn't exposed here -- one lookup mode is enough for this template's own use.
     :returns: The entry.
     """
     session = Session()
-    return TrnTestDataSet.open(dataset_folder, session.config)[edr_product]
+    return TrnTestDataSet.open(dataset_folder, session.config)[int(entry_index)]
 
 
 def summary(entry: TrnTestEntry) -> None:
-    """Display a one-line Markdown summary of `entry` (product ID, orbit, center, sun elevation)."""
+    """Display a one-line Markdown summary of `entry` (product ID, orbit, center, sun geometry).
+
+    Sun azimuth/elevation are computed fresh via `illumination.sun_azimuth_elevation_deg` at
+    `entry.camera`'s own footprint center/epoch -- the same call `hapke_shade_ortho` itself uses for
+    the real render's lighting -- rather than read from the manifest's own `sun_elevation_deg`
+    column, which uses a different (ellipsoid-normal) method and has no azimuth counterpart; mixing
+    the two would show numerically inconsistent elevations side by side.
+    """
     row = entry.row
+    center = entry.camera.footprint_lonlat_deg["center"]
+    assert center is not None, "camera's nadir footprint center must be a real ground point"
+    azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, entry.camera.et)
     display(
         Markdown(
             f"**{entry.product_id}** -- orbit {row['orbit_number']}, "
             f"center ({row['center_lat_deg']:.3f}, {row['center_lon_deg']:.3f}), "
-            f"sun elevation {row['sun_elevation_deg']:.1f} deg"
+            f"sun elevation {elevation_deg:.1f} deg, azimuth {azimuth_deg:.1f} deg"
         )
     )
 
 
-def hillshade(entry: TrnTestEntry) -> None:
-    """Display `entry`'s hillshade raster."""
-    plot_raster(entry.hillshade.raster_path)
+def reproject_overlay(entry: TrnTestEntry):
+    """Display `entry`'s reproject render as an overlay-toggle GIF over the basemap.
+
+    `margin_frac` is set to roughly half `plot_overlay`'s own default (0.3 -> 0.15) so more of the
+    report's fixed page width goes to the overlay itself rather than basemap padding.
+
+    :returns: An `IPython.display.HTML` object -- bare last expression, no trailing `;`, same
+        requirement as `TrnTestImage.plot_overlay`.
+    """
+    return entry.reproject.plot_overlay(margin_frac=0.15)
 
 
-def generate_report(dataset_folder: str, edr_product: str, report_dir: Path) -> None:
+def reproject_zoom_blink(entry: TrnTestEntry):
+    """Display a full-resolution zoom blink between `entry`'s reproject render and the basemap.
+
+    :returns: An `IPython.display.HTML` object -- same bare-last-expression requirement as
+        `reproject_overlay`.
+    """
+    return entry.reproject.plot_zoom_blink_over()
+
+
+def generate_report(dataset_folder: str, entry_index: int, report_dir: Path) -> None:
     """Renders `notebooks/report_template.py` for one entry: substitutes its `{{ }}` placeholders,
     jupytext-syncs the result to a notebook, papermill-executes it, then nbconvert-exports it to
     HTML with figures written to `images/` as real files rather than embedded base64 (see the
@@ -73,7 +104,8 @@ def generate_report(dataset_folder: str, edr_product: str, report_dir: Path) -> 
 
     :param dataset_folder: Dataset folder path, passed through to the template's own `load_entry`
         call.
-    :param edr_product: EDR product ID.
+    :param entry_index: Entry's positional index in the dataset, passed through to the template's
+        own `load_entry` call.
     :param report_dir: Output folder -- `report.py`/`report.ipynb`/`report.html`/`images/` are
         written here.
     """
@@ -81,7 +113,17 @@ def generate_report(dataset_folder: str, edr_product: str, report_dir: Path) -> 
     report_dir.mkdir(parents=True, exist_ok=True)
     report_py = report_dir / "report.py"
     report_ipynb = report_dir / "report.ipynb"
-    params = {"dataset_folder": dataset_folder, "edr_product": edr_product}
+    # product_id is looked up here (cheap -- just a manifest row, no SPICE) rather than in the
+    # template itself, so the page's own title can be filled in via plain `{{ }}` substitution like
+    # every other static value, instead of a Python call the "no explanatory markdown beyond a
+    # one-line title" convention (report-plan.md) would otherwise rule out.
+    product_id = TrnTestDataSet.open(dataset_folder, load_config())[entry_index].product_id
+    params = {
+        "dataset_folder": dataset_folder,
+        "entry_index": str(entry_index),
+        "dataset_name": Path(dataset_folder).name,
+        "product_id": product_id,
+    }
     report_py.write_text(render_template(_TEMPLATE_PATH.read_text(), params))
     run_quiet(["jupytext", "--to", "notebook", str(report_py), "--output", str(report_ipynb)])
     run_quiet(

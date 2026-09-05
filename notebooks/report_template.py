@@ -13,15 +13,14 @@
 # ---
 
 # %% [markdown]
-# # Per-entry report
+# ### {{ dataset_name }} -- entry {{ entry_index }}: {{ product_id }}
 
 # %%
-import trntest
-
-entry = trntest.report.load_entry("{{ dataset_folder }}", "{{ edr_product }}")
-
-# %%
+import trntest; entry = trntest.report.load_entry("{{ dataset_folder }}", "{{ entry_index }}")  # noqa: E702, I001  # fmt: skip
 trntest.report.summary(entry)
 
 # %%
-trntest.report.hillshade(entry)
+trntest.report.reproject_overlay(entry)
+
+# %%
+trntest.report.reproject_zoom_blink(entry)

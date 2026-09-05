@@ -4,8 +4,11 @@
 `populate_via_workers()`.** `notebooks/report_template.py` + `TrnTestReport`
 (`src/trntest/trn_products.py`) + `trntest.report.generate_report` produce one entry's report as
 part of normal dataset population; `TrnTestDataSet.write_index()` writes a dataset-wide
-`status.csv` and `reports/index.html` nav bar. Growing the report's own content (beyond the
-hillshade render + a couple of manifest fields) is the remaining explicit follow-up.
+`status.csv` and `reports/index.html` nav bar. Report content is a title (dataset name, entry index,
+entry id), a one-line summary (orbit, center, sun elevation/azimuth), and `reproject`'s
+overlay-toggle/full-resolution zoom blink against the basemap (`TrnTestReport._generate_impl`
+self-ensures `reproject`). The rest of "Future work" below (nav bar, overview map, richer problem
+flags) is still not started.
 
 ## Context
 
@@ -27,48 +30,61 @@ Reuses tooling this repo already depends on (`jupytext`, `papermill`, `nbconvert
 render_template`) for the one job none of those three tools does:
 
 1. **Template**: `notebooks/report_template.py`, a `.py:percent`-format text notebook with `{{ name
-   }}` placeholders inline in the code (e.g. `load_entry("{{ dataset_folder }}", "{{ edr_product
+   }}` placeholders inline in the code (e.g. `load_entry("{{ dataset_folder }}", "{{ entry_index
    }}")`) — plain text substitution, not papermill's parameter-injection mechanism. Papermill's own
    `parameters`-tagged-cell mechanism can't produce this: it injects a *new* cell with the
    overridden values immediately *after* the tagged cell, so code inside the tagged cell itself
    never sees the override — only cells strictly after it do. That rules out a one-line `entry =
-   trntest.report.load_entry("<path>", "<id>")` with literal values, the compact style wanted here,
-   hence `{{ }}` substitution instead.
+   trntest.report.load_entry("<path>", "<index>")` with literal values, the compact style wanted
+   here, hence `{{ }}` substitution instead. The title heading is filled in the same way
+   (`dataset_name`/`entry_index`/`product_id`, all cheap to compute from the manifest before the
+   notebook ever runs — see `generate_report`'s own comment on why this stays plain substitution
+   rather than a Python call in the template).
 
    Deliberately compact, per the user's request: the template carries no explanatory markdown
    beyond a one-line title — every cell is a single call into `src/trntest/report.py`
-   (`load_entry`/`summary`/`hillshade`), named so the call itself reads as the documentation.
-   Anything more than a trivial call lives in `report.py`, not the notebook, and the notebook needs
-   exactly one import (`import trntest` — `report` is registered in `trntest/__init__.py` alongside
-   `plotting`).
+   (`load_entry`/`summary`/`reproject_overlay`/`reproject_zoom_blink`), named so the call itself
+   reads as the documentation. Anything more than a trivial call lives in `report.py`, not the
+   notebook, and the notebook needs exactly one import (`import trntest` — `report` is registered in
+   `trntest/__init__.py` alongside `plotting`); the `import`+`load_entry` line is merged onto one
+   line with the following `summary(entry)` call into a single cell, per the user's explicit request
+   for the most compact form (needs `# noqa: E702, I001  # fmt: skip` to satisfy `trntest-lint`,
+   since this repo's `ruff format`/`ruff check` otherwise disallow a semicolon-joined
+   import-then-statement).
 
    Not paired/committed as a notebook: the template's `{{ }}` text isn't valid parameter defaults,
    so it can't be executed directly the way every other notebook here is
    (`scripts/run_notebook.sh`) — there's no `.ipynb` twin to keep in sync. `render_template(text,
    params)` (`src/trntest/report.py`) is a two-line regex substitution (`\{\{\s*(\w+)\s*\}\}`,
    raising `KeyError` on an unresolved placeholder) — reaches into markdown text too if a template
-   ever needs that (this one doesn't; `summary()`'s per-entry text goes through
-   `IPython.display.Markdown(f"...")` instead, since it's computed from `entry` at run time, not a
-   static value like `dataset_folder`/`edr_product`).
-2. **Per-entry execution**: `trntest.report.generate_report(dataset_folder, edr_product,
+   ever needs that (this one does, for the title; `summary()`'s per-entry text goes through
+   `IPython.display.Markdown(f"...")` instead, since it depends on `entry.camera` at run time, not a
+   static value like `dataset_folder`/`entry_index`).
+2. **Per-entry execution**: `trntest.report.generate_report(dataset_folder, entry_index,
    report_dir)` runs the substitution above (writes `<report_dir>/report.py`) → `jupytext --to
    notebook` (→ `<report_dir>/report.ipynb`) → `papermill` (executes that notebook in place) — all
    via `subprocess_utils.run_quiet`, in-process, no `docker compose run` wrapper (the caller already
    runs inside the container). `notebooks/report_template.py` itself is only ever read, never
    written to or executed. `TrnTestReport._generate_impl` (`src/trntest/trn_products.py`) is the
-   normal caller — see "Report as a product type" below; `scripts/generate_report.sh <edr_product>
+   normal caller — see "Report as a product type" below; `scripts/generate_report.sh <entry_index>
    [dataset_folder] [report_dir]` calls the same function for manual single-entry regeneration.
+   `entry_index` is the entry's position in the dataset (`TrnTestEntry.index`), the report's primary
+   (and only) lookup key — `TrnTestDataSet.__getitem__` also supports lookup by EDR product id, but
+   `load_entry` doesn't expose that: one lookup mode is enough for this template's own use.
 3. **HTML export**: `jupyter nbconvert --to html <report_dir>/report.ipynb
    --ExtractOutputPreprocessor.enabled=True --NbConvertApp.output_files_dir=images
    --TemplateExporter.exclude_input_prompt=True --TemplateExporter.exclude_output_prompt=True`
    right after. Code cells stay visible (no `--no-input`, since the user asked to see the code, not
    just its output) but the `In[N]:`/`Out[N]:` execution-count gutters are suppressed. Template
-   cells display figures the normal way (`trntest.report.hillshade(entry)`, no return value
-   captured, no `fig.savefig`/`plt.close`) — `ExtractOutputPreprocessor` (nbconvert's own built-in
+   cells display figures the normal way (`trntest.report.reproject_overlay(entry)`, a bare last
+   expression, no `fig.savefig`/`plt.close`) — `ExtractOutputPreprocessor` (nbconvert's own built-in
    mechanism, already on by default for the markdown/RST/LaTeX/asciidoc exporters, just not HTML's)
    pulls each cell's image out of the executed notebook's embedded-base64 output and writes it to a
    file under `output_files_dir` (`images/`), rewriting the cell's `<img>` tag to that relative
-   path — one CLI flag, no custom nbconvert template or preprocessor needed.
+   path — one CLI flag, no custom nbconvert template or preprocessor needed. (In practice this
+   applies only to a plain-`Figure`-returning cell, not the two GIF-returning ones below — an
+   `IPython.display.HTML` object's base64 payload isn't image output in nbconvert's sense, so it
+   stays inlined in the HTML rather than extracted to `images/`.)
 
 ## Report as a product type
 
@@ -79,7 +95,7 @@ already treat any `images_by_type` entry generically, so plugging `report` in th
 task-queue lifecycle, failure tracking, and backfilling of already-populated entries for free —
 including under `populate_via_workers()`, where it parallelizes across entries the same way
 crop/hillshade already do. `TrnTestReport._generate_impl` self-ensures its one dependency
-(`entry.hillshade.generate()`, a no-op once done) rather than relying on callers passing
+(`entry.reproject.generate()`, a no-op once done) rather than relying on callers passing
 `product_types` in a particular order, the same pattern `TrnTestReprojectImage` already uses for
 its own dependency on `entry.crop_result`.
 
@@ -109,9 +125,12 @@ to read footprint size from instead of rebuilding the camera.
     report.py             # notebooks/report_template.py with {{ }} substituted -- kept for provenance
     report.ipynb           # jupytext-synced + papermill-executed -- also kept for debugging
     report.html             # nbconvert's HTML export -- the deliverable
-    images/
-      report_N_0.png          # nbconvert's own ExtractOutputPreprocessor naming (cell index-based),
-                               # not chosen by report.py -- see "Mechanism" above
+    images/                 # currently always empty -- every current template cell returns an
+                             # IPython.display.HTML GIF, not a plain Figure, so ExtractOutputPreprocessor
+                             # (see "Mechanism" above) never has anything to extract; kept as a real
+                             # subfolder anyway since nbconvert creates it unconditionally, and a future
+                             # Figure-returning cell would populate it (report_N_0.png naming, cell
+                             # index-based, not chosen by report.py)
 <dataset_folder>/status.csv   # TrnTestDataSet.write_index() -- one row per entry
 ```
 
@@ -121,16 +140,48 @@ to read footprint size from instead of rebuilding the camera.
 that report generation is dataset-native). `TrnTestDataSet.create()` creates it up front the same
 way it does the other product-type subfolders.
 
-## First-pass report content (deliberately minimal)
+## Viewing reports in JupyterLab
 
-Per the user's explicit ask to keep this pass simple so the mechanism itself could be iterated on
-quickly: the template renders **one image (the hillshade render, via the existing generic
-`plotting.plot_raster`) and a couple of manifest fields** — orbit number, center lat/lon — nothing
-else. No overlay/basemap comparison, no tie points, no craters, no `crop`/`reproject` products. All
-of those are already-implemented pieces (`plotting.py`, `tie_points.py`, `craters.py`) that
-`notebooks/image_generation.py`'s Phases 5-8 already exercise per-entry — extending the report to
-reuse them is expected to be straightforward now that the pipeline is confirmed to work end to end
-via real `populate()` runs against the current `trn_dataset`, not a design risk.
+Browse to `<dataset_folder>/reports/index.html` in JupyterLab's file browser (`<dataset_folder>` is
+under `output/`, e.g. `output/trn_dataset/reports/index.html`) and click through from there. Double-
+clicking `index.html` opens it fine (JupyterLab's built-in HTML viewer fetches it via the contents
+API), but clicking one of its links to a specific entry's `report.html` used to 403 ("Blocking
+request from unknown origin") — Jupyter Server's Referer-based anti-CSRF check on `/files/...` GETs,
+which can't use its usual "token-authenticated requests skip this" bypass since this server runs with
+no token/password, and the built-in HTML viewer renders content in a sandboxed `srcdoc` iframe that
+sends no Referer on an outgoing link click. Fixed by `docker/Dockerfile`'s
+`--ServerApp.allow_origin='*'` (added specifically for this) rather than a client-side workaround, so
+every notebook/report page's normal in-browser links Just Work regardless of how the page was opened.
+
+## Current report content
+
+Per the user's explicit ask to keep the first pass simple so the mechanism itself could be iterated
+on quickly, the very first version of the template rendered one image (the hillshade render) and a
+couple of manifest fields, nothing else. Grown twice since:
+
+- Added `report.reproject_overlay(entry)` (`entry.reproject.plot_overlay(margin_frac=0.15)` — half
+  `plot_overlay`'s own 0.3 default, so more of the report's fixed page width goes to the overlay
+  itself than basemap padding) and `report.reproject_zoom_blink(entry)`
+  (`entry.reproject.plot_zoom_blink_over()`), the `reproject` equivalents of `image_generation.py`'s
+  Phase 6B/6C — deliberately `reproject`, not `crop`, and deliberately just these two, not the full
+  Phase 5-8 sweep at once, to keep the page light until real batch runs show what's actually worth
+  checking. `plot_overlay`/`plot_overlay_toggle` already exposed `margin_frac` as a display-only
+  parameter, no `_render_overlay_figure` axis-limit surgery needed.
+- Per further user feedback: dropped the plain hillshade-render cell entirely (the two `reproject`
+  blink plots above are more informative on their own, and this also removed `TrnTestReport`'s only
+  reason to self-ensure `hillshade` as a dependency — it now self-ensures `reproject` alone).
+  `summary()` now reports sun azimuth alongside elevation, both computed fresh via
+  `illumination.sun_azimuth_elevation_deg` at `entry.camera`'s own footprint center/epoch (the same
+  call the real render's own relighting uses) rather than the manifest's `sun_elevation_deg` column,
+  which uses a different method and has no azimuth counterpart. The title heading dropped to `###`
+  (saves vertical space) and reads `{dataset_name} -- entry {entry_index}: {product_id}` — informative
+  enough to identify the entry standalone, and matches the entry-identifier scheme "Future work"
+  below once asked for (`entry_index` is now `load_entry`'s primary, and only, lookup key). The
+  template's first two cells (`import`+`load_entry`, then `summary`) are merged into one, with the
+  first two statements joined on one line, per explicit request for a maximally compact top cell.
+
+No tie points, craters, or `crop` product in the report; those, plus the rest of "Future work"
+below, remain open.
 
 ## Future work (not started)
 
@@ -138,7 +189,7 @@ The site described below is the target shape; only the flat `write_index()` tabl
 per-entry detail report (both described above) are actually built so far.
 
 - **Page inventory**: four pages total — a nav bar, an overview map, an overview table, and one
-  detailed report per entry (the existing minimal report from "First-pass report content" above).
+  detailed report per entry (the existing report from "Current report content" above).
   The overview table is close to what `write_index_html` already produces (see "Report as a
   product type" above); splitting the nav bar into its own page, described next, is the main change
   needed there.
@@ -148,12 +199,12 @@ per-entry detail report (both described above) are actually built so far.
   frame, a compact way to jump straight to any entry's report, and prev/next buttons that step
   through entries one at a time for systematic review. Screen space is tight in a top strip, which
   is why the entry identifier below matters here specifically.
-- **Entry identifiers — add positional index alongside EDR id**: `TrnTestDataSet.__getitem__`
-  already accepts either a `product_id` string or an integer position (`self.images.iloc[key]`, see
-  `trn_dataset.py`) since `images` is reset to a dense `0..n-1` index at construction — so the
-  position is already a stable, ready-to-use short id, nothing new to build there. Use it as the
-  standard short reference in space-constrained UI (the nav bar particularly); the EDR product id
-  remains fine wherever there's room (e.g. the overview table).
+- **Entry identifiers — add positional index alongside EDR id**: done for the per-entry report
+  (`TrnTestEntry.index`, `report.load_entry`/`generate_report`'s primary lookup key, shown in the
+  report's own title alongside the EDR product id). Still to use it as the standard short reference
+  in the nav bar once that's built (space-constrained UI, where the position is more compact than
+  the EDR product id) — the EDR product id remains fine wherever there's room (e.g. the overview
+  table).
 - **Overview map**: a ground-track-style plot — one label per entry at its center lat/lon, with a
   vector overlay of each entry's hillshade/reproject FOV footprint (`camera.footprint_lonlat_deg`/
   `tie_points.crop_footprint_corners_for_camera` already compute these per entry) and its index
@@ -170,24 +221,6 @@ per-entry detail report (both described above) are actually built so far.
   a `TrnTestDataSet.name` property just returning `self.folder.name` signals "this is the standard
   identifier" clearly enough. Used in the `<title>` of every page above (nav bar, overview map,
   overview table, and each entry's detail report) either way.
-- **Grow per-entry report content — next increment**: the current minimal report (hillshade + a
-  couple of manifest fields) wasn't far off. Add the `reproject` equivalents of
-  `image_generation.py`'s Phase 6B/6C — `entry.reproject.plot_overlay(...)` (basemap + overlay
-  toggle) and `entry.reproject.plot_zoom_blink_over()` (full-resolution zoom blink) — deliberately
-  `reproject`, not `crop`, and deliberately just these two, not the full Phase 5-8 sweep at once, to
-  keep the page light until real batch runs show what's actually worth checking.
-
-  Also shrink Phase 6B's overlay margin, roughly by half, so more of the report's fixed page width
-  goes to the overlay itself. That margin isn't a `plot_overlay` display parameter today — it falls
-  out of `config.dem_padding_fraction` (0.3, `dem_ortho.fetch_dem_and_ortho`'s AOI pad around the
-  image footprint before fetching the basemap), and `plotting._render_overlay_figure` always shows
-  the *entire* fetched basemap extent. Shrinking `dem_padding_fraction` itself isn't the right lever
-  here — that basemap is `entry.dem_ortho_result`, shared with hillshade's own render/relighting
-  input, so a smaller fetch AOI would affect more than the report's display. This needs a
-  display-only crop instead: tighten `_render_overlay_figure`'s axis limits around the overlay
-  footprint before rendering, without touching the underlying fetched raster or
-  `dem_padding_fraction` — likely a new optional parameter threaded through `plot_overlay_toggle`/
-  `TrnTestImage.plot_overlay`, used only by the report template's call.
 - **Richer problem flags**: crater-sharpness grading (`crater_depth.py`), a real tie-point pixel
   residual (not computed anywhere today — `tie_points.py` only produces ground-truth pixel
   *locations* for overlay plotting, no image-based comparison), and the footprint-geometry check

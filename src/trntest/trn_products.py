@@ -402,12 +402,12 @@ class TrnTestReport(TrnTestProduct):
         return self.raster_path.exists()  # report.html is the deliverable; the .ipynb is a byproduct
 
     def _generate_impl(self) -> None:
-        self.entry.hillshade.generate()  # self-ensures its own dependency (report_template.py
-        # displays entry.hillshade's raster) rather than relying on callers passing product_types
-        # in a particular order -- same reasoning TrnTestReprojectImage already applies via
-        # entry.crop_result's cached_property chain. A no-op if hillshade is already done.
+        self.entry.reproject.generate()  # self-ensures its own dependency (report_template.py
+        # displays entry.reproject's own raster) rather than relying on callers passing
+        # product_types in a particular order -- same reasoning TrnTestReprojectImage already
+        # applies via entry.crop_result's cached_property chain. A no-op if already done.
         from trntest import report  # noqa: PLC0415 -- circular otherwise: report.py imports
         # TrnTestDataSet/TrnTestEntry from trn_dataset.py, which imports this module
         # (trn_products.py) to construct product instances.
 
-        report.generate_report(str(self.entry.dataset_folder), self.entry.edr_product, self.report_dir)
+        report.generate_report(str(self.entry.dataset_folder), self.entry.index, self.report_dir)

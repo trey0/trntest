@@ -9,27 +9,35 @@
 # not valid parameter defaults, so it can't run standalone; deliberately not committed as a paired
 # notebook for this reason -- see docs/proposed-tasks/report-plan.md).
 #
-# Usage: scripts/generate_report.sh <edr_product> [dataset_folder] [report_dir]
+# Usage: scripts/generate_report.sh <entry_index> [dataset_folder] [report_dir]
 #   dataset_folder defaults to /workspace/output/trn_dataset (the flagship demo's dataset)
-#   report_dir     defaults to <dataset_folder>/reports/<edr_product>
+#   report_dir     defaults to <dataset_folder>/reports/<product_id at that index>
 
 set -e
 
 if [ -z "$1" ]; then
-    echo "usage: $0 <edr_product> [dataset_folder] [report_dir]" >&2
+    echo "usage: $0 <entry_index> [dataset_folder] [report_dir]" >&2
     exit 1
 fi
 
-EDR_PRODUCT="$1"
+ENTRY_INDEX="$1"
 DATASET_FOLDER="${2:-/workspace/output/trn_dataset}"
-REPORT_DIR="${3:-$DATASET_FOLDER/reports/$EDR_PRODUCT}"
+REPORT_DIR="$3"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 docker compose -f docker/docker-compose.yml run --rm demo python3 -c "
+from trntest.config import load_config
 from trntest.report import generate_report
-generate_report('$DATASET_FOLDER', '$EDR_PRODUCT', '$REPORT_DIR')
-"
+from trntest.trn_dataset import TrnTestDataSet
 
-echo "generate_report: wrote $REPORT_DIR/report.html" >&2
+dataset_folder = '$DATASET_FOLDER'
+entry_index = $ENTRY_INDEX
+report_dir = '$REPORT_DIR'
+if not report_dir:
+    entry = TrnTestDataSet.open(dataset_folder, load_config())[entry_index]
+    report_dir = str(entry.dataset_folder / 'reports' / entry.product_id)
+generate_report(dataset_folder, entry_index, report_dir)
+print(f'generate_report: wrote {report_dir}/report.html')
+"

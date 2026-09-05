@@ -5419,3 +5419,123 @@ passed, unchanged).
 This closes the source-code reorganization end to end. `docs/proposed-tasks/open-items.md`'s "Source
 code reorganization" section collapses to a short done-pointer; the normal per-change
 `scripts/run_notebook.sh` discipline (suspended since Phase 94) resumes.
+
+## Phase 102 (2026-09-05) — Grew per-entry report content: `reproject` overlay-toggle + zoom blink
+
+Picked up `docs/proposed-tasks/report-plan.md`'s explicitly-flagged "next increment" for the report
+product type (Phase 101 confirmed the source-code reorganization didn't touch anything the plan
+depends on). `notebooks/report_template.py` now calls two new one-liners in `report.py` after the
+existing hillshade display: `reproject_overlay(entry)` (`entry.reproject.plot_overlay(margin_frac=
+0.15)` — half `plot_overlay`'s own 0.3 default, so more of the report's fixed page width goes to the
+overlay itself than basemap padding) and `reproject_zoom_blink(entry)`
+(`entry.reproject.plot_zoom_blink_over()`) — the `reproject` equivalents of `image_generation.py`'s
+Phase 6B/6C, deliberately just these two rather than the full Phase 5-8 sweep.
+
+`margin_frac` already existed as a display-only parameter on `plot_overlay`/`plot_overlay_toggle`/
+`TrnTestImage.plot_overlay` by the time this was picked up — the plan's own text had described adding
+it as new plumbing, but that had already landed separately (Phase 92's era); no `_render_overlay_figure`
+surgery was needed, just passing a smaller value from the report template's own call.
+
+`TrnTestReport._generate_impl` (`trn_products.py`) now self-ensures `entry.reproject.generate()`
+alongside its existing `entry.hillshade.generate()`, the same "self-ensure my own dependencies rather
+than rely on caller-supplied `product_types` order" pattern the class already used for hillshade.
+`entry.reproject.generate()` transitively pulls in `entry.crop_result`/`entry.dem_ortho_result` via
+their own cached-property chains, so no other wiring was needed.
+
+**Verification**: built this worktree's own Docker image, `trntest-lint` clean, full `pytest` clean
+(358 passed — `TrnTestReport._generate_impl` is fully monkeypatched in `test_trn_dataset.py`'s report
+tests, so the added `reproject.generate()` call is transparent to them). Ran `report.generate_report`
+directly against a real entry (`M1327210646CE`, the default candidate) end to end: the executed
+notebook has no error outputs, and the resulting `report.html` embeds three visuals (the static
+hillshade PNG plus two base64 GIFs) — decoded and visually inspected both new GIFs to confirm the
+overlay outline and zoom-blink crop render sensibly at the tighter margin.
+
+## Phase 103 (2026-09-05) — Fixed report-link 403s in JupyterLab; found a separate, real rendering bug along the way
+
+The user had previously hit a 403 clicking from a dataset's `reports/index.html` overview table
+through to a specific entry's `report.html` in JupyterLab, unresolved at the time. Reproduced it
+directly with `curl` against the running server rather than guessing: Jupyter Server's Referer-based
+anti-CSRF check (`jupyter_server/base/handlers.py`'s `check_referer`, invoked from
+`check_xsrf_cookie` for GET/HEAD) blocks any `/files/...` request lacking a `Referer` header that
+matches the server's own host, with `"Blocking request from unknown origin"` — confirmed via
+`curl -D -` showing the exact 403 body/message. This check can't fall back on its usual
+"token-authenticated requests skip this" exemption here, since `docker/Dockerfile`'s `CMD` disables
+both token and password. Root-caused the exact trigger: double-clicking `index.html` in JupyterLab's
+file browser opens it via the docmanager's built-in HTML viewer, which fetches content through
+`/api/contents/...` (not origin-checked — this is why the overview table itself always displayed
+fine) but renders it in a sandboxed `srcdoc` iframe (`sandbox="allow-scripts"`, no
+`allow-same-origin`); a link clicked inside that iframe navigates with an opaque origin, so the
+browser sends no `Referer` at all on the resulting `/files/...` request, tripping the check. Verified
+the fix path with `curl` before touching anything: a request with a same-host `Referer` (simulating a
+real top-level tab, e.g. via "Open in New Browser Tab") already passed; both a client-side workflow
+fix and a server-side one were viable, and the user chose the server-side one for durability
+regardless of how a report is opened. Added `--ServerApp.allow_origin='*'` to `docker/Dockerfile`'s
+Jupyter Lab `CMD` — `check_origin()` then short-circuits true before the Referer check ever runs.
+Rebuilt this worktree's image, restarted the server, and re-ran the identical no-Referer `curl`
+against both `index.html` and an entry's `report.html`: both now 200. `docs/proposed-tasks/
+report-plan.md` gained a "Viewing reports in JupyterLab" section recording this. `trntest-lint`
+clean after the Dockerfile change.
+
+**Setup for the repro, and a separate bug found along the way**: to get a live 2-entry dataset to
+test against, first tried populating `select_datasets.py`'s first selected orbit-sequence dataset
+(207 images, a 24-orbit/~2-day span) with `dataset.populate(limit=N)`. 10 different entries were
+attempted and all 10 failed `hillshade`/`report` generation — 4 with the already-known/expected
+±60° WAC_EMP coverage `ValueError` (`WAC_EMP_MAX_ABS_LATITUDE_DEG`, Phase 78), but **5 with a
+different, previously-undocumented `CPLE_AppDefinedError: Invalid dataset dimensions: 0 x N`**, at
+latitudes (-47.79° to 40.09°) well inside that coverage limit — so this second failure is a distinct,
+real bug, not another instance of the coverage one. Not root-caused or fixed (out of scope for this
+session's actual task); recorded as a new `docs/proposed-tasks/open-items.md` entry with the specific
+failing product IDs so a future session can reproduce without re-running the ~1-2 minute
+orbit-selection step. Abandoned this dataset for the actual repro and instead added one more
+low-latitude row (`M1327216889CE`, 12.3°) to the already-known-good `trn_dataset` (`image_generation.
+py`'s single-entry demo dataset) to reach n=2 entries — both populated cleanly, giving a real 2-entry
+dataset with a working overview table to verify the link fix against.
+
+## Phase 104 (2026-09-05) — Report content polish: index-based lookup, sun azimuth, dropped hillshade image
+
+User feedback on Phase 102's report content, applied directly (six small, independent requests):
+title heading dropped from `#` to `###` (saves vertical space); the template's first two cells
+(`import`+`load_entry`, then `summary`) merged into one, with the first two statements
+semicolon-joined onto one line per explicit request for the most compact form -- needed
+`# noqa: E702, I001  # fmt: skip` on that line, since this repo's `ruff format`/`ruff check` gate
+otherwise rejects a semicolon-joined import-then-statement outright (confirmed live: a bare `# noqa:
+E702` alone wasn't enough -- `ruff format` itself, not just the linter, rewrites the line back onto
+two lines regardless of `noqa`, and `ruff check`'s separate `I001` import-sorting rule also fired
+once the semicolon version passed formatting); the report page's title now reads `{dataset_name} --
+entry {entry_index}: {product_id}`, computed in `generate_report()` (a cheap manifest-only lookup,
+no SPICE) and passed through the same `{{ }}` substitution as every other static template value, so
+the template's own "no explanatory markdown beyond a one-line title, no Python calls in the title"
+convention didn't need bending; `summary()` now reports sun azimuth alongside elevation, both
+computed fresh via `illumination.sun_azimuth_elevation_deg` at `entry.camera`'s own footprint
+center/epoch (the same call `hapke_shade_ortho` itself uses for the real render's lighting) rather
+than reading the manifest's own `sun_elevation_deg` column, which uses a different (ellipsoid-normal)
+method with no azimuth counterpart -- mixing the two would show inconsistent elevations side by
+side; the plain hillshade-render cell dropped entirely, leaving just the two `reproject` blink plots
+(the two "blink" plots -- `plot_overlay_toggle` and `plot_zoom_blink` are both animated GIF
+comparators, unlike the dropped static hillshade PNG); and `report.load_entry`/`generate_report`
+switched from an EDR-product-id lookup to a positional-index one (`TrnTestEntry.index`, a new
+property -- `self.row.name`, always the entry's dense `0..n-1` position since
+`TrnTestDataSet.__init__` resets the manifest's index at construction, regardless of whether the
+entry was originally looked up by position or by product id) as the report's sole lookup mode,
+deliberately not also supporting product-id lookup (`TrnTestDataSet.__getitem__` already does, but
+one lookup mode is enough for this one template's own use, per explicit user steer against
+overcomplicating it).
+
+Dropping the hillshade cell also removed `TrnTestReport`'s only reason to self-ensure `hillshade` as
+a dependency (`_generate_impl` now self-ensures `reproject` alone -- `hillshade` is still generated
+regardless whenever `populate()`'s default `PRODUCT_TYPES` includes it as its own separate product
+type, just no longer forced by the report specifically). `scripts/generate_report.sh`'s CLI updated
+to take `<entry_index>` instead of `<edr_product>`, computing the default `report_dir` (still
+product-id-keyed on disk, unchanged) via one extra cheap manifest lookup when not given explicitly.
+
+**Verification**: `trntest-lint` clean (all five checks, including the semicolon-line's format/lint
+exemptions), full `pytest` clean (358 passed, no test exercised the changed report.py functions
+directly). Force-regenerated both `trn_dataset` entries' reports end to end: `<h3>` heading, title
+text, and sun elevation+azimuth line all confirmed via `grep` on the rendered HTML; image count
+confirmed exactly 2 (`<img` tags), both GIFs, no leftover hillshade PNG reference; re-ran the
+Phase 103 no-Referer `curl` check against both regenerated reports to confirm the 403 fix still
+holds with the new content. Deleted one stale orphaned `images/report_3_0.png` per entry, a leftover
+from an in-place regen against an existing `report_dir` after removing the hillshade cell -- an
+nbconvert `ExtractOutputPreprocessor` characteristic (doesn't clean a previous run's now-unreferenced
+extracted files), not a regression from this change; harmless for a real `TrnTestReport._generate_impl`
+call, which never had a stale hillshade image in that `report_dir` to begin with.

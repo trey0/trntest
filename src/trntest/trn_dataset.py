@@ -80,6 +80,14 @@ class TrnTestEntry:
     def product_id(self) -> str:
         return self.row["product_id"]
 
+    @property
+    def index(self) -> int:
+        """This entry's positional index in its dataset (`TrnTestDataSet.images` is reset to a dense
+        `0..n-1` index at construction, so `self.row.name` is always that position regardless of
+        whether this entry was looked up by position or by `product_id`) -- `report.load_entry`'s
+        primary lookup key."""
+        return int(self.row.name)
+
     @functools.cached_property
     def per_image_config(self) -> TrntestConfig:
         return candidate_window._per_image_config(
