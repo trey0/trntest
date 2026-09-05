@@ -7,33 +7,6 @@ Genuinely open questions/gaps in `trntest`, pointed to from
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
-- `notebooks/pose_alignment_spike.py` has two stale references left from the `isis_wac.py` split
-  (`docs/history.md`'s Phase 94) — `isis_wac.resolve_ground_to_image_model` and
-  `isis_wac.image_to_ground_points_batch`, both now on `isis_campt`. Deliberately not fixed yet: the
-  source-code-reorganization effort (see this file's own "Source code reorganization" section) is
-  running with the usual per-change notebook-re-execution discipline suspended, one full notebook
-  pass planned right before that work merges to `main`. Fix this notebook's `.py` and regenerate its
-  `.ipynb` as part of that pass, not before. Task 6 (`docs/history.md`'s Phase 100 entry) added much
-  more staleness on top: its whole `from trntest import control_network, isis_wac, plotting,
-  pose_alignment, tie_points, wac_camera_model` import line and every qualified
-  `pose_alignment.X`/`control_network.X`/`wac_camera_model.X` call throughout now need
-  `tie_point_matching`/`trntest.pose_alignment` updates, plus two module-path comments citing the old
-  flat file locations. Same deferred-until-the-final-pass treatment, for the same reason.
-- `notebooks/along_track_correction.py`/`real_hapke_params.py`/`crater_sharpness_review.py`/
-  `sfs_validation.py`/`hapke_hillshade.py` still `from trntest import lunaserv` and call functions now
-  split across `dem_gld100`/`ortho_wac_emp`/`lunaserv_wms`/`hapke`/`dem_ortho`/`geo_utils` (see
-  `docs/history.md`'s Phase 96 entry). Same deferred-until-the-final-pass treatment as the bullet
-  above, for the same reason.
-- `notebooks/select_datasets.py` calls `plotting.plot_sun_elevation_vs_edr_count`/
-  `plotting.plot_illuminated_node_scatter`, and `notebooks/sfs_validation.py` calls
-  `plotting.plot_sfs_comparison`/`plotting.plot_incidence_validation` — all four moved to
-  `dataset_selection_plots.py`/`sfs_plotting.py` respectively (task 4, `docs/history.md`'s Phase 98
-  entry). Same deferred-until-the-final-pass treatment as the bullets above, for the same reason.
-- `notebooks/select_datasets.py`'s markdown cells (2 spots, around its "Resolving one selected
-  dataset into an image list" section) still say `dataset.DATASET_COLUMNS`/`dataset.images_for_window`
-  -- stale from task 3's `dataset.py` → `candidate_window.py` rename (`docs/history.md`'s Phase 97
-  entry), missed by that task's own reference sweep since it only checked `src`/`tests`/current-state
-  docs, not notebooks. Same deferred-until-the-final-pass treatment as the bullets above.
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
@@ -81,10 +54,6 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   different footprints could silently disagree about which DEM is "the" one. All current real call
   sites pass the same footprint derivation, so no live divergence is known, but a future caller that
   forgets to could reintroduce it.
-- `real_hapke_params.ipynb`/`pose_alignment_spike.ipynb` both call `plotting.plot_overlay_toggle`
-  directly and haven't been regenerated since `margin_frac`'s default changed to `0.3`
-  (2026-09-05) — their committed output still shows the old full-basemap-padding view. Regenerate
-  via `scripts/run_notebook.sh` next time either is touched for another reason.
 - Whether `stretch_reflectance_to_uint8`'s fixed `[0, 0.30]` display stretch saturates is an
   unresolved question. Two distinct sources, neither confirmed absent: (1) `hapke_shade_ortho`'s
   relit reflectance can exceed the max for geometries near opposition (`ratio > 1`); (2)
@@ -95,74 +64,15 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   `compute_brightness_matched_diff`'s discriminating power in any clipped region. Resolving this
   needs an actual multi-candidate saturation sweep, not just asserting either combination is fine.
 
-## Source code reorganization
+## Source code reorganization (done)
 
-A source-code naming/organization review (2026-09-05) found three oversized modules
-(`lunaserv.py`, `isis_wac.py`, `plotting.py`, all past the ~1000-line split guideline), several
-confusing module-name groups, and two self-documented circular-import workarounds plus a third,
-undocumented one that only avoids crashing by accident. Six tasks below address this.
-
-**Task 1 (splitting `isis_wac.py` into `isis_wac.py`/`isis_campt.py`, and the circular-import fixes
-that came with it) is done** — see `docs/history.md`'s Phase 94 entry for what actually shipped
-(including two extra circular-import fixes, in `lunaserv.py`/`render.py`/`spice_kernels.py`, that the
-original plan hadn't anticipated).
-
-**Task 2 (splitting `lunaserv.py` into `geo_utils.py`/`dem_gld100.py`/`ortho_wac_emp.py`/
-`lunaserv_wms.py`/`hapke.py`/`dem_ortho.py`) is done** — see `docs/history.md`'s Phase 96 entry. This
-also fully resolved the `isis_wac`↔`lunaserv` cycle Phase 94 left open. Known gaps, all deferred to
-this reorganization's own final notebook-re-execution pass (see the workflow note below), tracked as
-their own bullets in this file's main list above: `notebooks/pose_alignment_spike.py` (2 stale
-`isis_wac.*` references, from task 1) and `notebooks/along_track_correction.py`/
-`real_hapke_params.py`/`crater_sharpness_review.py`/`sfs_validation.py`/`hapke_hillshade.py` (still
-import the old `lunaserv` module, from task 2).
-
-**Task 3 (`wac.py` deletion, `dataset.py` → `candidate_window.py`, `product_registry.py` →
-`product_io.py`) is done** — see `docs/history.md`'s Phase 97 entry.
-
-**Task 4 (splitting `plotting.py` into `plotting.py`/`sfs_plotting.py`/`dataset_selection_plots.py`)
-is done** — see `docs/history.md`'s Phase 98 entry.
-
-**Task 5 (splitting `trn_dataset.py`'s product classes into `trn_products.py`) is done** — see
-`docs/history.md`'s Phase 99 entry.
-
-**Task 6 (grouping `control_network.py`/`pose_alignment.py`/`wac_camera_model.py` into a
-`pose_alignment/` subpackage) is done** — see `docs/history.md`'s Phase 100 entry. This closes out
-the six-task reorganization plan; the notebook staleness it (and every earlier task) left behind is
-tracked in this file's main list above, resolved together in the final notebook-re-execution pass
-before `feature/refactor` merges to `main`.
-
-**Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
-the usual per-change `scripts/run_notebook.sh` re-execution discipline (`AGENTS.md`'s notebook
-section) is suspended across tasks 1-6 — rely on `pytest`/`trntest-lint` to catch references broken
-by a rename or split, and do one full notebook re-execution pass across every notebook right before
-merging `feature/refactor` into `main`, not after each task. Work happens on
-`claude/source-code-org-analysis-52dadf` (or whatever branch continues it); commits there don't need
-the user's review. The review gate is merging that branch into `feature/refactor` (pushed to
-`origin`, reviewable as a GitHub PR) — `feature/refactor` itself only reaches `main` after the final
-notebook pass above. Revert to the normal per-change notebook discipline once this reorganization is
-done and this note is deleted.
-
-### Target naming
-
-Decided now so later steps don't each re-litigate it. Apply each rename when its task below is
-actually done, not before.
-
-| Current | Becomes | Why |
-|---|---|---|
-| `isis_wac.py` **(done)** | `isis_wac.py` (unchanged) + new `isis_campt.py` | split by concern — see task 1's own doc |
-| `lunaserv.py` **(done)** | `dem_ortho.py` (orchestration) + new `dem_gld100.py`, `ortho_wac_emp.py`, `lunaserv_wms.py`, `hapke.py`, `geo_utils.py` | file is named for the one data source (Lunaserv WMS) that's now the deprecated fallback, not the live GLD100/WAC_EMP path it mostly contains |
-| `wac.py` **(done)** | deleted; `SAMPLES`/`VIS_BLOCK_HEIGHT` moved to new `wac_format.py` | `fetch_vis_mosaic` and its CDR-byte-layout constants (`PDS3_HEADER_BYTES`/`FRAME_BYTES`/`VIS_BLOCK_OFFSET`/`MISSING_CONSTANT`/`LINES_PER_FRAME`) are dead — superseded by `isis_wac.py`, only self-referenced. `SAMPLES`/`VIS_BLOCK_HEIGHT` are real WAC-VIS sensor-geometry constants `isis_wac.py`/`wac_camera_model.py`/`tie_points.py` still import for real code, not just comments — they need the tiny dependency-free home below, not to go down with the rest of the file |
-| `dataset.py` **(done)** | `candidate_window.py` | matches its own `images_for_window()`; frees the word "dataset" from a name collision with `trn_dataset.py` |
-| `dataset_selection.py` | `dataset_selection.py` (unchanged) | names the purpose (which datasets to select), not the technical approach (orbit-level) — keep it |
-| `trn_dataset.py` | `trn_dataset.py` (unchanged) | only confusing in contrast to `dataset.py`; now that's renamed this one reads fine as "the `TrnTestDataSet` module" |
-| `product_registry.py` **(done)** | `product_io.py` | it's atomic-publish/read/write helpers, not a registry data structure |
-| `plotting.py` **(done)** | `plotting.py` (kept, shrunk) + new `sfs_plotting.py`, `dataset_selection_plots.py` | splits off the two grab-bag pieces (SFS-only plots, dataset-selection-only scatter plots) that don't belong with the generator-comparison figures |
-| `trn_dataset.py`'s product classes **(done)** | new `trn_products.py` | `TrnTestProduct`/`TrnTestImage`/`TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestReport` move out, leaving `trn_dataset.py` with just `TrnTestEntry`/`TrnTestDataSet` |
-| `pose_alignment.py`, `control_network.py`, `wac_camera_model.py` **(done)** | `pose_alignment/tie_point_matching.py`, `pose_alignment/control_network.py`, `pose_alignment/wac_camera_model.py` | confirmed a real chain, not just three unrelated back-burner files (`docs/history.md`'s Phase 100 entry); `pose_alignment.py` itself is renamed to avoid colliding with its own package name |
-
-Not renamed: `wac_camera_model.py`'s own basename (distinguishable enough once the legacy `wac.py` is
-gone entirely rather than just renamed); any notebook. `notebooks/wac_isis.py` has the same
-word-order mismatch against `isis_wac.py` that motivated some of the source renames above, but a
-notebook rename is a jupytext-pair regeneration plus a README table edit for cosmetic gain only —
-not worth doing as part of this reorganization.
-
+A 2026-09-05 naming/organization review found three oversized modules (`lunaserv.py`, `isis_wac.py`,
+`plotting.py`), several confusing module-name groups, and two self-documented circular-import
+workarounds plus a third, undocumented one. Six tasks addressed this, followed by a full notebook
+re-execution pass to fix the stale references the renames/splits left behind (each task ran with
+the usual per-change `scripts/run_notebook.sh` discipline deliberately suspended, per the user's
+2026-09-05 direction, until that final pass). All done — see `docs/history.md`'s Phase 94 (`isis_wac.py`
+split), 96 (`lunaserv.py` split), 97 (`wac.py` deletion + `dataset.py`/`product_registry.py` renames),
+98 (`plotting.py` split), 99 (`trn_dataset.py` product-class split), 100 (`pose_alignment/` subpackage),
+and 101 (final notebook pass) entries for what shipped in each. Normal per-change notebook discipline
+resumed after Phase 101.

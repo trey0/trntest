@@ -25,9 +25,10 @@
 # `docs/data-sources.md`'s "LRO maneuver detection" section and `src/trntest/maneuver_detection.py`).
 #
 # The actual selection logic lives in `src/trntest/dataset_selection.py` (orbit-level statistics,
-# candidate enumeration, the greedy diversity-selection algorithm) and `src/trntest/plotting.py`
-# (both plots below) -- this notebook is just that pipeline's tunable parameters plus the calls
-# themselves, so it stays a scannable narrative rather than the place the actual logic lives.
+# candidate enumeration, the greedy diversity-selection algorithm) and
+# `src/trntest/dataset_selection_plots.py` (both plots below) -- this notebook is just that
+# pipeline's tunable parameters plus the calls themselves, so it stays a scannable narrative rather
+# than the place the actual logic lives.
 #
 # ## The illuminated node
 #
@@ -52,7 +53,7 @@
 # %%
 from datetime import datetime
 
-from trntest import TrnTestDataSet, dataset_selection, plotting
+from trntest import TrnTestDataSet, dataset_selection, dataset_selection_plots
 from trntest.config import load_config
 
 config = load_config()
@@ -99,7 +100,7 @@ orbits_df = dataset_selection.add_maneuver_flags(orbits_df, PERIOD_START, PERIOD
 # yield.
 
 # %%
-plotting.plot_sun_elevation_vs_edr_count(orbits_df, PERIOD_START, PERIOD_END)
+dataset_selection_plots.plot_sun_elevation_vs_edr_count(orbits_df, PERIOD_START, PERIOD_END)
 
 # %% [markdown]
 # ## Picking multiple datasets
@@ -135,19 +136,19 @@ selected_datasets[["start_utc", "end_utc", "center_lon_deg", "center_hour_angle_
 #
 # One marker per orbit, colored by acceptable-EDR count; a red X for any orbit with a maneuver; an
 # "underline" under each selected dataset's span (black for picks 1-10, grey for 11-20). See
-# `plotting.plot_illuminated_node_scatter`'s docstring for the full rationale.
+# `dataset_selection_plots.plot_illuminated_node_scatter`'s docstring for the full rationale.
 
 # %%
-plotting.plot_illuminated_node_scatter(orbits_df, PERIOD_START, PERIOD_END, selected_datasets)
+dataset_selection_plots.plot_illuminated_node_scatter(orbits_df, PERIOD_START, PERIOD_END, selected_datasets)
 
 # %% [markdown]
 # ## Resolving one selected dataset into an image list
 #
 # `selected_datasets` is orbit-level -- a start/end UTC window, no images yet. `dataset_selection.
 # resolve_orbit_sequence` turns exactly one selected row into a `TrnTestDataSet`-ready images table
-# (`dataset.DATASET_COLUMNS`) -- the same per-candidate EDR-label fetch + SPICE pose
-# `dataset.images_for_window` always uses, just windowed to this one selected span, and only after a
-# cheap catalog-metadata pre-filter narrows the raw candidate list first.
+# (`candidate_window.DATASET_COLUMNS`) -- the same per-candidate EDR-label fetch + SPICE pose
+# `candidate_window.images_for_window` always uses, just windowed to this one selected span, and only
+# after a cheap catalog-metadata pre-filter narrows the raw candidate list first.
 #
 # Resolves only `selected_datasets.iloc[0]` here, not all `N_DATASETS` picks -- resolving the rest
 # is a `for` loop away.

@@ -49,8 +49,8 @@ FLIP = False
 # `--no-kernels`, `lro` + `--no-kernels` -- `spiceinit web=yes` below covers the pointing/position
 # role that would otherwise need the much larger, un-flagged `base` download). `isis_wac.fetch_edr_img()`
 # pulls the EDR's own `.IMG` pixel data (not the `.xml` label the main demo pipeline already fetches,
-# and not the CDR `.IMG` `wac.py` uses) through the same `cache.fetch_lroc_file` mirror-and-skip
-# pattern as everything else in this repo.
+# and not CDR pixel data -- nothing in this project fetches that any more) through the same
+# `cache.fetch_lroc_file` mirror-and-skip pattern as everything else in this repo.
 
 # %%
 isis_wac.ensure_isisdata(config)
@@ -61,8 +61,8 @@ edr
 # ## Step 1: `lrowac2isis` -- split into even/odd x UV/VIS cubes
 #
 # Splits the EDR into 4 cubes. The VIS cubes come out already band-separated (5 ISIS cube bands,
-# one per VIS filter) -- no manual byte-offset extraction needed, unlike `wac.py`'s approach against
-# the raw CDR. Only the VIS cubes matter here; the UV cubes are never touched below.
+# one per VIS filter) -- no manual byte-offset extraction against the raw CDR needed at all. Only
+# the VIS cubes matter here; the UV cubes are never touched below.
 
 # %%
 split = isis_wac.run_lrowac2isis(edr, config)
@@ -111,9 +111,9 @@ _ = plotting.plot_raster(stitched.cub_path)
 # ### Zoomed crop near framelet boundaries
 #
 # The exact framelet period in *this* (post-`lrowac2isis`) cube's own line coordinates isn't
-# established -- the raw CDR's 78-lines/frame figure (`wac.LINES_PER_FRAME`) describes the
-# *pre*-TDI-extraction byte layout `wac.py` reads directly, not this already-TDI-processed ISIS
-# cube. Rather than guess a line range (the swath's early lines tend to be shadowed), pick the
+# established -- the raw CDR's 78-lines/frame figure describes that file's own *pre*-TDI-extraction
+# byte layout, not this already-TDI-processed ISIS cube. Rather than guess a line range (the swath's
+# early lines tend to be shadowed), pick the
 # window with real signal data-drivenly: read the whole band, find the `WINDOW_HEIGHT`-line span
 # with the highest mean value (a cheap proxy for "not near-empty/shadowed"), and crop there.
 

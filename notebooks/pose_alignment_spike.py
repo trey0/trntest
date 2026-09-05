@@ -33,9 +33,10 @@
 # **The options being compared, systematically**: every correction below varies along three axes --
 #
 # - **projection**: `2D->2D` fits a correction directly between two already map-projected rasters
-#   (`src/trntest/pose_alignment.py`, no camera model involved at all) vs. `3D->2D` fits a correction
-#   to the actual camera pose, projecting a real 3D ground point through it to a 2D image pixel
-#   (`src/trntest/wac_camera_model.py` + `control_network.py`, real ISIS control points).
+#   (`src/trntest/pose_alignment/tie_point_matching.py`, no camera model involved at all) vs. `3D->2D`
+#   fits a correction to the actual camera pose, projecting a real 3D ground point through it to a 2D
+#   image pixel (`src/trntest/pose_alignment/wac_camera_model.py` + `control_network.py`, real ISIS
+#   control points).
 # - **matcher**: `SIFT` (classical, Sobel-filtered) vs. `LightGlue` (learned DISK features + learned
 #   matcher -- more matches, headroom for future low-texture EDRs SIFT might struggle on).
 # - **correction**: `uncorrected` (the raw match-implied offset, no fit at all) through increasingly
@@ -61,7 +62,8 @@ import rasterio
 from scipy.spatial.transform import Rotation
 
 import trntest
-from trntest import control_network, isis_wac, plotting, pose_alignment, tie_points, wac_camera_model
+from trntest import isis_campt, isis_wac, plotting, tie_points
+from trntest.pose_alignment import control_network, tie_point_matching, wac_camera_model
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -86,7 +88,7 @@ results = []  # one dict per table row, appended right after each metric is comp
 # ## Crop the basemap to the WAC's own footprint, and prepare both for matching
 #
 # The basemap ortho covers a much larger area than the WAC crop's own footprint -- cropping to
-# match (`pose_alignment.crop_to_footprint`, padded 15%) gives the feature matcher a far smaller,
+# match (`tie_point_matching.crop_to_footprint`, padded 15%) gives the feature matcher a far smaller,
 # more relevant search space; confirmed empirically to matter for match quality, not just compute.
 #
 # Both `wac_path` and the basemap ortho are on the same ~100 m/px working grid (`config.
@@ -96,40 +98,40 @@ results = []  # one dict per table row, appended right after each metric is comp
 # the camera's own real resolution at this pose, which a direct `cam2map PIXRES=camera` probe found
 # to be ~184 m/px for this candidate (~1.8x coarser). Matching
 # SIFT keypoints on the interpolated-not-actually-resolved 100 m/px grid risks treating resampling
-# texture as real structure. `pose_alignment.native_wac_gsd_m` estimates the WAC crop's native
+# texture as real structure. `tie_point_matching.native_wac_gsd_m` estimates the WAC crop's native
 # GSD from the camera's own already-computed ground geometry (no extra ISIS call), and
 # `downsample_to_gsd` (area-averaging) brings both rasters down to that scale before matching.
 # `to_uint8_for_matching` then converts each to 8-bit, stretching over valid pixels only.
 
 # %%
-basemap_cropped_path = pose_alignment.crop_to_footprint(
+basemap_cropped_path = tie_point_matching.crop_to_footprint(
     basemap_path, wac_path, entry.per_image_config.output_dir / "alignment" / "basemap_cropped.tif"
 )
 
-target_gsd_m = pose_alignment.native_wac_gsd_m(entry.camera)
+target_gsd_m = tie_point_matching.native_wac_gsd_m(entry.camera)
 print(f"Downsampling to the WAC crop's estimated native resolution: {target_gsd_m:.0f} m/px")
-wac_matching_path = pose_alignment.downsample_to_gsd(
+wac_matching_path = tie_point_matching.downsample_to_gsd(
     wac_path, target_gsd_m, entry.per_image_config.output_dir / "alignment" / "wac_matching_res.tif"
 )
-basemap_matching_path = pose_alignment.downsample_to_gsd(
+basemap_matching_path = tie_point_matching.downsample_to_gsd(
     basemap_cropped_path, target_gsd_m, entry.per_image_config.output_dir / "alignment" / "basemap_matching_res.tif"
 )
 
-wac_image, wac_valid = pose_alignment.to_uint8_for_matching(wac_matching_path)
-basemap_image, basemap_valid = pose_alignment.to_uint8_for_matching(basemap_matching_path)
+wac_image, wac_valid = tie_point_matching.to_uint8_for_matching(wac_matching_path)
+basemap_image, basemap_valid = tie_point_matching.to_uint8_for_matching(basemap_matching_path)
 print(f"WAC: {wac_image.shape}, valid {wac_valid.mean():.1%}")
 print(f"Basemap: {basemap_image.shape}, valid {basemap_valid.mean():.1%}")
 
 # %% [markdown]
 # ## Feature matching: SIFT
 #
-# SIFT on Sobel-filtered versions of each image (see `pose_alignment.match_features`'s docstring for
+# SIFT on Sobel-filtered versions of each image (see `tie_point_matching.match_features`'s docstring for
 # why: raw-intensity matching across two different sensors/processing pipelines is far less reliable
 # than matching on edge/gradient content), with a mutual ratio test and two RANSAC geometric-
 # consistency passes (homography, then epipolar).
 
 # %%
-basemap_points_px, wac_points_px = pose_alignment.match_features(basemap_image, basemap_valid, wac_image, wac_valid)
+basemap_points_px, wac_points_px = tie_point_matching.match_features(basemap_image, basemap_valid, wac_image, wac_valid)
 print(f"{len(basemap_points_px)} matched points survived ratio/symmetry/RANSAC verification")
 
 with rasterio.open(basemap_matching_path) as src:
@@ -137,8 +139,8 @@ with rasterio.open(basemap_matching_path) as src:
 with rasterio.open(wac_matching_path) as src:
     wac_transform = src.transform
 
-basemap_points_map = pose_alignment.pixel_points_to_map(basemap_points_px, basemap_transform)
-wac_points_map = pose_alignment.pixel_points_to_map(wac_points_px, wac_transform)
+basemap_points_map = tie_point_matching.pixel_points_to_map(basemap_points_px, basemap_transform)
+wac_points_map = tie_point_matching.pixel_points_to_map(wac_points_px, wac_transform)
 
 # %% [markdown]
 # **Table row 1: 2D->2D, SIFT, uncorrected.** The raw match-implied offset -- no fit at all -- lets
@@ -176,13 +178,13 @@ results.append(
 # apples-to-apples comparison. **Table rows 2-4.**
 
 # %%
-correction_similarity, inliers_similarity, residuals_similarity_m = pose_alignment.fit_similarity_correction(
+correction_similarity, inliers_similarity, residuals_similarity_m = tie_point_matching.fit_similarity_correction(
     wac_points_map, basemap_points_map
 )
-correction_affine, inliers_affine, residuals_affine_m = pose_alignment.fit_affine_correction(
+correction_affine, inliers_affine, residuals_affine_m = tie_point_matching.fit_affine_correction(
     wac_points_map, basemap_points_map
 )
-homography, inliers_homography, residuals_homography_m = pose_alignment.fit_homography_correction(
+homography, inliers_homography, residuals_homography_m = tie_point_matching.fit_homography_correction(
     wac_points_map, basemap_points_map
 )
 
@@ -229,13 +231,13 @@ print(
 
 # %%
 alignment_dir = entry.per_image_config.output_dir / "alignment"
-corrected_similarity_path = pose_alignment.apply_correction(
+corrected_similarity_path = tie_point_matching.apply_correction(
     wac_path, correction_similarity, alignment_dir / "wac_corrected_similarity.tif"
 )
-corrected_affine_path = pose_alignment.apply_correction(
+corrected_affine_path = tie_point_matching.apply_correction(
     wac_path, correction_affine, alignment_dir / "wac_corrected_affine.tif"
 )
-corrected_homography_path = pose_alignment.apply_homography_correction(
+corrected_homography_path = tie_point_matching.apply_homography_correction(
     wac_path, homography, alignment_dir / "wac_corrected_homography.tif"
 )
 
@@ -268,7 +270,7 @@ plotting.plot_overlay_toggle(
 # not a camera-pose one. `control_network.resolve_control_points` converts a matched-point set into
 # real ISIS control points: for each match, the real image-space pixel it was observed at in the
 # *original*, pre-`cam2map` WAC crop cube, resolved through whatever camera model `entry.crop_result`
-# actually carries (ISIS's real DEM, by default, now) -- `isis_wac.resolve_ground_to_image_model`
+# actually carries (ISIS's real DEM, by default, now) -- `isis_campt.resolve_ground_to_image_model`
 # picks the right authority (native ISIS Pushframe model, not CSM -- see its own docstring for why).
 # The trusted ground truth (`ground_lonlat`) comes from the basemap's own georeferencing at each
 # match, `(lon, lat)` only, no elevation baked in yet -- `isis_wac.sample_lunar_dem_radii_batch`
@@ -288,7 +290,7 @@ plotting.plot_overlay_toggle(
 # shared pipeline the same way, rather than duplicating it per matcher).
 
 # %%
-ground_to_image_model = isis_wac.resolve_ground_to_image_model(
+ground_to_image_model = isis_campt.resolve_ground_to_image_model(
     entry.stitched, entry.crop_result, entry.per_image_config
 )
 with rasterio.open(wac_path) as src:
@@ -307,7 +309,7 @@ print(f"crop: {n_framelets} framelets, et0={et0:.3f}, et_per_line={et_per_line:.
 
 def ground_space_residual_m(cub_path, observed_pixels, ground_points_me_m):
     """The one legitimate ground-space residual for a set of already-resolved `observed_pixels`:
-    queries `campt` (via `isis_wac.image_to_ground_points_batch`) for the ground point each
+    queries `campt` (via `isis_campt.image_to_ground_points_batch`) for the ground point each
     pixel actually corresponds to under `cub_path`'s own real camera model, and compares that
     directly (in meters, body-fixed) against the trusted `ground_points_me_m`. Deliberately avoids
     `wac_camera_model`'s own forward-projection/framelet-search tie-break entirely -- comparing
@@ -316,7 +318,7 @@ def ground_space_residual_m(cub_path, observed_pixels, ground_points_me_m):
     `wac_camera_model.find_framelet_and_project`'s own docstring), which has no principled answer.
     This function never searches for a framelet: `observed_pixels` are already fixed coordinates,
     and one pixel has exactly one ground point -- nothing to litigate."""
-    ground_points = isis_wac.image_to_ground_points_batch(cub_path, observed_pixels)
+    ground_points = isis_campt.image_to_ground_points_batch(cub_path, observed_pixels)
     errors_m = []
     for ground_point, trusted_me_m in zip(ground_points, ground_points_me_m, strict=True):
         if ground_point is None:
@@ -462,7 +464,7 @@ results.append(
 # %% [markdown]
 # ## A second matcher: LightGlue
 #
-# `pose_alignment.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
+# `tie_point_matching.match_features_lightglue` swaps classical SIFT for a deep-learned local-feature
 # extractor (DISK) + learned matcher -- headroom for future shadowed/low-texture EDRs SIFT might
 # not find enough points on at all. Same inputs as SIFT above -- only the matcher differs, for a
 # direct, apples-to-apples comparison against SIFT's own rows. **Table row 7** is the raw
@@ -471,14 +473,14 @@ results.append(
 # improvement).
 
 # %%
-basemap_points_px_lg, wac_points_px_lg = pose_alignment.match_features_lightglue(
+basemap_points_px_lg, wac_points_px_lg = tie_point_matching.match_features_lightglue(
     basemap_image, basemap_valid, wac_image, wac_valid
 )
 print(f"SIFT:      {len(basemap_points_px)} matched points")
 print(f"LightGlue: {len(basemap_points_px_lg)} matched points")
 
-basemap_points_map_lg = pose_alignment.pixel_points_to_map(basemap_points_px_lg, basemap_transform)
-wac_points_map_lg = pose_alignment.pixel_points_to_map(wac_points_px_lg, wac_transform)
+basemap_points_map_lg = tie_point_matching.pixel_points_to_map(basemap_points_px_lg, basemap_transform)
+wac_points_map_lg = tie_point_matching.pixel_points_to_map(wac_points_px_lg, wac_transform)
 
 raw_offsets_lg_m = wac_points_map_lg - basemap_points_map_lg
 raw_distances_lg_m = np.linalg.norm(raw_offsets_lg_m, axis=1)
@@ -499,7 +501,7 @@ results.append(
     }
 )
 
-homography_lg, inliers_homography_lg, residuals_homography_lg_m = pose_alignment.fit_homography_correction(
+homography_lg, inliers_homography_lg, residuals_homography_lg_m = tie_point_matching.fit_homography_correction(
     wac_points_map_lg, basemap_points_map_lg
 )
 inlier_residuals_lg_m = residuals_homography_lg_m[inliers_homography_lg]
@@ -524,7 +526,7 @@ results.append(
 )
 
 # %%
-corrected_homography_lg_path = pose_alignment.apply_homography_correction(
+corrected_homography_lg_path = tie_point_matching.apply_homography_correction(
     wac_path, homography_lg, alignment_dir / "wac_corrected_homography_lightglue.tif"
 )
 plotting.plot_overlay_toggle(

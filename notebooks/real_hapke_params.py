@@ -16,7 +16,7 @@
 # %% [markdown]
 # # Real, ISIS-calibration-sourced Hapke parameters vs. the illustrative placeholder
 #
-# `lunaserv.hapke_shade_ortho`'s `_HAPKE_PLACEHOLDER_PARAMS` are explicitly "illustrative values...
+# `hapke.hapke_shade_ortho`'s `_HAPKE_PLACEHOLDER_PARAMS` are explicitly "illustrative values...
 # not calibrated against real lunar photometry" (a feasibility prototype for evaluating ISIS `photomet`
 # at all). Researching lunar Hapke photometry (Sato et al. 2014, *"Resolved Hapke parameter maps of
 # the Moon,"* JGR Planets) found that ISIS itself already ships that exact calibration, converted into
@@ -24,10 +24,10 @@
 # `lro` ISIS data package this project's `isis_wac.ensure_isisdata` already fetches (not a new
 # download) -- `$ISISDATA/lro/calibration/WAC_global_7bands_1x1_wbhs70NS_const_each_pole.cub`, a
 # spatially-resolved 1deg/px (~30km) cube, 7 wavelength bands x 9 parameters.
-# `lunaserv.fetch_real_hapke_params` samples it at one ground point (a candidate's own footprint
+# `hapke.fetch_real_hapke_params` samples it at one ground point (a candidate's own footprint
 # center, at 643nm to match `config.lunaserv_ortho_layer`'s own wavelength).
 #
-# **Now the default** (`lunaserv.DEFAULT_REAL_HAPKE_PARAMS = True`), wired through
+# **Now the default** (`hapke.DEFAULT_REAL_HAPKE_PARAMS = True`), wired through
 # `hapke_shade_ortho`/`despeckle_and_shade_ortho`/`fetch_dem_and_ortho` the same way
 # `along_track_correction` was -- `real_hapke_params=False` keeps the original placeholder available as
 # an explicit fallback. This notebook is now a reference/regression comparison between the two, not an
@@ -41,7 +41,7 @@ from rasterio.enums import Resampling
 from rasterio.windows import from_bounds
 
 import trntest
-from trntest import isis_wac, lunaserv, plotting
+from trntest import dem_ortho, hapke, isis_wac, plotting
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -64,10 +64,10 @@ print(f"Ground footprint center (lon, lat): {center}")
 # `0`/`1`/`0` for this WAC-derived product, i.e. genuinely unused by it).
 
 # %%
-real_params = lunaserv.fetch_real_hapke_params(*center, config)
+real_params = hapke.fetch_real_hapke_params(*center, config)
 print(f"{'param':8s}{'placeholder':>14s}{'real':>14s}")
 for name in ("wh", "hg1", "hg2", "hh", "b0", "theta"):
-    print(f"{name:8s}{lunaserv._HAPKE_PLACEHOLDER_PARAMS[name]:14.4f}{real_params[name]:14.4f}")
+    print(f"{name:8s}{hapke._HAPKE_PLACEHOLDER_PARAMS[name]:14.4f}{real_params[name]:14.4f}")
 print(f"\n(real-only, unused by HAPKEHEN) bc0={real_params['bc0']}, hc={real_params['hc']}, phi={real_params['phi']}")
 
 # %% [markdown]
@@ -80,7 +80,7 @@ print(f"\n(real-only, unused by HAPKEHEN) bc0={real_params['bc0']}, hc={real_par
 
 # %%
 dem_ortho_real = entry.dem_ortho_result
-dem_ortho_placeholder = lunaserv.fetch_dem_and_ortho(
+dem_ortho_placeholder = dem_ortho.fetch_dem_and_ortho(
     camera, config, extra_footprint_lonlat_deg=entry.crop_footprint, hapke=True, real_hapke_params=False
 )
 

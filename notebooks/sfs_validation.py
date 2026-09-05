@@ -16,7 +16,7 @@
 # %% [markdown]
 # # Independent cross-check: Ames Stereo Pipeline `sfs` vs. our own Hapke hillshade
 #
-# `lunaserv.hapke_shade_ortho` is our own hand-rolled pipeline: `_terrain_photometric_angles`
+# `hapke.hapke_shade_ortho` is our own hand-rolled pipeline: `_terrain_photometric_angles`
 # (per-pixel incidence/emission/phase, computed directly in Python) feeds ISIS `photomet`'s Hapke
 # evaluator, and the result relights the WAC_EMP ortho texture by the ratio H(i,e,g)/H(reference).
 #
@@ -48,7 +48,7 @@ import numpy as np
 import rasterio
 
 import trntest
-from trntest import illumination, lunaserv, plotting, sfs_validation
+from trntest import hapke, illumination, sfs_plotting, sfs_validation
 from trntest.plotting import compute_brightness_matched_diff
 
 images = trntest.read_manifest("dataset_manifest.csv")
@@ -107,7 +107,7 @@ print("brightness-matched diff, real WAC vs. sfs forward-render: ", diff_vs_sfs)
 # uniform noise.
 
 # %%
-_ = plotting.plot_sfs_comparison(
+_ = sfs_plotting.plot_sfs_comparison(
     real_wac_mapproj_path,
     dem_ortho_result.ortho,
     sim_masked_path,
@@ -132,7 +132,7 @@ _ = plotting.plot_sfs_comparison(
 # with a DEM shape model attached. Since incidence depends only on the surface normal and sun
 # direction (never the view vector), it's also unaffected by the along-track-correction gap that
 # limits the Hapke comparison above -- `along_track_correction` only ever changes emission/phase,
-# confirmed by comparing `lunaserv.real_geometry_photometric_angles` with it on vs. off (identical
+# confirmed by comparing `hapke.real_geometry_photometric_angles` with it on vs. off (identical
 # incidence either way).
 
 # %%
@@ -148,7 +148,7 @@ with rasterio.open(dem_ortho_result.dem) as src:
 
 center = camera.footprint_lonlat_deg["center"]
 azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, camera.et)
-incidence_ours_deg, _emission_deg, _phase_deg = lunaserv.real_geometry_photometric_angles(
+incidence_ours_deg, _emission_deg, _phase_deg = hapke.real_geometry_photometric_angles(
     dem, dem_ortho_result.bbox, camera, azimuth_deg, elevation_deg, config.dem_target_gsd_m
 )
 
@@ -160,7 +160,7 @@ print(
 )
 
 # %%
-_ = plotting.plot_incidence_validation(
+_ = sfs_plotting.plot_incidence_validation(
     incidence_sfs_deg,
     np.where(valid, incidence_ours_deg, np.nan),
     title=f"{entry.edr_product} -- incidence angle, sfs (Lambertian inversion) vs. ours",

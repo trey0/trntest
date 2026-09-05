@@ -49,7 +49,7 @@ import numpy as np
 import rasterio
 
 import trntest
-from trntest import crater_depth, crater_depth_batch, craters, lunaserv
+from trntest import crater_depth, crater_depth_batch, craters, geo_utils
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -97,7 +97,7 @@ print(f"Consolidated graded database: {gpkg_path}")
 def graded_craters_in_view(gpkg_path, raster_path, padding_fraction=0.05):
     with rasterio.open(raster_path) as src:
         raster_crs = src.crs
-    padded_bbox_deg = lunaserv.pad_bbox(craters.raster_bbox_deg(raster_path), padding_fraction)
+    padded_bbox_deg = geo_utils.pad_bbox(craters.raster_bbox_deg(raster_path), padding_fraction)
     gdf = geopandas.read_file(gpkg_path, bbox=padded_bbox_deg)
     minlon, minlat, maxlon, maxlat = padded_bbox_deg
     gdf = gdf.cx[minlon:maxlon, minlat:maxlat]

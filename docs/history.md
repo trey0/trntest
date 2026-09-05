@@ -5364,3 +5364,58 @@ This closes out the six-task source-code reorganization plan. `docs/proposed-tas
 "Source code reorganization" section is now all `(done)` except the deliberately-deferred notebook
 staleness bullets, which resolve together in the reorganization's final notebook-re-execution pass
 before `feature/refactor` merges to `main`.
+
+## Phase 101 (2026-09-05) — Final notebook re-execution pass for the source-code reorganization
+
+The last step of the six-task source-code reorganization (Phases 94/96-100): fixed every notebook
+reference the six tasks left stale, then re-executed all nine affected notebooks via
+`scripts/run_notebook.sh` to regenerate their `.ipynb` pairs from fresh, current-code runs.
+
+**Fixed, per the deferred bullets tracked in `open-items.md`**: `pose_alignment_spike.py` (the
+heaviest by far — `isis_wac.resolve_ground_to_image_model`/`image_to_ground_points_batch` →
+`isis_campt`; its whole product-classes/pose-alignment import line and every qualified
+`pose_alignment.X`/`control_network.X`/`wac_camera_model.X` call → `tie_point_matching`/
+`trntest.pose_alignment`; two module-path comments), `along_track_correction.py`/
+`real_hapke_params.py`/`hapke_hillshade.py`/`sfs_validation.py` (`lunaserv` → `hapke`/`dem_ortho`,
+per Phase 96's split), `crater_sharpness_review.py` (`lunaserv.pad_bbox` → `geo_utils.pad_bbox`),
+`sfs_validation.py` also needed `plotting.plot_sfs_comparison`/`plot_incidence_validation` →
+`sfs_plotting` (Phase 98), and `select_datasets.py` needed both `plotting.plot_sun_elevation_vs_edr_count`/
+`plot_illuminated_node_scatter` → `dataset_selection_plots` and two `dataset.DATASET_COLUMNS`/
+`dataset.images_for_window` markdown-cell mentions → `candidate_window` (Phase 97).
+
+**One real name-collision bug caught before execution**: `along_track_correction.py`'s
+`basemap_and_diff` helper had a local variable literally named `dem_ortho` (holding the
+`DemOrthoResult` fetch), which would `UnboundLocalError` the instant the module got imported under
+that same name and referenced on the assignment's own right-hand side (`dem_ortho =
+dem_ortho.fetch_dem_and_ortho(...)` — Python treats a name assigned anywhere in a function as local
+for the whole function body, so the module reference on the RHS would resolve to the not-yet-assigned
+local instead of the import). Renamed the local variable to `dem_ortho_result` to match this
+project's existing naming convention (`entry.dem_ortho_result`) rather than aliasing the import.
+
+**Two more stale references found by this pass's own sweep, not previously tracked in `open-items.md`**:
+`wac_isis.py` had three dangling comments citing the deleted `wac.py` (its CDR pixel-data fetch, its
+manual byte-offset framelet extraction, and its `LINES_PER_FRAME` byte-layout constant) — rewritten to
+state the current facts plainly, per this project's own comment-hygiene convention, rather than citing
+a module that no longer exists. `image_generation.py`'s own "which image" markdown cell still said
+`dataset.images_for_window` — fixed to `candidate_window.images_for_window`.
+
+**Bonus resolution**: regenerating `real_hapke_params.ipynb`/`pose_alignment_spike.ipynb` also
+resolved a separate, previously-tracked open item — both notebooks call `plotting.plot_overlay_toggle`
+directly and hadn't been regenerated since `margin_frac`'s default changed to `0.3`; their outputs now
+reflect the current default. Removed from `open-items.md`.
+
+**Verification**: all nine notebooks (`image_generation`, `wac_isis`, `along_track_correction`,
+`real_hapke_params`, `hapke_hillshade`, `crater_sharpness_review`, `sfs_validation`,
+`pose_alignment_spike`, `select_datasets`, in that order — real SPICE/ISIS/ASP/network calls
+throughout, ~11 minutes total) all completed cleanly via `scripts/run_notebook.sh`, no exceptions.
+Spot-checked `pose_alignment_spike`'s and `sfs_validation`'s numeric outputs against their own
+markdown's prior claims (e.g. the LightGlue 6-DOF fit's ground-space residual, 184.2m → 112.1m,
+matches the "183.8m → 112.9m" the notebook's own results discussion cites; the sfs/ours incidence
+agreement, ~0.0005 deg mean, matches the "~0.0005 deg" the notebook's own markdown claims) — both
+consistent with a working pipeline, not a coincidentally-non-crashing one. `trntest-lint --all` clean
+(structural sync, run-shape, and warning-scan notebook checks all pass), full `pytest` clean (358
+passed, unchanged).
+
+This closes the source-code reorganization end to end. `docs/proposed-tasks/open-items.md`'s "Source
+code reorganization" section collapses to a short done-pointer; the normal per-change
+`scripts/run_notebook.sh` discipline (suspended since Phase 94) resumes.

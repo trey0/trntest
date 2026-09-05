@@ -16,13 +16,13 @@
 # %% [markdown]
 # # Along-track correction vs. the uncorrected fallback
 #
-# `lunaserv.hapke_shade_ortho`'s per-pixel photometric angles come from one **frozen** camera
+# `hapke.hapke_shade_ortho`'s per-pixel photometric angles come from one **frozen** camera
 # position (`Camera.camera_center_moon_me_m`, matched to the crop's own center-frame time) -- but
 # the WAC crop is a ~97s pushframe scan, during which the spacecraft moved ~150km (confirmed via
 # ISIS `campt`'s `SpacecraftPosition` at the crop's edges). So the raw per-pixel view direction is
 # only accurate near the crop's own center; it's a mismatched, wrong-epoch position everywhere else.
 #
-# `lunaserv._terrain_photometric_angles`'s `along_track_correction` is a "poor man's" fix for this
+# `hapke._terrain_photometric_angles`'s `along_track_correction` is a "poor man's" fix for this
 # that doesn't need per-line timing: project the raw view direction onto the plane perpendicular to a
 # chosen along-track vector before computing emission/phase -- i.e. trust only the *cross-track*
 # component of the raw (wrong-position) view direction, discarding its along-track component
@@ -51,7 +51,7 @@ import rioxarray
 import xarray
 
 import trntest
-from trntest import isis_wac, lunaserv
+from trntest import dem_ortho, isis_wac
 
 images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
@@ -95,14 +95,14 @@ real_crop_display = real_crop_da.values.astype(np.float64)
 
 # %%
 def basemap_and_diff(along_track_correction: bool):
-    dem_ortho = lunaserv.fetch_dem_and_ortho(
+    dem_ortho_result = dem_ortho.fetch_dem_and_ortho(
         camera,
         entry.per_image_config,
         extra_footprint_lonlat_deg=entry.crop_footprint,
         hapke=True,
         along_track_correction=along_track_correction,
     )
-    basemap_da = rioxarray.open_rasterio(dem_ortho.ortho, masked=True)
+    basemap_da = rioxarray.open_rasterio(dem_ortho_result.ortho, masked=True)
     assert isinstance(basemap_da, xarray.DataArray)
     basemap_da = basemap_da.squeeze()
     # Independently-fetched/reprojected rasters don't necessarily land on identical pixel grids --

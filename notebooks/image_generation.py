@@ -41,7 +41,7 @@
 # **Which image**: this notebook reads `dataset_manifest.csv`, a small file checked into this repo
 # alongside this notebook -- a frozen result of a catalog-driven dataset search. To render a
 # different image, either hand-edit this CSV or produce a new one via
-# `dataset.images_for_window`/`dataset_selection.resolve_orbit_sequence` and
+# `candidate_window.images_for_window`/`dataset_selection.resolve_orbit_sequence` and
 # `trntest.write_manifest` (see `notebooks/select_datasets.py`).
 
 # %%
