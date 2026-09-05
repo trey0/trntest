@@ -16,3 +16,8 @@ docker/.env
 # Claude Code worktree checkouts (.claude/worktrees/<name>/, each a nested git worktree) -- must
 # never be tracked from the main checkout.
 .claude/
+
+# Written by scripts/mark_worktree_done.sh at a worktree's own root -- see
+# scripts/cleanup_worktrees.sh and docs/collaboration.md's "Recommend branch cleanup at session
+# closeout" section.
+/.session-done

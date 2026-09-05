@@ -20,11 +20,23 @@ batch doesn't carry over to the next.
 
 ## Recommend branch cleanup at session closeout
 
-When the user brings up wrapping up a session, proactively recommend deleting this session's
-feature branch — both the local branch and its `origin` copy — once its work is merged into `main`.
-Left alone, these accumulate as cruft, both on this VPS and (especially) on `origin`. This is a
+When the user brings up wrapping up a session, proactively recommend cleaning up this session's
+worktree/branch. Left alone, these accumulate as cruft — both on this VPS (worktree checkouts,
+several GB each, plus their own Docker images) and on `origin` (stale branches). This is a
 closeout-time recommendation, not a mid-session rule: deleting/recreating branches to start new work
 within one agent's own session isn't worth worrying about.
+
+Claude Code's CLI prompts to delete a session's worktree when you close it; Claude Desktop has no
+equivalent event, so nothing ever proposes cleanup on its own there. This repo's stand-in: run
+`scripts/mark_worktree_done.sh` in the closing session's own worktree once its work is merged into
+`main` — this is the explicit "I'm done here" signal the CLI's close button would otherwise provide.
+A *different*, later session (never the one being closed — it can't safely remove its own worktree)
+runs `scripts/cleanup_worktrees.sh list` to see what's now safe to remove (marked done *and* fully
+merged) versus other candidates that are missing one of those two conditions, then
+`scripts/cleanup_worktrees.sh delete ...` to actually remove a worktree, its local + `origin`
+branch, and its Docker image together. Only ever delete what the user has confirmed from that list —
+a worktree merged but not marked, or marked but not merged, might still be someone's live or
+resumable work.
 
 ## Preserve valuable spikes
 

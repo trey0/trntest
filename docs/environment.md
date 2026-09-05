@@ -139,9 +139,12 @@ automatically.
   only matters once (it's cached forever after) — check `cache/astropedia/*.tif` already exists
   before kicking off a full pipeline run if you're unsure whether another agent got there first.
 - **Docker images accumulate per worktree** (`trntest-lunar-demo-<name>`, several GB each once
-  ISIS/ASP are installed — see "Docker images" above). When a worktree's work
-  is done and the worktree itself is removed, also `docker rmi trntest-lunar-demo-<name>` so stale
-  per-agent images don't pile up; `docker system df` shows current usage.
+  ISIS/ASP are installed — see "Docker images" above), and a merged worktree checkout itself is
+  several more GB. `scripts/cleanup_worktrees.sh list` finds worktrees safe to remove (flagged done
+  via `scripts/mark_worktree_done.sh` *and* fully merged into `origin/main`) and `... delete` tears
+  one down completely — worktree, local + `origin` branch, and the Docker image together — rather
+  than remembering each step by hand. See `docs/collaboration.md`'s "Recommend branch cleanup at
+  session closeout" section for when to run this. `docker system df` shows current Docker usage.
 - **`isis_wac.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
   overwrite, no uniquely-named-temp-file-then-atomic-rename — confirmed live: two agents both
   calling `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
