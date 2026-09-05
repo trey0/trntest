@@ -607,7 +607,7 @@ def test_report_backfills_an_already_populated_entry(tmp_path, monkeypatch):
     """An entry whose crop/hillshade were already done before `report` existed as a product type
     gets its report generated on the next `populate()` call, without regenerating crop/hillshade --
     `_enqueue_pending` only enqueues an entry's still-pending product types, so this falls out of
-    the existing task-queue logic for free (see docs/proposed-tasks/report-plan.md)."""
+    the existing task-queue logic for free."""
     monkeypatch.setattr(trn_dataset.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_dataset.TrnTestReport, "_generate_impl", _fake_report_generate_impl)

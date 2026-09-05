@@ -37,7 +37,10 @@ Dockerfile's own comment there).
 - **`trntest_ws/scratch/`** (sibling of `src/`, `cache/`, `output/`) is for large, disposable
   spike/experiment output — rendered artifacts, big intermediate data, downloaded blobs. Kept
   distinct from `output/`, whose existing meaning (see `docs/caching.md`) is the demo's own final
-  rendered artifacts, not ad hoc spike data.
+  rendered artifacts, not ad hoc spike data. Write there via the mount a running `docker compose up`
+  Jupyter Lab server actually sees (`TRNTEST_HOST_SCRATCH_DIR`, see `docker/.env`) — a one-off
+  `docker compose run`'s own `-v` debug mount, if it uses a different path, is invisible to that
+  persistent server and to any other worktree.
 
 Everything outside `src/` — `cache/`, `output/`, `scratch/` — is explicitly fair game to be deleted
 at any time to save disk space or just to clean up. A fresh session should never assume prior

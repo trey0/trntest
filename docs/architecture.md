@@ -20,9 +20,9 @@ See [`README.md`](../README.md) for how to build/run/test it.
 
 **Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
 `notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
-`populate_via_workers()`, but its own content is still a first-pass minimal template — see
-[`docs/proposed-tasks/report-plan.md`](proposed-tasks/report-plan.md). A real population run across
-a full selected dataset hasn't happened yet, so there's no dataset-scale validation.
+`populate_via_workers()`, but its own content is still a first-pass minimal template. A real
+population run across a full selected dataset hasn't happened yet, so there's no dataset-scale
+validation.
 
 `notebooks/image_generation.py` validates the full per-entry pipeline in detail, on one manifest
 entry (`notebooks/dataset_manifest.csv`, checked in, frozen): all three generators, two independent
@@ -54,7 +54,7 @@ single-entry level.
 | [`pose_alignment.py`](../src/trntest/pose_alignment.py) | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md). On the back burner, not wired into the main pipeline. |
 | [`product_registry.py`](../src/trntest/product_registry.py) | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](intermediate-product-discipline.md). |
 | [`render.py`](../src/trntest/render.py) | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`](../src/trntest/report.py) | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below — see [`docs/proposed-tasks/report-plan.md`](proposed-tasks/report-plan.md). Report content itself is still a first-pass minimal template. |
+| [`report.py`](../src/trntest/report.py) | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content itself is still a first-pass minimal template. |
 | [`session.py`](../src/trntest/session.py) | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_validation.py`](../src/trntest/sfs_validation.py) | Cross-checks `lunaserv.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
 | [`spice_kernels.py`](../src/trntest/spice_kernels.py) | Selects/downloads the minimal SPICE kernel set for a date and furnishes it (`fetch_and_furnish`) — see [`docs/data-sources/spice-kernels-isis.md`](data-sources/spice-kernels-isis.md)/[`spice-kernels-naif.md`](data-sources/spice-kernels-naif.md). |

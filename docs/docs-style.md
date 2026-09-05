@@ -101,6 +101,14 @@ different from declaring that a choice was intentional ("deliberately does X, be
 normal, useful fact about the design. The problem is narrating the state of an ongoing review, not the
 word "deliberately" itself.
 
+## Don't launder unvalidated decisions as settled ones
+
+An old docstring/comment stating a rationale confidently (e.g. "X is the physically correct
+behavior, not an artifact to avoid") records what someone reasoned at the time — it isn't evidence
+that anyone validated it, revisited it, or would still endorse it today. When describing existing
+code this way, say what's actually known (was it tested? on how many cases? has anyone revisited
+it?) rather than repeating the original confident framing as if it were a settled design decision.
+
 ## One source of truth per fact
 
 The same fact (a path, a policy, a rationale) showing up in multiple docs is a bug, not redundancy

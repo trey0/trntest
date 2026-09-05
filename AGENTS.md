@@ -36,7 +36,14 @@ just this file). Then, as needed:
   `report-plan.md`), as opposed to the reference docs elsewhere in `docs/` that describe current
   state. Put a new plan doc here instead of loose in `docs/`; when the work finishes, fold its
   content into the relevant current-state doc (or `docs/history.md`) and delete the plan, per its
-  own usual "once resumed/done, delete or fold in" closing note.
+  own usual "once resumed/done, delete or fold in" closing note. Because a single-task plan file is
+  meant to disappear, don't cite one by filename from a file expected to persist indefinitely
+  (a docstring/comment, a test, another reference doc) — state the rationale inline there instead,
+  or the citation goes stale the moment the plan is folded in. `open-items.md` is the one exception:
+  unlike a single-task plan, it's a continually-refreshed running list that persists indefinitely by
+  design (items get deleted as they resolve, the file doesn't), so citing it by filename is fine.
+- `docs/collaboration.md` — how a session should collaborate with the user on this repo: commit/
+  merge review timing, what to do with valuable ad hoc exploration, and how to present findings.
 - `docs/history.md` — the phase-by-phase development narrative (what was tried, what broke, how
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above

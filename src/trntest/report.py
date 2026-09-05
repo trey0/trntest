@@ -1,7 +1,6 @@
 """Per-entry report helpers -- keeps notebooks/report_template.py's cells to one-liners, plus the
 pipeline that renders that template (`generate_report`, used by `TrnTestReport._generate_impl`) and
-the dataset-wide index (`write_index_html`, used by `TrnTestDataSet.write_index`).
-See docs/proposed-tasks/report-plan.md."""
+the dataset-wide index (`write_index_html`, used by `TrnTestDataSet.write_index`)."""
 
 import re
 from pathlib import Path
@@ -19,7 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TEMPLATE_PATH = _REPO_ROOT / "notebooks" / "report_template.py"
 
 LOW_SUN_ELEVATION_DEG_THRESHOLD = 10.0  # first-guess placeholder -- tune once a real batch run
-# shows what's actually worth flagging (see docs/proposed-tasks/report-plan.md).
+# shows what's actually worth flagging.
 
 
 def render_template(text: str, params: dict[str, str]) -> str:
@@ -66,8 +65,8 @@ def hillshade(entry: TrnTestEntry) -> None:
 def generate_report(dataset_folder: str, edr_product: str, report_dir: Path) -> None:
     """Renders `notebooks/report_template.py` for one entry: substitutes its `{{ }}` placeholders,
     jupytext-syncs the result to a notebook, papermill-executes it, then nbconvert-exports it to
-    HTML with figures written to `images/` as real files rather than embedded base64 -- see
-    docs/proposed-tasks/report-plan.md's "Mechanism" section for why each step is shaped this way.
+    HTML with figures written to `images/` as real files rather than embedded base64 (see the
+    `ExtractOutputPreprocessor` comment below for how).
 
     Runs in-process, no `docker compose run` wrapper -- callers (`TrnTestReport._generate_impl`,
     `scripts/generate_report.sh`) already run inside the container.
@@ -118,8 +117,7 @@ def generate_report(dataset_folder: str, edr_product: str, report_dir: Path) -> 
 
 def problem_flags(entry: TrnTestEntry) -> list[str]:
     """Cheap, zero-fetch heuristic checks on `entry.row` -- a first pass at flagging entries worth
-    a closer look, not an authoritative quality signal. See
-    docs/proposed-tasks/report-plan.md's "problem flags are first-guess" note.
+    a closer look, not an authoritative quality signal.
 
     Silently skips a check whose manifest column isn't present (`entry.row.get`, not `[]`) rather
     than raising -- a real manifest always has `dataset.DATASET_COLUMNS`, but a hand-built or

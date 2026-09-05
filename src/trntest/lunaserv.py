@@ -1008,7 +1008,7 @@ def _terrain_photometric_angles(
     # A still-unexplained regression remains open, not addressed here: the normal-tilt correction made
     # the brightness-matched diff against a WAC crop measurably worse, despite the geometry itself being
     # independently confirmed correct above. Leading hypothesis, not verified: the base ortho texture is
-    # already photometrically normalized by processing this project's own re-shading was never validated
+    # already photometrically normalized in a way this project's own re-shading was never validated
     # against. See `docs/proposed-tasks/open-items.md`.
     height, width = dem.shape
     minx, miny, maxx, maxy = bbox

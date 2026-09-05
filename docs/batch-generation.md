@@ -21,8 +21,8 @@ is a drop-in replacement for `populate()` from the caller's side, just backed by
 
 There's no per-dataset setting for this — `product_types` is a plain parameter on every call
 (`populate()`, `populate_via_workers()`, `status()`, `truncate()`), defaulting to
-`trn_dataset.PRODUCT_TYPES = ("crop", "hillshade", "report")`. `report` (the per-entry HTML report,
-see `docs/proposed-tasks/report-plan.md`) is on by default; `reproject` is implemented but opt-in
+`trn_dataset.PRODUCT_TYPES = ("crop", "hillshade", "report")`. `report` (the per-entry HTML report)
+is on by default; `reproject` is implemented but opt-in
 (see `trn_dataset.py`'s module docstring) -- pass it explicitly:
 
 ```python
