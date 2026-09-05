@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import rasterio
 
-from trntest import control_network, isis_wac, wac_camera_model
+from trntest import control_network, isis_campt, isis_wac, wac_camera_model
 from trntest.config import TrntestConfig
 
 _ORTHO_CRS = "+proj=ortho +lon_0=0 +lat_0=0 +R=1737400 +units=m +no_defs"
@@ -34,7 +34,7 @@ def test_map_points_to_lonlat_maps_the_projection_center_to_lon0_lat0():
 def test_map_points_to_lonlat_normalizes_to_0_360_positive_east():
     # A point west of the projection center (negative map x) should come back as a longitude
     # near 360, not a negative one -- this project's own 0-360 Positive-East convention throughout
-    # (matches isis_wac.ground_to_image_pixel's PositiveEast360Longitude expectation).
+    # (matches isis_campt.ground_to_image_pixel's PositiveEast360Longitude expectation).
     points_map = np.array([[-50000.0, 0.0]])
 
     lons, _ = control_network.map_points_to_lonlat(points_map, _ORTHO_CRS, TrntestConfig())
@@ -47,7 +47,7 @@ def test_resolve_control_points_pairs_and_drops_unresolved_points(tmp_path):
     basemap_points_map = np.array([[10.0, 10.0], [1010.0, 10.0], [2010.0, 10.0]])
     cub_path = tmp_path / "crop.cub"
     _write_fake_crop_cube(cub_path)
-    model = isis_wac.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
+    model = isis_campt.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
 
     # The middle point's implied ground point fails to project into any real framelet
     # (find_framelet_and_project returns None); the other two resolve to distinct, recognizable
@@ -81,7 +81,7 @@ def test_resolve_control_points_raises_if_nothing_resolves(tmp_path):
     basemap_points_map = np.array([[0.0, 0.0]])
     cub_path = tmp_path / "crop.cub"
     _write_fake_crop_cube(cub_path)
-    model = isis_wac.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
+    model = isis_campt.GroundToImageModel(cub_path=cub_path, name_model="fake", used_csm=False)
 
     with patch.object(isis_wac, "sample_lunar_dem_radii_batch", return_value=np.full(1, 1737400.0)):
         with patch.object(wac_camera_model, "calibrate_et_per_crop_line", return_value=(0.0, 1.0)):
@@ -100,7 +100,7 @@ def test_write_control_network_writes_a_correct_csv_and_invokes_the_isis_python_
     ground_lonlat = np.array([[10.0, 20.0], [30.0, 40.0]])
     out_path = tmp_path / "out.net"
 
-    with patch.object(isis_wac, "cube_serial_number", return_value="TEST_SN"):
+    with patch.object(isis_campt, "cube_serial_number", return_value="TEST_SN"):
         with patch("trntest.control_network.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             result = control_network.write_control_network(
@@ -131,7 +131,7 @@ def test_write_control_network_raises_on_writer_failure(tmp_path, monkeypatch):
     observed_pixels = np.array([[100.5, 200.5]])
     ground_lonlat = np.array([[10.0, 20.0]])
 
-    with patch.object(isis_wac, "cube_serial_number", return_value="TEST_SN"):
+    with patch.object(isis_campt, "cube_serial_number", return_value="TEST_SN"):
         with patch("trntest.control_network.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
             with pytest.raises(subprocess.CalledProcessError):

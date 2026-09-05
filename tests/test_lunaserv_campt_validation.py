@@ -10,7 +10,7 @@ Marked `@pytest.mark.heavy`: needs live network access (the real candidate's own
 fetch) *and* a real ISIS toolchain (`gdal_translate`, `csminit`, `campt`, and -- unlike every other
 ISIS-touching test in this project -- an actually-installed `usgscsm` CSM plugin, added to
 `docker/Dockerfile`'s `isis` conda env specifically for this test in Phase 71). Every other
-`campt`-touching test in this project (`test_isis_wac_ground_to_image.py`) mocks the subprocess call;
+`campt`-touching test in this project (`test_isis_campt.py`) mocks the subprocess call;
 this one really shells out, against a real rendered image's own real CSM camera.
 """
 
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import trntest
-from trntest import illumination, isis_wac, lunaserv, render, tie_points
+from trntest import illumination, isis_campt, lunaserv, render, tie_points
 from trntest.subprocess_utils import run_quiet
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -96,7 +96,7 @@ def test_terrain_photometric_angles_ellipsoid_limit_matches_real_campt_ground_tr
         row = int(round((maxy - y) / (maxy - miny) * height - 0.5))
         lon_deg, lat_deg = points_lonlat[name]
 
-        real = isis_wac.campt_photometric_angles(csm_cub_path, lon_deg, lat_deg)
+        real = isis_campt.campt_photometric_angles(csm_cub_path, lon_deg, lat_deg)
         assert real is not None, f"real campt failed to project sample point {name!r} into the render"
         phase_real_deg, incidence_real_deg, emission_real_deg = real
 

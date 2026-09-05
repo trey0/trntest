@@ -43,7 +43,7 @@ from huey.api import Result, TaskWrapper
 from huey.exceptions import TaskException
 
 from trntest import camera as camera_module
-from trntest import dataset, isis_wac, lunaserv, orientation, plotting, render, tasks, tie_points
+from trntest import dataset, isis_campt, isis_wac, lunaserv, orientation, plotting, render, tasks, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.lunaserv import DemOrthoResult
@@ -551,7 +551,7 @@ class TrnTestCropImage(TrnTestImage):
     """The real, ISIS-processed WAC crop: `crop/<edr_product>_crop.cub` + its ISD sidecar."""
 
     # The sidecar ISD is accurately-scoped but not reprojection-reliable -- see
-    # isis_wac.run_isd_generate_for_crop.
+    # isis_campt.run_isd_generate_for_crop.
 
     @property
     def raster_path(self) -> Path:
@@ -590,7 +590,7 @@ class TrnTestCropImage(TrnTestImage):
         return "crop_px"
 
     def _generate_impl(self) -> None:
-        isd = isis_wac.run_isd_generate_for_crop(
+        isd = isis_campt.run_isd_generate_for_crop(
             self.entry.crop_result, self.entry.camera, self.entry.stitched.flip, self.entry.per_image_config
         )
         self.raster_path.parent.mkdir(parents=True, exist_ok=True)

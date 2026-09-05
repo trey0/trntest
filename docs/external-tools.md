@@ -169,7 +169,7 @@ needs, recorded so they don't have to be re-derived.
   and looking like plausible terrain. Neither re-running `spiceinit` on the cropped cube, nor
   cropping earlier in the pipeline (the calibrated parity cubes, before `framestitch`, rather than
   the stitched cube after) changes this — both produce the exact same wrong result, so the bug isn't
-  about pipeline ordering. **Fix** (`isis_wac.run_isd_generate`): patch the 5 scalar time fields
+  about pipeline ordering. **Fix** (`isis_campt.run_isd_generate`): patch the 5 scalar time fields
   above by `time_offset_s = (line_offset / VIS_BLOCK_HEIGHT) * isd["interframe_delay"]` after
   generation — the underlying `instrument_pointing.ephemeris_times`/`quaternions`/
   `angular_velocities` arrays are untouched by `crop` (confirmed identical length before/after crop)
@@ -234,7 +234,7 @@ needs, recorded so they don't have to be re-derived.
   product/DEM. A separate, similarly-named field, `framelets_flipped` (within-framelet *line* order,
   not framelet *sequence* order), was also tested and rigorously ruled out as unrelated — patching it
   produced a byte-for-byte identical `mapproject` output on a fixed grid; ASP's implementation
-  doesn't appear to consume that field at all. `isis_wac.run_isd_generate` now patches
+  doesn't appear to consume that field at all. `isis_campt.run_isd_generate` now patches
   `framelet_order_reversed` to match the same `flip` value `framestitch` was run with (threaded
   through via `FramestitchResult.flip`).
 - **End-to-end wall time** for one product, from a cold `.IMG` fetch through a rendered `sat_sim`
@@ -395,7 +395,7 @@ model even on the known-good full cube) had missed both. Full investigation:
 
 ## The crop ISD sidecar's real accuracy
 
-`isis_wac.run_isd_generate_for_crop`'s sidecar is accurate, not just informational — it exists
+`isis_campt.run_isd_generate_for_crop`'s sidecar is accurate, not just informational — it exists
 specifically so `crop/<edr_product>_crop.json` truthfully describes `crop/<edr_product>_crop.cub`'s
 own dimensions and real acquisition time window, unlike a naive `isd_generate -i` run directly
 against a cropped Pushframe cube (see the ISD-authoring bug above). **This does not make the
@@ -414,7 +414,7 @@ however, is **~1.39s** off from real `campt` output at the crop's own last line 
 close to one whole `interframe_delay` (1.40625s here), not just numerical noise.
 
 **Traced, not a bug in this patch**: re-ran the identical `campt`-vs-`isd_generate` comparison
-directly on the full, *unpatched* stitched cube (`isis_wac.run_isd_generate`'s own pre-existing
+directly on the full, *unpatched* stitched cube (`isis_campt.run_isd_generate`'s own pre-existing
 output, untouched by any of this feature's new code) and found the exact same pattern: `campt` at
 the full cube's **line 1** matches the ISD's `ending_ephemeris_time` (not `starting_ephemeris_time`)
 to within ~1.39s, while `campt` at the full cube's **last line** (3612) matches
@@ -423,7 +423,7 @@ row 1 corresponds to the *chronologically last* framelet and the physical last r
 *chronologically first* one (consistent with `framestitch`'s `FLIP=TRUE` reordering, and with why
 `campt`-based lookups — which read the cube's own embedded, physically-correct-by-construction
 pointing data directly — remain the only trustworthy ground-to-image/image-to-ground path in this
-codebase). `isis_wac.run_isd_generate_for_crop` shifts the full-cube ISD's already-computed
+codebase). `isis_campt.run_isd_generate_for_crop` shifts the full-cube ISD's already-computed
 `starting_ephemeris_time`/`ending_ephemeris_time`/`center_ephemeris_time` by one shared
 `time_offset_s`, so it faithfully **preserves** whatever gap already existed between
 `isd_generate`'s own `ending_ephemeris_time` and true chronological end on the full cube — it
@@ -553,7 +553,7 @@ older ellipsoid-only finding still holds.
 
 ## `campt`'s `USECOORDLIST` batch mode: real gotchas, and why it matters here
 
-`isis_wac.ground_to_image_pixels_batch` (used by `control_network.resolve_control_points`, see
+`isis_campt.ground_to_image_pixels_batch` (used by `control_network.resolve_control_points`, see
 above) runs one real `campt usecoordlist=true` call for many points at once instead of one
 `ground_to_image_pixel` subprocess per point — confirmed live to matter a great deal: each
 individual `campt` call pays real process-spawn/SPICE-load overhead (~300ms observed), which

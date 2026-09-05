@@ -5009,3 +5009,70 @@ only live reference to it) and fixed three stale cross-references in still-live 
 (`_plot_tie_point_marker`'s "shared by" comment, `plot_overlay`'s docstring, `_render_overlay_figure`'s
 km-tick-formatter comment) that named it as a still-existing sibling. No notebook called it, so
 nothing to regenerate; `trntest-lint`/`pytest`/`mypy` all clean.
+
+## Phase 94 (2026-09-05) — Split `isis_wac.py` into `isis_wac.py`/`isis_campt.py`, removed the camera/isis_wac/wac_camera_model/lunaserv/render/spice_kernels circular-import cluster
+
+First step of a broader source-code organization pass (naming/module-boundary review, full plan
+originally in `docs/proposed-tasks/isis-wac-module-split.md`, folded in here now that it's done; the
+remaining steps are tracked in `docs/proposed-tasks/open-items.md`'s "Source code reorganization"
+section). Done on a separate `feature/refactor` integration branch per the user's request, with the
+usual per-change notebook re-execution discipline (`AGENTS.md`) suspended for the duration —
+`pytest`/`trntest-lint` catch reference breakage instead, and one full notebook pass happens right
+before `feature/refactor` merges to `main`.
+
+**The split**: `isis_wac.py` (1402 lines) mixed running the ISIS pipeline
+(`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`, plus CSM ISD generation) with
+answering ground-truth ground↔image queries against an already-processed cube via `campt` — a seam
+the test suite already reflected (`tests/test_isis_wac_ground_to_image.py` covered only the second
+concern). New `isis_campt.py` (538 lines) takes the `campt`-based queries (`GroundToImageModel`,
+`resolve_ground_to_image_model`, `ground_to_image_pixel(s_batch)`, `image_to_ground_points_batch`,
+`campt_photometric_angles`, `ground_point_at_pixel`, `ephemeris_time_at_pixel`, `cube_serial_number`)
+and the CSM ISD family they depend on (`IsdGenerateResult`, `run_isd_generate(_for_crop)`,
+`run_mapproject`); `isis_wac.py` (909 lines) keeps the pipeline itself. `run_mapproject`'s docstring
+was rewritten from a bare "**Deprecated**" to name the actual blocker (`usgscsm`'s Pushframe
+`groundToImage` has an unreliable secant-search bug, docs/external-tools.md) and frame it as
+preferable to `run_cam2map_for_crop` once that's fixed upstream, not abandoned — the user's own
+framing, since the CSM approach is architecturally the more direct one.
+
+**The circular imports**: two were already self-documented `# noqa: PLC0415` lazy-import workarounds
+(`camera.py` needing `isis_wac.run_pipeline`/`ground_point_at_pixel` for a real boresight correction;
+`lunaserv.py` needing `isis_wac.ensure_isisdata`); a third (`isis_wac.py`↔`wac_camera_model.py`) had no
+workaround at all and only avoided crashing because neither side did a name-specific import of the
+other. Tracing actual runtime need (not just type annotations) showed `isis_wac.py`'s imports of
+`Camera`/`FrameTiming`/`PoseCorrection`/`DemOrthoResult` were annotation-only, never constructed —
+fixed via `from __future__ import annotations` + `if TYPE_CHECKING:` guards in `isis_wac.py` and
+`isis_campt.py`, letting `camera.py` and `wac_camera_model.py` import them normally at module scope.
+
+That surfaced two more real cycles the plan hadn't anticipated, both only reachable once `camera.py`
+imports `isis_wac`/`isis_campt` for real: `lunaserv.py` and `render.py` also imported `Camera` (and
+`render.py` also `DemOrthoResult`) at module scope, annotation-only in both — same
+`TYPE_CHECKING`-guard fix applied to both files, confirmed by an actual Docker import test
+(`docker compose run --rm demo python3 -c "import trntest.<mod>"` for every module, and again with
+each module as the sole first import in a fresh process) after hand-tracing the chain wrongly twice.
+A fourth, separate lazy-import workaround turned up in `spice_kernels.py` (`from trntest import
+isis_wac  # noqa: PLC0415 -- avoids a circular import`, for `resolve_wac_ck_kernels`) — its own root
+cause (`spice_kernels`→`isis_wac`→`camera`→`spice_kernels`) was already fixed by the `camera.py`
+change above, so it converts to a normal top-level import too, as a bonus beyond the original plan's
+scope.
+
+**Verification**: fresh Docker image build, the import tests above, `trntest-lint --all`, and the fast
+`pytest` suite (362 passed) — all clean after fixing one real breakage
+(`test_tie_points_geometry.py` patched `isis_wac.ground_point_at_pixel`, which moved) and updating
+every test/doc/comment cross-reference to a moved name across `src/`, `tests/`, `scripts/`, and the
+current-state docs (`docs/external-tools.md`, `docs/pose-alignment.md`, `docs/image-pipeline.md`,
+`docs/environment.md`). `notebooks/pose_alignment_spike.py` still has two stale
+`isis_wac.resolve_ground_to_image_model`/`isis_wac.image_to_ground_points_batch` references —
+deliberately left for the final notebook pass rather than fixed now, per the suspended-discipline
+workflow above.
+
+## Phase 95 (2026-09-05) — `.gitignore`: exclude `cache/`/`output/`/`scratch/`
+
+Found while re-running `trntest-lint --all` repeatedly during Phase 94: `docker-compose.yml` bind-mounts
+`cache/`/`output/`/`scratch/` (which live outside this repo entirely, see `docs/environment.md`) at
+`/workspace/cache`/`/workspace/output`/`/workspace/scratch` inside the container — nested under this
+repo's own working directory from git's point of view. Without a `.gitignore` entry, `git ls-files
+--others --exclude-standard` (and therefore `trntest-lint --all`, which uses it to find untracked
+files) walks into the mounted `scratch/` content and reports spike scripts there as lint findings, on
+every `--all` run, on every worktree. Added `/cache/`, `/output/`, `/scratch/` to `.gitignore` — no
+host-side layout change, just stops git-based tooling inside the container from treating a bind mount
+as part of the repo.

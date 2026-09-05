@@ -23,7 +23,7 @@ from pathlib import Path
 import requests
 import spiceypy as spice
 
-from trntest import cache
+from trntest import cache, isis_wac
 from trntest.config import TrntestConfig, load_config
 
 # Kernels needed no matter what date we're targeting.
@@ -206,8 +206,6 @@ def select_isis_wac_ck_kernels(target_dt: datetime, config: TrntestConfig) -> li
     # resolution for LRO_LROCWAC_VIS depends entirely on lrolc's own direct CK segments for -85620).
     # Preferred anyway because it makes the furnished kernel set match ISIS's own resolution by
     # construction, rather than hand-picked filename prefixes.
-    from trntest import isis_wac  # noqa: PLC0415 -- avoids a circular import
-
     target_doy = doy_code(target_dt)
     covered = []
     for p in isis_wac.resolve_wac_ck_kernels(config):

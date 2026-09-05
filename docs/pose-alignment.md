@@ -185,7 +185,7 @@ spike's own ~150-165m) — the leading suspect (ellipsoid-only ground truth, no 
 motivating the open item below.
 
 Also batched `control_network.resolve_control_points`'s per-point `campt` calls
-(`isis_wac.ground_to_image_pixels_batch`, ~230s → ~3s on the 767-point set — see
+(`isis_campt.ground_to_image_pixels_batch`, ~230s → ~3s on the 767-point set — see
 `docs/external-tools.md`'s "`campt`'s `USECOORDLIST` batch mode" section), found while working the
 same notebook, unrelated to the alignment question itself.
 

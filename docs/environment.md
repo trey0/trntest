@@ -161,7 +161,7 @@ automatically.
   one down completely — worktree, local + `origin` branch, and the Docker image together — rather
   than remembering each step by hand. See `docs/collaboration.md`'s "Recommend branch cleanup at
   session closeout" section for when to run this. `docker system df` shows current Docker usage.
-- **`isis_wac.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
+- **`isis_campt.run_isd_generate`'s own `-o` write is still not concurrency-safe** — a plain
   overwrite, no uniquely-named-temp-file-then-atomic-rename — confirmed live: two agents both
   calling `resolve_ground_to_image_model`/`run_isd_generate` on the same shared default candidate
   (`M1327210646CE`) around the same time raced on that file (back when it lived at the old, shared

@@ -9,7 +9,7 @@ observed at in the original, pre-`cam2map` WAC cube, and a trusted 3D ground loc
 `write_control_network` writes the result to ISIS's own `.net` control-network format.
 """
 # Ground-to-image goes through `wac_camera_model.find_framelet_and_project`, not `campt`:
-# `isis_wac.ground_to_image_pixels_batch` has a scattered ~38% failure rate for WAC's Pushframe
+# `isis_campt.ground_to_image_pixels_batch` has a scattered ~38% failure rate for WAC's Pushframe
 # sensor (`PushFrameCameraGroundMap::GetLocalNormal` landing outside the correct framelet, a known
 # upstream ISIS bug, DOI-USGS/ISIS3#4256, not an edge-of-crop artifact -- see
 # docs/external-tools.md's campt failure-rate section), the same underlying bug class that made
@@ -40,7 +40,7 @@ import rasterio
 import rasterio.errors
 import rasterio.warp
 
-from trntest import isis_wac, lunaserv, wac_camera_model
+from trntest import isis_campt, isis_wac, lunaserv, wac_camera_model
 from trntest.config import TrntestConfig, load_config
 from trntest.tie_points import lonlat_to_ground_km
 
@@ -65,7 +65,7 @@ def map_points_to_lonlat(
     # `rasterio.warp.transform` (the point-wise sibling of `transform_bounds`, which only handles a
     # bbox) returns longitude in the standard -180..180 convention regardless of the destination
     # CRS's own definition (confirmed elsewhere in this project, see `craters.py`'s own note) --
-    # normalized here via `% 360.0` to match `isis_wac.ground_to_image_pixel`'s own
+    # normalized here via `% 360.0` to match `isis_campt.ground_to_image_pixel`'s own
     # `PositiveEast360Longitude` convention.
     config = config or load_config()
     geo_crs = lunaserv.geographic_crs()
@@ -77,7 +77,7 @@ def resolve_control_points(
     wac_points_map: np.ndarray,
     basemap_points_map: np.ndarray,
     map_crs,
-    ground_to_image_model: isis_wac.GroundToImageModel,
+    ground_to_image_model: isis_campt.GroundToImageModel,
     config: TrntestConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert matched map-space tie points into ISIS control points ready for a `jigsaw` bundle
@@ -101,7 +101,7 @@ def resolve_control_points(
           resampling, using only the WAC crop's own map projection, plus a DEM elevation sample via
           `isis_wac.sample_lunar_dem_radii_batch`), then projecting that point through
           `wac_camera_model.find_framelet_and_project` (see the module comment for why not
-          `isis_wac.ground_to_image_pixels_batch`). Doesn't depend on trusting the current camera
+          `isis_campt.ground_to_image_pixels_batch`). Doesn't depend on trusting the current camera
           pose: it's a pure function of the WAC map-pixel and whatever camera pose produced it.
         - `ground_lonlat`: the trusted ground truth for the same matched feature, taken directly from
           the matched basemap map-pixel's own georeferencing -- `(lon, lat)` only, no elevation (see
@@ -231,7 +231,7 @@ def write_control_network(
     out_path = Path(out_path)
     csv_path = out_path.with_suffix(".csv")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    serialnumber = isis_wac.cube_serial_number(cub_path)
+    serialnumber = isis_campt.cube_serial_number(cub_path)
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_CONTROL_NETWORK_CSV_COLUMNS)

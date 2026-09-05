@@ -220,6 +220,7 @@ lint's notebook checks).
 | [`dataset.py`][dataset.py] | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
 | [`dataset_selection.py`][dataset_selection.py] | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `dataset.py`. |
 | [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`plotting.py` use. |
+| [`isis_campt.py`][isis_campt.py] | ISIS `campt`-based ground-truth ground↔image queries against an already-processed WAC cube (`ground_to_image_pixel`/`ground_point_at_pixel`/`resolve_ground_to_image_model`), plus the CSM ISD generation those queries depend on. |
 | [`isis_wac.py`][isis_wac.py] | Steps a WAC EDR through ISIS3's own pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`) as this project's real-WAC comparison path — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
 | [`lunaserv.py`][lunaserv.py] | Fetches DEM (Astropedia GLD100) + ortho (WAC_EMP PDS4) imagery for a camera's footprint and preps both for `sat_sim`, including Hapke-relit hillshade blending — see the module docstring and [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md)/[`wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
@@ -250,6 +251,7 @@ lint's notebook checks).
 [dataset.py]: src/trntest/dataset.py
 [dataset_selection.py]: src/trntest/dataset_selection.py
 [illumination.py]: src/trntest/illumination.py
+[isis_campt.py]: src/trntest/isis_campt.py
 [isis_wac.py]: src/trntest/isis_wac.py
 [lunaserv.py]: src/trntest/lunaserv.py
 [maneuver_detection.py]: src/trntest/maneuver_detection.py

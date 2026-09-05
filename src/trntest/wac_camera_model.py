@@ -10,7 +10,7 @@ points.
 
 Only WAC-VIS band 1 (NAIF code -85631) is supported -- this project's own `isis_wac.py` never
 requests another band, and neither `campt` nor `jigsaw` expose a way to. Only ground-to-image is
-implemented here; image-to-ground still goes through `campt`/`isis_wac.ground_point_at_pixel` (see
+implemented here; image-to-ground still goes through `campt`/`isis_campt.ground_point_at_pixel` (see
 the investigation doc for why the two directions have different risk profiles for this camera).
 """
 
@@ -31,7 +31,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
-from trntest import isis_wac
+from trntest import isis_campt
 from trntest.camera import camera_pose_moon_me
 from trntest.wac import SAMPLES
 
@@ -137,8 +137,8 @@ def calibrate_et_per_crop_line(cub_path: Path, n_lines: int) -> tuple[float, flo
     n_framelets = n_lines / FRAMELET_HEIGHT
     line_a = (FRAMELET_HEIGHT + 1) / 2.0
     line_b = (n_framelets - 1) * FRAMELET_HEIGHT + (FRAMELET_HEIGHT + 1) / 2.0
-    et_a = isis_wac.ephemeris_time_at_pixel(cub_path, sample, line_a)
-    et_b = isis_wac.ephemeris_time_at_pixel(cub_path, sample, line_b)
+    et_a = isis_campt.ephemeris_time_at_pixel(cub_path, sample, line_a)
+    et_b = isis_campt.ephemeris_time_at_pixel(cub_path, sample, line_b)
     et_per_line = (et_b - et_a) / (line_b - line_a)
     et0 = et_a - et_per_line * line_a
     return et0, et_per_line

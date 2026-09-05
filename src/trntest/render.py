@@ -3,18 +3,23 @@ that exact camera to a CSM Frame model-state JSON sidecar with `cam_gen`. Takes 
 as plain Python values directly -- no file handoff needed.
 """
 
+from __future__ import annotations
+
 import dataclasses
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import spiceypy as spice
 
-from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import DemOrthoResult
 from trntest.product_registry import atomic_publish_path, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
+
+if TYPE_CHECKING:
+    from trntest.camera import Camera
+    from trntest.lunaserv import DemOrthoResult
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,7 +129,7 @@ def run_mapproject_image(
     :returns: `output_path`.
     """
     # The shared low-level worker both `run_mapproject` (the synthetic render's own `cam_gen` CSM
-    # sidecar) and `isis_wac.run_mapproject` (the WAC cube's ALE-derived ISD) use -- currently dead
+    # sidecar) and `isis_campt.run_mapproject` (the WAC cube's ALE-derived ISD) use -- currently dead
     # code, no live caller for either. Kept generic (`camera_type`) rather than hardcoded, as good
     # hygiene, even though its live caller (`trn_dataset.TrnTestHillshadeImage._mapprojected_path`)
     # always uses the default `"csm"` now: an earlier, since-reverted anisotropic `fu`/`fv` FOV
@@ -210,7 +215,7 @@ def patch_sun_position(csm_json_path: str | Path, et: float) -> None:
     #
     # Feed the resulting file to ISIS's `csminit` via its `state=` parameter, not `isd=`: `csminit
     # isd=` expects a from-scratch ISD (the format ALE's `isd_generate` produces,
-    # `isis_wac.run_isd_generate`'s own ISD), which needs a "constructModelFromISD" build step per
+    # `isis_campt.run_isd_generate`'s own ISD), which needs a "constructModelFromISD" build step per
     # candidate plugin/model and fails ("Could not parse the sensor model name") on a
     # `cam_gen`-style pre-built model *state* string like this one even once it's valid JSON.
     # `csminit state=` (a separate, documented parameter, not just an alias) is the one that

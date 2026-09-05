@@ -21,7 +21,7 @@ so it matches a real WAC swath — architecture detail alongside `../README.md`'
   **Boresight direction is re-aimed, not trusted from raw SPICE**: `spice.pxform`'s `[0,0,1]` in the
   `LRO_LROCWAC_VIS` frame is confirmed *not* WAC-VIS's real optical boresight (see "WAC-VIS's real
   boresight isn't `spice.pxform`'s `[0,0,1]`" below) — `build_camera()` instead runs the real WAC
-  pipeline and queries ISIS's own camera model (`isis_wac.ground_point_at_pixel`) for the real
+  pipeline and queries ISIS's own camera model (`isis_campt.ground_point_at_pixel`) for the real
   ground point at the crop's true center pixel, then points the boresight there directly
   (`camera.look_at_rotation`). Camera *position* is untouched — confirmed exactly correct.
 - **Comparison-figure aspect ratio**: both panels are plotted with `extent=` in real km (not raw
@@ -32,7 +32,7 @@ so it matches a real WAC swath — architecture detail alongside `../README.md`'
   plausible candidate points), projected into each image's real pixel coordinates. Synthetic side:
   closed-form pinhole inverse (exact, single fixed pose — `select_tie_points`). Real WAC crop side:
   a genuine ISIS `campt` ground-to-image query (`resolve_crop_pixels`, via
-  `isis_wac.resolve_ground_to_image_model`/`ground_to_image_pixel`) against the crop's own real,
+  `isis_campt.resolve_ground_to_image_model`/`ground_to_image_pixel`) against the crop's own real,
   embedded camera model — not the deprecated frame-index-bisection SPICE approximation
   (`project_ground_to_crop_pixel`/`_crop_pixel_at_frame`, kept for reference). Switched after
   confirming live, on this project's real default candidate, that the SPICE approximation disagreed
@@ -99,6 +99,6 @@ without being a no-op. The ~5-6° gap is a statement about which pixel is the tr
 
 **The fix in use** (`camera.build_camera()`): don't derive "where the crop centers" from a boresight
 ray at all — run the real ISIS pipeline, query the real ground point at the crop's actual center
-pixel via `campt`'s image-to-ground direction (`isis_wac.ground_point_at_pixel`), and re-aim the
+pixel via `campt`'s image-to-ground direction (`isis_campt.ground_point_at_pixel`), and re-aim the
 synthetic camera's boresight directly at that real point (`camera.look_at_rotation`, Gram-Schmidt
 against the original SPICE X axis for roll).

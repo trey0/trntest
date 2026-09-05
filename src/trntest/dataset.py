@@ -422,7 +422,7 @@ def generate_dataset(
     # assert-guarded invariants (`lunaserv.py`'s `assert center is not None`) are defensive checks on
     # state `build_camera` should already guarantee, not conditions expected to trip for a candidate,
     # and its ISIS `campt` calls (`tie_points.crop_footprint_corners_for_camera` ->
-    # `isis_wac.ground_point_at_pixel`) use `check=True` specifically because no failure is expected
+    # `isis_campt.ground_point_at_pixel`) use `check=True` specifically because no failure is expected
     # there (see that function's own docstring) -- so none of those get the same treatment; a failure
     # from any of them is exactly as likely to mean a bug as `generate_dataset` failing for any other
     # unanticipated reason, and should abort the batch the same way. `generate_dataset` is, in this

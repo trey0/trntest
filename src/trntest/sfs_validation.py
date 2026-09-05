@@ -161,7 +161,7 @@ def run_sfs_forward_render(
     # camera model: `sfs` refuses the crop cube outright ("Seems to have Isis camera type 1... Maybe
     # it will work with CSM") -- ASP's own ISIS session support doesn't cover WAC-VIS's native
     # Pushframe camera type at all, independent of the (different, `usgscsm`-`groundToImage`-specific)
-    # Pushframe CSM reliability concern `isis_wac.resolve_ground_to_image_model`'s docstring
+    # Pushframe CSM reliability concern `isis_campt.resolve_ground_to_image_model`'s docstring
     # describes. This CSM Frame camera is the one already used throughout this project's Hapke
     # shading pipeline itself and independently validated against `campt` ground truth (~0.018 deg,
     # `tests/test_lunaserv_campt_validation.py`) -- a different, but not lesser, source of camera-pose

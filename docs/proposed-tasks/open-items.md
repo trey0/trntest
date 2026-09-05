@@ -7,6 +7,13 @@ Genuinely open questions/gaps in `trntest`, pointed to from
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
+- `notebooks/pose_alignment_spike.py` has two stale references left from the `isis_wac.py` split
+  (`docs/history.md`'s Phase 94) — `isis_wac.resolve_ground_to_image_model` and
+  `isis_wac.image_to_ground_points_batch`, both now on `isis_campt`. Deliberately not fixed yet: the
+  source-code-reorganization effort (see this file's own "Source code reorganization" section) is
+  running with the usual per-change notebook-re-execution discipline suspended, one full notebook
+  pass planned right before that work merges to `main`. Fix this notebook's `.py` and regenerate its
+  `.ipynb` as part of that pass, not before.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
@@ -66,11 +73,16 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
 A source-code naming/organization review (2026-09-05) found three oversized modules
 (`lunaserv.py`, `isis_wac.py`, `plotting.py`, all past the ~1000-line split guideline), several
 confusing module-name groups, and two self-documented circular-import workarounds plus a third,
-undocumented one that only avoids crashing by accident. Six tasks below address this; task 1 has a
-full plan — [`isis-wac-module-split.md`](isis-wac-module-split.md) — since it unblocks the rest and
-its exact function boundaries needed working out. Tasks 2-6 are intentionally left at this depth
-until task 1 lands, rather than fully speccing steps that depend on decisions the earlier ones will
-make.
+undocumented one that only avoids crashing by accident. Six tasks below address this.
+
+**Task 1 (splitting `isis_wac.py` into `isis_wac.py`/`isis_campt.py`, and the circular-import fixes
+that came with it) is done** — see `docs/history.md`'s Phase 94 entry for what actually shipped
+(including two extra circular-import fixes, in `lunaserv.py`/`render.py`/`spice_kernels.py`, that the
+original plan hadn't anticipated). One known gap: `notebooks/pose_alignment_spike.py` still has two
+stale `isis_wac.resolve_ground_to_image_model`/`isis_wac.image_to_ground_points_batch` references —
+deferred to this reorganization's own final notebook-re-execution pass (see the workflow note below),
+tracked as its own bullet in this file's main list above. Tasks 2-6 below are intentionally left
+light, since their exact boundaries depend on decisions the later ones will make as they're tackled.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
 the usual per-change `scripts/run_notebook.sh` re-execution discipline (`AGENTS.md`'s notebook

@@ -50,7 +50,7 @@ def test_calibrate_et_per_crop_line_fits_an_exact_affine_line_through_two_real_p
         assert line in (center_a, center_b)
         return 1000.0 if line == center_a else 1000.0 - 69 * 1.40625  # matches a real interframe_delay
 
-    with patch("trntest.isis_wac.ephemeris_time_at_pixel", side_effect=fake_et):
+    with patch("trntest.isis_campt.ephemeris_time_at_pixel", side_effect=fake_et):
         et0, et_per_line = wac_camera_model.calibrate_et_per_crop_line("fake.cub", n_lines)
 
     assert et0 + et_per_line * center_a == pytest.approx(1000.0)
@@ -223,7 +223,7 @@ def test_project_in_known_framelet_returns_finite_reasonable_pixel():
 def _campt_image_to_ground(cub_path, sample, line):
     """Real campt image->ground query, returning (lon_deg, lat_deg, radius_m) -- the real 3D point
     wherever the shape model currently attached to `cub_path` puts it (the crop's real DEM by
-    default -- see isis_wac.run_spiceinit). Not isis_wac.ground_point_at_pixel: this test needs the
+    default -- see isis_wac.run_spiceinit). Not isis_campt.ground_point_at_pixel: this test needs the
     real LocalRadius too, to round-trip the *actual* 3D ground point (real elevation included), not
     a point at some assumed constant radius."""
     result = subprocess.run(

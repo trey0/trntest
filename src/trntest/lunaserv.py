@@ -8,11 +8,14 @@ docs/data-sources/astropedia-gld100.md, docs/data-sources/wac-emp-pds4.md,
 docs/data-sources/lunaserv-wms.md, and docs/caching.md.
 """
 
+from __future__ import annotations
+
 import dataclasses
 import math
 import tempfile
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import rasterio
@@ -24,10 +27,12 @@ from rasterio.windows import from_bounds as window_from_bounds
 from rasterio.windows import transform as window_transform
 
 from trntest import cache, illumination
-from trntest.camera import Camera
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.product_registry import atomic_publish, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
+
+if TYPE_CHECKING:
+    from trntest.camera import Camera
 
 # Placeholder Hapke-Henyey-Greenstein coefficients for `hapke_shade_ortho` -- illustrative values in
 # each parameter's documented valid range (see ISIS's photomet.xml), not calibrated against lunar

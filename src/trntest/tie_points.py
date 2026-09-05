@@ -31,7 +31,7 @@ import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import isis_wac, lunaserv, wac, wac_camera_model
+from trntest import isis_campt, isis_wac, lunaserv, wac, wac_camera_model
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -109,7 +109,7 @@ def crop_footprint_corners_for_camera(
     frame_timing: FrameTiming, camera: Camera, config: TrntestConfig | None = None
 ) -> dict:
     """The WAC crop's ground footprint, queried via ISIS's own camera model (`campt` image-to-ground,
-    `isis_wac.ground_point_at_pixel`) at the cropped cube's pixels, `_CROP_EDGE_MARGIN_PX` in from
+    `isis_campt.ground_point_at_pixel`) at the cropped cube's pixels, `_CROP_EDGE_MARGIN_PX` in from
     each edge -- not the deprecated `_crop_footprint_corners_spice_approx`'s SPICE ray-trace.
 
     Requires `isis_wac.run_pipeline` and `isis_wac.crop_for_camera`'s output to exist.
@@ -134,7 +134,7 @@ def crop_footprint_corners_for_camera(
     m = _CROP_EDGE_MARGIN_PX
 
     def real_ground(sample: float, line: float) -> tuple:
-        return isis_wac.ground_point_at_pixel(crop.cub_path, sample, line)
+        return isis_campt.ground_point_at_pixel(crop.cub_path, sample, line)
 
     return {
         "top_left": real_ground(1 + m, 1 + m),
@@ -163,7 +163,7 @@ def _crop_pixel_at_frame(
     ground_km: np.ndarray,
     half_angle_rad: float,
 ) -> tuple:
-    """**Deprecated** -- superseded by `isis_wac.ground_to_image_pixel`. Kept for reference/comparison
+    """**Deprecated** -- superseded by `isis_campt.ground_to_image_pixel`. Kept for reference/comparison
     only, not called by `select_tie_points`/`resolve_crop_pixels`.
 
     Cross-track column (pinhole formula, cross-track = camera Y) + row (linear frame-to-row mapping)
@@ -194,7 +194,7 @@ def project_ground_to_crop_pixel(
     tol: float = 1e-6,
     max_iter: int = 60,
 ) -> tuple:
-    """**Deprecated** -- superseded by `isis_wac.ground_to_image_pixel`. Kept for reference/comparison
+    """**Deprecated** -- superseded by `isis_campt.ground_to_image_pixel`. Kept for reference/comparison
     only, not called by `select_tie_points`/`resolve_crop_pixels`.
 
     The crop mixes many poses (one per frame), so finding which pixel a ground point falls on
@@ -414,7 +414,7 @@ def resolve_crop_pixels(tie_points: dict, crop: "isis_wac.CropResult", config: T
     """
     # Validated to exact (0.000px) agreement with ISIS `campt` output.
     #
-    # Used instead of isis_wac.ground_to_image_pixel/resolve_ground_to_image_model's campt-based
+    # Used instead of isis_campt.ground_to_image_pixel/resolve_ground_to_image_model's campt-based
     # query because campt's own ground-to-image solve has a ~38% failure rate for WAC's Pushframe
     # sensor on this project's default candidate -- a known upstream ISIS bug
     # (PushFrameCameraGroundMap::GetLocalNormal, DOI-USGS/ISIS3#4256), not an edge-of-crop artifact.

@@ -6,7 +6,7 @@ import pytest
 import rasterio
 from matplotlib.path import Path as MplPath
 
-from trntest import isis_wac, tie_points, wac_camera_model
+from trntest import isis_campt, isis_wac, tie_points, wac_camera_model
 from trntest.camera import Camera
 from trntest.config import TrntestConfig
 
@@ -223,7 +223,7 @@ def test_crop_footprint_corners_for_camera_queries_inset_from_edges(monkeypatch)
     fake_crop = isis_wac.CropResult(cub_path=Path("/fake/crop.cub"))
     with patch.object(isis_wac, "run_pipeline", return_value="fake-stitched"):
         with patch.object(isis_wac, "crop_for_camera", return_value=fake_crop):
-            monkeypatch.setattr(isis_wac, "ground_point_at_pixel", fake_ground_point_at_pixel)
+            monkeypatch.setattr(isis_campt, "ground_point_at_pixel", fake_ground_point_at_pixel)
             result = tie_points.crop_footprint_corners_for_camera(
                 frame_timing=None, camera=camera, config=TrntestConfig()
             )

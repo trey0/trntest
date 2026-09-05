@@ -21,7 +21,7 @@ network convention), `serialnumber`, `measureType`, `sample`, `line`. `sample`/`
 0-based (numpy/array convention) -- `plio`'s own `IsisStore.create_points` adds `(0.5, 0.5)` itself
 to reach ISIS's 1-based pixel-center convention (confirmed via direct source inspection, not
 assumed); the caller (`write_control_network`) is responsible for converting from
-`isis_wac.ground_to_image_pixel`'s already-1-based output before writing the CSV, not this script."""
+`isis_campt.ground_to_image_pixel`'s already-1-based output before writing the CSV, not this script."""
 
 import argparse
 

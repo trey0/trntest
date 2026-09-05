@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import spiceypy as spice
 
-from trntest import cache, spice_kernels
+from trntest import cache, isis_campt, isis_wac, spice_kernels
 from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
 
 PDS_NS = {
@@ -523,7 +523,7 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     # changes where `[0,0,1]` points without being a no-op). So instead: run the WAC pipeline
     # (`isis_wac.run_pipeline`, idempotent -- shares its output with Phase 6's own explicit call for
     # the same product, no duplicated ISIS work) to get a camera-model-aware stitched cube, query
-    # ISIS's own camera model (`isis_wac.ground_point_at_pixel`) for the ground point at the crop's
+    # ISIS's own camera model (`isis_campt.ground_point_at_pixel`) for the ground point at the crop's
     # own true center pixel (`center_frame_index * VIS_BLOCK_HEIGHT` -- exactly
     # `isis_wac.crop_window_for_camera`'s own window-center line, so this matches wherever the
     # eventual displayed crop actually centers, regardless of `flip`/`camera.reverse_crop_along_track`
@@ -564,11 +564,9 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     forward_step_km = ground_track_step_km(frame_timing, center_frame_index)
     k = boresight_rotation_k(r_cam_to_me_raw, forward_step_km)
 
-    from trntest import isis_wac  # noqa: PLC0415 -- circular otherwise (isis_wac imports Camera/FrameTiming)
-
     stitched = isis_wac.run_pipeline(k == _REVERSED_TIME_K, frame_timing, config)
     center_line = center_frame_index * isis_wac.VIS_BLOCK_HEIGHT
-    target_lon, target_lat = isis_wac.ground_point_at_pixel(stitched.cub_path, isis_wac.SAMPLES / 2.0, center_line)
+    target_lon, target_lat = isis_campt.ground_point_at_pixel(stitched.cub_path, isis_wac.SAMPLES / 2.0, center_line)
     target_ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(target_lon), np.radians(target_lat)))
     boresight_me = target_ground_km - c_meters / 1000.0
     boresight_me = boresight_me / np.linalg.norm(boresight_me)
