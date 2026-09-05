@@ -134,8 +134,60 @@ via real `populate()` runs against the current `trn_dataset`, not a design risk.
 
 ## Future work (not started)
 
-- **Grow report content** to match `image_generation.py`'s Phase 5/6/8 comparisons (overlay
-  toggle, tie points, crater layer) once the minimal version above is confirmed to read well.
+The site described below is the target shape; only the flat `write_index()` table and the single
+per-entry detail report (both described above) are actually built so far.
+
+- **Page inventory**: four pages total — a nav bar, an overview map, an overview table, and one
+  detailed report per entry (the existing minimal report from "First-pass report content" above).
+  The overview table is close to what `write_index_html` already produces (see "Report as a
+  product type" above); splitting the nav bar into its own page, described next, is the main change
+  needed there.
+- **Nav bar**: a persistent top frame (`<frameset>`/iframe, not per-page embedded navigation) so
+  switching between the overview map, overview table, or any entry's detail report never re-renders
+  the nav bar itself. It needs: links that open the overview map or overview table in the content
+  frame, a compact way to jump straight to any entry's report, and prev/next buttons that step
+  through entries one at a time for systematic review. Screen space is tight in a top strip, which
+  is why the entry identifier below matters here specifically.
+- **Entry identifiers — add positional index alongside EDR id**: `TrnTestDataSet.__getitem__`
+  already accepts either a `product_id` string or an integer position (`self.images.iloc[key]`, see
+  `trn_dataset.py`) since `images` is reset to a dense `0..n-1` index at construction — so the
+  position is already a stable, ready-to-use short id, nothing new to build there. Use it as the
+  standard short reference in space-constrained UI (the nav bar particularly); the EDR product id
+  remains fine wherever there's room (e.g. the overview table).
+- **Overview map**: a ground-track-style plot — one label per entry at its center lat/lon, with a
+  vector overlay of each entry's hillshade/reproject FOV footprint (`camera.footprint_lonlat_deg`/
+  `tie_points.crop_footprint_corners_for_camera` already compute these per entry) and its index
+  number labeled next to the footprint. Background: a global ortho layer (Lunaserv's
+  `luna_wac_global`, see `docs/data-sources/lunaserv-wms.md` — deprecated for per-camera fetches in
+  favor of `WAC_EMP` on image-quality grounds, but that concern doesn't apply to a low-opacity
+  overview backdrop) at ~20% opacity, layered over a day/night mask: white where sunlit, ~80% white
+  (i.e. a light grey) where in shadow. The illumination reference time is fixed at the dataset's
+  temporal midpoint — one global snapshot, not per-entry lighting; `illumination.sun_elevation_deg
+  (ground_km, et)` already gives sun elevation for an arbitrary ground point/time and is the natural
+  building block for a coarse lon/lat grid's day/night classification.
+- **Dataset short name**: `write_index_html` already reads `self.folder.name` informally as the
+  dataset's display name. That may already be sufficient — no strong need for a new stored field if
+  a `TrnTestDataSet.name` property just returning `self.folder.name` signals "this is the standard
+  identifier" clearly enough. Used in the `<title>` of every page above (nav bar, overview map,
+  overview table, and each entry's detail report) either way.
+- **Grow per-entry report content — next increment**: the current minimal report (hillshade + a
+  couple of manifest fields) wasn't far off. Add the `reproject` equivalents of
+  `image_generation.py`'s Phase 6B/6C — `entry.reproject.plot_overlay(...)` (basemap + overlay
+  toggle) and `entry.reproject.plot_zoom_blink_over()` (full-resolution zoom blink) — deliberately
+  `reproject`, not `crop`, and deliberately just these two, not the full Phase 5-8 sweep at once, to
+  keep the page light until real batch runs show what's actually worth checking.
+
+  Also shrink Phase 6B's overlay margin, roughly by half, so more of the report's fixed page width
+  goes to the overlay itself. That margin isn't a `plot_overlay` display parameter today — it falls
+  out of `config.dem_padding_fraction` (0.3, `lunaserv.fetch_dem_and_ortho`'s AOI pad around the
+  image footprint before fetching the basemap), and `plotting._render_overlay_figure` always shows
+  the *entire* fetched basemap extent. Shrinking `dem_padding_fraction` itself isn't the right lever
+  here — that basemap is `entry.dem_ortho_result`, shared with hillshade's own render/relighting
+  input, so a smaller fetch AOI would affect more than the report's display. This needs a
+  display-only crop instead: tighten `_render_overlay_figure`'s axis limits around the overlay
+  footprint before rendering, without touching the underlying fetched raster or
+  `dem_padding_fraction` — likely a new optional parameter threaded through `plot_overlay_toggle`/
+  `TrnTestImage.plot_overlay`, used only by the report template's call.
 - **Richer problem flags**: crater-sharpness grading (`crater_depth.py`), a real tie-point pixel
   residual (not computed anywhere today — `tie_points.py` only produces ground-truth pixel
   *locations* for overlay plotting, no image-based comparison), and the footprint-geometry check

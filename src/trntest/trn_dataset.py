@@ -484,6 +484,7 @@ class TrnTestImage(TrnTestProduct):
         title: str | None = None,
         overlay_label: str | None = None,
         layers: list[plotting.OverlayLayer] | None = None,
+        margin_frac: float = 0.3,
     ):
         """Plots this image over `self.entry.dem_ortho_result.ortho` via
         `plotting.plot_overlay_toggle`. Returns an `IPython.display.HTML` object -- callers must
@@ -496,6 +497,7 @@ class TrnTestImage(TrnTestProduct):
         :param layers: See `plotting.OverlayLayer`'s docstring. Each layer's geometry must already
             be in `self.entry.dem_ortho_result.ortho`'s own raster CRS and already AOI-filtered --
             this class does no fetch/filter/reprojection of its own.
+        :param margin_frac: See `plotting.plot_overlay`'s docstring.
         """
         # Shared by both TrnTestHillshadeImage and TrnTestCropImage with no special-casing.
         self._require_generated()
@@ -506,6 +508,7 @@ class TrnTestImage(TrnTestProduct):
             title=title or f"{label} over basemap",
             overlay_label=label,
             layers=layers,
+            margin_frac=margin_frac,
         )
 
     def plot_zoom_blink_over(

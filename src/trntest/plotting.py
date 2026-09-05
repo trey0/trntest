@@ -674,6 +674,7 @@ def plot_overlay(
     overlay_outline_color: str = "red",
     fill_overlay_nodata: bool = True,
     layers: list[OverlayLayer] | None = None,
+    margin_frac: float = 0.3,
 ):
     """Overlay `overlay_raster_path` on `base_raster_path`, both read with `rioxarray` so the
     georeferenced coordinates in each file drive the plot -- genuine pixel-for-pixel geo-registration,
@@ -693,6 +694,14 @@ def plot_overlay(
         from the unfilled data.
     :param layers: Additional vector annotation layers (see `OverlayLayer`), drawn on top of the
         footprint outline, in list order.
+    :param margin_frac: How much of the base raster's padding beyond the overlay's own footprint to
+        display, `1.0` showing the base's full extent and `0.0` cropping tight to the overlay's own
+        bounding box -- display-only, doesn't affect what's fetched/rendered. Defaults to `0.3`, not
+        `1.0`: the full padded AOI (`config.dem_padding_fraction`) devotes more of a fixed-size
+        figure to basemap context than to the overlay itself, most of it never used for actual
+        comparison. See `_render_overlay_figure`'s "why not smaller" note for why this never crops
+        past the overlay's own extent the way the removed `zoom_footprint_lonlat_deg` parameter once
+        did.
     :returns: The `Figure`.
     """
     # `overlay_cmap` defaults to `"gray"` (matching the base) since the overlay is typically also an
@@ -753,6 +762,7 @@ def plot_overlay(
         outline_geoseries,
         overlay_outline_color,
         layers,
+        margin_frac,
     )
 
 
@@ -961,6 +971,30 @@ def _overlay_outline_geoseries(overlay):
     return geopandas.GeoSeries([_valid_data_outline(overlay)], crs=overlay.rio.crs)
 
 
+def _crop_limits(
+    full_lim: tuple[float, float], overlay_lo: float, overlay_hi: float, margin_frac: float
+) -> tuple[float, float]:
+    """Shrink an axis's `full_lim` toward `[overlay_lo, overlay_hi]` by `margin_frac`.
+
+    `margin_frac=1.0` returns `full_lim` unchanged; `0.0` returns exactly `(overlay_lo, overlay_hi)`
+    -- never tighter, so a closed footprint outline traced from the overlay's own extent always
+    stays fully inside the cropped view (see `_render_overlay_figure`'s call site for why that
+    matters). Handles either axis direction (`full_lim` may be given high-to-low, e.g. image y-axes).
+
+    :param full_lim: `(lo, hi)` or `(hi, lo)` -- the uncropped axis limits.
+    :param overlay_lo: Overlay's own extent minimum, same units/order-independent.
+    :param overlay_hi: Overlay's own extent maximum.
+    :param margin_frac: `0.0`-`1.0` fraction of the base-to-overlay padding to keep.
+    :returns: New limits, in the same order as `full_lim`.
+    """
+    a, b = full_lim
+    forward = a <= b
+    span_lo, span_hi = (a, b) if forward else (b, a)
+    new_lo = overlay_lo - margin_frac * (overlay_lo - span_lo)
+    new_hi = overlay_hi + margin_frac * (span_hi - overlay_hi)
+    return (new_lo, new_hi) if forward else (new_hi, new_lo)
+
+
 def _render_overlay_figure(
     base,
     overlay_display,
@@ -974,6 +1008,7 @@ def _render_overlay_figure(
     outline_geoseries,
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
+    margin_frac: float = 0.3,
 ):
     """Build one `Figure` for `plot_overlay`/`plot_overlay_toggle`.
 
@@ -990,6 +1025,7 @@ def _render_overlay_figure(
     :param overlay_outline_color: Outline color.
     :param layers: Additional vector annotation layers (see `OverlayLayer`), drawn after
         `outline_geoseries`, in list order.
+    :param margin_frac: See `plot_overlay`'s docstring.
     :returns: The `Figure`.
     """
     # Identical rendering path (figsize, draw order, axis-limit restore, km tick formatting)
@@ -1007,6 +1043,15 @@ def _render_overlay_figure(
     # necessarily smaller, since it's the reprojected render, not the padded fetch AOI) would leave
     # the view cropped to just the overlay, hiding the surrounding base context entirely.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    # `margin_frac < 1.0` shrinks that restored extent back down toward the overlay's own bounding
+    # box (never past it -- see `_crop_limits`), trading surrounding basemap context for more of a
+    # fixed-size figure's pixels spent on the overlay itself. Unlike the removed
+    # `zoom_footprint_lonlat_deg` parameter this replaces (see `plot_overlay`'s docstring), this can
+    # never truncate `outline_geoseries`'s closed footprint shape, since it never crops tighter than
+    # the overlay's own extent.
+    if margin_frac < 1.0:
+        xlim = _crop_limits(xlim, float(overlay_display.x.min()), float(overlay_display.x.max()), margin_frac)
+        ylim = _crop_limits(ylim, float(overlay_display.y.min()), float(overlay_display.y.max()), margin_frac)
     overlay_display.plot.imshow(
         ax=ax, cmap=overlay_cmap, alpha=overlay_alpha, vmin=overlay_vmin, vmax=overlay_vmax, add_colorbar=False
     )
@@ -1043,6 +1088,7 @@ def plot_overlay_toggle(
     initial_visible: bool = True,
     blink_interval_ms: int = 700,
     layers: list[OverlayLayer] | None = None,
+    margin_frac: float = 0.3,
 ):
     """Like `plot_overlay`, but renders the overlay at both `overlay_alpha=0` and `overlay_alpha=1`
     and encodes them as a single looping animated GIF that automatically blinks between the two -- the
@@ -1063,8 +1109,12 @@ def plot_overlay_toggle(
     :param blink_interval_ms: How long each frame is shown before switching.
     :param layers: Additional vector annotation layers (see `OverlayLayer`); drawn identically in
         both GIF frames.
+    :param margin_frac: See `plot_overlay`'s docstring; applied identically to both frames (computed
+        from the same `base`/`overlay_display`, so the two stay pixel-aligned).
     :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
-        trailing `;`) to actually display.
+        trailing `;`) to actually display. Only actually animates in a GIF-rendering viewer (a live
+        Jupyter kernel, GitHub's `.ipynb` blob view) -- a static screenshot or a non-animating
+        viewer only shows one frame.
     """
     # Two complete, independently valid frames ("base only" and "with overlay"), not a transparent
     # layer meant to be blended by the browser -- showing each frame at full clarity in turn rather
@@ -1116,6 +1166,7 @@ def plot_overlay_toggle(
         outline_geoseries,
         overlay_outline_color,
         layers,
+        margin_frac,
     )
     overlay_frame, _, _ = _render_overlay_frame(
         base,
@@ -1130,6 +1181,7 @@ def plot_overlay_toggle(
         outline_geoseries,
         overlay_outline_color,
         layers,
+        margin_frac,
     )
 
     gif_b64 = _blink_gif_b64(base_frame, overlay_frame, initial_visible, blink_interval_ms)
@@ -1150,6 +1202,7 @@ def _render_overlay_frame(
     outline_geoseries,
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
+    margin_frac: float = 0.3,
 ):
     """Render one `_render_overlay_figure(...)` frame to a `PIL.Image`.
 
@@ -1165,6 +1218,7 @@ def _render_overlay_frame(
     :param outline_geoseries: Overlay footprint outline to draw, or `None` to skip.
     :param overlay_outline_color: Outline color.
     :param layers: Additional vector annotation layers.
+    :param margin_frac: See `plot_overlay`'s docstring.
     :returns: `(image, width_px, height_px)`.
     """
     # Deliberately no `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both
@@ -1187,6 +1241,7 @@ def _render_overlay_frame(
         outline_geoseries,
         overlay_outline_color,
         layers,
+        margin_frac,
     )
     width_px, height_px = fig.get_size_inches() * fig.dpi
     buf = io.BytesIO()
@@ -1251,8 +1306,8 @@ def plot_render_toggle(
     :param label_b: Second render's label.
     :param show_a_first: Which frame plays first in the loop.
     :param blink_interval_ms: How long each frame is shown before switching.
-    :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
-        trailing `;`), same requirement as `plot_overlay_toggle`.
+    :returns: An `IPython.display.HTML` object -- same requirements/caveats as
+        `plot_overlay_toggle`'s own `:returns:` (bare last expression, GIF-rendering viewer needed).
     """
     # Unlike `plot_overlay_toggle`, this needs no `rioxarray`/geo-registration step at all:
     # `raster_a_path`/`raster_b_path` are read as plain arrays (`read_raster_band`) and rotated
@@ -1351,8 +1406,8 @@ def plot_zoom_blink(
         its array. Named in each frame's own `"Zoomed ({crop_px} px): ..."` title prefix.
     :param show_a_first: Which frame plays first in the loop.
     :param blink_interval_ms: How long each frame is shown before switching.
-    :returns: An `IPython.display.HTML` object -- must be the bare last expression of a cell (no
-        trailing `;`), same requirement as `plot_render_toggle`/`plot_overlay_toggle`.
+    :returns: An `IPython.display.HTML` object -- same requirements/caveats as
+        `plot_overlay_toggle`'s own `:returns:` (bare last expression, GIF-rendering viewer needed).
     """
     # Reuses plot_overlay_toggle's own geo-alignment (_open_raster_dataarray, reindex_like) and
     # normalization (_robust_median/_normalize_to_median -- see _prep_overlay_rasters's docstring

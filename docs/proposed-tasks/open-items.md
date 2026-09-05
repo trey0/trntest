@@ -47,6 +47,10 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   different footprints could silently disagree about which DEM is "the" one. All current real call
   sites pass the same footprint derivation, so no live divergence is known, but a future caller that
   forgets to could reintroduce it.
+- `real_hapke_params.ipynb`/`pose_alignment_spike.ipynb` both call `plotting.plot_overlay_toggle`
+  directly and haven't been regenerated since `margin_frac`'s default changed to `0.3`
+  (2026-09-05) — their committed output still shows the old full-basemap-padding view. Regenerate
+  via `scripts/run_notebook.sh` next time either is touched for another reason.
 - Whether `stretch_reflectance_to_uint8`'s fixed `[0, 0.30]` display stretch saturates is an
   unresolved question. Two distinct sources, neither confirmed absent: (1) `hapke_shade_ortho`'s
   relit reflectance can exceed the max for geometries near opposition (`ratio > 1`); (2)
