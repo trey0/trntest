@@ -18,7 +18,7 @@ up front; this is the complete list.
 | [`resolution-investigation.md`](resolution-investigation.md) | Investigation (resolved) into why `crop` used to visibly outresolve `hillshade`/`reproject`, and the fix. |
 | [`wac-jigsaw-investigation.md`](wac-jigsaw-investigation.md) | Investigation behind the hand-rolled WAC-VIS camera-pose-alignment fallback, and why ISIS `jigsaw` can't be used for this camera. |
 | [`docs-style.md`](docs-style.md) | How to write docs and docstrings in this repo — brevity, docstring scope, voice. |
-| [`collaboration.md`](collaboration.md) | How a session should collaborate with the user: commit/merge timing, handling ad hoc spikes, presenting findings. |
+| [`collaboration.md`](collaboration.md) | How a session should collaborate with the user: commit/merge timing, handling ad hoc spikes, presenting findings, branch cleanup at closeout. |
 | [`environment.md`](environment.md) | This repo's VPS dev environment: what persists across sessions, and multi-agent worktree conventions. |
 | [`history.md`](history.md) | Phase-by-phase development narrative — what was tried, what broke. Background reading, not required before making a change. |
 

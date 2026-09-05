@@ -18,6 +18,14 @@ very large ones), pushing each batch to the branch as you go. Don't `git push or
 until the user has reviewed that specific batch and given the go-ahead — an earlier approval for one
 batch doesn't carry over to the next.
 
+## Recommend branch cleanup at session closeout
+
+When the user brings up wrapping up a session, proactively recommend deleting this session's
+feature branch — both the local branch and its `origin` copy — once its work is merged into `main`.
+Left alone, these accumulate as cruft, both on this VPS and (especially) on `origin`. This is a
+closeout-time recommendation, not a mid-session rule: deleting/recreating branches to start new work
+within one agent's own session isn't worth worrying about.
+
 ## Preserve valuable spikes
 
 Ad hoc exploration (one-off `docker compose run` commands, scratch scripts under `src/scratch/`,
