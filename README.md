@@ -70,17 +70,13 @@ Fetched WMS tiles and SPICE kernels persist there across container rebuilds (see
 
 ## Development setup
 
-Inside the Docker container (recommended — has GDAL/ASP/SPICE already):
+The Docker image (`docker compose build`, above) already has `trntest` installed in editable mode
+plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`, and `ipykernel` — nothing further to
+install for that path. jupytext's JupyterLab integration (`jupyterlab-jupytext`) registers
+automatically as part of the `jupytext` install — no separate `jupyter labextension install` step.
 
-```sh
-docker compose run --rm demo pip install -e '.[dev]'
-```
-
-This installs `trntest` in editable mode plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`,
-and `ipykernel`. jupytext's JupyterLab integration (`jupyterlab-jupytext`) registers automatically
-as part of the `jupytext` install — no separate `jupyter labextension install` step. Lint/
-type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain host venv with
-Python 3.11+:
+Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain host venv
+with Python 3.11+:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
