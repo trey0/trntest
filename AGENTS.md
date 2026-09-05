@@ -44,6 +44,8 @@ file). Then, as needed:
   design (items get deleted as they resolve, the file doesn't), so citing it by filename is fine.
 - `docs/collaboration.md` — how a session should collaborate with the user on this repo: commit/
   merge review timing, what to do with valuable ad hoc exploration, and how to present findings.
+- `docs/docs-index.md` — a one-line-each index of every file in `docs/`, for finding the doc on a
+  topic not already called out above.
 - `docs/history.md` — the phase-by-phase development narrative (what was tried, what broke, how
   each design decision was reached). Background/curiosity reading only — not required before making
   a change, and nothing there should be taken as describing current behavior unless the docs above

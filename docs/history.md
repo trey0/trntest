@@ -2,7 +2,7 @@
 
 Archival narrative of how this project reached its current state — phase by phase, including wrong
 turns and how they were caught. This is background/curiosity reading, **not required before making
-a change**: see `docs/plan.md` for current architecture/status and `docs/data-sources.md` for
+a change**: see `README.md` for current architecture/status and `docs/data-sources.md` for
 current reference facts. Nothing here should be treated as describing present-day behavior unless
 the current docs also say so.
 

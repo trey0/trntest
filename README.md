@@ -34,6 +34,10 @@ single-entry level.
 
 See [`docs/proposed-tasks/open-items.md`](docs/proposed-tasks/open-items.md) for the current list.
 
+## Documentation
+
+See [`docs/docs-index.md`](docs/docs-index.md) for an overview of documentation.
+
 ## Build & run
 
 All tooling (GDAL, ASP, SPICE) lives in a Docker container — nothing needs installing on the host
