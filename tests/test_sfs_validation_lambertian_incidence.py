@@ -1,4 +1,4 @@
-"""Validates `lunaserv.real_geometry_photometric_angles`'s real, DEM-aware `incidence_deg` field
+"""Validates `hapke.real_geometry_photometric_angles`'s real, DEM-aware `incidence_deg` field
 against Ames Stereo Pipeline's own independently ray-traced incidence angle -- extracted via
 `sfs_validation.run_sfs_lambertian_incidence`'s Lambertian-mode inversion trick (`sfs
 --reflectance-type 0` with a uniform albedo=1, so its raw `sim-intensity` output is exactly
@@ -23,7 +23,7 @@ import pytest
 import rasterio
 
 import trntest
-from trntest import illumination, lunaserv, sfs_validation
+from trntest import hapke, illumination, sfs_validation
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -53,7 +53,7 @@ def test_real_geometry_incidence_matches_sfs_lambertian_inversion_across_the_who
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "candidate's own boresight must intersect the Moon"
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, camera.et)
-    incidence_ours_deg, _emission_deg, _phase_deg = lunaserv.real_geometry_photometric_angles(
+    incidence_ours_deg, _emission_deg, _phase_deg = hapke.real_geometry_photometric_angles(
         dem, dem_ortho_result.bbox, camera, azimuth_deg, elevation_deg, config.dem_target_gsd_m
     )
 

@@ -23,7 +23,7 @@ the tiles one raster's footprint touches. `load_graded_database` reads the per-t
 #   cost for this precompute's purpose (finding sharper, smaller craters for a debug view).
 #
 # Known, deliberately deferred gap: no antimeridian handling. A tile whose padded bounds straddle
-# the 0/360 seam isn't specially unwrapped (unlike `lunaserv.footprint_bbox_deg`) -- a narrow band of
+# the 0/360 seam isn't specially unwrapped (unlike `geo_utils.footprint_bbox_deg`) -- a narrow band of
 # craters right at that seam may be missed or get a `None`-guarded (never silently wrong) result. Not
 # worth fixing yet: it's a small fraction of the database, and this precompute's consumer
 # (prioritizing sharper craters for a debug view) doesn't depend on any specific longitude.
@@ -52,7 +52,7 @@ import pandas as pd
 from huey import SqliteHuey
 from huey.exceptions import TaskException
 
-from trntest import cache, crater_depth, craters, lunaserv, product_registry, tasks
+from trntest import cache, crater_depth, craters, dem_gld100, dem_ortho, geo_utils, product_registry, tasks
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 
 _config = load_config()
@@ -70,7 +70,7 @@ _FULL_LONGITUDE_RANGE_DEG = 360.0
 
 def iter_tile_origins(
     tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
-    max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
+    max_abs_lat_deg: float = dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> Iterator[tuple[float, float]]:
     """Nominal `(lon_min, lat_min)` tile origins tiling the full `[0, 360) x [-max_abs_lat_deg,
     max_abs_lat_deg)` grid, row-major (south to north, west to east within a row).
@@ -108,7 +108,7 @@ def tile_bounds_deg(
     lat_min: float,
     tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
     padded_tile_size_deg: float = DEFAULT_PADDED_TILE_SIZE_DEG,
-    max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
+    max_abs_lat_deg: float = dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> tuple[tuple, tuple]:
     """Nominal and padded bounds for the tile at `(lon_min, lat_min)` -- see the module comment above
     for what each is for.
@@ -175,7 +175,7 @@ def _crater_ellipse_fits(polygon_local, dst_bbox_m: tuple, buffer_m: float) -> b
     :returns: Whether the buffered polygon fits entirely inside `dst_bbox_m`.
     """
     # dst_bbox_m comes directly from the destination grid this precompute built
-    # (`lunaserv.footprint_bbox_local_m`), not by reopening the written file to ask its own bounds.
+    # (`geo_utils.footprint_bbox_local_m`), not by reopening the written file to ask its own bounds.
     minx, miny, maxx, maxy = dst_bbox_m
     outer_minx, outer_miny, outer_maxx, outer_maxy = polygon_local.buffer(buffer_m).bounds
     return outer_minx >= minx and outer_miny >= miny and outer_maxx <= maxx and outer_maxy <= maxy
@@ -225,7 +225,7 @@ def grade_tile(
         return pd.DataFrame(columns=["CRATER_ID", "diameter_km", "depth_m", "depth_diameter_ratio", "arc_img"])
 
     center_lon = lon_min + tile_size_deg / 2.0
-    center_lat = min(lat_min + tile_size_deg / 2.0, lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG)
+    center_lat = min(lat_min + tile_size_deg / 2.0, dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG)
     padded_lon_min, padded_lat_min, padded_lon_max, padded_lat_max = padded
     corners = {
         "sw": (padded_lon_min, padded_lat_min),
@@ -233,9 +233,9 @@ def grade_tile(
         "nw": (padded_lon_min, padded_lat_max),
         "ne": (padded_lon_max, padded_lat_max),
     }
-    dst_bbox_m = lunaserv.footprint_bbox_local_m(corners, center_lon, center_lat, MOON_RADIUS_M)
-    dst_width, dst_height = lunaserv.pixel_dims_for_gsd(dst_bbox_m, target_gsd_m)
-    local_crs = lunaserv.local_orthographic_crs(center_lon, center_lat, MOON_RADIUS_M)
+    dst_bbox_m = geo_utils.footprint_bbox_local_m(corners, center_lon, center_lat, MOON_RADIUS_M)
+    dst_width, dst_height = geo_utils.pixel_dims_for_gsd(dst_bbox_m, target_gsd_m)
+    local_crs = geo_utils.local_orthographic_crs(center_lon, center_lat, MOON_RADIUS_M)
 
     astropedia_path = astropedia_path or cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
 
@@ -244,7 +244,7 @@ def grade_tile(
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         dem_elevation_path = Path(tmp_dir) / "dem_elevation.tif"
-        lunaserv.reproject_astropedia_elevation_to_local_grid(
+        dem_gld100.reproject_astropedia_elevation_to_local_grid(
             astropedia_path,
             padded,
             dst_bbox_m,
@@ -259,10 +259,10 @@ def grade_tile(
         # though gaps -- e.g. GLD100's own small internal nodata cells, see
         # docs/data-sources/astropedia-gld100.md -- are filled with literal NaN), so
         # `crater_depth_m`'s masked read wouldn't mask them, leaking NaN into the percentile as
-        # elevation. `lunaserv.fetch_dem` never hits this because it always runs `hole_fill_dem`
+        # elevation. `dem_ortho.fetch_dem` never hits this because it always runs `hole_fill_dem`
         # first for exactly this reason; same fix applied here.
         dem_path = Path(tmp_dir) / "dem_filled-tile-0.tif"
-        lunaserv.hole_fill_dem(dem_elevation_path, dem_path)
+        dem_ortho.hole_fill_dem(dem_elevation_path, dem_path)
 
         records = []
         for (_, row), center in zip(gdf.iterrows(), local_crs_gdf.geometry, strict=True):
@@ -290,7 +290,7 @@ def grade_tile(
 def tiles_covering_bbox(
     bbox_deg: tuple,
     tile_size_deg: float = DEFAULT_TILE_SIZE_DEG,
-    max_abs_lat_deg: float = lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
+    max_abs_lat_deg: float = dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG,
 ) -> list[tuple[float, float]]:
     """Nominal `(lon_min, lat_min)` tile origins whose nominal bounds intersect `bbox_deg`.
 
@@ -525,7 +525,7 @@ def grade_database_via_workers(
     # per `tasks.py`'s own docstring, one `Huey` instance per use case, not shared. `-k process` (real
     # worker processes, not threads) for the same reason `tasks.py` already gives:
     # SPICE/spiceypy-adjacent process-global state (this module doesn't touch SPICE directly, but
-    # `craters.py`/`lunaserv.py` do) isn't safe to share within one process. Blocks until every
+    # `craters.py`/`geo_utils.py` do) isn't safe to share within one process. Blocks until every
     # enqueued tile finishes or fails; one tile's failure doesn't abort the batch (`TaskException`
     # caught, not raised, same as `trn_dataset._await_result`) -- DEM/ISIS calls at this scale are
     # expected to have occasional failures.

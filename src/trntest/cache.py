@@ -4,7 +4,7 @@ Pattern: mirror the remote source's own folder structure under a cache root, and
 path that's already present locally. See docs/caching.md for the rationale.
 
 Low-level module: takes plain scalars (cache roots, base URLs), not a `TrntestConfig` -- callers
-(spice_kernels.py, lunaserv.py, camera.py, wac.py) source those values from a resolved config and
+(spice_kernels.py, dem_ortho.py, camera.py, wac.py) source those values from a resolved config and
 pass them down explicitly.
 """
 
@@ -279,7 +279,7 @@ def wac_emp_rel_path(product_id: str) -> str:
 
 
 def fetch_wac_emp_tile(product_id: str, cache_root: Path, base_url: str) -> Path:
-    """Fetch one WAC_EMP PDS4 archive tile (see `lunaserv.wac_emp_tile_id_for_bbox`) and cache it
+    """Fetch one WAC_EMP PDS4 archive tile (see `ortho_wac_emp.wac_emp_tile_id_for_bbox`) and cache it
     locally, once."""
     # Plain `cached_get`, not `fetch_astropedia_gld100`'s special resumable-curl path -- a WAC_EMP
     # tile is ~1.86GB at 304 ppd (see docs/data-sources/wac-emp-pds4.md), comfortably within

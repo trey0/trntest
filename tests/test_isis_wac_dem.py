@@ -12,7 +12,8 @@ from scipy.spatial.transform import Rotation
 
 from trntest import isis_wac, wac_camera_model
 from trntest.config import MOON_RADIUS_M, TrntestConfig
-from trntest.lunaserv import DemOrthoResult, local_orthographic_crs
+from trntest.dem_ortho import DemOrthoResult
+from trntest.geo_utils import local_orthographic_crs
 
 # Same fixture as test_isis_wac_parsing.py's _TABLES_LABEL_TEXT (a trimmed real InstrumentPointing
 # Table label, captured live against product M1327210646CE's cropped cube) -- what

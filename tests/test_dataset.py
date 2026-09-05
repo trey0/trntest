@@ -193,7 +193,7 @@ def test_generate_dataset_lets_fetch_error_abort_the_whole_batch(monkeypatch):
 
 
 def test_generate_dataset_still_records_the_anticipated_dem_coverage_value_error(monkeypatch):
-    """`ValueError` -- e.g. `lunaserv.astropedia_coverage_bbox_deg`'s real DEM-latitude-coverage
+    """`ValueError` -- e.g. `dem_gld100.astropedia_coverage_bbox_deg`'s real DEM-latitude-coverage
     check -- is the one anticipated per-image failure this catches and skips."""
     images = pd.DataFrame(
         [

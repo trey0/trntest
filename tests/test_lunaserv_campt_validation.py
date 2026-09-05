@@ -1,4 +1,4 @@
-"""Validates `lunaserv._terrain_photometric_angles`'s ellipsoid limit (`dem` all zero) against real
+"""Validates `hapke._terrain_photometric_angles`'s ellipsoid limit (`dem` all zero) against real
 ISIS `campt` ground truth -- independent confirmation, via a completely different geometry engine,
 that Phase 71's normal-tilt fix (unconditional since Phase 72 -- no opt-out parameter any more) is
 correct and not, e.g., double-counting the curvature correction already applied to `ground`'s own
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import trntest
-from trntest import illumination, isis_campt, lunaserv, render, tie_points
+from trntest import hapke, illumination, isis_campt, render, tie_points
 from trntest.subprocess_utils import run_quiet
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -78,7 +78,7 @@ def test_terrain_photometric_angles_ellipsoid_limit_matches_real_campt_ground_tr
     # exactly as every other caller uses it, not a hand-built intermediate.
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon_deg, center_lat_deg, camera.et)
     flat_dem = np.zeros((dem_ortho_result.height, dem_ortho_result.width))
-    incidence_deg, emission_deg, phase_deg = lunaserv.real_geometry_photometric_angles(
+    incidence_deg, emission_deg, phase_deg = hapke.real_geometry_photometric_angles(
         flat_dem,
         dem_ortho_result.bbox,
         camera,

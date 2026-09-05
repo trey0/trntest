@@ -1,4 +1,4 @@
-"""Cross-checks `lunaserv.hapke_shade_ortho`'s hand-rolled Hapke hillshade against Ames Stereo
+"""Cross-checks `hapke.hapke_shade_ortho`'s hand-rolled Hapke hillshade against Ames Stereo
 Pipeline's `sfs` tool, run purely as a forward renderer (`--save-sim-intensity-only`, no DEM
 refinement) -- a fully independent ray-DEM intersection and Hapke reflectance implementation, given
 the same inputs `hapke_shade_ortho` itself uses (the fetched DEM, the same ISIS-calibration-sourced
@@ -18,10 +18,10 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
-from trntest import illumination, isis_wac, lunaserv, render
+from trntest import hapke, illumination, isis_wac, render
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import DemOrthoResult
+from trntest.dem_ortho import DemOrthoResult
 from trntest.subprocess_utils import run_quiet
 
 # ASP `sfs --model-coeffs` Hapke order is (omega, b, c, B0, h) -- confirmed via ISIS's own
@@ -52,7 +52,7 @@ def _sfs_validation_dir(config: TrntestConfig) -> Path:
 def hapke_params_to_asp_model_coeffs(hapkehen_params: dict) -> str:
     """`hapkehen_params` as ASP `sfs --model-coeffs`'s own space-separated string.
 
-    :param hapkehen_params: `lunaserv.hapkehen_params_from_source`'s 6-key dict.
+    :param hapkehen_params: `hapke.hapkehen_params_from_source`'s 6-key dict.
     :returns: `"omega b c B0 h"` -- see this module's own docstring and
         `_ASP_HAPKE_COEFF_ORDER`'s comment for the parameter-name correspondence (and the one
         parameter, macroscopic roughness, that doesn't carry over).
@@ -68,7 +68,7 @@ def true_albedo_map(shaded_ortho: np.ndarray, real_reflectance: np.ndarray) -> n
         (`raw_ortho * H(real)/H(reference)`, clipped to `[0,255]`), not the raw pre-shading WAC_EMP
         texture (this project doesn't keep the raw texture around after shading).
     :param real_reflectance: The same H(real) factor `hapke_shade_ortho` itself multiplied in
-        (`lunaserv.real_geometry_hapke_reflectance`, called with matching
+        (`hapke.real_geometry_hapke_reflectance`, called with matching
         `dem`/`bbox`/`camera`/`azimuth_deg`/`elevation_deg`/`along_track_correction` arguments).
     :returns: The recovered albedo, `raw_ortho_norm/H(reference)` -- 0 where `real_reflectance` is
         zero or non-finite.
@@ -78,7 +78,7 @@ def true_albedo_map(shaded_ortho: np.ndarray, real_reflectance: np.ndarray) -> n
     # `shaded_norm/H(real) = (raw_norm * H(real)/H(reference)) / H(real) = raw_norm/H(reference)` --
     # the reference-geometry-normalization-undone quantity this function exists to compute.
     #
-    # An earlier version instead divided `shaded_ortho` by `lunaserv.reference_hapke_reflectance`
+    # An earlier version instead divided `shaded_ortho` by `hapke.reference_hapke_reflectance`
     # (H(reference), a constant) -- a double-counting bug: since `shaded_ortho` already has a full
     # H(real) factor baked in, dividing by the constant H(reference) a second time left that same
     # H(real) factor sitting in "albedo" uncanceled, and `sfs` then multiplied it by its own,
@@ -173,7 +173,7 @@ def run_sfs_forward_render(
     # array-vs-profile shape on `write`, it just crops to the destination window). Always derives
     # `ortho`/`dem` from the same `dem_ortho_result` here, which is only ever produced by one
     # `fetch_dem_and_ortho` call fetching both together -- but a caller resuming a `dem_ortho_result`
-    # built by `lunaserv.result_from_files` from independently dated files on disk could still hit
+    # built by `dem_ortho.result_from_files` from independently dated files on disk could still hit
     # this; not re-guarded against here.
     #
     # `sim_intensity_tif` lands on the DEM's own grid, not the camera's image-space pixel grid --
@@ -195,7 +195,7 @@ def run_sfs_forward_render(
     # `true_albedo_map` to correctly divide it back out; see that function's own docstring for why
     # dividing by anything else (e.g. the constant `reference_hapke_reflectance`) double-counts.
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, camera.et)
-    real_reflectance, hapkehen_params = lunaserv.real_geometry_hapke_reflectance(
+    real_reflectance, hapkehen_params = hapke.real_geometry_hapke_reflectance(
         dem, dem_ortho_result.bbox, camera, azimuth_deg, elevation_deg, config.dem_target_gsd_m, config
     )
     model_coeffs = hapke_params_to_asp_model_coeffs(hapkehen_params)
@@ -297,7 +297,7 @@ def run_sfs_lambertian_incidence(
     # `hapke_params_to_asp_model_coeffs`'s 5-of-6-parameter correspondence, the along-track
     # camera-model gap that limits that comparison to a rough cross-check). This gives `sfs`'s own,
     # fully independent ray-DEM-intersection incidence angle, directly comparable to
-    # `lunaserv.real_geometry_photometric_angles`'s own `incidence_deg` (via
+    # `hapke.real_geometry_photometric_angles`'s own `incidence_deg` (via
     # `incidence_deg_from_lambertian_sim_intensity`) -- confirmed to agree to ~0.02 deg mean |diff|
     # (0.51 deg max, concentrated at crater rims -- discretization noise between the two independent
     # normal computations, not a systematic difference; see

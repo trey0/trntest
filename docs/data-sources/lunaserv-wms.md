@@ -7,10 +7,10 @@ for the live default DEM source. Summary: Lunaserv's DTM layer
 (`luna_wac_dtm_numeric_meters_absolute`) has a real, axis-aligned crosshatch artifact baked into its
 own native tile (FFT-confirmed present regardless of requested ppd, CRS, or resampling kernel) — not
 fixable client-side, since the server exposes no resampling control (confirmed via several vendor
-`GetMap` parameter probes, all ignored) and no backing-store metadata. `src/trntest/lunaserv.py`'s
+`GetMap` parameter probes, all ignored) and no backing-store metadata. `src/trntest/lunaserv_wms.py`'s
 `fetch_dem_native`/`reproject_dem_to_local_grid` still implement the native-CRS-fetch-plus-local-
 reprojection approach that fixed an *earlier*, different artifact from this same server (see below) —
-kept for reference/comparison, no longer called by `fetch_dem_and_ortho`'s default path. Everything
+kept for reference/comparison, no longer called by `dem_ortho.fetch_dem_and_ortho`'s default path. Everything
 below this deprecation note that's DTM-specific (the local-CRS SRS discussion, the planetocentric-
 radius gotcha, the DTM layer list) describes that deprecated path; the **ortho fetch**
 (`luna_wac_normalized_reflectance` et al., further down) is unaffected and still current.
@@ -21,7 +21,7 @@ radius gotcha, the DTM layer list) describes that deprecated path; the **ortho f
   needed for real elevation values, not a colorized/stretched render).
 - SRS: `IAU2000:30100` returns a plain geographic (lon/lat, degrees) raster on a **sphere** of
   radius 1737400 m (GDAL reports it as an unprojected `GEOGCRS`) — the layers' native, unprojected
-  grid. **No longer what `src/trntest/lunaserv.py` actually requests** (see the local-CRS entry
+  grid. **No longer what `src/trntest/dem_ortho.py` actually requests** (see the local-CRS entry
   below) but still useful as a plain lookup/degrees SRS if needed ad hoc.
 - **`fetch_dem_and_ortho` requests the ortho in a per-camera local Orthographic CRS, not the native
   geographic grid** (still current — this is about the ortho fetch; the deprecated DEM path used the
@@ -44,7 +44,7 @@ radius gotcha, the DTM layer list) describes that deprecated path; the **ortho f
   meter pixels everywhere, so that failure mode can't arise.
 - **Gotcha (deprecated DEM path only):** `luna_wac_dtm_numeric_meters_absolute`'s pixel values are
   **planetocentric radius in meters** (~1.73-1.74 million), not height-above-datum —
-  `lunaserv.radius_to_elevation` subtracted the reference radius (`MOON_RADIUS_M = 1737400.0`) before
+  `lunaserv_wms.radius_to_elevation` subtracted the reference radius (`MOON_RADIUS_M = 1737400.0`) before
   handing the DEM to ASP. Astropedia's GLD100 file (the live default DEM source) already serves real
   elevation directly — no equivalent subtraction needed or performed for that path.
 - **Antimeridian:** LRO's near-polar orbit means a camera footprint can straddle ±180° longitude.
@@ -110,7 +110,7 @@ radius gotcha, the DTM layer list) describes that deprecated path; the **ortho f
   be a multi-observation composite. `luna_wac_normalized_reflectance` has the same *character* of
   noise (~91.6% isolated) but ~4x fewer outliers (0.059%) — consistent with its much larger
   (>100,000-image) source count suppressing, but not eliminating, single-frame noise.
-  `src/trntest/lunaserv.py`'s `despeckle()` (a MAD-based local-outlier filter, applied to whichever
+  `src/trntest/hapke.py`'s `despeckle()` (a MAD-based local-outlier filter, applied to whichever
   layer is fetched) cleans the residual before the ortho is used for anything. A large real
   saturated-crater feature seen in both `luna_wac_hapke_643nm` and `luna_wac_normalized_reflectance`
   (a genuine high-albedo feature blown out under fixed-geometry photometric normalization, not
@@ -123,6 +123,6 @@ radius gotcha, the DTM layer list) describes that deprecated path; the **ortho f
   mosaic; it cannot be applied post-hoc to `luna_wac_global`/`luna_wac_normalized_reflectance`. ISIS
   `noisefilter` (a generic boxcar-tolerance outlier filter) *could* in principle be run on any raster
   via `std2isis`/`isis2std` (both present in this project's Docker image), but was not used —
-  `lunaserv.despeckle()`'s in-process numpy filter was already validated against this exact data and
+  `hapke.despeckle()`'s in-process numpy filter was already validated against this exact data and
   avoids the ISIS round-trip subprocess/environment overhead for what's a display/render-texture
   concern, not primary scientific analysis.

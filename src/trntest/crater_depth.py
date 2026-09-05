@@ -4,7 +4,7 @@ depth = the 60th percentile of elevation in a ring around a crater's rim, minus 
 elevation inside the crater. Adopted because it's already validated in the literature rather than
 derived from scratch here.
 
-Deliberately scoped to GLD100 (`lunaserv`'s live default DEM source, ±79 deg latitude coverage) --
+Deliberately scoped to GLD100 (`dem_gld100`'s live default DEM source, ±79 deg latitude coverage) --
 see `docs/crater-grading.md` for the full rationale, including the global-DEM alternatives considered
 and set aside.
 """
@@ -17,7 +17,7 @@ import rasterio
 import rasterio.features
 import rasterio.windows
 
-from trntest import craters, lunaserv
+from trntest import craters, dem_gld100
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 
 
@@ -48,7 +48,7 @@ def crater_depth_m(
     # `rasterio.features.geometry_mask` (GDAL's own pixel-center-in-polygon test) selects pixels for
     # each region -- simpler than the original paper's own per-pixel area-intersection test, and
     # exact rather than approximate here because this project's DEMs are fetched onto a local,
-    # isotropic-meters Orthographic CRS (`lunaserv.fetch_dem_and_ortho`), where every pixel already
+    # isotropic-meters Orthographic CRS (`dem_ortho.fetch_dem_and_ortho`), where every pixel already
     # covers the same ground area. The original's own per-pixel area-weighting (needed on its
     # lon/lat raster, where non-square degree-pixels don't all cover the same ground area) is
     # dropped entirely here, not approximated -- it's a provable no-op on a uniform grid.
@@ -152,14 +152,14 @@ def _too_close_to_astropedia_pole(lat_deg: float, major_km: float) -> bool:
     :param lat_deg: Crater center latitude, degrees.
     :param major_km: Crater ellipse-fit major axis, full length, km.
     :returns: Whether the crater's angular half-extent, added to its center latitude, would cross
-        `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`.
+        `dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`.
     """
     # Great-circle arc, small enough here that the flat approximation `distance / MOON_RADIUS_M` is
     # fine. Checked directly from catalog fields (no DEM read) so a batch pass over many craters can
     # skip the read entirely for excluded ones, not just discover the gap empirically per-crater.
     half_extent_m = (major_km / 2.0) * 1000.0
     margin_deg = math.degrees(half_extent_m / MOON_RADIUS_M)
-    return abs(lat_deg) + margin_deg > lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG
+    return abs(lat_deg) + margin_deg > dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG
 
 
 def crater_depths_for_footprint(

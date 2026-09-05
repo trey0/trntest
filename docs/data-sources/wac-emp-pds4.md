@@ -27,7 +27,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   the same base name also present, unused by this project — GDAL's PDS3 driver reads the `.IMG`
   file's own attached label directly). `wac_emp_tile_id_for_bbox` builds this string.
   - **Wavelength**: one of 7 real bands, `321/360/415/566/604/643/689` (nm) — the identical band set
-    ISIS's own Hapke calibration cube already offers (`lunaserv._HAPKE_CALIBRATION_WAVELENGTHS_NM`).
+    ISIS's own Hapke calibration cube already offers (`hapke.HAPKE_CALIBRATION_WAVELENGTHS_NM`).
     This project defaults to 643nm (`DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM`), matching the
     wavelength every other real-photometry piece of this codebase already targets.
   - **Resolution (`ppd`)**: every band is offered at 64 ppd; 643nm *additionally* has a real 304 ppd
@@ -58,7 +58,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   diagnostic scripts, which predated confirming this and did the byte-range/PDS3-label math by hand).
   Every pixel is normalized to a fixed reference photometric geometry (incidence=30°, emission=0°,
   phase=30°) via an empirical (Boyd et al. 2012) function, not a raw albedo map — see
-  `REFERENCE_INCIDENCE_DEG`'s own module-level comment in `lunaserv.py` for how `hapke_shade_ortho`
+  `REFERENCE_INCIDENCE_DEG`'s own module-level comment in `hapke.py` for how `hapke_shade_ortho`
   relights this back out for a real candidate's own geometry.
 - **Size**: the 304ppd 643nm tile is ~1.86 GB (1,996,295,040 bytes, confirmed live) — comfortably
   within `cache.cached_get`'s normal per-call-unique-temp-file range (the same range

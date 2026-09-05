@@ -49,7 +49,7 @@ with warnings.catch_warnings():
     import lightglue
     import lightglue.utils
 
-from trntest.lunaserv import pad_bbox
+from trntest.geo_utils import pad_bbox
 
 # ISIS's own nodata/special-pixel sentinel convention for float32 rasters this project already
 # reads without `masked=True` in a few places (e.g. `plotting.valid_pixel_mask`'s own threshold) --
@@ -98,7 +98,7 @@ def to_uint8_for_matching(raster_path, percentile: float = 99.9) -> tuple[np.nda
 def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fraction: float = 0.15) -> Path:
     """Crops `reference_path` (e.g. the basemap ortho, typically much larger than the area actually
     being compared) down to `footprint_source_path`'s own valid-data bounding box, padded by
-    `pad_fraction` (via `lunaserv.pad_bbox`)."""
+    `pad_fraction` (via `geo_utils.pad_bbox`)."""
     # Matching the two rasters' extent like this matters for feature matching specifically: an
     # unmatched, much-larger reference frame gives OpenCV's matcher a far larger, mostly-irrelevant
     # search space to false-match against, confirmed empirically to hurt match quality, not just
@@ -187,7 +187,7 @@ def downsample_to_gsd(
         data = src.read(1)
         # `_ISIS_FLOAT_NODATA` is only a valid fallback for float rasters (e.g. `wac_path`'s
         # calibrated I/F cube) -- the basemap ortho this function is also used on
-        # (`lunaserv.despeckle_and_shade_ortho`'s output) is `uint8` with no nodata concept, and that
+        # (`hapke.despeckle_and_shade_ortho`'s output) is `uint8` with no nodata concept, and that
         # huge-magnitude sentinel isn't representable in its dtype at all (confirmed live: GDAL
         # raises rather than silently truncating it).
         nodata = src.nodata

@@ -27,7 +27,7 @@ from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:
     from trntest.camera import Camera
-    from trntest.lunaserv import DemOrthoResult
+    from trntest.dem_ortho import DemOrthoResult
 
 
 @dataclasses.dataclass(frozen=True)
@@ -369,7 +369,7 @@ def campt_photometric_angles(cub_path: Path, lon_deg: float, lat_deg: float) -> 
         project into this cube.
     """
     # The ISIS ground-truth counterpart to this project's own hand-rolled
-    # `lunaserv._terrain_photometric_angles`, used to validate it (see that function's own docstring).
+    # `hapke._terrain_photometric_angles`, used to validate it (see that function's own docstring).
     # Mirrors `ground_to_image_pixel`'s exact PVL-single-point-query pattern (same
     # `type=ground`/`allowoutside=false` convention) rather than the `usecoordlist=true` batched
     # flat-file approach `ground_to_image_pixels_batch` uses -- this project's own validation only ever

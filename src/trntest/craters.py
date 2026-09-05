@@ -14,7 +14,7 @@ import rasterio.warp
 import shapely.affinity
 import shapely.geometry
 
-from trntest import cache, lunaserv, plotting
+from trntest import cache, geo_utils, plotting
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 
 # A generous query-bbox pad (fraction of the AOI's own size) so an ellipse whose center sits just
@@ -23,7 +23,7 @@ from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 # extent, so a bare exact-AOI query could clip a partially-visible crater at the edge. Cheaper than
 # storing/reprojecting ellipse polygons for the *whole* 1.3M-row database just to get exact-extent
 # filtering, given how small these ellipses are relative to a single camera's tens-of-km AOI -- the
-# same "pad generously rather than filter exactly" tradeoff `lunaserv.fetch_dem_and_ortho`'s own
+# same "pad generously rather than filter exactly" tradeoff `dem_ortho.fetch_dem_and_ortho`'s own
 # `dem_padding_fraction` already makes.
 _QUERY_BBOX_PADDING_FRACTION = 0.05
 
@@ -82,7 +82,7 @@ def _convert_to_geopackage(zip_path: Path, gpkg_path: Path, moon_radius_m: float
     # The database's own declared CRS (docs/data-sources/robbins-craters.md): Planetocentric
     # latitude, Positive-East longitude, on a perfect sphere -- `moon_radius_m` already matches this
     # exactly.
-    crs = lunaserv.geographic_crs(moon_radius_m)
+    crs = geo_utils.geographic_crs(moon_radius_m)
     gdf = geopandas.GeoDataFrame(df, geometry=geometry, crs=crs)
     gpkg_path.parent.mkdir(parents=True, exist_ok=True)
     gdf.to_file(gpkg_path, driver="GPKG")
@@ -158,10 +158,10 @@ def raster_bbox_deg(raster_path) -> tuple:
 
     :param raster_path: A raster to compute the footprint of.
     :returns: `(minlon, minlat, maxlon, maxlat)` degrees, this project's 0-360 deg Positive-East
-        convention. Unpadded -- pad the result yourself (`lunaserv.pad_bbox`) if that's wanted.
+        convention. Unpadded -- pad the result yourself (`geo_utils.pad_bbox`) if that's wanted.
     """
     # Same "raster's own georeferencing is authoritative" pattern
-    # `isis_wac._orthographic_map_pvl`/`lunaserv.result_from_files` already rely on elsewhere, not a
+    # `isis_wac._orthographic_map_pvl`/`dem_ortho.result_from_files` already rely on elsewhere, not a
     # new convention. Factored out of `query_craters_for_raster` so a second caller
     # (`crater_depth_batch.grade_footprint`, which needs the *un*padded bbox to pick which tiles to
     # grade, not a query AOI) doesn't have to duplicate this exact `rasterio.warp.transform_bounds` +
@@ -170,13 +170,13 @@ def raster_bbox_deg(raster_path) -> tuple:
     # `transform_bounds` returns longitude in the standard -180..180 convention regardless of the
     # destination CRS's own definition (confirmed empirically: an AOI centered at 264.757 deg East
     # came back as -95.243), but the database's `LON_ELLI_IMG`/`LON_CIRC_IMG` columns (and this
-    # project's own lon/lat convention throughout `lunaserv.py`) are 0-360 deg Positive-East. Not
+    # project's own lon/lat convention throughout `geo_utils.py`) are 0-360 deg Positive-East. Not
     # unwrapped across the seam here: an AOI that straddles the 0/360 meridian would still come out
     # with `minlon > maxlon` after this -- a known, unhandled edge case (no camera footprint used by
     # this project currently lands there).
     with rasterio.open(raster_path) as src:
         raster_crs, raster_bounds = src.crs, src.bounds
-    geo_crs = lunaserv.geographic_crs(MOON_RADIUS_M)
+    geo_crs = geo_utils.geographic_crs(MOON_RADIUS_M)
     minlon, minlat, maxlon, maxlat = rasterio.warp.transform_bounds(raster_crs, geo_crs, *raster_bounds)
     return minlon % 360.0, minlat, maxlon % 360.0, maxlat
 
@@ -189,16 +189,16 @@ def query_craters_for_raster(
 
     :param raster_path: A raster to query craters within.
     :param config: Project config; `load_config()` if not given.
-    :param padding_fraction: Passed to `lunaserv.pad_bbox`.
+    :param padding_fraction: Passed to `geo_utils.pad_bbox`.
     :returns: Matching craters.
     """
     # Same "derive the padded bbox from the destination grid's own extent, not an independently
-    # computed one" approach `lunaserv.astropedia_coverage_bbox_deg` already uses (and documents why:
+    # computed one" approach `dem_gld100.astropedia_coverage_bbox_deg` already uses (and documents why:
     # two independently-padded bboxes aren't guaranteed to agree). Shared by `crater_overlay_layer`
     # and `crater_depth.crater_depths_for_footprint` -- both want "every Robbins crater whose ellipse
     # might overlap this raster," just for different downstream uses.
     config = config or load_config()
-    padded_bbox_deg = lunaserv.pad_bbox(raster_bbox_deg(raster_path), padding_fraction)
+    padded_bbox_deg = geo_utils.pad_bbox(raster_bbox_deg(raster_path), padding_fraction)
     return query_craters_in_bbox(padded_bbox_deg, config)
 
 

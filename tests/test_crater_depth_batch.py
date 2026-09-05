@@ -9,7 +9,7 @@ import pytest
 import rasterio
 import rasterio.transform
 
-from trntest import cache, crater_depth, crater_depth_batch, craters, lunaserv, tasks
+from trntest import cache, crater_depth, crater_depth_batch, craters, geo_utils, tasks
 from trntest.config import TrntestConfig
 
 _MOON_RADIUS_M = 1737400.0
@@ -71,7 +71,7 @@ def _write_flat_floor_rim_astropedia_like(
     dem[r <= floor_radius_m] = floor_elev
     dem[(r >= rim_inner_m) & (r <= rim_outer_m)] = rim_elev
 
-    crs = lunaserv.geographic_crs(_MOON_RADIUS_M)
+    crs = geo_utils.geographic_crs(_MOON_RADIUS_M)
     with rasterio.open(
         path,
         "w",
@@ -101,7 +101,7 @@ def _write_tiny_geographic_raster(path, bounds_deg):
         width=2,
         count=1,
         dtype="float32",
-        crs=lunaserv.geographic_crs(_MOON_RADIUS_M),
+        crs=geo_utils.geographic_crs(_MOON_RADIUS_M),
         transform=transform,
     ) as dst:
         dst.write(np.zeros((2, 2), dtype="float32"), 1)

@@ -47,7 +47,7 @@ for how this database is used to grade crater sharpness.
   spheroid `Moon_2000` — semi-major = semi-minor = polar radius = **1,737,400 m** (per the PDS4
   label's `cart:Geodetic_Model`), the exact same sphere radius this project's own
   `config.moon_radius_m`/`+proj=longlat +R={moon_radius_m}` convention already uses everywhere in
-  `lunaserv.py` — no CRS reconciliation needed beyond the usual lon/lat→local-Orthographic
+  `geo_utils.py` — no CRS reconciliation needed beyond the usual lon/lat→local-Orthographic
   reprojection every other vector/raster layer here already goes through.
   `DIAM_ELLI_MAJOR_IMG`/`DIAM_ELLI_MINOR_IMG` are the same km convention; `DIAM_ELLI_ANGLE_IMG` is
   decimal degrees (values like `35.99`, `127.00` seen in real rows — not radians, despite SONIC's

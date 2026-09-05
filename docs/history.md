@@ -5076,3 +5076,55 @@ files) walks into the mounted `scratch/` content and reports spike scripts there
 every `--all` run, on every worktree. Added `/cache/`, `/output/`, `/scratch/` to `.gitignore` — no
 host-side layout change, just stops git-based tooling inside the container from treating a bind mount
 as part of the repo.
+
+## Phase 96 (2026-09-05) — Split `lunaserv.py` by data source into six modules
+
+Task 2 of the source-code reorganization (`docs/proposed-tasks/open-items.md`'s "Source code
+reorganization" section; task 1 was Phase 94). Same `feature/refactor` branch, same suspended
+per-change notebook discipline as Phase 94.
+
+`lunaserv.py` (1836 lines) mixed GLD100 DEM fetch, WAC_EMP ortho fetch, the deprecated Lunaserv WMS
+fallback, ~650 lines of self-contained Hapke photometry math, and generic CRS/bbox math with no
+data-source dependency of its own. Split into six files, matching `docs/data-sources.md`'s own
+per-source organization:
+
+- **`geo_utils.py`** (230 lines) — dependency-free CRS/bbox/reprojection math
+  (`geographic_crs`/`local_orthographic_crs`/`pad_bbox`/`reproject_raster_to_local_grid`, the last
+  renamed from the private `_reproject_raster_to_local_grid` since it's now called across modules)
+  plus `DEM_FETCH_SAFETY_MARGIN_FRACTION`, shared by both DEM/ortho fetch paths.
+- **`dem_gld100.py`** (158 lines) — the live default DEM source (Astropedia GLD100).
+- **`ortho_wac_emp.py`** (203 lines) — the live default ortho source (WAC_EMP PDS4), importing two
+  wavelength constants from `hapke.py` (`HAPKE_CALIBRATION_WAVELENGTHS_NM`, also renamed public since
+  it's now cross-module) since the Hapke calibration cube and WAC_EMP's own archive share one
+  wavelength band set by design.
+- **`lunaserv_wms.py`** (157 lines) — the deprecated Lunaserv WMS fallback (`fetch_dem_native`,
+  `reproject_dem_to_local_grid`, `radius_to_elevation`) — real code with real test/notebook coverage,
+  not dead, just superseded as the live default.
+- **`hapke.py`** (814 lines) — despeckling, the default Hapke relighting pipeline, the plain
+  Lambertian fallback, and the photometric-angle geometry both need.
+- **`dem_ortho.py`** (384 lines) — the orchestration layer (`fetch_dem`/`fetch_and_shade_ortho`/
+  `fetch_dem_and_ortho`), including `hole_fill_dem` (previously misfiled in this doc's own task-2
+  scoping note as living in `product_registry.py` — it was always defined in the old `lunaserv.py`
+  itself).
+
+**Fully resolved the `isis_wac`↔`lunaserv` circular-import cycle** flagged as unfinished business in
+Phase 94: `isis_wac.sample_local_dem_patch`'s real `local_orthographic_crs`/`geographic_crs` calls
+now go to the dependency-free `geo_utils.py` instead, so `isis_wac.py` no longer needs `lunaserv`
+(real or type-only) at all — its `DemOrthoResult` import (now from `dem_ortho.py`) is a plain
+top-level import, no `TYPE_CHECKING` guard needed, since nothing cyclic remains on that edge.
+
+**Deviations from the original plan** (`docs/proposed-tasks/open-items.md`'s pre-Phase-96 naming
+table): `product_registry.py` → `product_io.py` and the `wac.py` deletion are unchanged, still
+task 3, not touched here.
+
+**Verification**: same method as Phase 94 — fresh Docker build, every module imported both together
+and as the sole first import in a fresh process (no failures either way), `trntest-lint --all` clean
+on the first real attempt (one unused-import fixup, one auto-formatting fixup), full `pytest` clean
+(362 passed, matching the pre-Phase-96 count exactly since this only moved/renamed existing tests).
+`test_lunaserv.py` (842 lines) split into `test_geo_utils.py`/`test_dem_gld100.py`/
+`test_ortho_wac_emp.py`/`test_lunaserv_wms.py`/`test_hapke.py`/`test_dem_ortho.py` along the same
+seams as the source. Every real call site across `src/`, `tests/`, and current-state docs updated;
+five notebooks (`along_track_correction.py`, `real_hapke_params.py`, `crater_sharpness_review.py`,
+`sfs_validation.py`, `hapke_hillshade.py`) still import the old `lunaserv` module and are deliberately
+left for the reorganization's final notebook pass, per the same suspended-discipline policy as
+Phase 94's one deferred notebook.

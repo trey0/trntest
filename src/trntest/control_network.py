@@ -40,7 +40,7 @@ import rasterio
 import rasterio.errors
 import rasterio.warp
 
-from trntest import isis_campt, isis_wac, lunaserv, wac_camera_model
+from trntest import geo_utils, isis_campt, isis_wac, wac_camera_model
 from trntest.config import TrntestConfig, load_config
 from trntest.tie_points import lonlat_to_ground_km
 
@@ -55,20 +55,20 @@ def map_points_to_lonlat(
     :param points_map: `(N, 2)` `(x, y)` map coordinates, e.g. `pose_alignment.pixel_points_to_map`'s
         output.
     :param crs: The CRS `points_map` is in (this pipeline's shared local Orthographic CRS -- every
-        camera's own is constructed the same way, see `lunaserv.DemOrthoResult`'s docstring).
+        camera's own is constructed the same way, see `dem_ortho.DemOrthoResult`'s docstring).
     :param config: Project config; `load_config()` if not given.
     :returns: `(lon_deg, lat_deg)` arrays, this project's own 0-360 Positive-East, ellipsoid-radius
         convention.
     """
-    # Via `lunaserv.geographic_crs`, the one shared source of truth for this CRS string (also used by
-    # `lunaserv.py`/`craters.py`/`tie_points.py`), not an independently-built copy.
+    # Via `geo_utils.geographic_crs`, the one shared source of truth for this CRS string (also used by
+    # `geo_utils.py`/`craters.py`/`tie_points.py`), not an independently-built copy.
     # `rasterio.warp.transform` (the point-wise sibling of `transform_bounds`, which only handles a
     # bbox) returns longitude in the standard -180..180 convention regardless of the destination
     # CRS's own definition (confirmed elsewhere in this project, see `craters.py`'s own note) --
     # normalized here via `% 360.0` to match `isis_campt.ground_to_image_pixel`'s own
     # `PositiveEast360Longitude` convention.
     config = config or load_config()
-    geo_crs = lunaserv.geographic_crs()
+    geo_crs = geo_utils.geographic_crs()
     lons, lats = rasterio.warp.transform(crs, geo_crs, points_map[:, 0], points_map[:, 1])
     return np.asarray(lons) % 360.0, np.asarray(lats)
 

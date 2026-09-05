@@ -25,9 +25,9 @@ import shapely.ops
 import xarray
 from PIL import Image
 
-from trntest import illumination, lunaserv, orientation
+from trntest import geo_utils, illumination, orientation
 from trntest.camera import Camera
-from trntest.lunaserv import DemOrthoResult
+from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
 # Visually-distinct, high-contrast marker per die-5 tie-point position, shared between the two
@@ -187,7 +187,7 @@ def plot_dem_ortho(dem_ortho_result: DemOrthoResult, camera: Camera):
         dem = src.read(1)
         dem_bounds = src.bounds
 
-    moon_geographic_crs = lunaserv.geographic_crs()
+    moon_geographic_crs = geo_utils.geographic_crs()
     min_polygon_points = 3
     corners = [camera.footprint_lonlat_deg[name] for name in ("top_left", "top_right", "bottom_right", "bottom_left")]
     corners = [c for c in corners if c is not None]
@@ -275,7 +275,7 @@ def _fill_dead_columns_for_display(band: np.ndarray, valid: np.ndarray) -> np.nd
     :returns: `band` with invalid pixels filled by per-row linear interpolation (or `NaN`, for a row
         with no valid pixel to interpolate from).
     """
-    # Unlike `lunaserv.despeckle()` (a randomly-scattered-outlier filter over otherwise-present
+    # Unlike `hapke.despeckle()` (a randomly-scattered-outlier filter over otherwise-present
     # values), ISIS's `lrowaccal` "SpecialPixels" correction marks genuinely missing pixels at a
     # small, fixed, deterministic set of detector columns on each VIS framelet's first line (the same
     # 56 columns recur, unchanged, at every 14-line framelet boundary across a full cube -- see
@@ -452,20 +452,20 @@ def plot_render_vs_basemap(
     # pattern (see docs/external-tools.md's "ISIS Pushframe pipeline" section) shows up as visible
     # speckle.
     #
-    # `lunaserv.footprint_bbox_local_m` (already used to size the original WMS fetch -- see its
+    # `geo_utils.footprint_bbox_local_m` (already used to size the original WMS fetch -- see its
     # docstring) converts `footprint_lonlat_deg`'s corners to the basemap's own local Orthographic
-    # CRS (centered on this same footprint's own center, see `lunaserv.fetch_dem_and_ortho`) to find
+    # CRS (centered on this same footprint's own center, see `dem_ortho.fetch_dem_and_ortho`) to find
     # the matching pixel window -- a plain windowed read, no resampling. Unlike the render (fixed
     # sensor-pixel axes, needing a pass-dependent rotation for north-up display), the basemap crop
     # needs no rotation: the local Orthographic CRS is already north-referenced by construction (+Y =
     # north).
     #
     # On the basemap panel, each tie point's `"lonlat"` is projected directly into the crop's own
-    # local-CRS offset (`lunaserv.orthographic_xy_m`, same center as the crop itself) -- no pixel
+    # local-CRS offset (`geo_utils.orthographic_xy_m`, same center as the crop itself) -- no pixel
     # coordinates needed there, since that panel is a plain, unrotated crop of an already-georeferenced
     # raster.
     center_lon, center_lat = footprint_lonlat_deg["center"]
-    minx, miny, maxx, maxy = lunaserv.footprint_bbox_local_m(footprint_lonlat_deg, center_lon, center_lat)
+    minx, miny, maxx, maxy = geo_utils.footprint_bbox_local_m(footprint_lonlat_deg, center_lon, center_lat)
 
     with rasterio.open(base_raster_path) as src:
         window = rasterio.windows.from_bounds(minx, miny, maxx, maxy, transform=src.transform)
@@ -507,7 +507,7 @@ def plot_render_vs_basemap(
                 axes[0], name, px, py, rotation_k, render_height, render_width, render_width_km, render_height_km
             )
             lon, lat = r["lonlat"]
-            x, y = lunaserv.orthographic_xy_m(lon, lat, center_lon, center_lat)
+            x, y = geo_utils.orthographic_xy_m(lon, lat, center_lon, center_lat)
             axes[1].plot(
                 (x - minx) / 1000.0,
                 (maxy - y) / 1000.0,
@@ -926,7 +926,7 @@ def plot_sfs_comparison(real_wac_path, ours_path, sfs_sim_intensity_path, title:
 
 def plot_incidence_validation(incidence_sfs_deg: np.ndarray, incidence_ours_deg: np.ndarray, title: str | None = None):
     """3-panel comparison for `sfs_validation`'s Lambertian-mode incidence cross-check: `sfs`'s own
-    independently ray-traced incidence field, `lunaserv.real_geometry_photometric_angles`'s own
+    independently ray-traced incidence field, `hapke.real_geometry_photometric_angles`'s own
     field, and their difference.
 
     :param incidence_sfs_deg: `sfs`'s incidence field, degrees, NaN outside camera coverage
@@ -1063,7 +1063,7 @@ def _render_overlay_figure(
     ax.set_ylim(ylim)
     ax.set_title(title)
     # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
-    # `lunaserv.fetch_dem_and_ortho`'s docstring for why (an isotropic-meter grid, unlike Lunaserv's
+    # `dem_ortho.fetch_dem_and_ortho`'s docstring for why (an isotropic-meter grid, unlike Lunaserv's
     # native unprojected geographic layer). Displayed in km (matching
     # `plot_isis_comparison`'s real-km scaling) via a tick formatter -- the
     # underlying data/geometry stay in meters (real CRS units), only the tick labels are rescaled.

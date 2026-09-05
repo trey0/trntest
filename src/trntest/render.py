@@ -19,7 +19,7 @@ from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:
     from trntest.camera import Camera
-    from trntest.lunaserv import DemOrthoResult
+    from trntest.dem_ortho import DemOrthoResult
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,7 +35,7 @@ class RenderResult:
 # precision. Lunaserv's DTM layer serves planetocentric radius (~1.7e6 m) as float32; float32 has
 # ~7.2 significant decimal digits, so its ULP (smallest representable step) at that magnitude is
 # already ~0.125m (2**(20-23), since 2**20 < 1.7e6 < 2**21) -- baked into the source data itself
-# before `lunaserv.radius_to_elevation` ever subtracts the reference radius, not something fixable
+# before `lunaserv_wms.radius_to_elevation` ever subtracts the reference radius, not something fixable
 # on our end. The default tolerance causes `sat_sim`'s ray/DEM-intersection root-finder to misbehave
 # at scattered pixels, producing salt-and-pepper speckle in the render; tightening it further makes
 # this dramatically worse, and loosening it to comfortably clear the float32 precision floor

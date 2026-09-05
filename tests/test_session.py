@@ -33,11 +33,11 @@ def test_build_camera_delegates_with_config():
 def test_fetch_dem_and_ortho_delegates_with_config():
     config = TrntestConfig()
     session = Session(config=config)
-    with mock.patch("trntest.session.lunaserv.fetch_dem_and_ortho") as mock_fn:
-        mock_fn.return_value = "lunaserv-sentinel"
+    with mock.patch("trntest.session.dem_ortho.fetch_dem_and_ortho") as mock_fn:
+        mock_fn.return_value = "dem-ortho-sentinel"
         result = session.fetch_dem_and_ortho("camera-sentinel")
     mock_fn.assert_called_once_with("camera-sentinel", config=config)
-    assert result == "lunaserv-sentinel"
+    assert result == "dem-ortho-sentinel"
 
 
 def test_run_sat_sim_delegates_with_config():
@@ -45,8 +45,8 @@ def test_run_sat_sim_delegates_with_config():
     session = Session(config=config)
     with mock.patch("trntest.session.render.run_sat_sim") as mock_fn:
         mock_fn.return_value = "render-sentinel"
-        result = session.run_sat_sim("camera-sentinel", "lunaserv-sentinel")
-    mock_fn.assert_called_once_with("camera-sentinel", "lunaserv-sentinel", config=config)
+        result = session.run_sat_sim("camera-sentinel", "dem-ortho-sentinel")
+    mock_fn.assert_called_once_with("camera-sentinel", "dem-ortho-sentinel", config=config)
     assert result == "render-sentinel"
 
 

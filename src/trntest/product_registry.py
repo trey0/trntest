@@ -168,7 +168,7 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
 @contextlib.contextmanager
 def atomic_publish_prefix(dest: Path, tool_suffix: str) -> Iterator[Path]:
     """For ASP/ISIS tools that take an output *prefix* (`-o <prefix>`), not an exact path, and append
-    their own fixed suffix to it -- `dem_mosaic`'s `<prefix>-tile-0.tif` (`lunaserv.hole_fill_dem`),
+    their own fixed suffix to it -- `dem_mosaic`'s `<prefix>-tile-0.tif` (`dem_ortho.hole_fill_dem`),
     `sat_sim`'s `<prefix>-<camera_stem>.tif` (`render.run_sat_sim`) -- neither of which fits
     `atomic_publish_path`'s exact-final-path contract directly.
 

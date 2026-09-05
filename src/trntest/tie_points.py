@@ -31,7 +31,7 @@ import rasterio.warp
 import spiceypy as spice
 from matplotlib.path import Path
 
-from trntest import isis_campt, isis_wac, lunaserv, wac, wac_camera_model
+from trntest import geo_utils, isis_campt, isis_wac, wac, wac_camera_model
 from trntest.camera import (
     Camera,
     FrameTiming,
@@ -330,8 +330,8 @@ def _footprint_to_local_m(corners: dict, center_lon_deg: float, center_lat_deg: 
     names = list(corners)
     lons = [corners[n][0] for n in names]
     lats = [corners[n][1] for n in names]
-    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
-    xs, ys = rasterio.warp.transform(lunaserv.geographic_crs(), ortho_crs, lons, lats)
+    ortho_crs = geo_utils.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    xs, ys = rasterio.warp.transform(geo_utils.geographic_crs(), ortho_crs, lons, lats)
     return dict(zip(names, zip(xs, ys, strict=True), strict=True))
 
 
@@ -345,8 +345,8 @@ def _local_m_to_lonlat(points_m: dict, center_lon_deg: float, center_lat_deg: fl
     names = list(points_m)
     xs = [points_m[n][0] for n in names]
     ys = [points_m[n][1] for n in names]
-    ortho_crs = lunaserv.local_orthographic_crs(center_lon_deg, center_lat_deg)
-    lons, lats = rasterio.warp.transform(ortho_crs, lunaserv.geographic_crs(), xs, ys)
+    ortho_crs = geo_utils.local_orthographic_crs(center_lon_deg, center_lat_deg)
+    lons, lats = rasterio.warp.transform(ortho_crs, geo_utils.geographic_crs(), xs, ys)
     return {n: (lon % 360.0, lat) for n, lon, lat in zip(names, lons, lats, strict=True)}
 
 

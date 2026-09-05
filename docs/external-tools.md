@@ -27,7 +27,7 @@ just code comments) when a concrete choice changes.
   pixel value is a direct geometric resample of whatever's already in the ortho, with no per-ray
   reflectance/sun-angle computation applied. Any relief/shading visible in a render is therefore
   whatever was already baked into the ortho texture, not something `sat_sim` computes — this
-  project supplies that shading itself (`lunaserv.despeckle_and_shade_ortho` — a real Hapke BRDF via
+  project supplies that shading itself (`hapke.despeckle_and_shade_ortho` — a real Hapke BRDF via
   ISIS `photomet` by default, `hapke_shade_ortho`, with a plain Lambertian `shade_ortho` fallback;
   both lit with real SPICE sun geometry, not relying on any shading baked into the source imagery,
   which was never guaranteed to match the simulated frame's real sun angle in the first place).
@@ -36,7 +36,7 @@ just code comments) when a concrete choice changes.
   misbehaves at scattered pixels). Root cause: Lunaserv's DTM layer serves planetocentric radius
   (~1.7e6 m) as float32, whose ULP (smallest representable step) at that magnitude is already
   ~0.125m — baked into the source data itself, not something fixable in
-  `lunaserv.radius_to_elevation`'s own subtraction. **Confirmed empirically**: tightening the
+  `lunaserv_wms.radius_to_elevation`'s own subtraction. **Confirmed empirically**: tightening the
   tolerance further makes the speckle dramatically worse (more, denser artifacts), loosening it to
   comfortably clear that ~0.125m floor eliminates it cleanly — neither outcome is subtle.
   `src/trntest/render.py`'s `DEM_HEIGHT_ERROR_TOL_M = 0.5` (a 4x margin above the float32 floor) is
@@ -74,7 +74,7 @@ just code comments) when a concrete choice changes.
   image, rather than deriving them from `--t_srs`/`--tr`/`--mpp`/`--ppd`. Pointing this at the same
   DEM used to produce the input image guarantees the output lands on that DEM's exact pixel
   grid/projection — i.e. the same grid as any other raster derived from that DEM (this project's
-  `lunaserv.py` outputs, e.g. `DemOrthoResult.ortho`), with no separate reprojection/alignment step
+  `dem_ortho.py` outputs, e.g. `DemOrthoResult.ortho`), with no separate reprojection/alignment step
   needed to overlay them. This is what `render.run_mapproject` uses.
 - Output nodata is real `NaN` (confirmed empirically, `Float32` output by default) — not a
   huge-magnitude sentinel like `wac.MISSING_CONSTANT` elsewhere in this codebase, and not something

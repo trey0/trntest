@@ -11,7 +11,7 @@ Typical usage:
     render_result = session.run_sat_sim(camera, dem_ortho_result)
 
 See `trntest.Session` for the full pipeline, or the individual modules (`trntest.camera`,
-`trntest.lunaserv`, `trntest.render`, `trntest.wac`, `trntest.tie_points`, `trntest.orientation`)
+`trntest.dem_ortho`, `trntest.render`, `trntest.wac`, `trntest.tie_points`, `trntest.orientation`)
 for the underlying free functions, each independently callable with an explicit `config`.
 """
 
@@ -26,7 +26,7 @@ from trntest.dataset import (
     read_manifest,
     write_manifest,
 )
-from trntest.lunaserv import DemOrthoResult, fetch_dem_and_ortho
+from trntest.dem_ortho import DemOrthoResult, fetch_dem_and_ortho
 from trntest.orientation import DisplayRotations, compute_display_rotations
 from trntest.render import RenderResult, read_csm_state, run_sat_sim
 from trntest.session import Session

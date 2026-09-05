@@ -1,5 +1,5 @@
 """Thin convenience facade over the module-level functions, so notebook/interactive code doesn't
-repeat `config=...` at every call. The logic stays in `camera.py`/`lunaserv.py`/`render.py`/etc. as
+repeat `config=...` at every call. The logic stays in `camera.py`/`dem_ortho.py`/`render.py`/etc. as
 free functions (independently usable and unit-testable without constructing a `Session`); `Session`
 methods are one-line delegators.
 """
@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from trntest import camera, dataset, lunaserv, orientation, render, spice_kernels, tie_points, wac
+from trntest import camera, dataset, dem_ortho, orientation, render, spice_kernels, tie_points, wac
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
 from trntest.dataset import GenerationResult
-from trntest.lunaserv import DemOrthoResult
+from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
 from trntest.render import RenderResult
 
@@ -39,7 +39,7 @@ def _inherit_doc(source):
 
 class Session:
     """Convenience entry point: holds a resolved `TrntestConfig` so pipeline steps don't need
-    `config=...` repeated at every call. See `trntest.camera`/`trntest.lunaserv`/etc. for the
+    `config=...` repeated at every call. See `trntest.camera`/`trntest.dem_ortho`/etc. for the
     underlying free functions if you'd rather call them directly with an explicit config."""
 
     def __init__(self, config: TrntestConfig | None = None):
@@ -49,9 +49,9 @@ class Session:
     def build_camera(self, output_tsai_path=None) -> Camera:
         return camera.build_camera(config=self.config, output_tsai_path=output_tsai_path)
 
-    @_inherit_doc(lunaserv.fetch_dem_and_ortho)
+    @_inherit_doc(dem_ortho.fetch_dem_and_ortho)
     def fetch_dem_and_ortho(self, camera: Camera) -> DemOrthoResult:
-        return lunaserv.fetch_dem_and_ortho(camera, config=self.config)
+        return dem_ortho.fetch_dem_and_ortho(camera, config=self.config)
 
     @_inherit_doc(render.run_sat_sim)
     def run_sat_sim(self, camera: Camera, dem_ortho_result: DemOrthoResult) -> RenderResult:

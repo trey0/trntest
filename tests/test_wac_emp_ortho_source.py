@@ -1,4 +1,4 @@
-"""End-to-end validation of the WAC_EMP-PDS ortho source (`lunaserv.fetch_dem_and_ortho`'s live
+"""End-to-end validation of the WAC_EMP-PDS ortho source (`dem_ortho.fetch_dem_and_ortho`'s live
 default, `ortho_source="wac_emp_pds"`) against the project's own real, frozen default candidate --
 real fetch (the ~1.86GB 304ppd 643nm tile), real reproject onto the local Orthographic working grid,
 real Hapke shading, real display stretch. See `docs/history.md`'s dated entry for the migration this
@@ -16,7 +16,8 @@ import pytest
 import rasterio
 
 import trntest
-from trntest import lunaserv
+from trntest import dem_ortho, geo_utils, ortho_wac_emp
+from trntest.config import MOON_RADIUS_M
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,7 +34,7 @@ def test_fetch_dem_and_ortho_wac_emp_pds_default_produces_a_real_non_saturating_
     dem_ortho_result = entry.dem_ortho_result
     assert dem_ortho_result.ortho.name.endswith("_wacemp.tif"), (
         "the live default ortho_source is 'wac_emp_pds' -- the resumed/fetched file must carry the "
-        "_wacemp filename suffix (lunaserv.ortho_shaded_filename), not a stale pre-migration name"
+        "_wacemp filename suffix (dem_ortho.ortho_shaded_filename), not a stale pre-migration name"
     )
 
     with rasterio.open(dem_ortho_result.ortho) as src:
@@ -69,7 +70,7 @@ def test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black():
     # entry.dem_ortho_result's own (larger, crop-unioned) ortho's pairing for any later resumer in the
     # same process/session (the exact bug this same fix addressed in notebooks/hapke_hillshade.py --
     # see docs/history.md's Phase 78 entry -- caught here too by a heavy-suite ordering regression).
-    dem_ortho_lambertian = lunaserv.fetch_dem_and_ortho(
+    dem_ortho_lambertian = dem_ortho.fetch_dem_and_ortho(
         entry.camera, entry.per_image_config, extra_footprint_lonlat_deg=entry.crop_footprint, hapke=False
     )
     assert dem_ortho_lambertian.ortho.name.endswith("_wacemp.tif")
@@ -97,8 +98,8 @@ def test_wac_emp_tile_id_for_bbox_resolves_the_real_default_candidate():
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None
     center_lon, center_lat = center
-    bbox_unpadded = lunaserv.footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat)
-    bbox = lunaserv.pad_bbox(bbox_unpadded, config.dem_padding_fraction)
+    bbox_unpadded = geo_utils.footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat)
+    bbox = geo_utils.pad_bbox(bbox_unpadded, config.dem_padding_fraction)
 
-    tile_id = lunaserv.wac_emp_tile_id_for_bbox(bbox, center_lon, center_lat, lunaserv.MOON_RADIUS_M)
+    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(bbox, center_lon, center_lat, MOON_RADIUS_M)
     assert tile_id == "WAC_EMP_643NM_E300N1350_304P"

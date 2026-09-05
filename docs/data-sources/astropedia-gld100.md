@@ -15,8 +15,8 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   `radius_to_elevation`-style subtraction needed or performed for this path
   (`reproject_astropedia_elevation_to_local_grid` reprojects the elevation values as-is).
   Coverage confirmed via the same `gdalinfo` output's corner coordinates: 79°0'6.57"N to
-  79°0'6.57"S — `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0` encodes this exactly, and
-  `lunaserv.astropedia_coverage_bbox_deg` raises rather than silently falling back to the deprecated
+  79°0'6.57"S — `dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0` encodes this exactly, and
+  `dem_gld100.astropedia_coverage_bbox_deg` raises rather than silently falling back to the deprecated
   Lunaserv path for any camera footprint that needs data outside it.
 - CRS: a Moon-specific Equidistant Cylindrical ("Equirectangular") `PROJCRS`, standard parallel 0,
   central meridian 180° (`ELLIPSOID["Moon_localRadius",1737400,0,...]` — confirmed the real Moon
@@ -52,7 +52,7 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   step) encoding raised a real question of whether that same tolerance might now be too tight again,
   reintroducing `sat_sim` ray-intersection speckle. Checked directly: rendered the same real
   camera/DEM/ortho at `--dem-height-error-tol` of 0.5 (current default), 1.0, 2.0, and 4.0, measuring
-  each render's isolated-single-pixel-outlier rate (`lunaserv.despeckle`'s own outlier test, used as a
+  each render's isolated-single-pixel-outlier rate (`hapke.despeckle`'s own outlier test, used as a
   pure measurement here, not applied) — all four came out ~0.444-0.447%, no meaningful difference,
   unlike the original tolerance sweep this default came from (order-of-magnitude swings in both
   directions). No change needed to `DEM_HEIGHT_ERROR_TOL_M`.

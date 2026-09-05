@@ -3,7 +3,7 @@
 file, finds every real Robbins crater whose own required footprint (its ellipse polygon plus
 `crater_depth_m`'s own half-pixel-diagonal margin) is fully contained within it, and times
 `crater_depth_m` per crater to extrapolate a rough, order-of-magnitude estimate for processing the
-whole non-polar (`|lat| < lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`) Robbins database against this
+whole non-polar (`|lat| < dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`) Robbins database against this
 same DEM.
 
 **Deliberately centered at (lon=180, lat=0)** -- GLD100's own central meridian and standard
@@ -14,7 +14,7 @@ the latitude-direction spacing does not (the same longitude-anisotropy effect
 `docs/data-sources/lunaserv-wms.md` documents as the reason Lunaserv's own `mapproject` round-trip
 switched to a per-camera local Orthographic CRS). `crater_depths_for_footprint`'s normal
 callers avoid this by working against a per-camera local Orthographic reprojection
-(`lunaserv.fetch_dem_and_ortho`), not GLD100's raw global CRS directly, the way this test does. This
+(`dem_ortho.fetch_dem_and_ortho`), not GLD100's raw global CRS directly, the way this test does. This
 test's equatorial tile sidesteps the distortion rather than fixing it. **Empirically quantified**
 (real craters at 30/45/60/78.5 deg latitude, ellipse built the same way this file does then measured
 via a local-Orthographic reprojection): a polygon's true east-west extent comes out ~0.87x/0.71x/
@@ -39,7 +39,7 @@ import rasterio.warp
 import rasterio.windows
 import shapely.geometry
 
-from trntest import cache, crater_depth, craters, lunaserv
+from trntest import cache, crater_depth, craters, dem_gld100, geo_utils
 from trntest.config import MOON_RADIUS_M, load_config
 
 _TILE_SIZE_PX = 512
@@ -84,7 +84,7 @@ def test_crater_depth_throughput_over_a_real_gld100_tile(tmp_path):
     gld100_path = cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
 
     with rasterio.open(gld100_path) as src:
-        geo_crs = lunaserv.geographic_crs(MOON_RADIUS_M)
+        geo_crs = geo_utils.geographic_crs(MOON_RADIUS_M)
         (center_x,), (center_y,) = rasterio.warp.transform(
             geo_crs, src.crs, [_TILE_CENTER_LON_DEG], [_TILE_CENTER_LAT_DEG]
         )
@@ -132,7 +132,7 @@ def test_crater_depth_throughput_over_a_real_gld100_tile(tmp_path):
     # equatorial-tile caveat, and docs/data-sources.md's "Crater depth" section for the batch-scale
     # open items (GLD100's own row-strip, not tiled, I/O layout; no per-crater-window caching) this
     # simple, single-threaded, one-tile timing loop doesn't measure or address.
-    non_polar_fraction = math.sin(math.radians(lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG))
+    non_polar_fraction = math.sin(math.radians(dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG))
     estimated_non_polar_craters = _ROBBINS_TOTAL_CRATERS * non_polar_fraction
     estimated_total_hours = estimated_non_polar_craters * mean_s / 3600.0
 
@@ -142,7 +142,7 @@ def test_crater_depth_throughput_over_a_real_gld100_tile(tmp_path):
         f"  fully-contained real craters tested: {len(polygons)} ({n_valid_depth} got a real depth)\n"
         f"  mean / median per-crater time: {mean_s * 1000:.2f} ms / {median_s * 1000:.2f} ms\n"
         f"  extrapolated to ~{estimated_non_polar_craters:,.0f} non-polar Robbins craters "
-        f"(sin({lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG} deg) of the real "
+        f"(sin({dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG} deg) of the real "
         f"{_ROBBINS_TOTAL_CRATERS:,} total, D>=1km): ~{estimated_total_hours:.1f} hours, "
         "single-threaded, naive independent per-crater reads, no batching/parallelism/re-tiling\n"
     )

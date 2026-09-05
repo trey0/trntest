@@ -179,7 +179,7 @@ per-entry detail report (both described above) are actually built so far.
 
   Also shrink Phase 6B's overlay margin, roughly by half, so more of the report's fixed page width
   goes to the overlay itself. That margin isn't a `plot_overlay` display parameter today — it falls
-  out of `config.dem_padding_fraction` (0.3, `lunaserv.fetch_dem_and_ortho`'s AOI pad around the
+  out of `config.dem_padding_fraction` (0.3, `dem_ortho.fetch_dem_and_ortho`'s AOI pad around the
   image footprint before fetching the basemap), and `plotting._render_overlay_figure` always shows
   the *entire* fetched basemap extent. Shrinking `dem_padding_fraction` itself isn't the right lever
   here — that basemap is `entry.dem_ortho_result`, shared with hillshade's own render/relighting

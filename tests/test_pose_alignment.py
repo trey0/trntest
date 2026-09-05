@@ -231,7 +231,7 @@ def test_downsample_to_gsd_halves_dimensions_and_preserves_bright_region_mean(tm
 
 
 def test_downsample_to_gsd_handles_uint8_raster_with_no_nodata(tmp_path):
-    # The basemap ortho this function is also called on (lunaserv.despeckle_and_shade_ortho's
+    # The basemap ortho this function is also called on (hapke.despeckle_and_shade_ortho's
     # output) is uint8 with no nodata tag -- confirmed live to crash if a float sentinel fallback is
     # blindly applied regardless of dtype (GDAL can't represent -3.4e38 in a uint8 buffer).
     data = np.zeros((40, 40), dtype="uint8")

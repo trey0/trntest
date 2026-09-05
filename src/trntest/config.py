@@ -23,7 +23,7 @@ DEFAULT_SCRATCH_DIR = Path("/workspace/scratch")
 DEFAULT_NAIF_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/"
 DEFAULT_LUNASERV_BASE_URL = "https://wms.im-ldi.com/lunaserv/lunaserv_stage?"
 # Lunaserv's per-request-parametrized local Orthographic CRS -- `{c_lon}`/`{c_lat}` are filled in
-# per camera footprint (`lunaserv.fetch_dem_and_ortho`) with that footprint's own center, giving
+# per camera footprint (`dem_ortho.fetch_dem_and_ortho`) with that footprint's own center, giving
 # isotropic meter pixels everywhere. Replaces the native unprojected geographic grid
 # (`IAU2000:30100`), whose degree-pixels are anisotropic away from the equator. See
 # docs/data-sources/lunaserv-wms.md.
@@ -85,8 +85,8 @@ DEFAULT_DEM_TARGET_GSD_M = 100.0
 DEFAULT_DEM_PADDING_FRACTION = 0.3
 
 # Deprecated -- Lunaserv's native, unprojected geographic grid for the Moon. Only used by
-# `lunaserv.fetch_dem_native`/`lunaserv.reproject_dem_to_local_grid`, the pre-Astropedia DEM path
-# kept for reference/comparison; no longer called by `fetch_dem_and_ortho`'s default path.
+# `lunaserv_wms.fetch_dem_native`/`lunaserv_wms.reproject_dem_to_local_grid`, the pre-Astropedia DEM
+# path kept for reference/comparison; no longer called by `fetch_dem_and_ortho`'s default path.
 # Superseded by an unfixable crosshatch artifact baked into Lunaserv's own native DTM tile -- see
 # docs/data-sources/lunaserv-wms.md. `dem_native_ppd`/`lunaserv_dem_srs` are valid config for this
 # deprecated path only, not for the live default (`astropedia_gld100_url` below).
@@ -103,7 +103,7 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
 # Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
-# archive (`lunaserv.wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
+# archive (`ortho_wac_emp.wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
 # Lunaserv's WMS render, which carries an uncorrected affine display stretch. One base URL covers
 # every tile: the tile's own product ID, resolved per footprint, is appended directly. See
 # docs/data-sources/wac-emp-pds4.md.

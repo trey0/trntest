@@ -99,7 +99,7 @@ same-entry cross-worker race on shared state (`entry.camera`/`entry.dem_ortho_re
 `functools.cached_property`, backed by `isis_wac.run_pipeline`'s shared ISIS working directory)
 structurally impossible, not just handled — and as a side benefit, that shared state is computed
 once per entry and reused across its product types instead of rebuilt per worker. Real writers
-(`isis_wac.crop_for_camera`/`run_framestitch`, `lunaserv.fetch_dem`/`fetch_and_shade_ortho`) also
+(`isis_wac.crop_for_camera`/`run_framestitch`, `dem_ortho.fetch_dem`/`fetch_and_shade_ortho`) also
 publish atomically (`product_registry.atomic_publish_path`/`atomic_publish`) — this remains valuable
 for genuine cross-entry write collisions and crash/partial-write safety, independent of the
 now-eliminated same-entry race.

@@ -140,7 +140,7 @@ file). Then, as needed:
   raw `subprocess.run`. These tools are noisy by default (progress bars, library-init messages,
   verbose logs) and inherit the calling process's own stdout/stderr, which floods a notebook cell
   with output that isn't the caller's — `run_quiet` captures it and only surfaces it on failure.
-  `render.py`, `lunaserv.py`, and `isis_wac.py` all follow this pattern.
+  `render.py`, `hapke.py`, `dem_ortho.py`, and `isis_wac.py` all follow this pattern.
 - **Profiling**: use `cProfile`/`pstats` inside Docker (real SPICE/network) rather than guessing
   which optimization matters. When isolating a
   from-cold cost, compare **separate fresh `docker compose run` invocations**, not multiple calls

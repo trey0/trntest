@@ -10,7 +10,7 @@ current default candidate, `M1327210646CE` — see the Caveat section for how fa
 
 - DEM (Astropedia GLD100): confirmed 100.0 m/px native pixel size (`docs/data-sources/astropedia-gld100.md`).
 - Ortho (WAC_EMP, 304 ppd, 643 nm band): 304 ppd works out to ~99.75 m/px.
-- `config.DEFAULT_DEM_TARGET_GSD_M = 100.0` is what `lunaserv.fetch_dem_and_ortho` samples both onto
+- `config.DEFAULT_DEM_TARGET_GSD_M = 100.0` is what `dem_ortho.fetch_dem_and_ortho` samples both onto
   for their shared local working grid — the same grid the notebook shows as "the basemap"
   (`dem_ortho_result.ortho`). It matches the DEM/ortho's own native resolution closely, not
   independently chosen.

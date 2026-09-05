@@ -53,7 +53,7 @@ def _azimuth_elevation_from_direction(direction: np.ndarray, lon_deg: float, lat
 
 def sun_azimuth_elevation_deg(lon_deg: float, lat_deg: float, et: float) -> tuple[float, float]:
     """Sun's azimuth and elevation at a MOON_ME lon/lat, for lighting a hillshade with the sun
-    geometry of a given frame/epoch (see `lunaserv.fetch_dem_and_ortho`).
+    geometry of a given frame/epoch (see `dem_ortho.fetch_dem_and_ortho`).
 
     :param lon_deg: Ground point longitude, degrees.
     :param lat_deg: Ground point latitude, degrees.

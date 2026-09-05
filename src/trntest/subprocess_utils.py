@@ -1,4 +1,4 @@
-"""Shared subprocess helper for the ASP wrapper modules (`render.py`, `lunaserv.py`)."""
+"""Shared subprocess helper for the ASP/ISIS wrapper modules (`render.py`, `hapke.py`, `dem_ortho.py`)."""
 
 import subprocess
 

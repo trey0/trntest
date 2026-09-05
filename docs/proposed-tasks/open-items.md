@@ -14,11 +14,16 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   running with the usual per-change notebook-re-execution discipline suspended, one full notebook
   pass planned right before that work merges to `main`. Fix this notebook's `.py` and regenerate its
   `.ipynb` as part of that pass, not before.
+- `notebooks/along_track_correction.py`/`real_hapke_params.py`/`crater_sharpness_review.py`/
+  `sfs_validation.py`/`hapke_hillshade.py` still `from trntest import lunaserv` and call functions now
+  split across `dem_gld100`/`ortho_wac_emp`/`lunaserv_wms`/`hapke`/`dem_ortho`/`geo_utils` (see
+  `docs/history.md`'s Phase 96 entry). Same deferred-until-the-final-pass treatment as the bullet
+  above, for the same reason.
 - Whether `--save-as-csm` state JSON is an acceptable stand-in for a literal ISD file for whatever
   comes after this demo.
 - Confirm the lunar frame kernel defining `MOON_ME` loads correctly so SPICE can output that frame
   directly; sanity-check against the known GLD100/LOLA convention.
-- **Astropedia's GLD100 only covers ±79° latitude** (`lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`) —
+- **Astropedia's GLD100 only covers ±79° latitude** (`dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG`) —
   `fetch_dem_and_ortho` raises rather than falling back to the deprecated, artifact-affected
   Lunaserv DTM path for any footprint beyond it, so a catalog-driven selection near either pole
   fails outright. NASA's VIRA project (`github.com/nasa/vira`) points at higher-resolution
@@ -29,14 +34,14 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   survey. Chunks B-E were never scoped — re-scope from scratch rather than assume a prior chunking
   plan still applies.
 - The real-WAC-crop/hillshade brightness match has an unresolved regression and an unresolved
-  validation gap. `lunaserv._terrain_photometric_angles`'s surface-normal computation and
+  validation gap. `hapke._terrain_photometric_angles`'s surface-normal computation and
   `hapke_shade_ortho`'s Hapke-ratio relighting were both made permanent/unconditional on the user's
   explicit call, despite the Hapke-ratio fix being confirmed to *worsen* the one measured
   brightness-matched diff (8.6853 → 9.2425) — not yet explained. Real `campt` ground truth can't
   validate the DEM-aware case (it stays ellipsoid-normal-based even with a DEM shape model
   attached), so ASP `sfs` was used as an independent forward-render cross-check instead
   (`sfs_validation.py`): its Lambertian mode's own independently-recovered incidence angle now
-  matches `lunaserv.real_geometry_photometric_angles` to ~0.0005 deg mean, closing the DEM-aware
+  matches `hapke.real_geometry_photometric_angles` to ~0.0005 deg mean, closing the DEM-aware
   validation gap for incidence — but confirming (not explaining) that the brightness regression and
   three other live visual observations (a real east-brightening gradient the hillshade
   underrepresents; an apparent ~10 deg shadow rotation confirmed *not* a sun-azimuth bug;
@@ -44,12 +49,12 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   for phase/emission cross-checks: its reconstructed CSM camera can't represent
   `along_track_correction`. See [`docs/history.md`](../history.md)'s Phase 70-79 entries for the
   full investigation trail.
-- `lunaserv.fetch_real_hapke_params` samples ISIS's real calibration cube once per image, at the
+- `hapke.fetch_real_hapke_params` samples ISIS's real calibration cube once per image, at the
   footprint's own center — real spatial variation exists within one footprint (a few percent of
   `wh`/`b0`/`hg1`'s own full-Moon range, somewhat more for `hg2`/`hh`) but is secondary to the
   placeholder-vs-real gap this already fixed. Per-pixel sampling (reprojecting the calibration cube
   onto the same working grid the DEM/ortho use) would be a real further refinement.
-- `lunaserv.fetch_dem`'s DEM output filename carries no suffix tied to `extra_footprint_lonlat_deg`
+- `dem_ortho.fetch_dem`'s DEM output filename carries no suffix tied to `extra_footprint_lonlat_deg`
   (unlike the ortho's own suffix discipline) — two calls against the same output directory with
   different footprints could silently disagree about which DEM is "the" one. All current real call
   sites pass the same footprint derivation, so no live divergence is known, but a future caller that
@@ -78,11 +83,19 @@ undocumented one that only avoids crashing by accident. Six tasks below address 
 **Task 1 (splitting `isis_wac.py` into `isis_wac.py`/`isis_campt.py`, and the circular-import fixes
 that came with it) is done** — see `docs/history.md`'s Phase 94 entry for what actually shipped
 (including two extra circular-import fixes, in `lunaserv.py`/`render.py`/`spice_kernels.py`, that the
-original plan hadn't anticipated). One known gap: `notebooks/pose_alignment_spike.py` still has two
-stale `isis_wac.resolve_ground_to_image_model`/`isis_wac.image_to_ground_points_batch` references —
-deferred to this reorganization's own final notebook-re-execution pass (see the workflow note below),
-tracked as its own bullet in this file's main list above. Tasks 2-6 below are intentionally left
-light, since their exact boundaries depend on decisions the later ones will make as they're tackled.
+original plan hadn't anticipated).
+
+**Task 2 (splitting `lunaserv.py` into `geo_utils.py`/`dem_gld100.py`/`ortho_wac_emp.py`/
+`lunaserv_wms.py`/`hapke.py`/`dem_ortho.py`) is done** — see `docs/history.md`'s Phase 96 entry. This
+also fully resolved the `isis_wac`↔`lunaserv` cycle Phase 94 left open. Known gaps, all deferred to
+this reorganization's own final notebook-re-execution pass (see the workflow note below), tracked as
+their own bullets in this file's main list above: `notebooks/pose_alignment_spike.py` (2 stale
+`isis_wac.*` references, from task 1) and `notebooks/along_track_correction.py`/
+`real_hapke_params.py`/`crater_sharpness_review.py`/`sfs_validation.py`/`hapke_hillshade.py` (still
+import the old `lunaserv` module, from task 2).
+
+Tasks 3-6 below are intentionally left light, since their exact boundaries depend on decisions made
+while tackling the earlier ones.
 
 **Workflow for the duration of this reorganization (temporary, per the user's 2026-09-05 direction):**
 the usual per-change `scripts/run_notebook.sh` re-execution discipline (`AGENTS.md`'s notebook
@@ -102,8 +115,8 @@ actually done, not before.
 
 | Current | Becomes | Why |
 |---|---|---|
-| `isis_wac.py` | `isis_wac.py` (unchanged) + new `isis_campt.py` | split by concern — see task 1's own doc |
-| `lunaserv.py` | `dem_ortho.py` (orchestration) + new `dem_gld100.py`, `ortho_wac_emp.py`, `lunaserv_wms.py`, `hapke.py`, `geo_utils.py` | file is named for the one data source (Lunaserv WMS) that's now the deprecated fallback, not the live GLD100/WAC_EMP path it mostly contains |
+| `isis_wac.py` **(done)** | `isis_wac.py` (unchanged) + new `isis_campt.py` | split by concern — see task 1's own doc |
+| `lunaserv.py` **(done)** | `dem_ortho.py` (orchestration) + new `dem_gld100.py`, `ortho_wac_emp.py`, `lunaserv_wms.py`, `hapke.py`, `geo_utils.py` | file is named for the one data source (Lunaserv WMS) that's now the deprecated fallback, not the live GLD100/WAC_EMP path it mostly contains |
 | `wac.py` | deleted; `SAMPLES`/`VIS_BLOCK_HEIGHT` move to new `wac_format.py` | `fetch_vis_mosaic` and its CDR-byte-layout constants (`PDS3_HEADER_BYTES`/`FRAME_BYTES`/`VIS_BLOCK_OFFSET`/`MISSING_CONSTANT`/`LINES_PER_FRAME`) are dead — superseded by `isis_wac.py`, only self-referenced. `SAMPLES`/`VIS_BLOCK_HEIGHT` are real WAC-VIS sensor-geometry constants `isis_wac.py`/`wac_camera_model.py`/`tie_points.py` still import for real code, not just comments — they need the tiny dependency-free home below, not to go down with the rest of the file |
 | `dataset.py` | `candidate_window.py` | matches its own `images_for_window()`; frees the word "dataset" from a name collision with `trn_dataset.py` |
 | `dataset_selection.py` | `dataset_selection.py` (unchanged) | names the purpose (which datasets to select), not the technical approach (orbit-level) — keep it |
@@ -118,16 +131,6 @@ gone entirely rather than just renamed); any notebook. `notebooks/wac_isis.py` h
 word-order mismatch against `isis_wac.py` that motivated some of the source renames above, but a
 notebook rename is a jupytext-pair regeneration plus a README table edit for cosmetic gain only —
 not worth doing as part of this reorganization.
-
-### Task 2: split `lunaserv.py` by data source
-
-1830 lines mixing GLD100 DEM fetch, WAC_EMP ortho fetch, the deprecated Lunaserv WMS fallback, ~650
-lines of self-contained Hapke photometry math (no fetch/network code, independently exercised by
-`hapke_hillshade.ipynb`/`real_hapke_params.ipynb`/`sfs_validation.ipynb`), and generic CRS/bbox math
-that isn't data-source-specific at all. Split along the "target naming" table above; `geo_utils.py`
-in particular should end up dependency-free (no `trntest.*` imports beyond `config`), since
-`isis_wac.py` needs to import it directly to finish resolving the `isis_wac`↔`lunaserv` cycle noted
-in task 1's doc. Every one of the six resulting files should land comfortably under 1000 lines.
 
 ### Task 3: `wac.py` deletion + rename cleanup
 

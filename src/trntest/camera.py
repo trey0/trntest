@@ -84,7 +84,7 @@ class Camera:
     camera_along_track_direction_moon_me: list  # unit vector, MOON_ME frame, not a velocity -- the
     # sensor's own along-track (py) axis, pre-twist X per the sensor-model axis convention comment
     # near this module's top (cross-track/px is the *other* pre-twist axis, cross(z, x), not this).
-    # Used by `lunaserv._terrain_photometric_angles`'s `along_track_correction`; tracks per-pixel
+    # Used by `hapke._terrain_photometric_angles`'s `along_track_correction`; tracks per-pixel
     # phase against ISIS `campt` ground truth far better than the spacecraft's raw orbital velocity
     # direction did (an earlier version of this field).
     r_cam_to_me: list

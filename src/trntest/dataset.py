@@ -1,7 +1,7 @@
 """Catalog-driven WAC dataset selection and generation: `images_for_window()` queries the LROC
 catalog for EDR candidates in a given time window and returns a throttled, illumination-filtered
 image list; `generate_dataset()` takes that list and generates synthetic images for it, reusing the
-existing single-image pipeline (`camera.build_camera`, `lunaserv.fetch_dem_and_ortho`,
+existing single-image pipeline (`camera.build_camera`, `dem_ortho.fetch_dem_and_ortho`,
 `render.run_sat_sim`), parameterized per image.
 
 The window itself is picked elsewhere: `dataset_selection.py`'s orbit-level pipeline
@@ -16,10 +16,10 @@ from pathlib import Path
 import pandas as pd
 import spiceypy as spice
 
-from trntest import cache, camera, catalog, illumination, lunaserv, render, tie_points
+from trntest import cache, camera, catalog, dem_ortho, illumination, render, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import DemOrthoResult
+from trntest.dem_ortho import DemOrthoResult
 from trntest.render import RenderResult
 
 DATASET_COLUMNS = [
@@ -416,10 +416,10 @@ def generate_dataset(
     # aborts the whole batch.
     #
     # The only other exception caught (and skipped) here is `ValueError` from
-    # `lunaserv.astropedia_coverage_bbox_deg`'s coverage check: a candidate whose padded AOI falls
+    # `dem_gld100.astropedia_coverage_bbox_deg`'s coverage check: a candidate whose padded AOI falls
     # outside Astropedia's GLD100 flat file's +-79-ish deg latitude coverage. Checked deliberately
     # narrow, same reasoning as `_evaluate_illuminated_candidates` above: this pipeline's other
-    # assert-guarded invariants (`lunaserv.py`'s `assert center is not None`) are defensive checks on
+    # assert-guarded invariants (`dem_ortho.py`'s `assert center is not None`) are defensive checks on
     # state `build_camera` should already guarantee, not conditions expected to trip for a candidate,
     # and its ISIS `campt` calls (`tie_points.crop_footprint_corners_for_camera` ->
     # `isis_campt.ground_point_at_pixel`) use `check=True` specifically because no failure is expected
@@ -442,7 +442,7 @@ def generate_dataset(
             built_camera = camera.build_camera(per_image_config)
             frame_timing = camera.fetch_frame_timing(per_image_config)
             crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, built_camera, per_image_config)
-            dem_ortho_result = lunaserv.fetch_dem_and_ortho(
+            dem_ortho_result = dem_ortho.fetch_dem_and_ortho(
                 built_camera, per_image_config, extra_footprint_lonlat_deg=crop_footprint
             )
             render_result = render.run_sat_sim(built_camera, dem_ortho_result, per_image_config)

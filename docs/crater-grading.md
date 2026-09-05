@@ -18,7 +18,7 @@ it's already validated in the literature, not derived from scratch.
   percentile — necessary there since degree-pixels don't all cover the same real ground area.
 - `src/trntest/crater_depth.py` adapts this against this project's own Robbins ellipse
   polygons (`craters._ellipse_polygon`) and local, **isotropic-meters** DEM
-  (`lunaserv.fetch_dem_and_ortho`) instead: every "inside" pixel already covers the same real area
+  (`dem_ortho.fetch_dem_and_ortho`) instead: every "inside" pixel already covers the same real area
   on this grid, so the original's area-weighting machinery is dropped entirely (a provable no-op
   here, not an approximation), and `rasterio.features.geometry_mask` on a `pixel_size_m *
   sqrt(2) / 2`-buffered *real* ellipse polygon stands in for the original's manual per-pixel
@@ -50,7 +50,7 @@ Not a genuinely global (pole-to-pole) alternative — two real candidates were f
   real follow-up if either global source is picked up later.
 - **Decision (2026-08-23)**: stay on GLD100, and have `crater_depths_for_footprint` store a
   `None` depth (kept as a row, not dropped) for any crater whose own extent could reach past
-  `lunaserv.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` (79.0), rather than adopt either global source now.
+  `dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG` (79.0), rather than adopt either global source now.
   A real, separate future step (precomputing depth for the whole non-polar Robbins database
   without any new DEM fetch) remains open, not blocked by this — GLD100 is already a single flat
   file cached locally once. If it's picked up: both candidate files share GLD100's own row-strip
@@ -76,11 +76,11 @@ nicety**: a crater ellipse built directly in GLD100's raw global Equidistant Cyl
 compressed east-west by `cos(latitude)` — measured ~0.87x/0.71x/0.50x/**0.20x** true extent at
 30/45/60/78.5 deg latitude, severe enough near GLD100's own ±79 deg edge to badly misplace the
 floor/rim masks. `crater_depth_batch.py` reprojects per tile for exactly this reason (via
-`lunaserv.reproject_astropedia_elevation_to_local_grid`); `crater_depths_for_footprint`'s own
+`dem_gld100.reproject_astropedia_elevation_to_local_grid`); `crater_depths_for_footprint`'s own
 per-camera path is unaffected (always a local Orthographic DEM, genuinely isotropic near its own
 center regardless of latitude).
 
-**A real correctness bug caught while building this**: `lunaserv._reproject_raster_to_local_grid`'s
+**A real correctness bug caught while building this**: `geo_utils.reproject_raster_to_local_grid`'s
 raw output has no `nodata` tag set, even though real gaps are filled with literal `NaN` — invisible
 in the per-camera pipeline because `fetch_dem` always runs the reprojected DEM through
 `hole_fill_dem` first, which also sets the `nodata` tag; the batch tiler initially skipped that step

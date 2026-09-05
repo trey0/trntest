@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from trntest import isis_wac, lunaserv, product_registry, render
+from trntest import dem_ortho, isis_wac, product_registry, render
 
 # -- atomic_publish / atomic_publish_path -----------------------------------------------------------
 
@@ -227,8 +227,8 @@ def test_real_pipeline_writers_are_registered():
     # docs/history.md's Phase 79 entry: the real writer functions decorated so far are
     # legibly registered under their own label -- importing the modules is enough to trigger
     # registration (decorators run at module-import/definition time).
-    assert product_registry.writer_of("dem_filled") is lunaserv.fetch_dem
-    assert product_registry.writer_of("ortho_shaded") is lunaserv.fetch_and_shade_ortho
+    assert product_registry.writer_of("dem_filled") is dem_ortho.fetch_dem
+    assert product_registry.writer_of("ortho_shaded") is dem_ortho.fetch_and_shade_ortho
     assert product_registry.writer_of("isis_stitched_cube") is isis_wac.run_framestitch
     assert product_registry.writer_of("isis_crop_cube") is isis_wac.crop_for_camera
     assert product_registry.writer_of("crop_cam2map") is isis_wac.run_cam2map_for_crop

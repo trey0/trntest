@@ -12,7 +12,7 @@ generated and validated together by `notebooks/image_generation.py`.
 | [`reproject`](generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `cam2map` reproject, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
 
 Each generator's doc has the full data-source/processing detail. `README.md`'s Source files
-table covers the underlying modules (`lunaserv.py`, `render.py`, `isis_wac.py`, `trn_dataset.py`).
+table covers the underlying modules (`dem_ortho.py`/`hapke.py`, `render.py`, `isis_wac.py`, `trn_dataset.py`).
 
 See [`resolution-investigation.md`](resolution-investigation.md) for why `crop` used to visibly
 outresolve `hillshade`/`reproject` — largely `sat_sim`'s fixed render size, not a data-source limit —

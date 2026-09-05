@@ -43,10 +43,10 @@ from huey.api import Result, TaskWrapper
 from huey.exceptions import TaskException
 
 from trntest import camera as camera_module
-from trntest import dataset, isis_campt, isis_wac, lunaserv, orientation, plotting, render, tasks, tie_points
+from trntest import dataset, dem_ortho, hapke, isis_campt, isis_wac, orientation, plotting, render, tasks, tie_points
 from trntest.camera import Camera, FrameTiming
 from trntest.config import TrntestConfig, load_config
-from trntest.lunaserv import DemOrthoResult
+from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
 PRODUCT_TYPES = ("crop", "hillshade", "report")  # "reproject" is implemented
@@ -110,22 +110,22 @@ class TrnTestEntry:
         on disk if present, else fetched fresh from Lunaserv/Astropedia."""
         # The resumability win `dataset.populate()`'s second-run-near-instant behavior depends on,
         # since a fresh fetch is by far the most expensive part of generating either product type.
-        # Looks for `lunaserv.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
+        # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
         # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
         # (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
         # *other*-mode ortho left over from before any default changed (or from a one-off
         # non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho`
         # below picks up the same defaults itself.
-        ortho_path = self.per_image_config.output_dir / lunaserv.ortho_shaded_filename(
-            lunaserv.DEFAULT_HAPKE_SHADING,
-            lunaserv.DEFAULT_ALONG_TRACK_CORRECTION,
-            lunaserv.DEFAULT_REAL_HAPKE_PARAMS,
-            lunaserv.DEFAULT_ORTHO_SOURCE,
+        ortho_path = self.per_image_config.output_dir / dem_ortho.ortho_shaded_filename(
+            hapke.DEFAULT_HAPKE_SHADING,
+            hapke.DEFAULT_ALONG_TRACK_CORRECTION,
+            hapke.DEFAULT_REAL_HAPKE_PARAMS,
+            dem_ortho.DEFAULT_ORTHO_SOURCE,
         )
         dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
         if ortho_path.exists() and dem_path.exists():
-            return lunaserv.result_from_files(ortho_path, dem_path)
-        return lunaserv.fetch_dem_and_ortho(
+            return dem_ortho.result_from_files(ortho_path, dem_path)
+        return dem_ortho.fetch_dem_and_ortho(
             self.camera, self.per_image_config, extra_footprint_lonlat_deg=self.crop_footprint
         )
 
@@ -610,7 +610,7 @@ class TrnTestHillshadeImage(TrnTestImage):
     sidecar."""
 
     # The hillshade is baked into the ortho before sat_sim ever runs (see
-    # lunaserv.despeckle_and_shade_ortho), so run_sat_sim's own output already is "hillshade
+    # hapke.despeckle_and_shade_ortho), so run_sat_sim's own output already is "hillshade
     # basemap data reprojected via sat_sim".
 
     @property
@@ -714,7 +714,7 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
         wac_ortho_path = isis_wac.run_cam2map_for_crop(
             self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
         )
-        return lunaserv.result_from_files(wac_ortho_path, self.entry.dem_ortho_result.dem)
+        return dem_ortho.result_from_files(wac_ortho_path, self.entry.dem_ortho_result.dem)
 
     def _generate_impl(self) -> None:
         render_result = render.run_sat_sim(self.entry.camera, self._reproject_dem_ortho, self.entry.per_image_config)
