@@ -81,7 +81,7 @@ tag/project name at agent-specific ones. Re-run it any time; it's idempotent. In
 active worktree agent runs its own `docker compose up` Jupyter Lab server (so the user can watch
 that agent's `scripts/run_notebook.sh` runs live) rather than the main checkout — no agent works
 directly in the main checkout, and the user doesn't run a persistent server there either, so it's
-normal for these per-worktree servers to be the only ones actually running at any given time.
+normal for these per-worktree servers to be the only ones running at any given time.
 
 **Jupyter port assignment is now manual, not automatic — a stale convention still lives in the
 setup script.** The script still writes `TRNTEST_JUPYTER_PORT` into each worktree's own
@@ -177,7 +177,7 @@ automatically.
   shared `trntest_ws/{cache,output,scratch}` root, that's this bug recurring — safe to delete (it's
   a duplicate of data that already lives correctly at the shared location, not unique data),
   but worth a quick check first that nothing currently running has that specific worktree-local copy
-  actually mounted (`docker inspect <container> --format '{{ range .Mounts }}{{ .Source }} -> {{
+  mounted (`docker inspect <container> --format '{{ range .Mounts }}{{ .Source }} -> {{
   .Destination }}{{ "\n" }}{{ end }}'`, confirm it points at the shared paths, not the local ones).
 - **Merging your own worktree branch into `origin/main` without a PR is normal here — but only
   when the user asks for it in that turn, and only your own branch.** This is a small team of
@@ -214,8 +214,9 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
   it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
   independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
   API, Lunaserv) at the same time; the combined rate can still trip a server-side limiter (see
-  the Phase 36 incident `cache.py` itself documents). Messaging first gives everyone a chance to
-  stagger or postpone, which a message sent only after starting can't do.
+  [`docs/caching.md`](caching.md)'s "Retry/backoff/pacing policy" section for the incident that
+  motivated this pacing in the first place). Messaging first gives everyone a chance to stagger or
+  postpone, which a message sent only after starting can't do.
 - **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
   two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
   about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),

@@ -2,9 +2,9 @@
 
 **Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done (18 of 18 files) -- every `docs/history.md` citation is out of `src/trntest/*.py`.**
 The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, and
-both halves are now largely done. One doc (`docs/environment.md`) remains unreviewed and open to
-pick up; one more (`docs/proposed-tasks/report-plan.md`) is blocked on another agent's in-flight
-work — see "Not yet done" below.
+both halves are now largely done. Every doc is reviewed except `docs/proposed-tasks/report-plan.md`,
+blocked on another agent's in-flight work — see "Not yet done" below. This plan is close to ready
+to delete once that lands.
 
 ## Goal
 
@@ -336,27 +336,32 @@ not treated as a violation worth splitting out. No edits made.
   status, which is this doc's designated purpose per `docs/docs-style.md`'s own carve-out for
   material that belongs in an overview/tutorial doc rather than a docstring.
 
-**Docs not yet reworked**:
 - `docs/environment.md` — its content was rewritten separately for the VPS-persistence change (no
-  longer "ephemeral VPS, archive/restore"), but that rewrite wasn't done as a `docs/docs-style.md`
-  pass — still needs one. At 239 lines it's the longest doc in the repo other than `docs/history.md`
-  itself, with a "Multi-agent worktrees" section full of incident narrative ("confirmed live", dated
-  fixes) that may be legitimate given the doc's own operational-gotchas purpose, but hasn't been
-  checked line-by-line against the voice/filler rules the way the `src/trntest/*.py` files were.
+  longer "ephemeral VPS, archive/restore"); this pass checked that rewrite against
+  `docs/docs-style.md`. Cut 2 bare-intensifier `actually` instances (kept the two that were
+  legitimately contrastive: "won't actually reclaim the space" vs. the naive assumption that any
+  `micromamba clean` layer reclaims it, and "actually overlap mid-write" vs. "land sequentially" in
+  the same sentence). No `docs/history.md` citations. Fixed one stale cross-reference: "the Phase 36
+  incident `cache.py` itself documents" no longer resolves — that content moved to
+  `docs/caching.md`'s "Retry/backoff/pacing policy" section during `cache.py`'s own docs-style pass
+  (the Phase citation was cut there too, per this rollout's own "one source of truth" rule) — now
+  points there instead. The "Multi-agent worktrees" section's incident narrative ("confirmed live",
+  dated fixes) was left as is: this doc's purpose is exactly the kind of operational-gotchas record
+  `docs/docs-style.md` says belongs in an overview doc rather than a docstring, not history
+  narrative to be pruned.
+
+**Docs not yet reworked**:
 - `docs/proposed-tasks/report-plan.md` — not reviewed against `docs/docs-style.md` at all yet.
   **Hands off for now (2026-09-05): a separate agent is working this file's "Future work" section —
   don't touch it until that lands**, to avoid a collision on the same file.
 
 ## If resuming
 
-1. `src/trntest/*.py`, `docs/architecture.md`, `README.md`, `docs/reproject-fov-investigation.md`,
-   and `docs/wac-jigsaw-investigation.md` are done; `docs/environment.md` is the only doc left open
-   to pick up solo (per the user's request, two at a time unless one's too big on its own — at 239
-   lines this one's a likely single-doc batch). `docs/proposed-tasks/report-plan.md` is blocked on
-   another agent's in-flight work (see above) — check whether that's landed before touching it.
-   Re-verify any `src/trntest/*.py` docstring change with `trntest-lint` and, if it touches a
-   function a notebook exercises, `scripts/run_notebook.sh` on the relevant notebook before
-   committing. A pure docstring/comment edit with no code-logic change (confirm via `git diff`)
-   doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
-2. Delete this plan once the remaining docs above have had their pass, or fold whatever's left into
-   a narrower follow-up.
+1. Every other doc in this rollout is done. `docs/proposed-tasks/report-plan.md` is the only one
+   left, blocked on another agent's in-flight work (see above) — check whether that's landed before
+   touching it. Re-verify any `src/trntest/*.py` docstring change with `trntest-lint` and, if it
+   touches a function a notebook exercises, `scripts/run_notebook.sh` on the relevant notebook
+   before committing. A pure docstring/comment edit with no code-logic change (confirm via `git
+   diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
+2. Delete this plan once `report-plan.md` has had its pass, or fold whatever's left into a narrower
+   follow-up.
