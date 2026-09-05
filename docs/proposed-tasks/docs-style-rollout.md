@@ -1,9 +1,9 @@
 # Docs rework: applying `docs/docs-style.md` across `docs/` and `src/`
 
 **Status: `docs/*.md` mostly done; `src/trntest/*.py` docstrings/comments done (18 of 18 files) -- every `docs/history.md` citation is out of `src/trntest/*.py`.**
-The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, but
-so far the actual editing has gone almost entirely into `docs/*.md`. The in-code half is the bigger
-remaining job.
+The original problem was docstrings, not just standalone docs — `docs/docs-style.md` covers both, and
+both halves are now largely done. Four docs remain unreviewed against the style rules: see "Not yet
+done" below.
 
 ## Goal
 
@@ -26,8 +26,9 @@ truth per fact, thin index files, sensible file naming.
   already-reworked `data-sources.md` content.
 - `docs/external-tools.md`, `docs/crater-grading.md`, `docs/image-pipeline.md`,
   `docs/dataset-selection.md` — new, assembled from the same already-reworked material.
-- `docs/proposed-tasks/` convention established (this doc lives under it); `report-plan.md` and
-  `corrected-overlay-cam2map-plan.md` moved there.
+- `docs/proposed-tasks/` convention established (this doc lives under it); `report-plan.md` moved
+  there (`corrected-overlay-cam2map-plan.md`, moved there at the same time, has since been resolved
+  and deleted independently of this rollout).
 - `docs/batch-generation.md` — full brevity/voice pass (`docs/history.md` refs removed; the
   "mixing product types" narrative condensed from a 3-phase investigation trail down to the current
   task-granularity model and why the race it describes is now structurally impossible).
@@ -299,22 +300,50 @@ implementation commentary" issue `trn_dataset.py` round 2 fixed (see its Complet
 another file, the fix is the same: evict any "-- because/since/matching X" rationale clause from
 the docstring to a body/class comment, even a short one — not just long history paragraphs.
 
+**`docs/architecture.md` — now done**, via a separate rename+dedupe pass (`docs/plan.md` →
+`docs/architecture.md`, commit `665d15c`) that happened to satisfy this rollout's original
+index-pattern ask: 620 lines down to ~103, already a thin index (one table row per module, no
+rationale). Spot-checked against `docs/docs-style.md` here: every `real`/`actual` occurrence is a
+legitimate real-vs-synthetic contrast (this project's established convention), its one
+`docs/history.md` reference is the explicitly-allowed "if you're curious" pointer, and the Architecture
+table rows are one sentence each except `trn_dataset.py`'s (three sentences, covering four product
+types) — long for an index row, but the module itself is the dataset's central orchestration point;
+not treated as a violation worth splitting out. No edits made.
+
+- `README.md` — no `docs/history.md` citations to begin with. Cut 3 bare-intensifier
+  `real`/`actual`/`actually` instances (kept the ones contrasting real SPICE/NAIF data/tests against
+  the deterministic default test run — this project's established convention); the rest were plain
+  filler. Also fixed one "one source of truth" duplication: "Viewing the rendered demo" restated the
+  `.py`-is-source-of-truth fact the intro section already establishes — trimmed to just the new
+  information (ruff/mypy-checked, diffable, `.ipynb` diff noisy) instead of repeating the claim. Split
+  one sentence carrying two em-dash asides (the `docker-compose.yml` mounts paragraph) into two. No
+  code/behavior described changed.
+- `docs/reproject-fov-investigation.md` — no `docs/history.md` citations to begin with. Cut 3
+  bare-intensifier `actual`/`genuine`/`actually` instances (kept one legitimately-contrastive
+  `actual corner`, explicitly contrasted against "just the along-track edge midpoint" in the same
+  sentence). Otherwise already close to the target voice — investigation docs like this one are the
+  designated place for the diagnostic-trail content `docs/docs-style.md` says to evict from
+  docstrings, so the narrative itself stayed; this pass only touched filler wording, not content or
+  the "Still open"/status claims.
+
 **Docs not yet reworked**:
-- `docs/architecture.md` (~620 lines) — flagged in conversation as its own future index-pattern candidate,
-  not started. Cross-references into it were kept accurate, but its prose/length weren't addressed.
-- `docs/environment.md` — its "ephemeral VPS, archive/restore" framing is confirmed stale (the VPS
-  data store now persists across sessions); a full rewrite is owed, deferred so far.
-- `README.md`, `docs/reproject-fov-investigation.md`, `docs/wac-jigsaw-investigation.md`,
-  `docs/proposed-tasks/report-plan.md`, `docs/proposed-tasks/corrected-overlay-cam2map-plan.md` —
-  not reviewed against `docs/docs-style.md` at all yet (the two investigation docs only got
-  mechanical link fixes).
+- `docs/environment.md` — its content was rewritten separately for the VPS-persistence change (no
+  longer "ephemeral VPS, archive/restore"), but that rewrite wasn't done as a `docs/docs-style.md`
+  pass — still needs one. At 239 lines it's the longest doc in the repo other than `docs/history.md`
+  itself, with a "Multi-agent worktrees" section full of incident narrative ("confirmed live", dated
+  fixes) that may be legitimate given the doc's own operational-gotchas purpose, but hasn't been
+  checked line-by-line against the voice/filler rules the way the `src/trntest/*.py` files were.
+- `docs/wac-jigsaw-investigation.md`, `docs/proposed-tasks/report-plan.md` — not reviewed against
+  `docs/docs-style.md` at all yet.
 
 ## If resuming
 
-1. `src/trntest/*.py` is done; work through the "Docs not yet reworked" list one doc at a time.
-   Re-verify any `src/trntest/*.py` docstring change with `trntest-lint` and, if it touches a
-   function a notebook exercises, `scripts/run_notebook.sh` on the relevant notebook before
-   committing. A pure docstring/comment edit with no code-logic change (confirm via `git diff`)
-   doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
+1. `src/trntest/*.py`, `docs/architecture.md`, `README.md`, and `docs/reproject-fov-investigation.md`
+   are done; work through the remaining "Docs not yet reworked" list one doc at a time (per the
+   user's request, two at a time unless one's too big on its own — `docs/environment.md` at 239
+   lines is a likely single-doc batch). Re-verify any `src/trntest/*.py` docstring change with
+   `trntest-lint` and, if it touches a function a notebook exercises, `scripts/run_notebook.sh` on
+   the relevant notebook before committing. A pure docstring/comment edit with no code-logic change
+   (confirm via `git diff`) doesn't need a notebook re-run — `lunaserv.py`'s pass didn't need one.
 2. Delete this plan once the remaining docs above have had their pass, or fold whatever's left into
    a narrower follow-up.

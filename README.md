@@ -43,9 +43,9 @@ docker compose run --rm demo sat_sim --help
 docker compose run --rm demo gdalinfo --version
 ```
 
-`docker-compose.yml` mounts the repo at `/workspace`, and mounts `cache/`/`output/` (which live
-*outside* this repo — see Configuration below) at `/workspace/cache`/`/workspace/output` — fetched
-WMS tiles and SPICE kernels persist there across container rebuilds (see `docs/caching.md`).
+`docker-compose.yml` mounts the repo at `/workspace`, and mounts `cache/`/`output/` at
+`/workspace/cache`/`/workspace/output` (these live *outside* this repo — see Configuration below).
+Fetched WMS tiles and SPICE kernels persist there across container rebuilds (see `docs/caching.md`).
 
 ## Development setup
 
@@ -140,20 +140,19 @@ natively in GitHub's file browser (markdown, code, and outputs, including images
 click the file in the repo. No separate publishing step, HTML build, or GitHub Pages setup.
 
 `notebooks/image_generation.py` (jupytext percent format, paired with its own `.ipynb` via inline
-metadata) is the actual source of truth: it's what you edit, what gets `ruff`/`mypy`-checked, and
-what stays diffable — the `.ipynb`'s own diff will always be noisy since it carries outputs, which
-is expected. After editing the notebook, regenerate and re-execute its `.ipynb` before committing:
+metadata) is what you edit, what gets `ruff`/`mypy`-checked, and what stays diffable — the
+`.ipynb`'s own diff will always be noisy since it carries outputs. After editing the notebook,
+regenerate and re-execute its `.ipynb` before committing:
 
 ```sh
 scripts/run_notebook.sh notebooks/image_generation.py
 ```
 
 The pre-commit hook checks that the `.py`/`.ipynb` pair is staged together, that their code/
-markdown content actually matches, and that the `.ipynb`'s `execution_count`s look like a single
-clean top-to-bottom run (the shape this script produces) — but it can't cheaply verify that the
-outputs are *fresh* relative to the code (that needs a real re-execution, which is slow: SPICE/WMS/
-`sat_sim` calls). Always run the script above after a code change rather than relying on the hook
-alone.
+markdown content matches, and that the `.ipynb`'s `execution_count`s look like a single clean
+top-to-bottom run (the shape this script produces) — but it can't cheaply verify that the outputs
+are *fresh* relative to the code (that needs re-execution, which is slow: SPICE/WMS/`sat_sim`
+calls). Always run the script above after a code change rather than relying on the hook alone.
 
 ## About this project
 
