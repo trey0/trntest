@@ -14,6 +14,7 @@ up front; this is the complete list.
 | [`image-pipeline.md`](image-pipeline.md) | Architecture detail: how the synthetic camera is posed and the crop sized to match a real WAC swath. |
 | [`dataset-selection.md`](dataset-selection.md) | Architecture detail: maneuver detection and orbit-search/candidate-filtering for TRN-OD dataset selection. |
 | [`crater-grading.md`](crater-grading.md) | Crater depth measurement (Breton et al. 2019) and its batch precompute — the input to crater sharpness grading. |
+| [`report-generation.md`](report-generation.md) | Per-entry HTML reports plus the dataset-wide site (nav bar, overview map, overview table) — mechanism, on-disk layout, and why the nav bar can't be viewed through JupyterLab. |
 | [`reproject-fov-investigation.md`](reproject-fov-investigation.md) | Investigation (resolved, merged) behind the `reproject` generator and a synthetic-camera FOV bug fix. |
 | [`resolution-investigation.md`](resolution-investigation.md) | Investigation (resolved) into why `crop` used to visibly outresolve `hillshade`/`reproject`, and the fix. |
 | [`pose-alignment.md`](pose-alignment.md) | Investigation behind the hand-rolled WAC-VIS camera-pose-alignment fallback, and why ISIS `jigsaw` can't be used for this camera. |

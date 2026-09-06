@@ -1,7 +1,6 @@
 """Dataset-wide overview map: a ground-track-style plot of every entry in a `TrnTestDataSet` on a
-global lunar backdrop, for `docs/proposed-tasks/report-plan.md`'s planned overview-map page. Wired
-into `TrnTestDataSet.write_index()` (pass `write_overview_map=False` there to skip it); not yet
-linked from any nav bar (still one of that plan's open "Future work" items).
+global lunar backdrop. Wired into `TrnTestDataSet.write_index()` (pass `write_overview_map=False`
+there to skip it) and linked from the nav bar's "Map" link (`report.write_index_html`).
 """
 
 from datetime import datetime
@@ -21,10 +20,10 @@ GLOBAL_BACKDROP_LAYER = "luna_wac_global"  # see docs/data-sources/lunaserv-wms.
 # geographic backdrop, not for measurement.
 GLOBAL_BACKDROP_WIDTH_PX = 1440  # 0.25 deg/px -- plenty for a partial-opacity full-globe backdrop,
 GLOBAL_BACKDROP_HEIGHT_PX = 720  # small/fast to fetch (one-time, then cached like any other tile).
-BACKDROP_ALPHA = 0.4  # report-plan.md's original "~20% opacity" read too faint in practice
-SHADOW_GRAY_LEVEL = 0.8  # report-plan.md's "~80% white (light grey) where in shadow" -- a grayscale
-# value (0.8 -> 80% of full white), not an alpha; the day/night layer itself is fully opaque, it's
-# the backdrop drawn on top of it that's at BACKDROP_ALPHA.
+BACKDROP_ALPHA = 0.4  # raised from an initial 0.2, which read too faint in practice
+SHADOW_GRAY_LEVEL = 0.8  # "~80% white" (light grey) where in shadow -- a grayscale value (0.8 ->
+# 80% of full white), not an alpha; the day/night layer itself is fully opaque, it's the backdrop
+# drawn on top of it that's at BACKDROP_ALPHA.
 
 
 def dataset_midpoint_datetime(dataset: TrnTestDataSet) -> datetime:

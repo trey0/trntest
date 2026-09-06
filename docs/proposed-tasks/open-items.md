@@ -71,7 +71,18 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   limit (`WAC_EMP_MAX_ABS_LATITUDE_DEG`), not another instance of it. The zero-width pattern (always
   `0 x <height>`, never a zero height) suggests a degenerate AOI/bbox computation somewhere in the
   DEM/ortho fetch or mapproject step specific to this dataset's orbit geometry, not yet root-caused.
-  Found incidentally while reproducing a report-viewing issue (`docs/proposed-tasks/report-plan.md`'s
-  "Viewing reports in JupyterLab" section) — not investigated further since it's orthogonal to that
-  task; `output/orbit_sequence_dataset` (this worktree's copy) still has the failed task state on
-  disk if a future session wants to reproduce without re-running the ~1-2 min orbit-selection step.
+  Found incidentally while reproducing a report-viewing issue (see `docs/report-generation.md`'s
+  "Viewing reports" section for that, unrelated, now-fixed issue) — not investigated further since
+  it's orthogonal to that task; `output/orbit_sequence_dataset` (this worktree's copy) still has the
+  failed task state on disk if a future session wants to reproduce without re-running the ~1-2 min
+  orbit-selection step.
+- **Richer report problem flags**: `report.problem_flags` is deliberately narrow today (just low sun
+  elevation, from manifest fields alone). Three real checks are still missing, each blocked on the
+  same thing — a cheap-enough way to compute them (a persisted value or a lightweight query, not a
+  fresh SPICE/camera rebuild or GLD100 fetch per entry per `write_index()` call, which would make
+  `problem_flags` no longer cheap/pure-Python): crater-sharpness grading (`crater_depth.py`), a real
+  tie-point pixel residual (not computed anywhere today — `tie_points.py` only produces ground-truth
+  pixel *locations* for overlay plotting, no image-based comparison), and a footprint-geometry
+  outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
+  own FOV polygons already pay this same cost, but for a different, on-demand, presentation-only
+  purpose, see `docs/report-generation.md`'s "Overview map" section).

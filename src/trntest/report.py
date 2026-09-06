@@ -120,8 +120,8 @@ def generate_report(dataset_folder: str, entry_index: int, report_dir: Path) -> 
     report_ipynb = report_dir / "report.ipynb"
     # product_id is looked up here (cheap -- just a manifest row, no SPICE) rather than in the
     # template itself, so the page's own title can be filled in via plain `{{ }}` substitution like
-    # every other static value, instead of a Python call the "no explanatory markdown beyond a
-    # one-line title" convention (report-plan.md) would otherwise rule out.
+    # every other static value, instead of a Python call the template's own "no explanatory markdown
+    # beyond a one-line title" convention would otherwise rule out.
     dataset = TrnTestDataSet.open(dataset_folder, load_config())
     params = {
         "dataset_folder": dataset_folder,
@@ -229,13 +229,15 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
     `write_index_html` call refreshes both files. See `TrnTestDataSet.write_index`.
 
     A single document with a nav `<div>` (CSS flexbox, `flex: 0 0 auto`) above one content `<iframe>`
-    (`flex: 1 1 auto`), not a `<frameset>` split into separate nav/content pages -- avoids any
-    cross-frame scripting between sibling frames (which Jupyter's own CSP `sandbox` header, applied
-    per file served via `/files/...`, would give distinct opaque origins and block): the nav bar's
-    script only ever sets its *own* child iframe's `src` attribute, a same-document DOM operation,
-    never reads or reaches into the iframe's own `window`/`document`. (This page cannot actually be
-    *viewed* through Jupyter at all regardless, for a different, more fundamental reason -- see
-    `docs/proposed-tasks/report-plan.md`'s "Nav bar" section and `scripts/serve_reports.sh`.)
+    (`flex: 1 1 auto`), not a `<frameset>` split into separate nav/content pages -- purely a styling
+    choice, not a workaround for anything: **this page cannot be viewed through JupyterLab's own
+    server at all**, in either form. Jupyter Server's `AuthenticatedFileHandler` unconditionally
+    gives every file it serves via `/files/...` an opaque origin (`sandbox allow-scripts`, no
+    `allow-same-origin`) plus `frame-ancestors 'self'` -- and an opaque origin can never satisfy
+    `'self'`, so no page Jupyter serves can ever embed another page Jupyter serves in an iframe or
+    frame, regardless of how the embedding document is structured. Use `scripts/serve_reports.sh`
+    (a plain, CSP-free static server) to actually view this page -- see that script's own comment for
+    the full mechanism.
 
     A number box (not a dropdown) is the jump-to-entry control -- a `<select>` with one `<option>`
     per entry doesn't scale to a many-hundred-entry dataset the way a plain "type a number" box does.

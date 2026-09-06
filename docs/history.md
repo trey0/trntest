@@ -5914,3 +5914,40 @@ existing product-id column's own link text (`"{entry.index}: {product_id}"`, bot
 contains `"P1/report.html"`/`"P2/report.html"`, unaffected by the link *text* changing). Regenerated
 `overview_table.html` against the real `trn_dataset` and confirmed both rows now read `0:
 M1327210646CE`/`1: M1327216889CE` as linked text, re-served through `scripts/serve_reports.sh`.
+
+## Phase 114 (2026-09-06) — Closed out `report-plan.md`; wrote a production-run readiness assessment
+
+With all four of `report-plan.md`'s planned pages built and working (Phases 102-113), and its one
+remaining item ("richer problem flags") genuinely blocked rather than just unstarted, this closes
+the plan out per `AGENTS.md`'s own convention for a finished `docs/proposed-tasks/` file: fold
+current-state content into a real reference doc, move any remaining loose end to
+`open-items.md` (the one proposed-tasks file exempt from deletion), then delete the plan.
+
+New `docs/report-generation.md` is the resulting reference doc -- the report/nav-bar/overview-map/
+overview-table design, pruned of the file's accumulated narrative ("first guess (wrong)... corrected
+after the user tried it...") that Phases 102-113's own entries here already preserve verbatim; no
+information was lost by cutting it from the reference doc, since it lives here. "Richer problem
+flags" moved to `open-items.md` as its own bullet, restated as a real, standing question rather than
+a completed-plan's leftover.
+
+Also fixed every citation of `docs/proposed-tasks/report-plan.md` by filename from a file expected to
+persist (exactly the failure mode `AGENTS.md`'s own `proposed-tasks/` section warns about) --
+`src/trntest/report.py`, `overview_map.py`, `scripts/generate_report.sh`, `scripts/serve_reports.sh`,
+`docker/Dockerfile`, `README.md` (three spots), `AGENTS.md`'s own illustrative example, and
+`docs/proposed-tasks/production-run-readiness.md` (written just before this cleanup, already citing
+the soon-to-be-deleted file). Each now either states its own rationale inline or points at
+`docs/report-generation.md`/`scripts/serve_reports.sh`'s own comment instead. One of these citations
+turned out to be quietly wrong, not just soon-to-be-stale: `write_index_html`'s own docstring still
+described the single-document nav bar design as *avoiding* the CSP problem (Phase 109's original,
+since-corrected belief) -- fixed to state the real mechanism (Phase 110's finding) directly, matching
+what `scripts/serve_reports.sh`'s own comment already said correctly.
+
+Prompted directly by the user's own question about production-run readiness -- see
+`docs/proposed-tasks/production-run-readiness.md` (new this session, not a Phase-102-113 file) for
+the actual disk-space math (17GB free vs. an estimated 40-45GB for a full 81-row run),
+the ±60° WAC_EMP latitude-coverage failure rate (24-36 of 81 rows), and the still-open
+`CPLE_AppDefinedError` risk carried over from `open-items.md`.
+
+**Verification**: `trntest-lint` clean after the docstring/comment edits. Grepped the whole repo
+(`*.md` and `*.py`) for remaining `report-plan` references before deleting the file, to confirm none
+were missed.

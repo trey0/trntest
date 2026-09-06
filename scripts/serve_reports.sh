@@ -9,10 +9,10 @@
 # impossible for any page Jupyter serves to embed another page Jupyter serves in an iframe/frame --
 # an opaque origin can never satisfy 'self'. That's what reports/index.html's nav bar (a fixed nav
 # strip over a content <iframe>) needs to do, so it can never work through JupyterLab's own server,
-# no matter what CSP/CORS config is changed there -- see docs/proposed-tasks/report-plan.md's "Nav
-# bar" section for the full story (including the earlier, different report-link 403 this is NOT the
-# same issue as -- that one really was fixable server-side, via allow_origin). Python's http.server
-# sets no CSP at all, so this sidesteps the problem entirely rather than working around it.
+# no matter what CSP/CORS config is changed there (this is NOT the same issue as the earlier
+# report-link 403 that --ServerApp.allow_origin='*' fixed -- that one really was fixable
+# server-side; this one isn't). Python's http.server sets no CSP at all, so this sidesteps the
+# problem entirely rather than working around it.
 #
 # Usage: scripts/serve_reports.sh [port] [dataset_folder]
 #   port           defaults to 8899 -- this repo's usual multi-agent caveat applies (see

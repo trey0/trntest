@@ -23,21 +23,14 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 
 **Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
 `notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
-`populate_via_workers()`; its content is a title (dataset name, entry index, entry id), a one-line
-summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle and
-full-resolution zoom blink against the basemap. `TrnTestDataSet.write_index()` (also called by
-`populate()`/`populate_via_workers()` by default) writes the full site's remaining pages: a
-dataset-wide overview map (`src/trntest/overview_map.py`) with each entry's real FOV footprint — a
-real per-entry SPICE cost, so pass `write_overview_map=False` when incrementally populating a large
-dataset (see `docs/batch-generation.md`) — an overview table (`reports/overview_table.html`), and a
-persistent nav bar (`reports/index.html`) tying the map/table/per-entry reports together via a
-content iframe, a jump-to-entry dropdown, and prev/next buttons. **The nav bar cannot be viewed
-through JupyterLab's own server at all** — Jupyter Server deliberately gives every file it serves an
-opaque origin (`AuthenticatedFileHandler`'s CSP), which blocks any Jupyter-served page from embedding
-another one via `frame-ancestors`; use `scripts/serve_reports.sh` (a plain, CSP-free static server on
-its own port) instead — see `docs/proposed-tasks/report-plan.md`'s "Nav bar" section for the full
-story and known first-pass limitations. A real population run across a full selected dataset hasn't
-happened yet, so there's no dataset-scale validation.
+`populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by default)
+writes the rest of a four-page report site — an overview map, an overview table, and a persistent
+nav bar tying them together with the per-entry reports. See `docs/report-generation.md` for the full
+design, including why **the nav bar cannot be viewed through JupyterLab's own server at all** (a
+real, structural CSP limitation — use `scripts/serve_reports.sh` instead). A real population run
+across a full selected dataset hasn't happened yet — see
+`docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks assessment done
+ahead of attempting one.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -242,14 +235,14 @@ lint's notebook checks).
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | [`ortho_wac_emp.py`][ortho_wac_emp.py] | Live default ortho/texture source: fetches/caches WAC_EMP's own PDS4 archive tile directly (no Lunaserv WMS display stretch) and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
-| [`overview_map.py`][overview_map.py] | Dataset-wide ground-track overview plot (`plot_overview_map`/`write_overview_map`) — global backdrop + sub-solar-point day/night mask + each entry's real FOV footprint polygon and index label. Called by `write_index()` (pass `write_overview_map=False` there to skip it); not yet linked from any nav bar. |
+| [`overview_map.py`][overview_map.py] | Dataset-wide ground-track overview plot (`plot_overview_map`/`write_overview_map`) — global backdrop + sub-solar-point day/night mask + each entry's real FOV footprint polygon and index label. Called by `write_index()` (pass `write_overview_map=False` there to skip it); linked from the nav bar's "Map" link — see `docs/report-generation.md`. |
 | [`plotting.py`][plotting.py] | Generic raster-display primitives (`plot_raster`, `read_raster_band`) plus generator-comparison figures: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`) and a quantitative brightness diff (`compute_brightness_matched_diff`). |
 | [`pose_alignment/control_network.py`][pose_alignment/control_network.py] | Converts `tie_point_matching.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`pose_alignment/tie_point_matching.py`][pose_alignment/tie_point_matching.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`pose_alignment/wac_camera_model.py`][pose_alignment/wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content is a title, a sun-geometry summary, and `reproject`'s overlay-toggle/zoom-blink against the basemap. Also writes the dataset-wide `reports/overview_table.html` and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/proposed-tasks/report-plan.md` for what's still short of the full planned site. |
+| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Also writes the dataset-wide `reports/overview_table.html` and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/report-generation.md` for the full design. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |

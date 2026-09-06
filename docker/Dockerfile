@@ -126,10 +126,10 @@ EXPOSE 8888
 # requests (jupyter_server/base/handlers.py's check_referer) -- without a token/password, that
 # check can't use its usual "token-authenticated requests skip this" bypass, so it's strictly
 # enforced on every /files/ request. In particular, a link clicked *inside* an HTML file JupyterLab
-# is already displaying (e.g. a TrnTestReport's reports/index.html linking to a per-entry
-# report.html, see docs/proposed-tasks/report-plan.md) is rendered in a sandboxed srcdoc iframe with
-# no Referer, which otherwise 403s ("Blocking request from unknown origin") on every such
-# click-through. Accepted tradeoff for this loopback-only, SSH-tunnel-only, single-user server (see
+# is already displaying (e.g. a TrnTestReport's per-entry report.html linking to another one) is
+# rendered in a sandboxed srcdoc iframe with no Referer, which otherwise 403s ("Blocking request
+# from unknown origin") on every such click-through. Accepted tradeoff for this loopback-only,
+# SSH-tunnel-only, single-user server (see
 # docker-compose.yml's own port-binding comment) -- a locally-running malicious page could otherwise
 # more easily probe it, but that's not meaningfully worse than the existing no-auth posture.
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=", "--NotebookApp.password=", "--ServerApp.allow_origin=*"]
