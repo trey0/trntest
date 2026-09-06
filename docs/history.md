@@ -5663,3 +5663,48 @@ explicit `strict=False`, and the new title line needed wrapping under the 120-ch
 and visually confirmed the title format, label positions (now clear of both polygons), and darker
 outline color; the antimeridian fix was confirmed separately via the synthetic-footprint trace above,
 not the real image (no real entry crosses the seam yet).
+
+## Phase 108 (2026-09-06) — Wired the overview map into `write_index()`; found and fixed the fallout
+
+`TrnTestDataSet.write_index()` now calls `overview_map.write_overview_map(self, self.config)` by
+default after writing `status.csv`/`reports/index.html`, per explicit user request -- new
+`write_overview_map: bool = True` parameter on `write_index()` itself (mirroring `populate()`'s own
+existing `write_index: bool` escape-hatch pattern) to skip it when needed.
+
+**This broke 19 of the 358 previously-passing tests immediately** -- every `test_trn_dataset.py` test
+that calls `populate()`/`populate_via_workers()`/`write_index()` against a hand-built minimal
+manifest (`_minimal_manifest`, missing `start_time`/`stop_time`/`center_lat_deg`/`center_lon_deg`)
+now hit a `KeyError` inside `overview_map.dataset_midpoint_datetime`, since `write_index()`
+unconditionally tried to render a real overview map for fake data. Fixed with one module-level
+`autouse=True` pytest fixture (`_no_real_overview_map`) rather than a per-test `monkeypatch.setattr`
+call repeated 19 times -- nearly every test in that file populates or writes an index one way or
+another, so a blanket fixture is both less repetitive and harder to forget on a future test than
+remembering the patch individually each time.
+
+**A second, real cost concern found separately, in a `@pytest.mark.heavy` integration test** (outside
+the normal fast `pytest -q` run, so not caught by the fixture above -- it doesn't use
+`_minimal_manifest` at all): `test_wac_camera_model.py`'s
+`test_find_framelet_and_project_round_trips_real_ground_points_through_real_campt` builds a
+`TrnTestDataSet` from the *full* `notebooks/dataset_manifest.csv` (many rows) and calls
+`dataset.populate(limit=1)` -- populating only 1 entry, but (with this session's change)
+`write_index()`'s default would now build a real `Camera` for *every* row in that full manifest just
+to draw the overview map, unrelated cost and failure surface for a test about
+`wac_camera_model`'s ground-to-image accuracy specifically. Fixed by passing `write_index=False`
+there instead (the test never used `write_index()`'s outputs to begin with).
+
+**A related, more general risk documented, not (yet) coded around**: `docs/batch-generation.md`
+already recommended `write_index=False` during a `populate(limit=N)` loop over a large dataset as a
+minor optimization; now it's closer to a correctness-adjacent performance trap -- leaving the new
+default on in such a loop means *every* call rebuilds cameras for the *entire* already-populated
+portion of the dataset just to redraw one map, a real, avoidable, roughly-quadratic-in-total-calls
+cost that didn't exist before this phase. Updated that doc's own `write_index` section to say so
+explicitly, and updated `report-plan.md`'s "Overview map" bullet, the "Report as a product type"
+section (the on-disk layout diagram now lists `overview_map.png` as one of `write_index()`'s
+outputs), and `README.md`'s Status section and `overview_map.py` table row, all of which had
+previously said (correctly, at the time) that the map wasn't wired in.
+
+**Verification**: `trntest-lint` clean, full `pytest` clean (359 passed, 10 deselected -- the fixed
+`heavy` test wasn't re-run live, since it needs real Docker/network and wasn't touched functionally,
+just had one unrelated side effect turned off). Live-verified the actual wiring against the real
+`trn_dataset`: a plain `dataset.write_index()` call regenerated `overview_map.png` in ~5s (2 entries),
+and `dataset.write_index(write_overview_map=False)` correctly left it untouched/absent.

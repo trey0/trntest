@@ -271,7 +271,11 @@ def test_find_framelet_and_project_round_trips_real_ground_points_through_real_c
     images = trntest.read_manifest("notebooks/dataset_manifest.csv")
     session = trntest.Session()
     dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
-    dataset.populate(limit=1)
+    # write_index=False: this test only needs entry 0's crop_result, not status.csv/index.html/the
+    # overview map -- the last of those would otherwise build a real Camera for every row in the
+    # full dataset_manifest.csv (not just the one entry populated here), unrelated cost/failure
+    # surface for a test about wac_camera_model's ground-to-image round-trip accuracy.
+    dataset.populate(limit=1, write_index=False)
     entry = dataset[0]
     cub_path = entry.crop_result.cub_path
 

@@ -39,9 +39,16 @@ there too, making `reproject`'s real state invisible rather than raising anythin
 
 `populate()`/`populate_via_workers()` also take `write_index: bool = True`: after their task-queue
 loop, they write `<dataset_folder>/status.csv` and `<dataset_folder>/reports/index.html` (a nav bar
-across every entry's own report) via `TrnTestDataSet.write_index()` -- cheap, pure Python, safe to
-leave on; pass `write_index=False` to skip it (e.g. in a tight `populate(limit=N)` loop where you'd
-rather refresh it once at the end yourself).
+across every entry's own report) via `TrnTestDataSet.write_index()`. `status.csv`/`index.html`
+themselves are cheap/pure-Python, but `write_index()` also (re)generates
+`<dataset_folder>/reports/overview_map.png` (`overview_map.write_overview_map`) by default, which
+is **not** cheap -- it builds a real `Camera` (a SPICE pose rebuild) for *every* entry in the whole
+dataset, not just ones the triggering call actually populated. In a `populate(limit=N)` loop over a
+large dataset, leaving this on means every single call re-rebuilds cameras for the entire
+already-populated portion just to redraw the map -- real, avoidable, roughly-quadratic-in-total-calls
+cost. Pass `write_index=False` for every call in the loop except (optionally) the last, or
+`dataset.write_index(write_overview_map=False)` calls in between with one plain `write_index()` (map
+included) once at the end.
 
 ## Recommended workflow
 

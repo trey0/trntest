@@ -1,7 +1,7 @@
 """Dataset-wide overview map: a ground-track-style plot of every entry in a `TrnTestDataSet` on a
-global lunar backdrop, for `docs/proposed-tasks/report-plan.md`'s planned overview-map page (one of
-that plan's still-open "Future work" items -- this module is a first pass, not yet wired into
-`TrnTestDataSet.write_index()` or any notebook/nav bar).
+global lunar backdrop, for `docs/proposed-tasks/report-plan.md`'s planned overview-map page. Wired
+into `TrnTestDataSet.write_index()` (pass `write_overview_map=False` there to skip it); not yet
+linked from any nav bar (still one of that plan's open "Future work" items).
 """
 
 from datetime import datetime
@@ -192,8 +192,8 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
 
 def write_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = None) -> Path:
     """Renders `plot_overview_map` and writes it to `<dataset.folder>/reports/overview_map.png` --
-    not yet linked from anywhere (no nav bar/overview table reference it), and not called by
-    `TrnTestDataSet.write_index()`; call directly until those exist.
+    called by `TrnTestDataSet.write_index()` (pass `write_overview_map=False` there to skip it);
+    not yet linked from anywhere (no nav bar/overview table reference it).
 
     :returns: The written file's path.
     """

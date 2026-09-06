@@ -333,19 +333,26 @@ class TrnTestDataSet:
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
 
-    def write_index(self, product_types: tuple[str, ...] = PRODUCT_TYPES) -> None:
+    def write_index(self, product_types: tuple[str, ...] = PRODUCT_TYPES, write_overview_map: bool = True) -> None:
         """Writes `<folder>/status.csv` (`status()` plus a `problems` column, see
-        `report.problem_flags`) and `<folder>/reports/index.html` (a nav bar linking to each
-        entry's own `reports/<edr_product>/report.html`, alongside the same status/problem info) --
-        covers every entry in the dataset, not just ones touched by whatever call (if any)
-        triggered this.
+        `report.problem_flags`), `<folder>/reports/index.html` (a nav bar linking to each entry's
+        own `reports/<edr_product>/report.html`, alongside the same status/problem info), and
+        `<folder>/reports/overview_map.png` (`overview_map.write_overview_map`) -- covers every
+        entry in the dataset, not just ones touched by whatever call (if any) triggered this.
 
-        Cheap and pure Python (no subprocess) -- safe to call on its own to refresh the index
-        without a full `populate()` pass. Like `populate()`/`populate_via_workers()`, not safe to
-        run concurrently with itself against the same dataset folder (writes shared files).
+        `status.csv`/`reports/index.html` are cheap/pure-Python (no subprocess); the overview map is
+        not -- it builds a real `Camera` (a SPICE pose rebuild) for every entry to get its FOV
+        footprint, so this call's cost now scales with dataset size regardless of how many entries
+        were actually just populated. Pass `write_overview_map=False` to skip it (e.g. for a large
+        dataset's repeated incremental `populate(limit=N)` calls, see `docs/batch-generation.md`) and
+        call `overview_map.write_overview_map(self)` directly whenever an up-to-date map is actually
+        needed.
+
+        Like `populate()`/`populate_via_workers()`, not safe to run concurrently with itself against
+        the same dataset folder (writes shared files).
         """
-        from trntest import report  # noqa: PLC0415 -- circular otherwise (report.py imports
-        # TrnTestDataSet/TrnTestEntry from this module)
+        from trntest import overview_map, report  # noqa: PLC0415 -- circular otherwise (both
+        # import TrnTestDataSet/TrnTestEntry from this module)
 
         # mkdir here rather than relying on create() having already run -- some callers (e.g. this
         # project's own tests) construct a TrnTestDataSet directly.
@@ -354,6 +361,8 @@ class TrnTestDataSet:
         status_df["problems"] = ["; ".join(report.problem_flags(entry)) for entry in self]
         status_df.to_csv(self.folder / "status.csv", index=False)
         report.write_index_html(self, status_df)
+        if write_overview_map:
+            overview_map.write_overview_map(self, self.config)
 
     def truncate(
         self,

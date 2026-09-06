@@ -9,8 +9,19 @@ import pytest
 from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import TaskException
 
-from trntest import report, tasks, trn_dataset, trn_products
+from trntest import overview_map, report, tasks, trn_dataset, trn_products
 from trntest.config import TrntestConfig
+
+
+@pytest.fixture(autouse=True)
+def _no_real_overview_map(monkeypatch):
+    """`write_index()` (called by `populate()`/`populate_via_workers()` by default) now also calls
+    `overview_map.write_overview_map`, which builds a real `Camera` (SPICE) per entry and needs
+    manifest columns (`start_time`/`stop_time`/`center_lat_deg`/`center_lon_deg`) this module's own
+    `_minimal_manifest`/hand-built test manifests don't have. Autouse, not a per-test
+    `monkeypatch.setattr` call, since nearly every test in this file populates/writes an index one
+    way or another; still exercises that `write_index()` calls it, just not the real rendering."""
+    monkeypatch.setattr(overview_map, "write_overview_map", lambda dataset, config=None: None)
 
 
 def _minimal_manifest(product_ids: list[str]) -> pd.DataFrame:

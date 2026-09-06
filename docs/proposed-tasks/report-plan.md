@@ -4,11 +4,12 @@
 `populate_via_workers()`.** `notebooks/report_template.py` + `TrnTestReport`
 (`src/trntest/trn_products.py`) + `trntest.report.generate_report` produce one entry's report as
 part of normal dataset population; `TrnTestDataSet.write_index()` writes a dataset-wide
-`status.csv` and `reports/index.html` nav bar. Report content is a title (dataset name, entry index,
-entry id), a one-line summary (orbit, center, sun elevation/azimuth), and `reproject`'s
-overlay-toggle/full-resolution zoom blink against the basemap (`TrnTestReport._generate_impl`
-self-ensures `reproject`). The rest of "Future work" below (nav bar, overview map, richer problem
-flags) is still not started.
+`status.csv`, `reports/index.html` nav bar, and `reports/overview_map.png` (all by default, the last
+one skippable via `write_index(write_overview_map=False)` -- see `docs/batch-generation.md` for why
+that matters at scale). Report content is a title (dataset name, entry index, entry id), a one-line
+summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle/full-resolution zoom
+blink against the basemap (`TrnTestReport._generate_impl` self-ensures `reproject`). The rest of
+"Future work" below (nav bar, richer problem flags) is still not started.
 
 ## Context
 
@@ -99,28 +100,34 @@ crop/hillshade already do. `TrnTestReport._generate_impl` self-ensures its one d
 `product_types` in a particular order, the same pattern `TrnTestReprojectImage` already uses for
 its own dependency on `entry.crop_result`.
 
-The nav bar/status table are a different shape — one file summarizing every entry, not one entry's
-own artifact — so they're a separate step, `TrnTestDataSet.write_index()`, run once (not per
-worker) after `populate()`/`populate_via_workers()`'s task-queue loop, controlled by their own
+The nav bar/status table/overview map are a different shape — one file summarizing every entry, not
+one entry's own artifact — so they're a separate step, `TrnTestDataSet.write_index()`, run once (not
+per worker) after `populate()`/`populate_via_workers()`'s task-queue loop, controlled by their own
 `write_index: bool = True` parameter. It writes `<dataset_folder>/status.csv` (`status()` plus a
-`problems` column from `trntest.report.problem_flags`) and `<dataset_folder>/reports/index.html`
+`problems` column from `trntest.report.problem_flags`), `<dataset_folder>/reports/index.html`
 (a plain-HTML table linking to each entry's own report where it exists — no styling/JS, fine if a
-link is momentarily broken because that entry's report doesn't exist yet).
+link is momentarily broken because that entry's report doesn't exist yet), and
+`<dataset_folder>/reports/overview_map.png` (`overview_map.write_overview_map`, its own
+`write_overview_map: bool = True` parameter — see `docs/batch-generation.md` for why that one in
+particular is worth turning off during incremental population at scale).
 
 `problem_flags(entry)` is deliberately narrow for this pass: cheap, zero-fetch heuristics on
 `entry.row` only (currently just low sun elevation — deep-shadow risk). Its threshold
 (`LOW_SUN_ELEVATION_DEG_THRESHOLD` in `report.py`) is a first guess, not a validated cutoff — tune
 it once a real batch run shows what's actually worth flagging. A footprint-geometry outlier check
 was considered and dropped for now: it would need `entry.camera` (a real SPICE/camera rebuild, not
-persisted anywhere cheap to re-read), which would make `write_index()` re-do that work for every
-entry on every call rather than staying cheap/pure-Python — worth adding once there's a cheap place
-to read footprint size from instead of rebuilding the camera.
+persisted anywhere cheap to re-read), which would make `problem_flags` itself re-do that work for
+every entry on every call rather than staying cheap/pure-Python — worth adding once there's a cheap
+place to read footprint size from instead of rebuilding the camera. (The overview map's own FOV
+polygons already pay this same cost deliberately, for a different, presentation-only purpose — see
+"Overview map" below — but `problem_flags` stays a separate, cheap, pure-manifest check.)
 
 ## On-disk layout
 
 ```
 <dataset_folder>/reports/
   index.html              # TrnTestDataSet.write_index() -- nav bar + status/problems table
+  overview_map.png        # TrnTestDataSet.write_index() -- overview_map.write_overview_map()
   <edr_product>/
     report.py             # notebooks/report_template.py with {{ }} substituted -- kept for provenance
     report.ipynb           # jupytext-synced + papermill-executed -- also kept for debugging
@@ -207,9 +214,10 @@ per-entry detail report (both described above) are actually built so far.
   table).
 - **Overview map**: built, `src/trntest/overview_map.py`
   (`plot_overview_map`/`write_overview_map`, registered in `trntest/__init__.py` alongside
-  `plotting`/`report`) — not yet wired into `TrnTestDataSet.write_index()` or linked from anywhere
-  (no nav bar/overview table reference it yet), call directly (`trntest.overview_map.
-  write_overview_map(dataset)`) until those exist. Background: `luna_wac_global` (Lunaserv, see
+  `plotting`/`report`) — called by `TrnTestDataSet.write_index()` by default (see
+  `docs/batch-generation.md` for the real per-call cost this adds and how to skip it during
+  incremental population), not yet linked from any nav bar/overview table (neither exists yet).
+  Background: `luna_wac_global` (Lunaserv, see
   `docs/data-sources/lunaserv-wms.md` — deprecated for per-camera fetches in favor of `WAC_EMP` on
   image-quality grounds, but that concern doesn't apply to this map's own display), plain geographic
   lon/lat (`config.lunaserv_dem_srs`, reused as-is despite the DEM-flavored name — same fixed CRS),
