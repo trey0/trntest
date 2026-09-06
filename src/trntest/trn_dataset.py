@@ -335,8 +335,10 @@ class TrnTestDataSet:
 
     def write_index(self, product_types: tuple[str, ...] = PRODUCT_TYPES, write_overview_map: bool = True) -> None:
         """Writes `<folder>/status.csv` (`status()` plus a `problems` column, see
-        `report.problem_flags`), `<folder>/reports/index.html` (a nav bar linking to each entry's
-        own `reports/<edr_product>/report.html`, alongside the same status/problem info), and
+        `report.problem_flags`), `<folder>/reports/overview_table.html` (one row per entry, linking
+        to its own `reports/<edr_product>/report.html`, alongside the same status/problem info),
+        `<folder>/reports/index.html` (a persistent nav bar over a content iframe defaulting to the
+        overview table -- see `report.write_index_html`'s own docstring for its design), and
         `<folder>/reports/overview_map.png` (`overview_map.write_overview_map`) -- covers every
         entry in the dataset, not just ones touched by whatever call (if any) triggered this.
 

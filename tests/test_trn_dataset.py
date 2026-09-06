@@ -519,9 +519,13 @@ def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
     assert "P2" in status_csv
     assert "low sun elevation" in status_csv
 
+    overview_table_html = (ds.folder / "reports" / "overview_table.html").read_text()
+    assert "P1/report.html" in overview_table_html
+    assert "P2/report.html" in overview_table_html
+
     index_html = (ds.folder / "reports" / "index.html").read_text()
-    assert "P1/report.html" in index_html
-    assert "P2/report.html" in index_html
+    assert "overview_table.html" in index_html  # the nav bar's content iframe default
+    assert '"P1"' in index_html and '"P2"' in index_html  # the jump-to-entry productIds array
 
 
 def test_populate_write_index_false_skips_status_csv_and_index_html(tmp_path, monkeypatch):

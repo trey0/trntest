@@ -5708,3 +5708,209 @@ previously said (correctly, at the time) that the map wasn't wired in.
 just had one unrelated side effect turned off). Live-verified the actual wiring against the real
 `trn_dataset`: a plain `dataset.write_index()` call regenerated `overview_map.png` in ~5s (2 entries),
 and `dataset.write_index(write_overview_map=False)` correctly left it untouched/absent.
+
+## Phase 109 (2026-09-06) — Nav bar: the last of report-plan.md's four planned pages
+
+Picked up `docs/proposed-tasks/report-plan.md`'s last unstarted structural piece (all three other
+pages -- per-entry report, overview table, overview map -- already existed). The plan's own
+description called for a `<frameset>` split into separate nav/content pages; built something
+different instead, after working through a real blocker the plan hadn't anticipated: Jupyter Server
+applies a `Content-Security-Policy: sandbox allow-scripts` header (confirmed live via `curl -D -`,
+first noticed while fixing the Phase 103 403) to *every* file it serves via `/files/...`, which gives
+each separately-served file its own opaque origin -- a `<frameset>`'s nav and content frames, each
+fetched as their own file, would be unable to script each other (no `allow-same-origin` in that
+header) despite genuinely sharing the same real origin. Worked around by not splitting into separate
+files at all: `report.write_index_html` now writes one single document (`reports/index.html`) with a
+fixed-position nav `<div>` over one content `<iframe>`, so the only "cross-frame" JS operation needed
+is setting that iframe's own `src` attribute -- a same-document DOM write on an element the page
+itself owns, which sandboxing doesn't restrict (unlike reading the iframe's `window`/`document`,
+which the opaque origin would block). Delivers the plan's full feature list regardless: links to the
+overview map/table via plain `<a target="content">` (native HTML frame targeting, no JS needed), a
+compact `<select>` populated with one `{index}: {product_id}` option per entry (`TrnTestEntry.index`
+as the value -- finally puts the "entry identifiers" future-work item to its intended use), and
+prev/next buttons stepping through a `productIds` array baked into the page as JSON at generation
+time.
+
+`write_index_html`'s previous content (the flat status/problems table) moved to a new function,
+`write_overview_table_html`, writing a new file, `reports/overview_table.html` -- `write_index_html`
+now calls it internally so one `write_index()` call still refreshes both. `TrnTestDataSet.
+write_index()`'s own docstring updated to describe the new three-file (`overview_table.html`/
+`index.html`/`overview_map.png`) output instead of the old two-file one.
+
+**One real, documented first-pass limitation, not fixed**: the nav bar's "current entry" (for
+prev/next) lives only in `index.html`'s own in-memory JS, with no way to detect a navigation that
+happens *inside* the content iframe without going through the nav bar's own controls (e.g. clicking
+a link directly in the overview table) -- prev/next can go stale relative to the content frame's
+actual state until the nav bar's own controls are used again. A real fix would need each per-entry
+report page to notify the nav frame of its own index on load, likely via `postMessage` specifically
+(direct property access would hit the same opaque-origin restriction the design above works around) --
+not attempted this session.
+
+**Verification gap, disclosed rather than glossed over**: confirmed via `curl` that `index.html`/
+`overview_table.html`/`overview_map.png` all serve `200` with the expected structure/content
+(regenerated against the real `trn_dataset`, inspected the raw HTML/JS by eye), and reasoned through
+the CSP-sandbox workaround carefully against documented sandboxed-iframe semantics, but this session
+had no way to actually click through the page in a real browser (no browser-automation tool reachable
+against this VPS's own JupyterLab instance) -- the jump-to dropdown, prev/next buttons, and nav
+links are none of them interactively confirmed yet. `trntest-lint` clean, full `pytest` clean (359
+passed) -- `test_trn_dataset.py`'s `test_write_index_writes_status_csv_and_index_html` updated to
+check `overview_table.html` for the per-entry links it used to check `index.html` for, plus new
+assertions that `index.html` itself references `overview_table.html` and both fake product ids.
+`docs/proposed-tasks/report-plan.md`/`README.md` updated throughout to describe the new file split
+and the nav bar's real (not originally-planned) design and known limitations.
+
+## Phase 110 (2026-09-06) — The nav bar can't run through JupyterLab at all: root cause and workaround
+
+Phase 109's own "not yet interactively verified" caveat turned out to be hiding a real, total
+failure. The user tried it (a fresh top-level browser tab on the `/files/...` URL, not JupyterLab's
+own HTML viewer -- ruled that out first) and reported every link and button did nothing. Diagnosed
+without guessing further: asked for the browser's own DevTools console output, which named the
+mechanism directly -- `Content-Security-Policy: ... blocked ... (frame-ancestors) ... "frame-ancestors
+'self'"`. Confirmed the root cause by reading Jupyter Server's own source rather than inferring it:
+`jupyter_server/base/handlers.py`'s `AuthenticatedFileHandler.content_security_policy` unconditionally
+appends `"; sandbox allow-scripts"` (no `allow-same-origin`) to *every* file it serves via
+`/files/...`, with its own comment stating the intent plainly -- "confine any Javascript to a unique
+origin so it can't interact with the Jupyter server." That gives every served HTML page an opaque
+origin; combined with the `frame-ancestors 'self'` every file also carries, an opaque-origin embedder
+can never satisfy `'self'`, so **no page Jupyter serves can ever embed another page Jupyter serves in
+an iframe or frame** -- structurally, not as a bug, and not fixable via any server setting (the
+`sandbox` token is hardcoded onto that one handler, appended even after a `headers` config override,
+so there's no way to opt out). Phase 109's own "single document instead of `<frameset>`" design
+choice, believed at the time to route around exactly this kind of restriction, didn't -- it addressed
+a *different*, plausible-looking half of the problem (that a same-document iframe `.src` write is a
+DOM operation, not a cross-frame read, so opaque origins shouldn't block it) while missing that the
+navigation still gets blocked downstream, at the *embedded* page's own `frame-ancestors` check,
+regardless of how the navigation was initiated. A `<frameset>` would have hit the identical wall, for
+the identical reason -- the two designs were never actually different with respect to this
+restriction.
+
+**Fix**: new `scripts/serve_reports.sh [port] [dataset_folder]`, a plain `python3 -m http.server`
+(via `docker compose run --rm -p 127.0.0.1:<port>:<port> demo ...`, matching JupyterLab's own
+loopback-only port-binding convention) serving one dataset's `reports/` folder on its own port,
+completely separate from JupyterLab's server. Python's built-in server sets no CSP at all, so the
+nav bar's iframe design needs no changes to work there -- confirmed live via `curl` that no
+`Content-Security-Policy` header is present on any response, and that `index.html`/
+`overview_table.html`/`overview_map.png`/a per-entry `report.html` all still serve `200` through it.
+Single-page views (one report, the overview table, the overview map alone -- no nav bar involved)
+still work fine through JupyterLab either way, since they don't embed anything.
+
+Presented this finding to the user as a real three-way tradeoff rather than picking one silently: (1)
+give up on a persistent frame, embed a repeated nav strip directly in every generated page instead
+(touches `report_template.py` too), (2) keep `index.html` as a plain non-framed hub page (loses the
+nav bar while actually viewing a report), or (3) keep the current design as-is and serve it outside
+JupyterLab. Chose (3) -- no code changes to `report.py`'s nav bar implementation from Phase 109 were
+needed, only a new way to serve it.
+
+**Verification**: confirmed via `curl` (headers, status codes) that the new server works and carries
+no CSP; `trntest-lint` clean. Still not confirmed by an actual click-through in a real browser this
+session (still no reachable browser-automation tool -- `list_connected_browsers` returned empty) --
+that remains the user's own next check, now against the new port rather than JupyterLab's.
+Corrected `docs/proposed-tasks/report-plan.md`'s "Nav bar" section, which had stated the (wrong)
+same-document reasoning as settled fact -- now describes the real mechanism and cites the exact
+source location, and both it and `README.md` point at `scripts/serve_reports.sh` as the only way to
+view the nav bar at all.
+
+## Phase 111 (2026-09-06) — Nav bar: fixed a quirks-mode layout bug, redesigned per user feedback
+
+With `scripts/serve_reports.sh` letting the nav bar actually be viewed for the first time, the user
+found three real problems and asked for several style changes.
+
+**Real bug: the overview table appeared to have only one row.** The generated `overview_table.html`
+file itself was already correct (verified directly -- both entries' `<tr>`s present), so this was a
+rendering bug in `index.html`'s own content iframe, not a data bug. Root cause: `index.html` had no
+`<!DOCTYPE html>`, which puts Firefox in quirks mode, where `height: 100%` on `html`/`body` resolves
+unreliably -- combined with `#content` being `position: absolute; top: 32px; bottom: 0`, this could
+starve the iframe down to barely any height, showing only the table's header plus one row with no
+visible scrollbar. Fixed by adding the doctype and switching the whole layout from
+`position: fixed`/`absolute` to CSS flexbox (`body { display: flex; flex-direction: column }`, nav
+bar `flex: 0 0 auto`, content iframe `flex: 1 1 auto`) -- doesn't depend on percentage-height
+resolution at all, more robust regardless of doctype.
+
+**Real bug: the overview map loaded as a tiny thumbnail with a broken click-to-zoom.** The nav bar's
+"Map" link pointed straight at `overview_map.png`; browsers (Firefox in particular) treat a
+navigated-to image as a standalone "image document" with their own built-in shrink-to-fit-plus-click-
+to-zoom viewer, not a normally-flowing embedded image. Fixed by having `overview_map.write_overview_map`
+also write a thin `map.html` wrapper (`<img style="max-width:100%;height:auto">`) alongside the PNG,
+and pointing the nav bar's link at that instead.
+
+**Style/UX changes, all applied directly**: the dataset name is now the first, boldest element in
+the nav bar (previously not shown at all); the jump-to-entry `<select>` (one `<option>` per entry)
+replaced with a plain number `<input>` that doubles as the current-entry display, plus a `Go` button
+and Enter-key shortcut -- doesn't scale to a many-hundred-entry dataset the way a dropdown with one
+option per entry never would have; Prev/Next buttons moved to be adjacent to each other (previously
+split, flanking the dropdown); "Overview map"/"Overview table" link labels shortened to "Map"/
+"Table" (file names unchanged, `map.html`/`overview_table.html`, since only the visible label was
+the actual complaint).
+
+**Verification**: `trntest-lint` clean, full `pytest` clean (359 passed, no test touches the changed
+markup beyond the existing `productIds`/`overview_table.html` substring checks, both still valid).
+Regenerated `index.html`/`overview_table.html`/`map.html`/`overview_map.png` against the real
+`trn_dataset` and re-fetched all four through the already-running `scripts/serve_reports.sh` server,
+confirming byte-for-byte the new markup (doctype, flexbox CSS, dataset name, number box, adjacent
+Prev/Next, shortened labels, `map.html`'s `<img>` wrapper) matches what was written. Still not
+interactively click-tested in a real browser this session -- the quirks-mode/layout diagnosis is a
+strong, well-supported explanation for the reported symptom, not a live-confirmed fix; worth the
+user re-checking the table's row count and the map's display size specifically after this change.
+
+## Phase 112 (2026-09-06) — Nav bar fine points: disabled buttons, cross-frame sync, index wording
+
+Phase 111's fixes worked -- the user confirmed the table/map bugs were gone and moved on to fine
+points: Prev/Next should disable at the ends of the entry range, the entry number box goes stale
+when navigating via a link inside the content iframe (the "known first-pass limitation" flagged but
+not fixed in Phase 109/111), and the "Entry ... of 2" wording reads as inconsistent when entries are
+numbered 0..1.
+
+**Cross-frame sync, implemented via `postMessage`** (the exact mechanism speculated about in
+Phase 109/111 without being built): `generate_report` (`src/trntest/report.py`) now post-processes
+nbconvert's own `report.html` output -- string-replacing `</body>` to inject one `<script>` tag
+that calls `window.parent.postMessage({source: "trntest-report", entryIndex: N}, "*")` on load.
+Deliberately a post-processing step on the exported HTML, not a `report_template.py` notebook cell --
+keeps that template's "every cell is a single call" convention untouched. `index.html`'s own new
+`window.addEventListener('message', ...)` calls the same `updateNavState(i)` function Prev/Next/Go
+already used, so the number box and button disabled-state now stay correct regardless of whether the
+content frame got there via the nav bar's own controls or a link clicked inside it (e.g. the overview
+table's per-entry links). `postMessage` was the deliberate choice because, unlike direct
+`parent.frames[...].document` access, it isn't blocked by the opaque-origin restriction Phase 110
+found -- confirmed by re-reading the generated `report.html` after a real regeneration and seeing the
+injected script with the correct `entryIndex` for that specific entry (1 for `M1327216889CE`, the
+dataset's second row).
+
+**Prev/Next disabling**: `updateNavState` now also sets `document.getElementById('prevBtn').disabled
+= (i <= 0)` and the equivalent `>= productIds.length - 1` check for `nextBtn`. This also simplified
+`step()`'s own null-state handling -- previously "Prev" from a fresh page (`current === null`) wrapped
+to the last entry while "Next" went to entry 0, an asymmetry that no longer made sense once both
+buttons need a real "current" value to compute their own disabled state from; both now just go to
+entry 0 from a fresh page.
+
+**Index wording**: replaced "Entry ... of {n_entries}" with "Entry index ... (max {last_index})".
+The user asked for design input here rather than a specific fix, framed around genuine uncertainty
+("I'm not sure how to think about the 'of 2' part"). Considered switching to 1-based *display*
+numbering (a familiar "page 1 of 2" convention) but rejected it: entries are 0-indexed everywhere
+else already established this session (`TrnTestEntry.index`, per-entry report titles, the
+`productIds` array itself), and displaying a different number in the nav bar than the report page's
+own title would just relocate the confusion rather than remove it. Stating the actual maximum valid
+index instead of a count sidesteps the off-by-one reading entirely, without touching the established
+0-based convention anywhere else.
+
+**Verification**: `trntest-lint` clean (one quote-style nit from `ruff format` on the injected
+script's f-string, fixed), full `pytest` clean (359 passed, no test covers the new `postMessage`
+injection specifically since existing tests all monkeypatch `TrnTestReport._generate_impl` before
+`generate_report` itself ever runs). Regenerated both real `trn_dataset` entries' reports end to end
+(force-triggering the real `generate_report` pipeline, not the faked one) and `index.html`, confirmed
+via `grep` that the injected script and the new nav bar JS (`prevBtn`/`nextBtn`/`updateNavState`/the
+`message` listener) both appear exactly as intended, and re-fetched everything through the running
+`scripts/serve_reports.sh` server to confirm nothing regressed there.
+
+## Phase 113 (2026-09-06) — Overview table: entry index folded into the product-id column
+
+Small follow-up: the overview table (`write_overview_table_html`) only showed each entry's EDR
+product id, not its positional index -- but the nav bar's own jump-to-entry box takes an index, not
+a product id, so there was no way to look one up from the table itself. Folded the index into the
+existing product-id column's own link text (`"{entry.index}: {product_id}"`, both part of the same
+`<a href="...">`) rather than adding a new column, per the user's own suggested placement.
+
+**Verification**: `trntest-lint` clean, full `pytest` clean (359 passed -- the existing
+`test_write_index_writes_status_csv_and_index_html` only checks that the link's `href` still
+contains `"P1/report.html"`/`"P2/report.html"`, unaffected by the link *text* changing). Regenerated
+`overview_table.html` against the real `trn_dataset` and confirmed both rows now read `0:
+M1327210646CE`/`1: M1327216889CE` as linked text, re-served through `scripts/serve_reports.sh`.

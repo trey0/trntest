@@ -26,12 +26,18 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 `populate_via_workers()`; its content is a title (dataset name, entry index, entry id), a one-line
 summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle and
 full-resolution zoom blink against the basemap. `TrnTestDataSet.write_index()` (also called by
-`populate()`/`populate_via_workers()` by default) now also regenerates a dataset-wide overview map
-(`src/trntest/overview_map.py`) with each entry's real FOV footprint — a real per-entry SPICE cost,
-so pass `write_overview_map=False` when incrementally populating a large dataset (see
-`docs/batch-generation.md`). The full site described in `docs/proposed-tasks/report-plan.md`'s
-"Future work" section (a nav bar tying the pages together) isn't built yet. A real population run
-across a full selected dataset hasn't happened yet, so there's no dataset-scale validation.
+`populate()`/`populate_via_workers()` by default) writes the full site's remaining pages: a
+dataset-wide overview map (`src/trntest/overview_map.py`) with each entry's real FOV footprint — a
+real per-entry SPICE cost, so pass `write_overview_map=False` when incrementally populating a large
+dataset (see `docs/batch-generation.md`) — an overview table (`reports/overview_table.html`), and a
+persistent nav bar (`reports/index.html`) tying the map/table/per-entry reports together via a
+content iframe, a jump-to-entry dropdown, and prev/next buttons. **The nav bar cannot be viewed
+through JupyterLab's own server at all** — Jupyter Server deliberately gives every file it serves an
+opaque origin (`AuthenticatedFileHandler`'s CSP), which blocks any Jupyter-served page from embedding
+another one via `frame-ancestors`; use `scripts/serve_reports.sh` (a plain, CSP-free static server on
+its own port) instead — see `docs/proposed-tasks/report-plan.md`'s "Nav bar" section for the full
+story and known first-pass limitations. A real population run across a full selected dataset hasn't
+happened yet, so there's no dataset-scale validation.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -243,7 +249,7 @@ lint's notebook checks).
 | [`pose_alignment/wac_camera_model.py`][pose_alignment/wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content is a title, a sun-geometry summary, and `reproject`'s overlay-toggle/zoom-blink against the basemap; still short of the full site in `docs/proposed-tasks/report-plan.md`. |
+| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Report content is a title, a sun-geometry summary, and `reproject`'s overlay-toggle/zoom-blink against the basemap. Also writes the dataset-wide `reports/overview_table.html` and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/proposed-tasks/report-plan.md` for what's still short of the full planned site. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |

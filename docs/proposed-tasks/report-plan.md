@@ -1,15 +1,18 @@
 # Design: per-image Jupyter/HTML reports
 
-**Status: report is now a fourth product type, wired into `TrnTestDataSet.populate()`/
-`populate_via_workers()`.** `notebooks/report_template.py` + `TrnTestReport`
+**Status: all four planned pages exist.** `notebooks/report_template.py` + `TrnTestReport`
 (`src/trntest/trn_products.py`) + `trntest.report.generate_report` produce one entry's report as
-part of normal dataset population; `TrnTestDataSet.write_index()` writes a dataset-wide
-`status.csv`, `reports/index.html` nav bar, and `reports/overview_map.png` (all by default, the last
-one skippable via `write_index(write_overview_map=False)` -- see `docs/batch-generation.md` for why
-that matters at scale). Report content is a title (dataset name, entry index, entry id), a one-line
+part of normal dataset population (report is a fourth product type, wired into
+`TrnTestDataSet.populate()`/`populate_via_workers()`); `TrnTestDataSet.write_index()` writes the
+dataset-wide `status.csv`, `reports/overview_table.html`, `reports/index.html` (the nav bar --
+persistent, over a content iframe), and `reports/overview_map.png` (all by default, the last one
+skippable via `write_index(write_overview_map=False)` -- see `docs/batch-generation.md` for why that
+matters at scale). Report content is a title (dataset name, entry index, entry id), a one-line
 summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle/full-resolution zoom
-blink against the basemap (`TrnTestReport._generate_impl` self-ensures `reproject`). The rest of
-"Future work" below (nav bar, richer problem flags) is still not started.
+blink against the basemap (`TrnTestReport._generate_impl` self-ensures `reproject`). **The nav bar
+cannot be viewed through JupyterLab's own server at all** (a real, structural CSP limitation, not a
+bug to fix — see "Nav bar" below) — view it via `scripts/serve_reports.sh` instead. Only "richer
+problem flags" in "Future work" below is still not started.
 
 ## Context
 
@@ -104,9 +107,11 @@ The nav bar/status table/overview map are a different shape — one file summari
 one entry's own artifact — so they're a separate step, `TrnTestDataSet.write_index()`, run once (not
 per worker) after `populate()`/`populate_via_workers()`'s task-queue loop, controlled by their own
 `write_index: bool = True` parameter. It writes `<dataset_folder>/status.csv` (`status()` plus a
-`problems` column from `trntest.report.problem_flags`), `<dataset_folder>/reports/index.html`
-(a plain-HTML table linking to each entry's own report where it exists — no styling/JS, fine if a
-link is momentarily broken because that entry's report doesn't exist yet), and
+`problems` column from `trntest.report.problem_flags`), `<dataset_folder>/reports/overview_table.html`
+(`report.write_overview_table_html` — a plain-HTML table linking to each entry's own report where it
+exists — no styling/JS, fine if a link is momentarily broken because that entry's report doesn't
+exist yet), `<dataset_folder>/reports/index.html` (`report.write_index_html` — the persistent nav bar
+described in "Nav bar" below, defaulting its content iframe to the overview table), and
 `<dataset_folder>/reports/overview_map.png` (`overview_map.write_overview_map`, its own
 `write_overview_map: bool = True` parameter — see `docs/batch-generation.md` for why that one in
 particular is worth turning off during incremental population at scale).
@@ -126,8 +131,10 @@ polygons already pay this same cost deliberately, for a different, presentation-
 
 ```
 <dataset_folder>/reports/
-  index.html              # TrnTestDataSet.write_index() -- nav bar + status/problems table
+  index.html              # TrnTestDataSet.write_index() -- persistent nav bar + content iframe
+  overview_table.html     # TrnTestDataSet.write_index() -- one row per entry, status/problems
   overview_map.png        # TrnTestDataSet.write_index() -- overview_map.write_overview_map()
+  map.html                # ditto -- thin <img> wrapper, the nav bar's actual "Map" link target
   <edr_product>/
     report.py             # notebooks/report_template.py with {{ }} substituted -- kept for provenance
     report.ipynb           # jupytext-synced + papermill-executed -- also kept for debugging
@@ -147,18 +154,28 @@ polygons already pay this same cost deliberately, for a different, presentation-
 that report generation is dataset-native). `TrnTestDataSet.create()` creates it up front the same
 way it does the other product-type subfolders.
 
-## Viewing reports in JupyterLab
+## Viewing reports
 
-Browse to `<dataset_folder>/reports/index.html` in JupyterLab's file browser (`<dataset_folder>` is
-under `output/`, e.g. `output/trn_dataset/reports/index.html`) and click through from there. Double-
-clicking `index.html` opens it fine (JupyterLab's built-in HTML viewer fetches it via the contents
-API), but clicking one of its links to a specific entry's `report.html` used to 403 ("Blocking
-request from unknown origin") — Jupyter Server's Referer-based anti-CSRF check on `/files/...` GETs,
-which can't use its usual "token-authenticated requests skip this" bypass since this server runs with
-no token/password, and the built-in HTML viewer renders content in a sandboxed `srcdoc` iframe that
-sends no Referer on an outgoing link click. Fixed by `docker/Dockerfile`'s
-`--ServerApp.allow_origin='*'` (added specifically for this) rather than a client-side workaround, so
-every notebook/report page's normal in-browser links Just Work regardless of how the page was opened.
+**The nav bar (`reports/index.html`) cannot be viewed through JupyterLab's own server at all** --
+use `scripts/serve_reports.sh` instead (a plain `python3 -m http.server`, see "Nav bar" below for
+why). Single-page views (an individual `report.html`, `overview_table.html`, `overview_map.png` on
+their own, with no nav bar) still work fine through JupyterLab, via either mechanism below.
+
+**Through JupyterLab** (single pages only, not the nav bar): browse to the file in JupyterLab's file
+browser (`<dataset_folder>` is under `output/`, e.g. `output/trn_dataset/reports/overview_table.html`)
+and open it. Double-clicking opens it fine (JupyterLab's built-in HTML viewer fetches it via the
+contents API), and links to other single pages now work too (they didn't always -- clicking a link
+used to 403, "Blocking request from unknown origin": Jupyter Server's Referer-based anti-CSRF check
+on `/files/...` GETs, which can't use its usual "token-authenticated requests skip this" bypass since
+this server runs with no token/password, and the built-in HTML viewer renders content in a sandboxed
+`srcdoc` iframe that sends no Referer on an outgoing link click. Fixed by `docker/Dockerfile`'s
+`--ServerApp.allow_origin='*'`, added specifically for this).
+
+**Through `scripts/serve_reports.sh`** (needed for the nav bar, works for everything else too):
+`scripts/serve_reports.sh [port] [dataset_folder]` runs a plain, CSP-free static file server over
+one dataset's `reports/` folder, entirely separate from JupyterLab's own server on its own port.
+Tunnel that port the same way as JupyterLab's (`ssh -L <port>:localhost:<port> <this-host>`) and open
+`http://localhost:<port>/reports/index.html`.
 
 ## Current report content
 
@@ -190,33 +207,90 @@ couple of manifest fields, nothing else. Grown twice since:
 No tie points, craters, or `crop` product in the report; those, plus the rest of "Future work"
 below, remain open.
 
-## Future work (not started)
+## Future work
 
-The site described below is the target shape; only the flat `write_index()` table and the single
-per-entry detail report (both described above) are actually built so far.
+**Page inventory: all four planned pages now exist.** A nav bar (`reports/index.html`), an overview
+map (`reports/overview_map.png`), an overview table (`reports/overview_table.html`), and one detailed
+report per entry (`reports/<edr_product>/report.html`, "Current report content" above). Only "Richer
+problem flags" below remains genuinely not-started.
 
-- **Page inventory**: four pages total — a nav bar, an overview map, an overview table, and one
-  detailed report per entry (the existing report from "Current report content" above).
-  The overview table is close to what `write_index_html` already produces (see "Report as a
-  product type" above); splitting the nav bar into its own page, described next, is the main change
-  needed there.
-- **Nav bar**: a persistent top frame (`<frameset>`/iframe, not per-page embedded navigation) so
-  switching between the overview map, overview table, or any entry's detail report never re-renders
-  the nav bar itself. It needs: links that open the overview map or overview table in the content
-  frame, a compact way to jump straight to any entry's report, and prev/next buttons that step
-  through entries one at a time for systematic review. Screen space is tight in a top strip, which
-  is why the entry identifier below matters here specifically.
-- **Entry identifiers — add positional index alongside EDR id**: done for the per-entry report
-  (`TrnTestEntry.index`, `report.load_entry`/`generate_report`'s primary lookup key, shown in the
-  report's own title alongside the EDR product id). Still to use it as the standard short reference
-  in the nav bar once that's built (space-constrained UI, where the position is more compact than
-  the EDR product id) — the EDR product id remains fine wherever there's room (e.g. the overview
-  table).
+- **Nav bar**: built, `report.write_index_html` (`src/trntest/report.py`) writes
+  `reports/index.html` — a single document with a fixed nav `<div>` (CSS flexbox, not
+  `position: absolute`/`fixed` — the first version used the latter and, missing a `<!DOCTYPE html>`,
+  triggered quirks-mode `height: 100%` bugs that starved the content iframe down to showing only one
+  table row at a time; flexbox plus an explicit doctype fixed it) over one content `<iframe>` (not a
+  `<frameset>` split into separate nav/content pages as originally planned — see the CSP finding
+  below for why that distinction turned out not to matter). Current layout, left to right: the
+  dataset name (bold, prominent), `Map`/`Table` links (content-frame-targeted, no JS), Prev/Next
+  buttons (adjacent to each other, not flanking anything, each disabled at its own end of the entry
+  range), then a plain number `<input>` (not a `<select>` — a dropdown with one `<option>` per entry
+  doesn't scale to a many-hundred-entry dataset the way a "type a number" box does) that doubles as
+  the current-entry display, plus a `Go` button/Enter-key shortcut. Labeled "Entry index ... (max
+  {last_index})", not "... of {n_entries}" — entries are 0-indexed throughout (matching
+  `TrnTestEntry.index`/report titles/URLs), and stating the actual maximum valid value avoids the
+  off-by-one reading a count invites ("indices 0..1 'of 2'" reads as inconsistent to anyone not
+  already thinking in 0-based terms; "(max 1)" states the same fact without implying a count). The
+  map link points at a new `overview_map.write_overview_map`-written
+  `map.html` (a thin `<img>` wrapper), not `overview_map.png` directly — linking straight to the raw
+  image made the browser treat it as a standalone image document, which (confirmed in Firefox) got
+  shrunk to a thumbnail with an unreliable click-to-zoom.
+
+  **Real, structural finding: this can never work through JupyterLab's own server, by design, no
+  server config can fix it.** First guess (wrong, corrected after the user actually tried it and
+  reported total failure — every link and button did nothing): that a single document sidesteps
+  Jupyter's per-file CSP `sandbox` header (see "Viewing reports" above) since it only ever *writes*
+  its own child iframe's `src`, never *reads* across the frame boundary, and a same-document DOM
+  write should be unaffected by sandboxing. That reasoning addressed the wrong half of the problem.
+  The real mechanism: `AuthenticatedFileHandler.content_security_policy`
+  (`jupyter_server/base/handlers.py`) unconditionally appends `sandbox allow-scripts` (no
+  `allow-same-origin`) to *every* file served via `/files/...`, deliberately, so served HTML can
+  never impersonate the Jupyter server itself — confirmed by reading that handler's own source
+  directly, not inferred. That gives `index.html` itself an opaque origin when loaded as a top-level
+  page. Every file also carries `frame-ancestors 'self'` — and an opaque origin can never equal
+  `'self'`, so **any attempt by a Jupyter-served page to embed another Jupyter-served page in an
+  iframe or frame is blocked by the embedded page's own `frame-ancestors` check**, regardless of how
+  the navigation was initiated (a plain `<a target="content">` click and a JS `.src =` write both hit
+  it identically) and regardless of which document does the embedding (a `<frameset>` document would
+  have hit the exact same wall, since it too would carry `sandbox` as a Jupyter-served file). Live
+  reproduction: the user's own browser console showed
+  `Content-Security-Policy: ... blocked ... (frame-ancestors) ... "frame-ancestors 'self'"` on the
+  first real attempt to use it. No `allow_origin`-style server setting fixes this — the `sandbox`
+  token is hardcoded in that one handler, appended after any `headers` config override, not
+  conditional on anything.
+
+  **Consequence — the nav bar cannot be viewed through JupyterLab at all.**
+  `scripts/serve_reports.sh` (a plain `python3 -m http.server`, no CSP of any kind) serves the same
+  files on their own port instead — the iframe design works completely normally there, confirmed via
+  `curl` (no `Content-Security-Policy` header on any response). See "Viewing reports" above.
+
+  **Fixed: the nav bar's "current entry" state now stays in sync however you got there.** Originally
+  it lived only in `index.html`'s own in-memory JS, with no way to detect a navigation that happened
+  *inside* the content iframe without going through the nav bar's own controls (e.g. clicking a row's
+  link directly in the overview table) — the exact `postMessage`-based fix speculated here originally
+  is what got built: `generate_report` (`src/trntest/report.py`) post-processes nbconvert's own
+  `report.html` output (not a notebook cell — keeps `report_template.py`'s "every cell is a single
+  call" convention untouched) to inject one `<script>` tag that calls
+  `window.parent.postMessage({{source: "trntest-report", entryIndex: N}}, "*")` on load.
+  `index.html`'s own `message` listener (`NAV_SYNC_MESSAGE_SOURCE`, shared between both ends) then
+  calls the same `updateNavState` the nav bar's own Prev/Next/Go controls use, syncing the number
+  box's value and Prev/Next's disabled state regardless of which page announced it or how it was
+  reached. `postMessage` was the right tool specifically because it isn't blocked by the opaque-origin
+  restriction above (unlike direct cross-frame property access, which would be).
+
+  Prev/Next are now disabled at either end of the entry range (`updateNavState` sets
+  `.disabled` from `i <= 0`/`i >= productIds.length - 1`); before this they had no such check.
+- **Entry identifiers — add positional index alongside EDR id**: done. `TrnTestEntry.index`,
+  `report.load_entry`/`generate_report`'s primary lookup key, shown in the per-entry report's own
+  title alongside the EDR product id, the nav bar's jump-to-entry number box's value
+  (space-constrained UI, where the position is more compact than the EDR product id), and the
+  overview table's own product-id column (`write_overview_table_html`, `"{index}: {product_id}"`,
+  both part of the same link) — since the nav bar's jump box takes an index, not a product id, the
+  table needed some way to expose that lookup key too.
 - **Overview map**: built, `src/trntest/overview_map.py`
   (`plot_overview_map`/`write_overview_map`, registered in `trntest/__init__.py` alongside
   `plotting`/`report`) — called by `TrnTestDataSet.write_index()` by default (see
   `docs/batch-generation.md` for the real per-call cost this adds and how to skip it during
-  incremental population), not yet linked from any nav bar/overview table (neither exists yet).
+  incremental population), linked from the nav bar's "Overview map" link (see "Nav bar" above).
   Background: `luna_wac_global` (Lunaserv, see
   `docs/data-sources/lunaserv-wms.md` — deprecated for per-camera fetches in favor of `WAC_EMP` on
   image-quality grounds, but that concern doesn't apply to this map's own display), plain geographic

@@ -191,14 +191,34 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
 
 
 def write_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = None) -> Path:
-    """Renders `plot_overview_map` and writes it to `<dataset.folder>/reports/overview_map.png` --
-    called by `TrnTestDataSet.write_index()` (pass `write_overview_map=False` there to skip it);
-    not yet linked from anywhere (no nav bar/overview table reference it).
+    """Renders `plot_overview_map` and writes it to `<dataset.folder>/reports/overview_map.png`,
+    plus a thin `<dataset.folder>/reports/map.html` wrapper around it -- called by
+    `TrnTestDataSet.write_index()` (pass `write_overview_map=False` there to skip it), linked from
+    the nav bar's "Map" link.
 
-    :returns: The written file's path.
+    The `.html` wrapper exists because linking directly to the raw `.png` as a nav-bar target makes
+    the browser treat it as a standalone image document -- Firefox in particular shrinks it to a
+    thumbnail with an unreliable click-to-zoom, confirmed live to look broken inside the nav bar's
+    content frame. A plain page with a scaled `<img>` avoids that entirely.
+
+    :returns: The written PNG's path (`map.html`'s own path is a fixed, predictable sibling).
     """
     fig = plot_overview_map(dataset, config)
     path = dataset.folder / "reports" / "overview_map.png"
     fig.savefig(path, dpi=150)
     plt.close(fig)
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>{dataset.name} map</title>
+<style>
+  body {{ margin: 0; }}
+  img {{ display: block; max-width: 100%; height: auto; }}
+</style>
+</head>
+<body>
+<img src="overview_map.png" alt="{dataset.name} overview map">
+</body>
+</html>"""
+    (dataset.folder / "reports" / "map.html").write_text(html)
     return path
