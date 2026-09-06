@@ -2,8 +2,11 @@
 Lunaserv's WMS render. See docs/data-sources/wac-emp-pds4.md and `dem_ortho.fetch_and_shade_ortho`.
 """
 
+import math
+
 import rasterio
 from rasterio.warp import Resampling, transform_bounds
+from rasterio.warp import transform as warp_transform
 from rasterio.windows import from_bounds as window_from_bounds
 from rasterio.windows import transform as window_transform
 
@@ -176,19 +179,65 @@ def reproject_wac_emp_reflectance_to_local_grid(
     # `hapke.hapke_shade_ortho`/`hapke.shade_ortho` treat it as reflectance directly (see their own
     # docstrings for the resulting numeric-pipeline change).
     with rasterio.open(wac_emp_path) as src:
-        src_crs = src.crs
         src_nodata = src.nodata
         left, bottom, right, top = transform_bounds(
-            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m), src_crs, *dst_bbox_m
+            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m), src.crs, *dst_bbox_m
         )
+        # `transform_bounds` normalizes longitude into (-180, 180] before applying `src.crs`'s
+        # `central_meridian=0` Equirectangular formula (`x = R * lon_rad`), but each WAC_EMP tile's
+        # own PDS4 georeferencing is written in unwrapped, continuous longitude -- the "E300*2250"
+        # (180-270 deg) tile's raster spans x in [R*pi, R*1.5pi], entirely positive, never negated
+        # back into (-180, 180]'s range. For any AOI whose true longitude falls past +-180 deg in
+        # that continuous domain (confirmed via a real `M1314068239CE` repro, longitude -160.04 deg /
+        # 199.96 deg unwrapped), the normalized-vs-unwrapped mismatch lands `left`/`right` a full
+        # sphere circumference away from the tile's actual raster -- silently producing a `Window`
+        # with a wildly wrong offset that later reads as zero-width (`CPLE_AppDefinedError: Invalid
+        # dataset dimensions`). Latitude has no such branch cut, so `bottom`/`top` need no correction.
+        # Shifting by the sphere's own circumference (this CRS's one linear degree-of-freedom) puts
+        # the window back where the tile's own longitude convention actually stores it.
+        circumference_m = 2 * math.pi * moon_radius_m
+        if right < src.bounds.left:
+            left, right = left + circumference_m, right + circumference_m
+        elif left > src.bounds.right:
+            left, right = left - circumference_m, right - circumference_m
         window = window_from_bounds(left, bottom, right, top, transform=src.transform)
         src_transform = window_transform(window, src.transform)
         reflectance = src.read(1, window=window)
 
+        # The same branch cut bites `rasterio.warp.reproject` below, not just the window read above:
+        # it runs its own `src.crs` <-> destination-CRS coordinate transform per pixel, which
+        # normalizes longitude into (-180, 180] exactly like `transform_bounds` did, and (for a
+        # `central_meridian=0` tile whose own raster lives in unwrapped, past-180-deg coordinates)
+        # finds nothing there -- silently producing an all-nodata output instead of raising.
+        # Re-expressing the read window in an equivalent Equirectangular CRS whose `central_meridian`
+        # is this tile's own PROJ-normalized center (rather than the tile file's literal one, whatever
+        # that happens to be) sidesteps this: every point within one 90-deg-wide WAC_EMP zone sits
+        # within 45 deg of its own center, so no destination longitude near it can cross +-180 deg
+        # from that center either. `src.crs`'s inverse projection (`warp_transform`, i.e. real PROJ,
+        # not a hand-rolled `x = R * lon_rad` assumption that would only hold for `central_meridian=0`
+        # specifically) gives this tile's own center point's true, already-normalized longitude; a
+        # pure `central_meridian` change is just an additive shift in this linear projection, so
+        # translating `src_transform`'s origin by that same center's raw-frame X keeps every pixel at
+        # its real physical location.
+        src_center_x = (src.bounds.left + src.bounds.right) / 2
+        src_center_y = (src.bounds.bottom + src.bounds.top) / 2
+        (warp_center_lon_deg,), _ = warp_transform(
+            src.crs, geographic_crs(moon_radius_m), [src_center_x], [src_center_y]
+        )
+        warp_src_crs = f"+proj=eqc +lat_ts=0 +lon_0={warp_center_lon_deg} +R={moon_radius_m} +units=m +no_defs"
+        warp_src_transform = rasterio.Affine(
+            src_transform.a,
+            src_transform.b,
+            src_transform.c - src_center_x,
+            src_transform.d,
+            src_transform.e,
+            src_transform.f,
+        )
+
     return reproject_raster_to_local_grid(
         reflectance,
-        src_crs,
-        src_transform,
+        warp_src_crs,
+        warp_src_transform,
         dst_bbox_m,
         dst_width,
         dst_height,

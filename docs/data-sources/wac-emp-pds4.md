@@ -60,6 +60,26 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   phase=30°) via an empirical (Boyd et al. 2012) function, not a raw albedo map — see
   `REFERENCE_INCIDENCE_DEG`'s own module-level comment in `hapke.py` for how `hapke_shade_ortho`
   relights this back out for a real candidate's own geometry.
+- **At least the "180-270°" zone tile's own georeferencing is written in unwrapped, continuous
+  longitude past +-180°, not PROJ's canonical (-180°, 180°] convention** — confirmed live on both
+  `WAC_EMP_643NM_E300S2250_304P` and `..._E300N2250_304P`: each raster's projected X spans
+  `[R*pi, R*1.5pi]` (both positive), under a `central_meridian=0` Equirectangular CRS. A generic
+  `rasterio.warp` CRS-to-CRS transform (`transform_bounds`/`reproject`) normalizes any input
+  longitude into (-180°, 180°] before applying that `central_meridian=0` formula, so a real-world
+  point whose true longitude is e.g. 200° (SPICE's signed convention: -160°) lands at
+  `x = R*radians(-160°)` — a full sphere circumference away from where this tile's own raster
+  actually stores that location. This silently produced a degenerate, zero-width read `Window`
+  (`CPLE_AppDefinedError: Invalid dataset dimensions`) and, once that was worked around, an
+  all-nodata `rasterio.warp.reproject` output (the same branch cut, hit a second time by the
+  pixel-level warp) — see `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`'s own inline
+  comments for the two-part fix (shifting the read window by one circumference when it lands outside
+  the tile's own stored bounds; re-expressing the source CRS's `central_meridian` at the tile's own
+  PROJ-normalized center before the warp, so no destination point needs to cross ±180° from it) and
+  `tests/test_ortho_wac_emp.py`'s own antimeridian regression test. Only the "225°" zone (both
+  hemispheres) is confirmed to need this; whether the "315°" zone's tiles use the same unwrapped
+  (rather than canonical -90°..0°) convention is unverified -- the fix itself doesn't assume either
+  way (it derives the tile's own domain from its real `bounds`/`crs`, not a hardcoded zone list), so
+  it's correct regardless, but the fact isn't independently confirmed for that zone.
 - **Size**: the 304ppd 643nm tile is ~1.86 GB (1,996,295,040 bytes, confirmed live) — comfortably
   within `cache.cached_get`'s normal per-call-unique-temp-file range (the same range
   `fetch_isis_kernel`'s ~1.65GB CK merges already use), not `fetch_astropedia_gld100`'s special

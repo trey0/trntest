@@ -106,3 +106,56 @@ def test_reproject_wac_emp_reflectance_to_local_grid_preserves_constant_field(tm
     assert result.shape == (dst_height, dst_width)
     assert not np.isnan(result).any()
     assert result == pytest.approx(reflectance_value, abs=1e-4)
+
+
+def _write_wac_emp_antimeridian_style_tif(path, reflectance_value, lon_min_deg, lon_max_deg, height, moon_radius_m):
+    """Fixture matching the *real* WAC_EMP tile's own PROJCS convention, unlike
+    `_write_wac_emp_style_tif`'s `lon_0=180`-shifted one: `central_meridian=0`/`false_easting=0` (as
+    confirmed live on a real "E300*2250" tile), with the file's own transform origin placed directly
+    in the unwrapped, continuous longitude domain past +-180 deg that the real 180-270/270-360 deg
+    zone tiles actually use -- `lon_0=180` sidesteps the antimeridian branch-cut bug this regresses,
+    since it never asks PROJ to reproject a point whose *destination*-CRS longitude representation
+    disagrees in sign from the *source* file's own stored domain."""
+    crs = f"+proj=eqc +lat_ts=0 +lon_0=0 +R={moon_radius_m} +units=m +no_defs"
+    x_min, x_max = moon_radius_m * math.radians(lon_min_deg), moon_radius_m * math.radians(lon_max_deg)
+    width = height  # square fixture is enough to exercise the bug
+    y_half = (x_max - x_min) / 2
+    transform_ = transform_from_bounds(x_min, -y_half, x_max, y_half, width, height)
+    data = np.full((height, width), reflectance_value, dtype="float32")
+    with rasterio.open(
+        path, "w", driver="GTiff", height=height, width=width, count=1, dtype="float32", crs=crs, transform=transform_
+    ) as dst:
+        dst.write(data, 1)
+
+
+def test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimeridian(tmp_path):
+    # Regression test for a real bug (docs/proposed-tasks/open-items.md): `M1314068239CE` (physical
+    # longitude ~200 deg, reported by SPICE in the signed -180..180 convention as -160.04 deg) failed
+    # hillshade/report generation against the real "WAC_EMP_643NM_E300S2250_304P" tile (180-270 deg
+    # zone) with `CPLE_AppDefinedError: Invalid dataset dimensions : 0 x N`. Root cause: this
+    # function's `transform_bounds` call normalizes longitude into (-180, 180] before applying the
+    # tile's `central_meridian=0` linear formula, but the real tile's own georeferencing is written in
+    # unwrapped, continuous longitude (this zone's raster spans x in [R*pi, R*1.5pi], never negative)
+    # -- landing the AOI window a full sphere circumference away from the tile's actual raster.
+    moon_radius_m = 1_737_400.0
+    reflectance_value = 0.08
+    native_path = tmp_path / "wac_emp_native_past_antimeridian.tif"
+    # A narrow native span (~30km) at 64px keeps resolution generous relative to the 10km destination
+    # AOI -- see `test_reproject_wac_emp_reflectance_to_local_grid_preserves_constant_field`'s own
+    # docstring for why a too-coarse native/dst ratio can spuriously clip the read window's own edges.
+    _write_wac_emp_antimeridian_style_tif(native_path, reflectance_value, 199.5, 200.5, 64, moon_radius_m)
+
+    center_lon, center_lat = -160.0, 0.0  # SPICE-style signed convention for physical longitude 200 deg
+    dst_bbox_m = (-5_000.0, -5_000.0, 5_000.0, 5_000.0)
+    dst_width, dst_height = 32, 32
+    output_path = tmp_path / "reprojected.tif"
+
+    result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
+        native_path, dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+    )
+
+    with rasterio.open(result_path) as src:
+        result = src.read(1)
+    assert result.shape == (dst_height, dst_width)
+    assert not np.isnan(result).any()
+    assert result == pytest.approx(reflectance_value, abs=1e-4)

@@ -54,14 +54,20 @@ This is an already-known, already-documented limit (`WAC_EMP_MAX_ABS_LATITUDE_DE
 low-latitude rows before a production run rather than discovering the failure rate one entry at a
 time.
 
-## Open, unresolved correctness risk: a second, different failure mode
+## Resolved: the second, different failure mode from `orbit_sequence_dataset`
 
 Populating a *different* multi-entry dataset earlier this session (`orbit_sequence_dataset`, from
 `select_datasets.py`) hit `CPLE_AppDefinedError: Invalid dataset dimensions: 0 x N` on 5 of 10 tried
-entries — at latitudes well inside ±60°, so *not* explained by the limit above. Flagged in
-`docs/proposed-tasks/open-items.md` but not root-caused. Whether this recurs in `trn_dataset`'s own
-remaining 79 rows is an open question, not yet checked — a real unknown, not just a theoretical risk,
-since it hit half the entries tried in the one other real multi-entry dataset attempted.
+entries — at latitudes well inside ±60°, so *not* explained by the limit above. Root-caused and fixed
+in a later session: a longitude branch-cut bug in `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`
+(PROJ normalizes longitude into (-180°, 180°] before applying a WAC_EMP tile's own
+`central_meridian=0` formula, but the "225°" zone tiles' own georeferencing is written in unwrapped,
+continuous longitude past ±180° — see `docs/data-sources/wac-emp-pds4.md`'s own bullet for the full
+mechanism). Confirmed fixed on all 4 of the originally-affected entries this session could directly
+retest (`M1314068239CE`, `M1314069246CE`, `M1314074526CE`, `M1314074818CE`), plus a synthetic
+regression test (`tests/test_ortho_wac_emp.py`). Affects any AOI whose true longitude falls in the
+Moon's "180-270°" zone (confirmed) — `trn_dataset`'s own 79 not-yet-populated rows should no longer
+be at risk from this specific bug, though they haven't been individually retested.
 
 ## This session's new features are untested past 2 entries
 
@@ -78,9 +84,8 @@ stay legible with 50+ overlapping entries on one global map, or whether `write_i
    remaining headroom, versus a deliberately-chosen low-latitude subset.
 2. Pre-filter `trn_dataset`'s manifest to `|center_lat_deg| <= 50` (or similar) before a real run,
    rather than hitting the known WAC_EMP limit one entry at a time.
-3. Run a small trial (10-20 entries from that filtered set) first — not the full run — specifically
-   to check whether the `CPLE_AppDefinedError` bug recurs here, and to get a real per-entry timing
-   number for this dataset's own geometry before committing to a much larger batch.
+3. Run a small trial (10-20 entries from that filtered set) first — not the full run — to get a real
+   per-entry timing number for this dataset's own geometry before committing to a much larger batch.
 4. Follow `docs/batch-generation.md`'s existing guidance for the real run:
    `populate_via_workers()`, not sequential `populate()`; `write_index=False` for every call in an
    incremental loop except the last, since `write_overview_map`'s default `True` rebuilds cameras

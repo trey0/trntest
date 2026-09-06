@@ -5951,3 +5951,53 @@ the ±60° WAC_EMP latitude-coverage failure rate (24-36 of 81 rows), and the st
 **Verification**: `trntest-lint` clean after the docstring/comment edits. Grepped the whole repo
 (`*.md` and `*.py`) for remaining `report-plan` references before deleting the file, to confirm none
 were missed.
+
+## Phase 115 (2026-09-06) — Root-caused and fixed the `orbit_sequence_dataset` `CPLE_AppDefinedError`
+
+Picked up `open-items.md`'s still-open `CPLE_AppDefinedError: Invalid dataset dimensions: 0 x N`
+finding from Phase 114's readiness assessment. Reproduced it fresh against a real run (populating
+`select_datasets.py`'s first selected orbit-sequence dataset's first equatorial entry,
+`M1314068239CE`, -6.12° lat — chosen specifically to rule out the already-known ±60° WAC_EMP polar
+limit as the cause) in a separate worktree, then root-caused it via direct instrumentation of
+`ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`: a longitude branch-cut bug, not a
+degenerate AOI/bbox computation as originally guessed. The WAC_EMP "225°" zone tile's own PDS4
+georeferencing is written in unwrapped, continuous longitude past ±180° (raster X spans
+`[R*pi, R*1.5pi]`, both positive, under a `central_meridian=0` Equirectangular CRS), but
+`rasterio.warp`'s generic CRS-to-CRS transform machinery normalizes any longitude into (-180°, 180°]
+before applying that same linear formula — landing the AOI a full sphere circumference away from
+where the tile's raster actually stores that physical location. This dataset's own orbit sequence
+sits almost exactly on the antimeridian (`center_lon_deg` -172.6°), so roughly half its 207 entries
+fell in the affected zone, explaining the "5 of 10 tried" failure rate Phase 114 recorded.
+
+The fix has two parts, both needed (confirmed by testing each in isolation): (1) the read-`Window`
+computation shifts by one full sphere circumference when `transform_bounds`'s naive result falls
+outside the tile's own stored `bounds` -- this alone fixed the window selection, but (2)
+`rasterio.warp.reproject`'s own per-pixel coordinate transform hits the *identical* branch cut a
+second time (confirmed via a synthetic unit-test case that still silently produced 100% NaN output
+after fix (1) alone, with no exception raised -- a real live run under fix (1) alone had produced the
+exact same silent corruption, betrayed only by a `RuntimeWarning: invalid value encountered in cast`
+this session almost missed). Fix (2) re-expresses the read window's source CRS with its
+`central_meridian` moved to that tile's own PROJ-normalized center (derived via a real
+`rasterio.warp.transform` point inversion, not a hand-rolled formula assuming `central_meridian=0` --
+an earlier version of this fix that did assume that broke the pre-existing
+`test_reproject_wac_emp_reflectance_to_local_grid_preserves_constant_field` test, whose synthetic
+fixture deliberately uses a different, `lon_0=180`, convention), translating the window's own affine
+transform by the same amount. Since every WAC_EMP zone is only 90°-wide, no destination point can
+ever be more than 45° from its own tile's center, so this re-centering makes a ±180° crossing
+structurally impossible regardless of which zone or hemisphere is involved.
+
+New regression test in `tests/test_ortho_wac_emp.py`
+(`test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimeridian`), using a
+synthetic fixture matching the real tile's own `central_meridian=0`/unwrapped-domain convention
+(distinct from the pre-existing test's `lon_0=180` fixture, which never exercised this branch cut in
+the first place). See `docs/data-sources/wac-emp-pds4.md`'s new bullet for the fact itself, and
+`docs/proposed-tasks/production-run-readiness.md`'s updated "Resolved" section for what this means
+for a real production run.
+
+**Verification**: `trntest-lint` clean; full non-`heavy` suite (360 tests) passes; the 4 originally
+Phase 114-affected entries this session could still directly retest (`M1314068239CE`,
+`M1314069246CE`, `M1314074526CE`, `M1314074818CE`) were truncated (including `_work/` so the DEM/
+ortho intermediates weren't silently reused from the buggy first-pass fix) and regenerated clean end
+to end via real `populate()` calls, with the actual published hillshade pixel content inspected
+directly (not just "no exception raised") to catch the same silent-NaN failure mode the first,
+incomplete version of this fix suffered from.

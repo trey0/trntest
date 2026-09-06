@@ -63,19 +63,6 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   `sfs_validation.true_albedo_map`'s recovered albedo and reduce
   `compute_brightness_matched_diff`'s discriminating power in any clipped region. Resolving this
   needs an actual multi-candidate saturation sweep, not just asserting either combination is fine.
-- **New finding: most entries in `select_datasets.py`'s first selected orbit-sequence dataset fail
-  `hillshade`/`report` generation with `CPLE_AppDefinedError: Invalid dataset dimensions: 0 x N`**
-  (crop still succeeds). Confirmed on 5 distinct entries, all well within WAC_EMP's ±60° coverage
-  (`M1314068239CE` -6.12°, `M1314068896CE` -32.19°, `M1314069246CE` -47.79°, `M1314074526CE` 40.09°,
-  `M1314074818CE` 23.26°) — so this is a separate bug from the already-known/expected ±60° coverage
-  limit (`WAC_EMP_MAX_ABS_LATITUDE_DEG`), not another instance of it. The zero-width pattern (always
-  `0 x <height>`, never a zero height) suggests a degenerate AOI/bbox computation somewhere in the
-  DEM/ortho fetch or mapproject step specific to this dataset's orbit geometry, not yet root-caused.
-  Found incidentally while reproducing a report-viewing issue (see `docs/report-generation.md`'s
-  "Viewing reports" section for that, unrelated, now-fixed issue) — not investigated further since
-  it's orthogonal to that task; `output/orbit_sequence_dataset` (this worktree's copy) still has the
-  failed task state on disk if a future session wants to reproduce without re-running the ~1-2 min
-  orbit-selection step.
 - **Richer report problem flags**: `report.problem_flags` is deliberately narrow today (just low sun
   elevation, from manifest fields alone). Three real checks are still missing, each blocked on the
   same thing — a cheap-enough way to compute them (a persisted value or a lightweight query, not a
