@@ -117,12 +117,12 @@ def generate_report(dataset_folder: str, entry_index: int, report_dir: Path) -> 
     # template itself, so the page's own title can be filled in via plain `{{ }}` substitution like
     # every other static value, instead of a Python call the "no explanatory markdown beyond a
     # one-line title" convention (report-plan.md) would otherwise rule out.
-    product_id = TrnTestDataSet.open(dataset_folder, load_config())[entry_index].product_id
+    dataset = TrnTestDataSet.open(dataset_folder, load_config())
     params = {
         "dataset_folder": dataset_folder,
         "entry_index": str(entry_index),
-        "dataset_name": Path(dataset_folder).name,
-        "product_id": product_id,
+        "dataset_name": dataset.name,
+        "product_id": dataset[entry_index].product_id,
     }
     report_py.write_text(render_template(_TEMPLATE_PATH.read_text(), params))
     run_quiet(["jupytext", "--to", "notebook", str(report_py), "--output", str(report_ipynb)])
@@ -189,7 +189,7 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
             product_cell = f"{row['product_id']} (no report yet)"
         other_cells = "".join(f"<td>{row[col]}</td>" for col in status_df.columns[1:])
         rows_html.append(f"<tr><td>{product_cell}</td>{other_cells}</tr>")
-    name = dataset.folder.name
+    name = dataset.name
     html = (
         f"<html><head><title>{name} reports</title></head><body>"
         f"<h1>{name} reports</h1>"

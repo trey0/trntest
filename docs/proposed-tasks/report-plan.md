@@ -205,22 +205,42 @@ per-entry detail report (both described above) are actually built so far.
   in the nav bar once that's built (space-constrained UI, where the position is more compact than
   the EDR product id) — the EDR product id remains fine wherever there's room (e.g. the overview
   table).
-- **Overview map**: a ground-track-style plot — one label per entry at its center lat/lon, with a
-  vector overlay of each entry's hillshade/reproject FOV footprint (`camera.footprint_lonlat_deg`/
-  `tie_points.crop_footprint_corners_for_camera` already compute these per entry) and its index
-  number labeled next to the footprint. Background: a global ortho layer (Lunaserv's
-  `luna_wac_global`, see `docs/data-sources/lunaserv-wms.md` — deprecated for per-camera fetches in
-  favor of `WAC_EMP` on image-quality grounds, but that concern doesn't apply to a low-opacity
-  overview backdrop) at ~20% opacity, layered over a day/night mask: white where sunlit, ~80% white
-  (i.e. a light grey) where in shadow. The illumination reference time is fixed at the dataset's
-  temporal midpoint — one global snapshot, not per-entry lighting; `illumination.sun_elevation_deg
-  (ground_km, et)` already gives sun elevation for an arbitrary ground point/time and is the natural
-  building block for a coarse lon/lat grid's day/night classification.
-- **Dataset short name**: `write_index_html` already reads `self.folder.name` informally as the
-  dataset's display name. That may already be sufficient — no strong need for a new stored field if
-  a `TrnTestDataSet.name` property just returning `self.folder.name` signals "this is the standard
-  identifier" clearly enough. Used in the `<title>` of every page above (nav bar, overview map,
-  overview table, and each entry's detail report) either way.
+- **Overview map**: built, `src/trntest/overview_map.py`
+  (`plot_overview_map`/`write_overview_map`, registered in `trntest/__init__.py` alongside
+  `plotting`/`report`) — not yet wired into `TrnTestDataSet.write_index()` or linked from anywhere
+  (no nav bar/overview table reference it yet), call directly (`trntest.overview_map.
+  write_overview_map(dataset)`) until those exist. Background: `luna_wac_global` (Lunaserv, see
+  `docs/data-sources/lunaserv-wms.md` — deprecated for per-camera fetches in favor of `WAC_EMP` on
+  image-quality grounds, but that concern doesn't apply to this map's own display), plain geographic
+  lon/lat (`config.lunaserv_dem_srs`, reused as-is despite the DEM-flavored name — same fixed CRS),
+  fetched once via the existing `cache.fetch_lunaserv_getmap` and cached like any other tile, at 40%
+  opacity (raised from an initial 20%, which read too faint in practice). Day/night mask: computed
+  directly from the sub-solar point (`illumination.sub_solar_lonlat_deg`, one SPICE call total) via
+  the standard spherical solar-elevation law-of-cosines formula rather than a per-point SPICE
+  `ilumin` call — cheap enough (pure `numpy`) to run at the backdrop's own full pixel resolution for
+  a genuinely smooth terminator, not a coarse grid; white where sunlit, 80%-white (light grey) where
+  in shadow, drawn as the base layer with the backdrop on top at its own opacity. Illumination
+  reference time is `overview_map.dataset_midpoint_datetime` — halfway between the dataset's earliest
+  `start_time` and latest `stop_time` — one global snapshot, not per-entry lighting. Live-verified
+  against that same `sub_solar_lonlat_deg` call at the same epoch: the rendered terminator's longitude
+  boundaries matched its ±90° antipodal boundary almost exactly. A 30°-spaced lon/lat grid is drawn
+  for scale reference.
+
+  Each entry's own FOV is a real footprint polygon (a straight-line quadrilateral through
+  `entry.camera.footprint_lonlat_deg`'s 4 corners — fine at this whole-Moon zoom level, no need for
+  the real geodesic edges), not just a center point — a real per-entry `Camera`/SPICE rebuild cost
+  (the same one `report.problem_flags`'s own dropped footprint-geometry check avoided for a cheaper,
+  more-frequently-run function), accepted here since this map is generated on demand, not on every
+  `write_index()` call. Each entry's index label is anchored at its footprint's own bounding-box
+  upper-right corner (`_upper_right_label_point`), not its center, so it doesn't collide with the
+  polygon; drawn in `darkred` for better contrast against the backdrop than plain `red`. A footprint
+  that straddles the +/-180° antimeridian is drawn correctly, not as a spurious line across the whole
+  plot — plain matplotlib has no built-in geographic wraparound, so `_antimeridian_split_xy` applies
+  this codebase's own existing per-edge unwrap-then-clip technique
+  (`illumination.unwrap_relative_deg`, already used by `dataset_selection_plots._underline_segments`
+  for the same reason) to each of the polygon's 4 edges, inserting a `nan` at any edge that crosses
+  the seam so a single `ax.plot` call skips drawing across the break; verified against a synthetic
+  seam-straddling footprint (none of `trn_dataset`'s own 2 real entries happen to cross it).
 - **Richer problem flags**: crater-sharpness grading (`crater_depth.py`), a real tie-point pixel
   residual (not computed anywhere today — `tie_points.py` only produces ground-truth pixel
   *locations* for overlay plotting, no image-based comparison), and the footprint-geometry check

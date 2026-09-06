@@ -184,6 +184,12 @@ class TrnTestDataSet:
         self.images = images.reset_index(drop=True)
         self.config = config
 
+    @property
+    def name(self) -> str:
+        """The dataset's display name, for page titles/headings -- just the folder's own name; no
+        separate stored field, since the folder name already serves as the standard identifier."""
+        return self.folder.name
+
     @classmethod
     def create(cls, folder: Path | str, images: pd.DataFrame, config: TrntestConfig | None = None) -> "TrnTestDataSet":
         """Idempotent: (re)writes `manifest.csv` from `images`, ensures `crop`/`hillshade`/

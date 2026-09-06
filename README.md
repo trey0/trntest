@@ -25,10 +25,11 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 `notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
 `populate_via_workers()`; its content is a title (dataset name, entry index, entry id), a one-line
 summary (orbit, center, sun elevation/azimuth), and `reproject`'s overlay-toggle and
-full-resolution zoom blink against the basemap, but is still short of the full site described in
-`docs/proposed-tasks/report-plan.md`'s "Future work" section (nav bar, overview map). A real
-population run across a full selected dataset hasn't happened yet, so there's no
-dataset-scale validation.
+full-resolution zoom blink against the basemap. A standalone dataset-wide overview map
+(`src/trntest/overview_map.py`) also exists as a first pass, but the full site described in
+`docs/proposed-tasks/report-plan.md`'s "Future work" section (nav bar, real per-entry footprint
+overlays on the map) isn't built yet. A real population run across a full selected dataset hasn't
+happened yet, so there's no dataset-scale validation.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -233,6 +234,7 @@ lint's notebook checks).
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | [`ortho_wac_emp.py`][ortho_wac_emp.py] | Live default ortho/texture source: fetches/caches WAC_EMP's own PDS4 archive tile directly (no Lunaserv WMS display stretch) and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
+| [`overview_map.py`][overview_map.py] | Dataset-wide ground-track overview plot (`plot_overview_map`/`write_overview_map`) — global backdrop + sub-solar-point day/night mask + each entry's real FOV footprint polygon and index label. Per `docs/proposed-tasks/report-plan.md`; not yet wired into `write_index()` or linked from anywhere. |
 | [`plotting.py`][plotting.py] | Generic raster-display primitives (`plot_raster`, `read_raster_band`) plus generator-comparison figures: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`) and a quantitative brightness diff (`compute_brightness_matched_diff`). |
 | [`pose_alignment/control_network.py`][pose_alignment/control_network.py] | Converts `tie_point_matching.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`pose_alignment/tie_point_matching.py`][pose_alignment/tie_point_matching.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
@@ -272,6 +274,7 @@ lint's notebook checks).
 [maneuver_detection.py]: src/trntest/maneuver_detection.py
 [orientation.py]: src/trntest/orientation.py
 [ortho_wac_emp.py]: src/trntest/ortho_wac_emp.py
+[overview_map.py]: src/trntest/overview_map.py
 [plotting.py]: src/trntest/plotting.py
 [pose_alignment/control_network.py]: src/trntest/pose_alignment/control_network.py
 [pose_alignment/tie_point_matching.py]: src/trntest/pose_alignment/tie_point_matching.py

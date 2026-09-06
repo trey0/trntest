@@ -5539,3 +5539,127 @@ from an in-place regen against an existing `report_dir` after removing the hills
 nbconvert `ExtractOutputPreprocessor` characteristic (doesn't clean a previous run's now-unreferenced
 extracted files), not a regression from this change; harmless for a real `TrnTestReport._generate_impl`
 call, which never had a stale hillshade image in that `report_dir` to begin with.
+
+## Phase 105 (2026-09-05) — `TrnTestDataSet.name` property; first-pass overview map
+
+Two pieces of `docs/proposed-tasks/report-plan.md`'s "Future work," picked up after Phase 104's
+report polish. First, the trivial one: added `TrnTestDataSet.name` (just `self.folder.name`) and
+switched `report.py`'s two informal `dataset.folder.name`/`Path(dataset_folder).name` uses over to
+it, closing out that bullet.
+
+Second, a first pass at the overview map: new `src/trntest/overview_map.py`
+(`plot_overview_map`/`write_overview_map`, registered in `trntest/__init__.py` alongside
+`plotting`/`report`) — a ground-track-style plot of every entry in a dataset on a global lunar
+backdrop. Mechanism: `cache.fetch_lunaserv_getmap` (already existed, previously only used by the
+deprecated `lunaserv_wms` ortho path and the deprecated DEM path) fetches `luna_wac_global` at a
+coarse global resolution in plain geographic lon/lat (`config.lunaserv_dem_srs` — reused as-is
+despite the DEM-flavored name, since it's just the fixed `IAU2000:30100` CRS string, body/layer-
+generic); a coarse (1°, ~65k-point) lon/lat grid classifies day/night via
+`illumination.sun_elevation_deg(tie_points.lonlat_to_ground_km(lon, lat), et)` at the dataset's
+temporal midpoint (`dataset_midpoint_datetime` — halfway between the earliest `start_time` and
+latest `stop_time`); the day/night mask is drawn as the base layer (white sunlit / 80%-white shadow),
+the backdrop on top at ~20% opacity per the plan's own spec; each entry gets a point + index-number
+label at its manifest `center_lat_deg`/`center_lon_deg` (not a real footprint polygon — deliberately
+deferred, see below).
+
+**Live-verified for correctness, not just "runs without crashing"**: computed the true sub-solar
+point independently via `illumination.sub_solar_lonlat_deg` at the same epoch and confirmed the
+rendered terminator's longitude boundaries matched its ±90° antipodal boundary almost exactly.
+Caught one real visual bug this way before settling on the final grid resolution: an initial 5°-step
+grid rendered as a jagged/stepped boundary that looked wrong at first glance, but the underlying data
+was already correct (same sub-solar cross-check passed) — the raggedness was genuinely the Moon's own
+small-but-nonzero axial tilt shifting the terminator's longitude near the poles, just rendered
+blocky by the coarse grid, not a computation bug. Timed the grid computation itself (not vectorized —
+one SPICE `ilumin` call per point) across a few resolutions (5°: 0.07s, 2°: 0.44s, 1°: 1.75s) and
+found plenty of headroom, so shipped at 1° for a visibly smoother curve instead of settling for the
+coarser default the first draft used.
+
+**Deliberately deferred, matching the per-entry report's own "ship minimal, iterate" precedent** set
+in Phases 102/104: real per-entry footprint-polygon overlays (`camera.footprint_lonlat_deg`) would
+need a fresh SPICE camera rebuild per entry with no cheap place to read it from today — the same cost
+concern `report.problem_flags`'s own dropped footprint-geometry check ran into (see "Report as a
+product type" in `report-plan.md`) — so this first pass uses the manifest's already-known center
+lat/lon instead, keeping generation cheap (~3s including the one-time backdrop fetch, now cached, for
+the real 2-entry `trn_dataset`) for a many-entry dataset. Also not yet wired into
+`TrnTestDataSet.write_index()` or linked from any nav bar/overview table (neither exists yet) — call
+`overview_map.write_overview_map(dataset)` directly for now.
+
+**Verification**: `trntest-lint` clean, full `pytest` clean (359 passed — added
+`test_overview_map.py`'s one pure-`pandas`, no-SPICE unit test for `dataset_midpoint_datetime`).
+Ran `write_overview_map` against the real, live `trn_dataset` (2 entries) end to end and visually
+inspected the rendered PNG: both entries' points/labels land at their correct manifest
+lat/lon, real crater texture is visible through the low-opacity backdrop, and the day/night
+boundary's shape and location match the independent sub-solar-point cross-check above.
+
+## Phase 106 (2026-09-05) — Overview map polish: real footprint polygons, sub-solar trig, five fixes
+
+User feedback on Phase 105's first-pass overview map, applied directly:
+
+1. **Added a 30°-spaced lon/lat grid** for scale reference.
+2. **Real FOV footprint polygons, not center points**: each entry now draws a straight-line
+   quadrilateral through `entry.camera.footprint_lonlat_deg`'s 4 corners (fine at this whole-Moon
+   zoom level -- no need for the real geodesic edges), overriding Phase 105's own "too expensive"
+   deferral of this exact thing. `_require_point` narrows each corner's `tuple[float, float] | None`
+   type for mypy (`assert`-and-return, called per corner -- a bare `assert all(c is not None for c in
+   ring)` doesn't narrow individual list elements for mypy's flow analysis, confirmed live when the
+   first attempt still failed `mypy` with the list held at its wider `| None` type).
+3. **Fixed a real inverted-value bug**: `SHADOW_GRAY_LEVEL` was `1.0 - 0.8 = 0.2` (nearly black) where
+   it should have just been `0.8` (80% of full white, i.e. light grey, per the plan's own spec) --
+   the `1.0 -` was left over from thinking of the constant as "how much to dim," not the target
+   grayscale value directly.
+4. **`BACKDROP_ALPHA`: 0.2 -> 0.4** -- the original 20% read too faint against the day/night layer
+   in practice.
+5. **Rewrote the day/night computation** per the user's own suggested approach: instead of Phase
+   105's per-point `illumination.sun_elevation_deg`/SPICE `ilumin` call over a coarse lon/lat grid,
+   `_day_night_mask` now calls `illumination.sub_solar_lonlat_deg` once (the only SPICE call left)
+   and computes sun elevation everywhere else via plain `numpy` spherical trig (the standard
+   solar-elevation law-of-cosines formula, `sin(elevation) = sin(sub_lat)*sin(lat) +
+   cos(sub_lat)*cos(lat)*cos(lon-sub_lon)`), assuming a spherical Moon -- fine at this display scale.
+   This is cheap enough to run at the backdrop's own full pixel resolution instead of a separate
+   coarse grid, for a genuinely smooth terminator with no interpolation needed.
+
+**Verification**: `trntest-lint` clean, full `pytest` clean (359 passed, unchanged --
+`test_overview_map.py`'s one test doesn't touch any of the changed rendering code). Regenerated
+`overview_map.png` against the real `trn_dataset` (2 entries) and visually confirmed all five fixes
+at once: a visible 30°-grid overlay, both entries now show as small red quadrilaterals (not dots)
+with their index label near the center, the shadow region reads as a clearly lighter grey (not
+near-black), real crater texture is much more visible through the stronger backdrop, and the
+terminator is a smooth curve with no coarse-grid stepping at any latitude.
+
+## Phase 107 (2026-09-06) — Overview map: readable title time, non-colliding labels, antimeridian handling
+
+Four more small fixes from user feedback on Phase 106's map:
+
+1. **Title timestamp**: `midpoint_dt.isoformat()` (`2019-11-01T02:22:30.104500+00:00`) ->
+   `strftime("%Y-%m-%d %H:%M:%S")` (`2019-11-01 02:22:30`) -- more readable, no sub-second precision
+   or UTC offset nobody needed.
+2. **Index labels moved off the polygon interior**: were anchored at the footprint's center,
+   overlapping the polygon itself -- now anchored at `_upper_right_label_point`, the footprint's own
+   bounding-box upper-right corner (max longitude, max latitude among its 4 corners -- not
+   necessarily any single actual vertex, just a corner of its bounding box), computed via the same
+   `_unwrap_ring_relative_to_first` antimeridian-unwrap technique used for drawing (see below) so a
+   seam-straddling footprint still gets its true upper-right corner rather than one thrown off by a
+   raw (non-unwrapped) longitude comparison.
+3. **Darker red** (`"red"` -> `"darkred"`) for both the footprint outline and the index label, for
+   better contrast against the backdrop.
+4. **Antimeridian handling**: the user asked directly what happens to a footprint that crosses
+   +/-180° with plain matplotlib (nothing built-in handles geographic wraparound) -- answered by
+   implementing it, not just describing it. `_antimeridian_split_xy` applies this codebase's own
+   existing technique (`illumination.unwrap_relative_deg`, already used by
+   `dataset_selection_plots._underline_segments` for exactly this reason, just for a single line
+   segment rather than a closed 4-edge ring) to each of the footprint quadrilateral's edges: unwrap
+   the edge's second point relative to its first, detect whether the unwrapped edge crosses +/-180,
+   and if so split it at the boundary and continue from the opposite side. A `nan` is inserted at
+   each split so one `ax.plot` call skips drawing the connecting line across the break, rather than a
+   spurious line straight across the whole plot. Verified against a synthetic footprint straddling
+   the seam (traced through by hand against the function's own output: both crossing edges split
+   correctly at exactly (+/-180, correct interpolated latitude), the two non-crossing edges pass
+   through unmodified) -- neither of `trn_dataset`'s own 2 real entries happens to cross the seam, so
+   this couldn't be visually confirmed against real data this session.
+
+**Verification**: `trntest-lint` clean (two follow-up nits from the first pass: `zip()` needed an
+explicit `strict=False`, and the new title line needed wrapping under the 120-char limit), full
+`pytest` clean (359 passed, unchanged). Regenerated `overview_map.png` against the real `trn_dataset`
+and visually confirmed the title format, label positions (now clear of both polygons), and darker
+outline color; the antimeridian fix was confirmed separately via the synthetic-footprint trace above,
+not the real image (no real entry crosses the seam yet).
