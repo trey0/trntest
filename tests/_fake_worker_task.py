@@ -26,12 +26,13 @@ class FakeWorkerImage:
 
 
 class FakeWorkerEntry:
-    """Minimal stand-in for `TrnTestEntry` -- just the `images_by_type` mapping and `log_path`
-    method `trntest.tasks._generate_entry` actually needs. Logs alongside `marker_path`, in the same
-    `tmp_path` the calling test already controls."""
+    """Minimal stand-in for `TrnTestEntry` -- just the `images_by_type` mapping, `edr_product`, and
+    `log_path` method `trntest.tasks._generate_entry` actually needs. Logs alongside `marker_path`,
+    in the same `tmp_path` the calling test already controls."""
 
     def __init__(self, marker_path: str):
         self.images_by_type = {"fake": FakeWorkerImage(marker_path)}
+        self.edr_product = "FAKE"
         self._log_dir = Path(marker_path).parent
 
     def log_path(self, product_type: str) -> Path:
@@ -52,6 +53,7 @@ class FailingWorkerImage:
 class FailingWorkerEntry:
     def __init__(self, log_dir: str):
         self.images_by_type = {"fake": FailingWorkerImage()}
+        self.edr_product = "FAKE"
         self._log_dir = Path(log_dir)
 
     def log_path(self, product_type: str) -> Path:

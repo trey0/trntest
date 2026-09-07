@@ -120,6 +120,7 @@ def atomic_publish(dest: Path) -> Iterator[Path]:
     try:
         yield tmp
         tmp.rename(dest)
+        print(f"wrote {dest}")
     except BaseException:
         if tmp.is_dir():
             shutil.rmtree(tmp, ignore_errors=True)
@@ -157,6 +158,7 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
     try:
         yield tmp
         tmp.rename(dest)
+        print(f"wrote {dest}")
     except BaseException:
         if tmp.is_dir():
             shutil.rmtree(tmp, ignore_errors=True)
@@ -192,6 +194,7 @@ def atomic_publish_prefix(dest: Path, tool_suffix: str) -> Iterator[Path]:
     try:
         yield tmp_prefix
         tmp_output.rename(dest)
+        print(f"wrote {dest}")
     except BaseException:
         tmp_output.unlink(missing_ok=True)
         raise
