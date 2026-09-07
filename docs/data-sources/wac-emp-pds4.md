@@ -42,14 +42,41 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
     (`60*304=18240`, `90*304=27360`, exact) — real coverage 90-180°E, 0-60°N, matching its own ID's
     `lon_center=135.0`/hemisphere `N` exactly.
   - **Polar coverage** (60-90° both hemispheres): a real, *separate* tile pair also exists in the same
-    listing (`WAC_EMP_643NM_P900N0000_304P.IMG`/`..._P900S0000_304P.IMG`, 643nm only) — presumably a
-    polar-stereographic projection (`P900` = pole at 90°), but its real format is **unverified and not
-    fetched by this project** (a deliberate scope decision, mirroring `astropedia_coverage_bbox_deg`'s
-    own `ASTROPEDIA_MAX_ABS_LATITUDE_DEG` precedent): `wac_emp_tile_id_for_bbox` raises `ValueError`
-    for any footprint whose padded AOI needs latitude beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0`,
-    rather than guessing at the polar format or silently falling back to the deprecated Lunaserv path.
-  - No multi-tile mosaic in this pass either: an AOI straddling the equator or a 90°-lon zone boundary
-    also raises `ValueError` (same "no silent fallback/mosaic" stance).
+    listing, 643nm/304ppd only — `WAC_EMP_643NM_P900N0000_304P.IMG`/`..._P900S0000_304P.IMG` — and
+    **is fetched by this project** (`wac_emp_tile_id_for_bbox` dispatches to it automatically for a
+    footprint entirely beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0` in one hemisphere; a footprint
+    that straddles that 60° boundary, or that needs polar coverage at a wavelength/ppd other than
+    643nm/304, still raises `ValueError` — no mosaic across the boundary, no silently-wrong tile).
+    Confirmed live via `gdalinfo`/`rasterio` on the real `P900N0000` tile (1,394,200,920 bytes,
+    18669x18669 px at 304 ppd): a genuine Polar Stereographic (variant A, EPSG method 9810,
+    `lat_0=90`/`lon_0=0`) projection GDAL's PDS3 driver reads natively, same as the equirect tiles —
+    no hand-rolled polar-projection math needed, and no antimeridian-branch-cut risk either (that bug
+    is specific to the equirect tiles' linear `x = R*lon_rad` formula — this projection's longitude
+    dependence is smooth sin/cos, so `reproject_wac_emp_reflectance_to_local_grid` gates that fix off
+    for it via a real PROJ4 `proj` tag check, not a hardcoded tile-family list).
+    - **Seam with the equirect grid**: the polar tile's own raster edge lands almost exactly on the
+      equirect grid's 60° boundary — real data confirmed starting at 61°, with a single-pixel nodata
+      sliver right at the shared 60° edge (an ordinary rasterization artifact, not a real coverage
+      gap) — so the two tile families meet cleanly with no real seam gap in practice.
+    - **Real, scattered interior nodata voids**: unlike every equirect AOI fetched by this project so
+      far (fully valid, no embedded nodata needed), the polar tile carries a genuine embedded
+      `NoData Value` (`-3.4028227e+38`), and real single-pixel voids exist well within its nominal
+      coverage — confirmed via a systematic 10°-longitude sweep: fully solid from 60-75°, then a
+      growing but still sparse (roughly 10-30% of sampled points) speckle of voids from 80° up to the
+      pole itself, presumably real imaging/illumination-geometry gaps in the underlying mosaic, not a
+      processing bug. `reproject_raster_to_local_grid`'s existing `src_nodata`/`dst_nodata` handling
+      (already exercised by the DEM path) propagates these through as ordinary NaN holes in the
+      output — confirmed on two real candidates (`M1314069739CE`, -72.6°: 2,381/1,731,856 NaN
+      pixels ≈0.14%; `M1314073855CE`, 70.8°: 6,689/1,731,856 ≈0.39%), both otherwise well-formed.
+    - **Practical reach today**: `fetch_dem_and_ortho` fetches the DEM (GLD100, capped at
+      `ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0`) before the ortho, so this polar-ortho support is only
+      actually reachable for 60-79° until DEM coverage is separately extended past 79° (tracked, not
+      yet done, in `docs/proposed-tasks/open-items.md`'s GLD100/VIRA bullet) — real 60-79° candidates
+      from a live orbit-sequence dataset (`M1314069739CE`/`M1314073855CE` above) confirm this range
+      works end to end today.
+  - No multi-tile mosaic in this pass either: an AOI straddling the equator, a 90°-lon zone boundary,
+    or the equirect/polar 60° boundary also raises `ValueError` (same "no silent fallback/mosaic"
+    stance).
 - **File format, confirmed live via `gdalinfo`/`rasterio` on the real 304ppd tile**: IEEE754 float32,
   real physical reflectance (I/F), a genuine PDS3-attached-label GeoTIFF-equivalent GDAL's own `PDS3`
   driver reads natively (`Driver: PDS3/PDS3`) — real embedded map-projection keywords (Equidistant

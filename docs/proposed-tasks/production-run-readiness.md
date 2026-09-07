@@ -40,19 +40,23 @@ these takes free space from 17GB to ~25GB — still not enough for the full 81-r
 buffer. Ask the user before deleting (these are other past worktrees' output, not this session's own
 scratch).
 
-## Latitude coverage: ~30-45% of the manifest will fail on a known, expected limit
+## Latitude coverage: mostly resolved since this assessment was written
 
-`notebooks/dataset_manifest.csv`'s 81 rows span `center_lat_deg` from -68.2° to +73.2°. WAC_EMP
-(the live default ortho source) only covers ±60°:
+`notebooks/dataset_manifest.csv`'s 81 rows span `center_lat_deg` from -68.2° to +73.2°. At the time
+this assessment was written, WAC_EMP (the live default ortho source) only covered ±60°, so 24 of 81
+rows (`|center_lat_deg| > 60`) were guaranteed to fail outright.
 
-- 24 of 81 rows have `|center_lat_deg| > 60` — guaranteed `ValueError` ("beyond WAC_EMP's ±60.0 deg
-  coverage").
-- 36 of 81 have `|center_lat_deg| > 50` — at risk once the camera footprint's own padding is added.
-
-This is an already-known, already-documented limit (`WAC_EMP_MAX_ABS_LATITUDE_DEG`,
-`docs/data-sources/wac-emp-pds4.md`), not a bug — but worth pre-filtering the manifest to
-low-latitude rows before a production run rather than discovering the failure rate one entry at a
-time.
+**Resolved in a later session**: `wac_emp_tile_id_for_bbox` now also fetches WAC_EMP's own
+polar-stereographic tile pair (`P900N`/`P900S`) for a footprint entirely beyond 60° in one
+hemisphere — see `docs/data-sources/wac-emp-pds4.md`'s polar-tile bullet for the confirmed
+format/coverage facts. Since GLD100 (the DEM source `fetch_dem_and_ortho` calls first) still caps
+out at ±79° and this manifest's own range (-68.2°..+73.2°) fits entirely inside that, essentially all
+24 previously-failing rows should now succeed — confirmed end to end on two real high-latitude
+candidates from a *different* dataset (`orbit_sequence_dataset`'s `M1314069739CE`/`-72.6°` and
+`M1314073855CE`/`70.8°`), but **not yet re-verified against `trn_dataset`'s own manifest
+specifically** — a real remaining risk is any row whose padded AOI happens to straddle the exact 60°
+equirect/polar seam (still an unmosaiced hard `ValueError`, by design), which this pre-filtering pass
+would still need to catch.
 
 ## Resolved: the second, different failure mode from `orbit_sequence_dataset`
 
@@ -82,8 +86,10 @@ stay legible with 50+ overlapping entries on one global map, or whether `write_i
 1. Free disk space first: at minimum reclaim the ~7.9GB of orphaned worktree `output/` (with the
    user's go-ahead); reconsider whether the full 81-row manifest is the right scope at all given the
    remaining headroom, versus a deliberately-chosen low-latitude subset.
-2. Pre-filter `trn_dataset`'s manifest to `|center_lat_deg| <= 50` (or similar) before a real run,
-   rather than hitting the known WAC_EMP limit one entry at a time.
+2. Pre-filter `trn_dataset`'s manifest to exclude any row whose padded AOI would straddle the exact
+   60° equirect/polar seam (now the only remaining hard latitude cutoff within GLD100's own ±79°
+   DEM coverage — see "Latitude coverage" above) before a real run, rather than hitting it one entry
+   at a time.
 3. Run a small trial (10-20 entries from that filtered set) first — not the full run — to get a real
    per-entry timing number for this dataset's own geometry before committing to a much larger batch.
 4. Follow `docs/batch-generation.md`'s existing guidance for the real run:

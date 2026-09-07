@@ -6001,3 +6001,91 @@ ortho intermediates weren't silently reused from the buggy first-pass fix) and r
 to end via real `populate()` calls, with the actual published hillshade pixel content inspected
 directly (not just "no exception raised") to catch the same silent-NaN failure mode the first,
 incomplete version of this fix suffered from.
+
+## Phase 116 (2026-09-07) — WAC_EMP polar-tile support, extending ortho coverage from ±60° to ±79°
+
+Direct follow-up request after Phase 115: assess low-hanging fruit for expanding latitude coverage
+past WAC_EMP's ±60°/GLD100's ±79° limits, given the user's own recollection that "one data set goes
+to 60 and one to 79" and a vague memory of polar data in a different projection. Initial assessment
+surfaced the obvious cheap option (auto-fallback to the deprecated Lunaserv WMS ortho layer beyond
+60°) — the user rejected this immediately and emphatically: Lunaserv WMS layers are not considered a
+known-good fallback (real, previously-fixed defects — the affine DN stretch Phase 78 migrated off of,
+the DEM side's crosshatch artifact), and the project's existing hard-fail-on-missing-coverage
+behavior is a deliberate choice, not something to silently paper over. Directed instead to pursue
+WAC_EMP's own polar-stereographic tile pair (`P900N`/`P900S`, previously flagged "unverified format,
+not fetched" in `ortho_wac_emp.py`'s own comments) and explicitly leave DEM coverage (GLD100's ±79°,
+NASA's VIRA project as a possible future extension) aside for this pass.
+
+**Real archive investigation before writing any code.** The project's own `?list-type=2&prefix=...`
+S3-listing technique (Phase 78) confirmed the exact real bucket root
+(`https://pds.mcp.nasa.gov/data/store/img/?list-type=2&prefix=...` — not the `.../WAC_EMP/` path
+itself, which 404s when queried directly) and the two real polar product IDs/sizes
+(`WAC_EMP_643NM_P900N0000_304P.IMG`/`..._P900S0000_304P.IMG`, ~1.39GB each, 643nm/304ppd only, same
+as this project's own defaults). `gdalinfo`/`rasterio` on the real tile via GDAL's `/vsicurl/`
+virtual filesystem (cheap partial reads, no full download) confirmed a genuine Polar Stereographic
+(variant A, EPSG method 9810, `lat_0=90`/`lon_0=0`) projection, real embedded georeferencing GDAL's
+PDS3 driver reads natively — no unverified/hand-rolled format risk after all. Hit a real `HTTP 429`
+from the archive mid-investigation (raw `/vsicurl/`/`curl` probing bypasses `cache.py`'s own
+pacing/backoff) — a useful reminder to route all further real fetches through `cache.fetch_wac_emp_tile`
+rather than ad hoc GDAL virtual-filesystem reads, not just a data point.
+
+**A systematic point-sampling sweep, not just corner inspection, found the two facts that actually
+mattered**: (1) the polar tile's own raster edge lands almost exactly on the equirect grid's 60°
+boundary (real data confirmed starting at 61°, a single-pixel nodata sliver right at the shared edge
+— an ordinary rasterization artifact, not a coverage gap, so the two tile families meet cleanly), and
+(2) real, scattered single-pixel nodata voids exist well within nominal coverage from 80° up to the
+pole (fully solid 60-75°, then a sparse ~10-30% speckle of voids toward the pole) — a genuine
+embedded `NoData Value`, unlike every equirect AOI fetched so far. Neither fact was guessable from
+the file's own metadata alone; both came from actually querying real pixel values across a lon/lat
+grid.
+
+**Implementation, in `ortho_wac_emp.py`**: `wac_emp_tile_id_for_bbox` now checks `minlat`/`maxlat`
+against `WAC_EMP_MAX_ABS_LATITUDE_DEG` *before* touching longitude at all (a footprint whose padded
+AOI genuinely encircles the pole has meaningless naive lon min/max — irrelevant for polar dispatch,
+since the polar tile has no longitude zoning to begin with), returning the polar product ID for a
+footprint entirely beyond 60° in one hemisphere, raising for the archive's own restricted
+wavelength/ppd there, and raising a new "straddles the equirect/polar boundary" error (matching the
+existing equator/lon-zone-boundary stance — no mosaic across it) for a footprint that spans both
+sides of 60°.
+
+**A real design bug caught before it shipped, not discovered live**: Phase 115's antimeridian fix
+unconditionally re-expressed every WAC_EMP source as an equirectangular CRS (`+proj=eqc`) before the
+final warp, to sidestep that projection's own branch cut — applying that same "correction"
+unconditionally to a genuinely Polar Stereographic source would have silently mis-declared its
+projection family and corrupted otherwise-correct data, a subtler and harder-to-detect bug than the
+one being fixed. Caught by reasoning through the fix's own assumptions before writing the polar
+dispatch code, not by a failing test — `reproject_wac_emp_reflectance_to_local_grid` now gates the
+whole branch-cut correction on the source's real PROJ4 `proj` tag (`== "eqc"`), not a hardcoded
+tile-family list, so it stays correct for either family and for any future one.
+
+**Tests**: `tests/test_ortho_wac_emp.py` gained polar-tile-resolution cases (north/south dispatch,
+wrong-band rejection, seam-straddle rejection) and a synthetic Polar-Stereographic fixture proving
+the branch-cut fix stays correctly gated off for that projection family, using the real confirmed
+projection parameters (`lat_0=90`, EPSG 9810) rather than the equirect fixtures' own convention.
+
+**Real end-to-end verification, not just synthetic**: two real high-latitude candidates from
+`orbit_sequence_dataset` (previously unreachable, one directly blocked by the old ±60° `ValueError`)
+were populated fresh through the full pipeline — `M1314069739CE` (-72.6°, real `P900S0000` tile) and
+`M1314073855CE` (70.8°, real `P900N0000` tile) — both completing crop/hillshade/report cleanly, with
+actual published hillshade pixel content inspected directly (plausible min/max/mean, small NaN
+fractions matching the polar tile's own confirmed sparse-void rate: 0.14%/0.39% respectively, not the
+100%-NaN silent-corruption pattern Phase 115 caught). A third real candidate genuinely straddling the
+60° seam (`M1314069493CE`, padded AOI -63.17°..-56.32°) correctly raised the new boundary error
+instead of silently mis-resolving, confirming that path live too.
+
+**A genuinely open, separate question surfaced but not investigated further this session**: one
+polar hillshade's own pixel range included a small negative value (`M1314069739CE`: min -2.36) —
+plausibly ordinary Hapke-ratio shading behavior at the grazing sun-elevation geometries the user
+themselves flagged as an expected risk at these latitudes ("grazing-angle issues... hopefully not
+totally intolerable"), not investigated further since it's orthogonal to this session's own scope.
+
+**Practical reach today**: since `fetch_dem_and_ortho` fetches the DEM (GLD100, still capped at
+±79°) before the ortho, this polar-ortho support is only reachable for 60-79° until DEM coverage is
+separately extended (deliberately deferred, per the user's own explicit scope call) — matching
+exactly the range the user identified as their real, practical need ("our already selected datasets
+stretch up past 60 but not up to 79").
+
+**Docs**: `docs/data-sources/wac-emp-pds4.md`'s polar-tile bullet rewritten from "unverified format,
+not fetched" to the confirmed facts above; `docs/proposed-tasks/production-run-readiness.md`'s
+latitude-coverage section updated to reflect the new, mostly-resolved state (not yet re-verified
+against `trn_dataset`'s own manifest specifically).

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_bounds as transform_from_bounds
+from rasterio.warp import transform as warp_transform
 
 from trntest import ortho_wac_emp
 from trntest.config import MOON_RADIUS_M
@@ -34,10 +35,37 @@ def test_wac_emp_tile_id_for_bbox_rejects_unknown_wavelength():
         ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, 30.0, MOON_RADIUS_M, wavelength_nm=500)
 
 
-def test_wac_emp_tile_id_for_bbox_raises_beyond_max_latitude():
+def test_wac_emp_tile_id_for_bbox_resolves_polar_north():
+    # A footprint fully north of the equirect grid's own +-60 deg coverage resolves to the
+    # polar-stereographic tile pair instead of raising (confirmed real, fetchable tile -- see
+    # docs/data-sources/wac-emp-pds4.md's polar-tile bullet).
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    with pytest.raises(ValueError, match="beyond WAC_EMP"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, 85.0, MOON_RADIUS_M)
+    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M)
+    assert tile_id == "WAC_EMP_643NM_P900N0000_304P"
+
+
+def test_wac_emp_tile_id_for_bbox_resolves_polar_south():
+    dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
+    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, -75.0, MOON_RADIUS_M)
+    assert tile_id == "WAC_EMP_643NM_P900S0000_304P"
+
+
+def test_wac_emp_tile_id_for_bbox_rejects_non_default_band_for_polar():
+    # The polar tile pair only exists at one wavelength/ppd combination (confirmed via the archive's
+    # own listing) -- a footprint that needs polar coverage but requests a different one can't be
+    # silently served a wrong tile.
+    dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
+    with pytest.raises(ValueError, match="archive only offers"):
+        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M, wavelength_nm=321, ppd=64)
+
+
+def test_wac_emp_tile_id_for_bbox_raises_when_straddling_equirect_polar_boundary():
+    # A footprint whose padded AOI spans from well inside the equirect grid's own +-60 deg coverage to
+    # well beyond it -- no single tile (equirect or polar) covers it, and this project doesn't mosaic
+    # across that boundary either, matching its existing equator/lon-zone-boundary stance.
+    dst_bbox_m = (-50000.0, -200000.0, 50000.0, 200000.0)  # +-200km height, well past +-60 at center 60
+    with pytest.raises(ValueError, match="doesn't mosaic across it"):
+        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 60.0, MOON_RADIUS_M)
 
 
 def test_wac_emp_tile_id_for_bbox_raises_when_straddling_equator():
@@ -146,6 +174,64 @@ def test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimerid
     _write_wac_emp_antimeridian_style_tif(native_path, reflectance_value, 199.5, 200.5, 64, moon_radius_m)
 
     center_lon, center_lat = -160.0, 0.0  # SPICE-style signed convention for physical longitude 200 deg
+    dst_bbox_m = (-5_000.0, -5_000.0, 5_000.0, 5_000.0)
+    dst_width, dst_height = 32, 32
+    output_path = tmp_path / "reprojected.tif"
+
+    result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
+        native_path, dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+    )
+
+    with rasterio.open(result_path) as src:
+        result = src.read(1)
+    assert result.shape == (dst_height, dst_width)
+    assert not np.isnan(result).any()
+    assert result == pytest.approx(reflectance_value, abs=1e-4)
+
+
+def _write_wac_emp_polar_style_tif(
+    path, reflectance_value, center_lon_deg, center_lat_deg, half_width_m, size, moon_radius_m
+):
+    """Fixture matching the real WAC_EMP polar tile's own projection family -- Polar Stereographic,
+    not Equirectangular (confirmed live via `gdalinfo` on the real `P900N0000` tile: EPSG method 9810,
+    `lat_0=90`/`lon_0=0`). Used to prove `reproject_wac_emp_reflectance_to_local_grid`'s
+    antimeridian-branch-cut fix stays correctly gated off (`is_equirect`) for this projection family --
+    it has no such branch cut (longitude enters through smooth sin/cos terms, not a raw linear
+    multiply), so "correcting" it the same way would corrupt otherwise-valid data instead of fixing
+    anything."""
+    crs = f"+proj=stere +lat_0=90 +lat_ts=90 +lon_0=0 +R={moon_radius_m} +units=m +no_defs"
+    geo_crs = f"+proj=longlat +R={moon_radius_m} +no_defs"
+    (cx,), (cy,) = warp_transform(geo_crs, crs, [center_lon_deg], [center_lat_deg])
+    bbox_m = (cx - half_width_m, cy - half_width_m, cx + half_width_m, cy + half_width_m)
+    transform_ = transform_from_bounds(*bbox_m, size, size)
+    data = np.full((size, size), reflectance_value, dtype="float32")
+    with rasterio.open(
+        path, "w", driver="GTiff", height=size, width=size, count=1, dtype="float32", crs=crs, transform=transform_
+    ) as dst:
+        dst.write(data, 1)
+
+
+def test_reproject_wac_emp_reflectance_to_local_grid_handles_polar_stereographic_source(tmp_path):
+    # A footprint near the pole resolves to the real polar-stereographic tile family (see
+    # test_wac_emp_tile_id_for_bbox_resolves_polar_north/south) -- this confirms
+    # reproject_wac_emp_reflectance_to_local_grid's generic warp still produces correct, non-NaN
+    # output for that different projection family, and specifically that the antimeridian-branch-cut
+    # fix (which only makes sense for the equirect tiles' `central_meridian=0` formula) doesn't fire
+    # for it and corrupt otherwise-good data.
+    moon_radius_m = 1_737_400.0
+    reflectance_value = 0.08
+    center_lon, center_lat = 45.0, 80.0
+    native_path = tmp_path / "wac_emp_native_polar.tif"
+    _write_wac_emp_polar_style_tif(
+        native_path,
+        reflectance_value,
+        center_lon,
+        center_lat,
+        half_width_m=30_000.0,
+        size=120,
+        moon_radius_m=moon_radius_m,
+    )
+
     dst_bbox_m = (-5_000.0, -5_000.0, 5_000.0, 5_000.0)
     dst_width, dst_height = 32, 32
     output_path = tmp_path / "reprojected.tif"
