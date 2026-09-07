@@ -36,7 +36,7 @@ import rasterio
 import rasterio.warp
 import rasterio.windows
 
-from trntest import cache, geo_utils
+from trntest import cache, geo_utils, trace
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
 from trntest.product_io import atomic_publish, atomic_publish_path, writes_product
@@ -501,13 +501,15 @@ def run_pipeline(flip: bool, frame_timing: FrameTiming, config: TrntestConfig | 
     out_prefix = _spike_dir(config) / edr.img_path.stem
     stitched_path = out_prefix.with_name(out_prefix.name + ".vis.cal.stitched.cub")
     if stitched_path.exists():
-        print(f"cache hit: {stitched_path}")
+        if trace.enabled():
+            print(f"cache hit: {stitched_path}")
         return FramestitchResult(cub_path=stitched_path, flip=flip)
 
     vis_even_path = out_prefix.with_name(out_prefix.name + ".vis.even.cub")
     vis_odd_path = out_prefix.with_name(out_prefix.name + ".vis.odd.cub")
     if vis_even_path.exists() and vis_odd_path.exists():
-        print(f"cache hit: {vis_even_path}, {vis_odd_path} -- skipping lrowac2isis")
+        if trace.enabled():
+            print(f"cache hit: {vis_even_path}, {vis_odd_path} -- skipping lrowac2isis")
         split = Lrowac2IsisResult(
             uv_even=out_prefix.with_name(out_prefix.name + ".uv.even.cub"),
             vis_even=vis_even_path,
@@ -636,9 +638,11 @@ def ensure_crop_for_camera(
     config = config or load_config()
     cached = cached_crop_path(config)
     if cached.exists():
-        print(f"cache hit: {cached}")
+        if trace.enabled():
+            print(f"cache hit: {cached}")
         return CropResult(cub_path=cached)
-    print(f"cache miss: {cached} -- running full ISIS pipeline")
+    if trace.enabled():
+        print(f"cache miss: {cached} -- running full ISIS pipeline")
 
     stitched = run_pipeline(flip, frame_timing, config)
     crop = crop_for_camera(stitched, camera, config)

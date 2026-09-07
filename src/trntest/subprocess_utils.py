@@ -3,6 +3,8 @@
 import shlex
 import subprocess
 
+from trntest import trace
+
 
 def run_quiet(cmd: list[str]) -> None:
     """Like `subprocess.run(cmd, check=True)`, but captures stdout/stderr instead of letting them
@@ -14,9 +16,11 @@ def run_quiet(cmd: list[str]) -> None:
     """
     # ASP binaries are noisy by default (progress bars, verbose logs) and inherit the calling
     # process's own stdout/stderr, which would otherwise flood a notebook cell.
-    print("+ " + shlex.join(cmd))  # every call site (isis_wac.py/render.py/hapke.py/dem_ortho.py/
-    # report.py) runs through here, so this one line traces every external command this project
-    # invokes -- shlex.join, not " ".join, so a path containing spaces is still unambiguous.
+    if trace.enabled():
+        # Every call site (isis_wac.py/render.py/hapke.py/dem_ortho.py/report.py) runs through
+        # here, so this one line traces every external command this project invokes -- shlex.join,
+        # not " ".join, so a path containing spaces is still unambiguous.
+        print("+ " + shlex.join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         print(result.stdout, end="")

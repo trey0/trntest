@@ -17,6 +17,7 @@ from pathlib import Path
 
 from huey import SqliteHuey
 
+from trntest import trace
 from trntest.config import load_config
 
 _config = load_config()
@@ -157,7 +158,12 @@ def _capture_generator_log(log_path: Path, product_type: str, edr_product: str) 
     # is redirected wholesale into <output_dir>/.huey/consumer.log, every worker's output
     # interleaved together.
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "w") as log_file, contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
+    with (
+        open(log_path, "w") as log_file,
+        contextlib.redirect_stdout(log_file),
+        contextlib.redirect_stderr(log_file),
+        trace.enable(),
+    ):
         # edr_product in the header, not just log_path's own parent directory name, so the entry is
         # still identifiable if this file's content is copied elsewhere without its path.
         print(f"=== {edr_product} {product_type} generation started {datetime.now(UTC).isoformat()} ===")

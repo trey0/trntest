@@ -17,6 +17,8 @@ from pathlib import Path
 
 import requests
 
+from trntest import trace
+
 # A from-cold `candidate_window.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
 # sequential loop with no pacing between requests -- confirmed enough on its own, no concurrent
 # caller needed, to trip a server-side rate limiter (~3.5 req/s sustained for ~8 minutes; see
@@ -98,11 +100,14 @@ def cached_get(
     # rather than left behind.
     dest = cache_root / rel_path
     if dest.exists() and dest.stat().st_size > 0:
-        print(f"cache hit: {dest}")
+        if trace.enabled():
+            print(f"cache hit: {dest}")
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    print(f"fetching {url} -> {dest}")  # every fetch_* function in this module routes through
-    # here, so this traces every network fetch this project makes.
+    if trace.enabled():
+        # Every fetch_* function in this module routes through here, so this traces every network
+        # fetch this project makes.
+        print(f"fetching {url} -> {dest}")
 
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -220,11 +225,13 @@ def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
     # rather than captured.
     dest = cache_root / astropedia_rel_path(base_url)
     if dest.exists() and dest.stat().st_size > 0:
-        print(f"cache hit: {dest}")
+        if trace.enabled():
+            print(f"cache hit: {dest}")
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.parent / (dest.name + ".part")
-    print(f"fetching {base_url} -> {dest} (~10GB, resumable -- may already be partially downloaded)")
+    if trace.enabled():
+        print(f"fetching {base_url} -> {dest} (~10GB, resumable -- may already be partially downloaded)")
     result = subprocess.run(["curl", "-fL", "-C", "-", "-o", str(partial), base_url], check=False)
     if result.returncode != 0:
         raise RuntimeError(
@@ -232,7 +239,8 @@ def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
             f"partial download kept at {partial} for the next call to resume from"
         )
     partial.rename(dest)
-    print(f"wrote {dest}")
+    if trace.enabled():
+        print(f"wrote {dest}")
     return dest
 
 

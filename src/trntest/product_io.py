@@ -24,6 +24,8 @@ import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+from trntest import trace
+
 
 class ProductRegistryError(Exception):
     """Raised by `writes_product` when a label already has a registered writer -- principle 2 ("exactly
@@ -120,7 +122,8 @@ def atomic_publish(dest: Path) -> Iterator[Path]:
     try:
         yield tmp
         tmp.rename(dest)
-        print(f"wrote {dest}")
+        if trace.enabled():
+            print(f"wrote {dest}")
     except BaseException:
         if tmp.is_dir():
             shutil.rmtree(tmp, ignore_errors=True)
@@ -158,7 +161,8 @@ def atomic_publish_path(dest: Path) -> Iterator[Path]:
     try:
         yield tmp
         tmp.rename(dest)
-        print(f"wrote {dest}")
+        if trace.enabled():
+            print(f"wrote {dest}")
     except BaseException:
         if tmp.is_dir():
             shutil.rmtree(tmp, ignore_errors=True)
@@ -194,7 +198,8 @@ def atomic_publish_prefix(dest: Path, tool_suffix: str) -> Iterator[Path]:
     try:
         yield tmp_prefix
         tmp_output.rename(dest)
-        print(f"wrote {dest}")
+        if trace.enabled():
+            print(f"wrote {dest}")
     except BaseException:
         tmp_output.unlink(missing_ok=True)
         raise
