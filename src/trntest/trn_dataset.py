@@ -186,6 +186,27 @@ class TrnTestEntry:
     def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]:
         return {"crop": self.crop, "hillshade": self.hillshade, "reproject": self.reproject, "report": self.report}
 
+    @property
+    def log_dir(self) -> Path:
+        """This entry's captured-log folder -- `<dataset_folder>/logs/<edr_product>/`, holding
+        whichever generator logs (`log_path`) have actually been captured so far. Only created
+        (`_capture_generator_log`'s own `mkdir`) once at least one log has been written, so
+        `.is_dir()` doubles as "has anything been captured for this entry yet" -- `report.py`'s
+        overview table/summary link to this folder as a whole (one link, not one per generator) once
+        it exists, rather than enumerating individual `<product_type>_log.txt` files themselves."""
+        return self.dataset_folder / "logs" / self.edr_product
+
+    def log_path(self, product_type: str) -> Path:
+        """Where `tasks._generate_entry` captures this entry/product_type's console output
+        (stdout/stderr, plus a traceback on failure) -- `self.log_dir / f"{product_type}_log.txt"`.
+        `.txt`, not `.log` -- a plain `python3 -m http.server` (what serves this folder, see
+        `docs/report-generation.md`'s "Viewing reports" section) doesn't know the `.log` extension
+        and would otherwise serve it as `application/octet-stream`, which browsers download instead
+        of displaying; `.txt` is a real stdlib-recognized `mimetypes` extension, so no custom server
+        is needed just to view a log. Only written when that product type is actually generated (a
+        no-op `generate()` call, because it already exists, never touches this file)."""
+        return self.log_dir / f"{product_type}_log.txt"
+
 
 class TrnTestDataSet:
     """A self-contained dataset folder: `manifest.csv` plus `crop`/`hillshade`/`reproject`/`_work`
@@ -210,11 +231,11 @@ class TrnTestDataSet:
     @classmethod
     def create(cls, folder: Path | str, images: pd.DataFrame, config: TrntestConfig | None = None) -> "TrnTestDataSet":
         """Idempotent: (re)writes `manifest.csv` from `images`, ensures `crop`/`hillshade`/
-        `reproject`/`reports`/`_work` exist. Never touches already-generated product files -- those live
-        under `crop`/`hillshade`, untouched by this call."""
+        `reproject`/`reports`/`logs`/`_work` exist. Never touches already-generated product files --
+        those live under `crop`/`hillshade`, untouched by this call."""
         config = config or load_config()
         folder = Path(folder)
-        for sub in ("crop", "hillshade", "reproject", "reports", "_work"):
+        for sub in ("crop", "hillshade", "reproject", "reports", "logs", "_work"):
             (folder / sub).mkdir(parents=True, exist_ok=True)
         candidate_window.write_manifest(images, folder / "manifest.csv")
         return cls(folder, images, config)
@@ -369,6 +390,9 @@ class TrnTestDataSet:
 
         Like `populate()`/`populate_via_workers()`, not safe to run concurrently with itself against
         the same dataset folder (writes shared files).
+
+        Finishes by displaying a clickable link to the freshly-written `reports/index.html`
+        (`report.print_viewing_url`) -- the point of this call having just refreshed it.
         """
         from trntest import overview_map, report  # noqa: PLC0415 -- circular otherwise (both
         # import TrnTestDataSet/TrnTestEntry from this module)
@@ -382,6 +406,7 @@ class TrnTestDataSet:
         report.write_index_html(self, status_df)
         if write_overview_map:
             overview_map.write_overview_map(self, self.config)
+        report.print_viewing_url(self)
 
     def truncate(
         self,
@@ -389,10 +414,11 @@ class TrnTestDataSet:
         product_types: tuple[str, ...] = PRODUCT_TYPES,
         invalidate_crop_cache: bool = False,
     ) -> None:
-        """Delete already-generated product file(s) (`raster_path`/`sidecar_json_path`) and any
-        task-queue result state for `entries` (a single `TrnTestEntry`, a list of them, or `None`
-        for every entry in this dataset) across `product_types` -- reverting their `task_state`
-        back to `"pending"` so a subsequent `populate()` call regenerates them from scratch.
+        """Delete already-generated product file(s) (`raster_path`/`sidecar_json_path`), their
+        captured log file (`log_path`), and any task-queue result state for `entries` (a single
+        `TrnTestEntry`, a list of them, or `None` for every entry in this dataset) across
+        `product_types` -- reverting their `task_state` back to `"pending"` so a subsequent
+        `populate()` call regenerates them from scratch.
 
         Leaves `_work/<edr_product>/` intermediates (DEM/ortho, `.tsai`) alone -- regeneration
         reuses those where still valid (see `TrnTestEntry.dem_ortho_result`'s own resume-from-files
@@ -435,6 +461,9 @@ class TrnTestDataSet:
                 image = entry.images_by_type[product_type]
                 image.raster_path.unlink(missing_ok=True)
                 image.sidecar_json_path.unlink(missing_ok=True)
+                entry.log_path(product_type).unlink(missing_ok=True)  # stale otherwise -- would
+                # keep pointing at the truncated attempt's own log until the next populate() call
+                # regenerates it
             if invalidate_crop_cache and "crop" in product_types:
                 isis_wac.cached_crop_path(entry.per_image_config).unlink(missing_ok=True)
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)

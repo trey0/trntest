@@ -80,6 +80,17 @@ not one entry's own artifact — so they're a separate step, `TrnTestDataSet.wri
 (`write_index(write_overview_map=False)`; `write_overview_map` has its own real per-entry SPICE
 cost — see `docs/batch-generation.md` for why that matters at scale).
 
+The overview table's trailing `logs` column links to an entry's whole `log_dir` folder
+(`<dataset_folder>/logs/<edr_product>/`, `TrnTestEntry.log_dir`, holding whatever
+`<product_type>_log.txt` files `tasks._capture_generator_log` has captured during `generate()`) if
+anything's been captured there yet — one link to the folder, not one per generator file, since the
+folder's own directory listing (see "Viewing reports" below — Jupyter's own file server can't list a
+directory) already lets you pick the generator of interest. Most useful exactly when a
+row shows `failed`, since that's precisely when the log is worth a look. `report._logs_link_html`
+builds this same link for the per-entry report's own summary line too (see "Current report content"
+below) — see `docs/batch-generation.md`'s "Where to look when something fails" section for the full
+design.
+
 `problem_flags(entry)` is deliberately narrow: cheap, zero-fetch heuristics on `entry.row` only
 (currently just low sun elevation — deep-shadow risk, `LOW_SUN_ELEVATION_DEG_THRESHOLD` in
 `report.py`, a first guess not a validated cutoff). A footprint-geometry outlier check was
@@ -106,33 +117,75 @@ than on every `write_index()` call — see "Overview map" below.)
                              # never has anything to extract; kept anyway since nbconvert creates it
                              # unconditionally, and a future Figure-returning cell would populate it
 <dataset_folder>/status.csv   # TrnTestDataSet.write_index() -- one row per entry
+<dataset_folder>/logs/
+  <edr_product>/
+    crop_log.txt            # tasks._capture_generator_log -- one file per product type actually
+    hillshade_log.txt       # generated (console output + traceback on failure), linked from both
+    report_log.txt          # overview_table.html's `logs` column and this entry's own report page
+                             # ".txt", not ".log" -- a real stdlib-mimetypes-recognized extension,
+                             # so a plain http.server displays it inline instead of downloading it
 ```
 
 `reports/` is a subfolder of the dataset folder itself, alongside `crop`/`hillshade`/`reproject`/
-`_work`. `TrnTestDataSet.create()` creates it up front the same way it does the other
-product-type subfolders.
+`_work`/`logs`. `TrnTestDataSet.create()` creates it (and `logs/`) up front the same way it does the
+other product-type subfolders.
 
 ## Viewing reports
 
-**The nav bar (`reports/index.html`) cannot be viewed through JupyterLab's own server at all —
-use `scripts/serve_reports.sh` instead.** Jupyter Server's `AuthenticatedFileHandler` (the handler
-behind every `/files/...` response) unconditionally gives served HTML an opaque origin (`sandbox
-allow-scripts`, no `allow-same-origin`) plus `frame-ancestors 'self'` — and an opaque origin can
-never satisfy `'self'`, so no page Jupyter serves can ever embed another page Jupyter serves in an
-iframe or frame, regardless of how the embedding page is structured. No server config fixes this —
-the `sandbox` token is hardcoded onto that one handler. `scripts/serve_reports.sh [port]
-[dataset_folder]` runs a plain `python3 -m http.server` over one dataset's `reports/` folder,
-entirely separate from JupyterLab, with no CSP at all — the nav bar's iframe design works normally
-there. Tunnel that port the same way as JupyterLab's own
-(`ssh -L <port>:localhost:<port> <this-host>`) and open `http://localhost:<port>/reports/index.html`.
+**Two ways to browse the site with all its features (nav bar, overview table, autoindexed `logs/`
+folders) working — pick either.**
 
-Single-page views (one `report.html`, `overview_table.html`, `overview_map.png`/`map.html` alone, no
-nav bar) work fine through JupyterLab too — browse to the file and open it, or use
-`scripts/serve_reports.sh` for those as well. Links between single pages work either way; that was
-its own, separate, now-fixed issue (Jupyter Server's Referer-based anti-CSRF check on `/files/...`
-GETs 403'd a link clicked from JupyterLab's sandboxed `srcdoc` HTML viewer, since it sends no
-Referer — fixed by `docker/Dockerfile`'s `--ServerApp.allow_origin='*'`, a real server-side fix,
-unlike the nav-bar embedding restriction above).
+### Via JupyterLab itself: the `jupyter-server-proxy` `/output/...` route (recommended)
+
+`config/jupyter_server_config.py` (loaded by `docker/Dockerfile`'s `CMD` via `--config=`) registers
+a `jupyter-server-proxy` server named `output`, proxying `<jupyter-base-url>/output/...` on the
+*same* Jupyter server/port to a plain `python3 -m http.server --directory /workspace/output`
+process that `jupyter-server-proxy` starts lazily on first request and supervises itself. Tunnel
+port 8888 the usual way (`ssh -L 8888:localhost:8888 <this-host>`) and open
+`http://localhost:8888/output/trn_dataset/reports/index.html` (substituting whichever dataset
+folder name under `output/` you want — every dataset is reachable this way, not just one at a time).
+
+This isn't just a workaround for the directory-listing gap below — it also fixes the nav bar's own
+iframe-embedding problem, previously **structural and unfixable through Jupyter's own server**:
+Jupyter Server's `AuthenticatedFileHandler` (the handler behind every `/files/...` response)
+unconditionally gives served HTML an opaque origin (`sandbox allow-scripts`, no
+`allow-same-origin`) plus `Content-Security-Policy: frame-ancestors 'self'` — and an opaque origin
+can never satisfy `'self'`, so no page reached via `/files/...` could ever embed another one in an
+iframe, regardless of how the embedding page was structured. `jupyter-server-proxy`'s `ProxyHandler`
+sidesteps this entirely: it clears Tornado's default headers and forwards only the *backend*
+process's own response headers (rewriting just `Location`, to keep redirects under the `/output/`
+prefix) — confirmed live via `curl -D -` that a file fetched through `/output/...` carries none of
+`/files/...`'s CSP/sandbox headers, since plain `http.server` sets none of its own. The nav bar's
+content iframe (pointed at another page under that same `/output/...` prefix) therefore embeds
+normally.
+
+It also gives real directory-listing ("autoindex") support for free: `http.server` autoindexes any
+folder with no `index.html` of its own, and `jupyter-server-proxy`'s `Location`-rewriting keeps a
+bare directory URL's redirect-to-trailing-slash pointed at the right `/output/...` path (confirmed
+live: a GET to
+`.../logs/<edr_product>` 301s to `.../logs/<edr_product>/`, still under the `/output/` prefix,
+listing whichever `<product_type>_log.txt` files exist) — exactly what `TrnTestEntry.log_dir`/
+`report._logs_link_html`'s single per-entry logs-folder link needs (see "Report as a product type"
+above), and what Jupyter's own `/files/...` route can't do at all (confirmed live: 403, "not a
+file", on any directory URL there — `web.StaticFileHandler`'s only directory-related feature is an
+optional fixed `default_filename` fallback, not a real listing).
+
+### Via a standalone static server: `scripts/serve_reports.sh`
+
+`scripts/serve_reports.sh [port] [dataset_folder]` runs the same idea (`python3 -m http.server`) as
+its own separate `docker compose run` process, entirely outside JupyterLab, scoped to one dataset
+folder at a time (`--directory $DATASET_FOLDER`, so `logs/` — a sibling of `reports/` — is served
+too). Tunnel that port the same way (`ssh -L <port>:localhost:<port> <this-host>`) and open
+`http://localhost:<port>/reports/index.html`. Useful if you'd rather not run JupyterLab at all, or
+want a report site reachable on its own dedicated port; the `/output/...` route above covers the
+same ground (every dataset, not just one) from inside an already-running JupyterLab session, so
+prefer that when JupyterLab is already up.
+
+Links between pages work the same way regardless of which of the two you use. Before either existed,
+Jupyter's own `/files/...` route also 403'd a link clicked from a `report.html` opened directly
+through JupyterLab (its Referer-based anti-CSRF check, since a click from a sandboxed `srcdoc`
+viewer sends no Referer) — fixed separately by `docker/Dockerfile`'s `--ServerApp.allow_origin='*'`,
+independent of the `/output/...` route above.
 
 ## Nav bar
 
@@ -203,7 +256,8 @@ at any edge that crosses the seam so a single `ax.plot` call skips drawing acros
 A title (dataset name, entry index, entry id), a one-line summary (orbit, center, sun
 elevation/azimuth via `illumination.sun_azimuth_elevation_deg` at `entry.camera`'s own footprint
 center/epoch — the same call the real render's own relighting uses, rather than the manifest's
-`sun_elevation_deg` column, which uses a different method and has no azimuth counterpart), and
+`sun_elevation_deg` column, which uses a different method and has no azimuth counterpart — plus
+links to this entry's own captured generator logs, see "Report as a product type" above), and
 `reproject`'s overlay-toggle (`entry.reproject.plot_overlay(margin_frac=0.15)` — half
 `plot_overlay`'s own 0.3 default, so more of the report's fixed page width goes to the overlay
 itself than basemap padding) and full-resolution zoom blink against the basemap — the `reproject`

@@ -26,9 +26,10 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 `populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by default)
 writes the rest of a four-page report site — an overview map, an overview table, and a persistent
 nav bar tying them together with the per-entry reports. See `docs/report-generation.md` for the full
-design, including why **the nav bar cannot be viewed through JupyterLab's own server at all** (a
-real, structural CSP limitation — use `scripts/serve_reports.sh` instead). A real population run
-across a full selected dataset hasn't happened yet — see
+design, including how to browse it — Jupyter's own `/files/...` route can't embed one served page
+inside another (a real CSP restriction) or list a directory, so a `jupyter-server-proxy`-backed
+`/output/...` route on the same Jupyter server (or the standalone `scripts/serve_reports.sh`) is
+needed instead. A real population run across a full selected dataset hasn't happened yet — see
 `docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks assessment done
 ahead of attempting one.
 
@@ -80,9 +81,10 @@ Fetched WMS tiles and SPICE kernels persist there across container rebuilds (see
 ## Development setup
 
 The Docker image (`docker compose build`, above) already has `trntest` installed in editable mode
-plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`, and `ipykernel` — nothing further to
-install for that path. jupytext's JupyterLab integration (`jupyterlab-jupytext`) registers
-automatically as part of the `jupytext` install — no separate `jupyter labextension install` step.
+plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`, `jupyter-server-proxy`, and `ipykernel` —
+nothing further to install for that path. jupytext's JupyterLab integration (`jupyterlab-jupytext`)
+registers automatically as part of the `jupytext` install — no separate `jupyter labextension
+install` step.
 
 Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain host venv
 with Python 3.11+:

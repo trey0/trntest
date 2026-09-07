@@ -47,6 +47,7 @@ dev = [
     "pytest",
     "jupytext",
     "jupyterlab",
+    "jupyter-server-proxy",
     "ipykernel",
     "papermill",
     "nbformat",

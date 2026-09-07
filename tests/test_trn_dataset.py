@@ -77,7 +77,7 @@ def test_create_writes_manifest_and_subfolders(tmp_path):
     images = _minimal_manifest(["P1", "P2"])
     ds = trn_dataset.TrnTestDataSet.create(folder, images, TrntestConfig())
 
-    for sub in ("crop", "hillshade", "reproject", "reports", "_work"):
+    for sub in ("crop", "hillshade", "reproject", "reports", "logs", "_work"):
         assert (folder / sub).is_dir()
     assert (folder / "manifest.csv").is_file()
     assert len(ds) == 2
@@ -277,6 +277,55 @@ def test_populate_limit_does_not_count_already_done_entries(tmp_path, monkeypatc
     assert (ds.status(product_types=product_types).set_index("product_id").loc["P2"] == "done").all()
 
 
+# -- Generator logging (trntest.tasks._generate_entry / _capture_generator_log) ------------------
+
+
+def test_populate_captures_generator_output_on_success(tmp_path, monkeypatch):
+    def loud_generate_impl(image):
+        print("hello from crop generation")
+        _fake_generate_impl(image)
+
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", loud_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+
+    ds.populate(product_types=("crop",))
+
+    log_text = entry.log_path("crop").read_text()
+    assert "hello from crop generation" in log_text
+    assert "crop generation started" in log_text
+    assert "crop generation ended" in log_text
+
+
+def test_populate_captures_traceback_on_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+
+    ds.populate(product_types=("crop",))
+
+    log_text = entry.log_path("crop").read_text()
+    assert "Traceback (most recent call last)" in log_text
+    assert "boom for P1" in log_text
+
+
+def test_generate_entry_skips_log_capture_for_an_already_done_type(tmp_path, monkeypatch):
+    """`_generate_entry`'s own `image.exists()` guard, not just `_enqueue_pending`'s pending-only
+    filter (which would never even call `_generate_entry` for an already-done type in practice) --
+    exercised directly so a stale log from a genuinely new attempt is never silently overwritten by
+    a same-entry, same-process no-op."""
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    log_path = entry.log_path("crop")
+    original_log = log_path.read_text()
+
+    tasks._generate_entry(entry, ("crop",))
+
+    assert log_path.read_text() == original_log
+
+
 # -- truncate() -----------------------------------------------------------------------------------
 
 
@@ -296,6 +345,18 @@ def test_truncate_single_entry_reverts_to_pending_and_leaves_others_alone(tmp_pa
     assert not ds[0].crop.raster_path.exists()
     assert not ds[0].crop.sidecar_json_path.exists()
     assert not ds[0].hillshade.raster_path.exists()
+
+
+def test_truncate_deletes_the_log_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    assert entry.log_path("crop").exists()
+
+    ds.truncate(entry, product_types=("crop",))
+
+    assert not entry.log_path("crop").exists()
 
 
 def test_truncate_none_reverts_every_entry(tmp_path, monkeypatch):
@@ -588,6 +649,35 @@ def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
     assert '"P1"' in index_html and '"P2"' in index_html  # the jump-to-entry productIds array
 
 
+def test_print_viewing_url_prints_link_when_folder_is_under_output_dir(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TRNTEST_JUPYTER_PORT", "8891")
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "trn_dataset", _minimal_manifest([]), config)
+
+    report.print_viewing_url(ds)
+
+    assert "http://localhost:8891/output/trn_dataset/reports/index.html" in capsys.readouterr().out
+
+
+def test_print_viewing_url_defaults_to_port_8888(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("TRNTEST_JUPYTER_PORT", raising=False)
+    config = dataclasses.replace(TrntestConfig(), output_dir=tmp_path)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "trn_dataset", _minimal_manifest([]), config)
+
+    report.print_viewing_url(ds)
+
+    assert "http://localhost:8888/output/trn_dataset/reports/index.html" in capsys.readouterr().out
+
+
+def test_print_viewing_url_noop_when_folder_outside_output_dir(capsys):
+    # TrntestConfig()'s default output_dir is /workspace/output -- this folder isn't under it.
+    ds = trn_dataset.TrnTestDataSet(Path("/some/other/place"), _minimal_manifest([]), TrntestConfig())
+
+    report.print_viewing_url(ds)
+
+    assert capsys.readouterr().out == ""
+
+
 def test_populate_write_index_false_skips_status_csv_and_index_html(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
@@ -597,6 +687,35 @@ def test_populate_write_index_false_skips_status_csv_and_index_html(tmp_path, mo
     ds.populate(write_index=False)
 
     assert not (ds.folder / "status.csv").exists()
+
+
+def test_logs_link_html_shows_placeholder_when_no_logs_exist(tmp_path):
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    assert report._logs_link_html(ds[0], "../logs") == "&mdash;"
+
+
+def test_logs_link_html_links_to_the_whole_log_dir(tmp_path):
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    entry.log_path("crop").parent.mkdir(parents=True, exist_ok=True)
+    entry.log_path("crop").write_text("...")
+
+    html = report._logs_link_html(entry, "../logs")
+
+    assert html == f'<a href="../logs/{entry.edr_product}/">logs/</a>'
+
+
+def test_overview_table_links_to_a_failed_entrys_log_dir(tmp_path, monkeypatch):
+    """The overview table's `logs` column is exactly where a `failed` status is most useful paired
+    with a link -- confirms `write_overview_table_html` links to the entry's `log_dir` folder after
+    a real (faked) generator failure, without needing the entry's own report to exist first."""
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+
+    ds.populate(product_types=("crop",))
+
+    overview_table_html = (ds.folder / "reports" / "overview_table.html").read_text()
+    assert '<a href="../logs/P1/">logs/</a>' in overview_table_html
 
 
 def test_problem_flags_low_sun_elevation(tmp_path):
@@ -653,7 +772,7 @@ def test_generate_product_parallel_runs_in_a_real_worker_subprocess(tmp_path):
 
 
 def test_generate_product_parallel_failure_visible_via_huey_parallel_result(tmp_path):
-    task = tasks.generate_product_parallel.s(FailingWorkerEntry(), ("fake",))
+    task = tasks.generate_product_parallel.s(FailingWorkerEntry(str(tmp_path)), ("fake",))
     task.id = f"test-real-consumer-failure-{tmp_path.name}"
     result = tasks.huey_parallel.enqueue(task)
 

@@ -66,7 +66,12 @@ A concrete instance of the principles above. See `../README.md`'s `trn_dataset.p
 meaning or content) holds `manifest.csv` plus `crop/<edr_product>_crop.{cub,json}`,
 `hillshade/<edr_product>_hillshade.{tif,json}`, an empty reserved `reproject/`, per-entry
 intermediates under `_work/<edr_product>/` (`.tsai`, DEM/ortho tiles, pre-copy render output — kept
-out of `crop`/`hillshade` so those two only ever hold the canonical named pair). Task-queue state
+out of `crop`/`hillshade` so those two only ever hold the canonical named pair), and each generator
+attempt's captured console output under `logs/<edr_product>/<product_type>_log.txt`
+(`tasks._capture_generator_log`, see `docs/report-generation.md`'s on-disk layout and
+`docs/batch-generation.md`'s "Where to look when something fails" section) — a single-answer
+artifact per entry+generator per this doc's own principle 1, written once per real (non-no-op)
+`generate()` attempt. Task-queue state
 lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
 databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_workers()`'s real
 worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s

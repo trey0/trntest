@@ -1,24 +1,27 @@
 #!/bin/sh
-# Serves one dataset's reports/ folder over plain HTTP (python3 -m http.server), entirely outside
-# JupyterLab's own server.
+# Serves one dataset's whole folder (reports/ + logs/) over plain HTTP (python3 -m http.server),
+# entirely outside JupyterLab's own server, as its own separate docker compose process on its own
+# port.
 #
-# Necessary, not just convenient: Jupyter Server's AuthenticatedFileHandler (the handler behind
-# every /files/... response) unconditionally appends "sandbox allow-scripts" to every file it
-# serves, deliberately giving served HTML an opaque origin so it can never impersonate the Jupyter
-# server itself. Combined with every file's own "frame-ancestors 'self'", this makes it structurally
-# impossible for any page Jupyter serves to embed another page Jupyter serves in an iframe/frame --
-# an opaque origin can never satisfy 'self'. That's what reports/index.html's nav bar (a fixed nav
-# strip over a content <iframe>) needs to do, so it can never work through JupyterLab's own server,
-# no matter what CSP/CORS config is changed there (this is NOT the same issue as the earlier
-# report-link 403 that --ServerApp.allow_origin='*' fixed -- that one really was fixable
-# server-side; this one isn't). Python's http.server sets no CSP at all, so this sidesteps the
-# problem entirely rather than working around it.
+# Prefer the jupyter-server-proxy-backed /output/... route on the *same* already-running JupyterLab
+# server instead (config/jupyter_server_config.py, see docs/report-generation.md's "Viewing reports"
+# section) unless you specifically don't want JupyterLab running at all -- it needs no separate port
+# to coordinate in a multi-agent setup (reuses the worktree's own already-allocated
+# TRNTEST_JUPYTER_PORT) and covers every dataset under output/ at once, not just one. Both exist for
+# the same underlying reason: Jupyter Server's AuthenticatedFileHandler (the handler behind every
+# /files/... response) unconditionally appends "sandbox allow-scripts" plus "frame-ancestors 'self'"
+# to every file it serves, so no page reached via /files/... can ever embed another one in an
+# iframe/frame -- what reports/index.html's nav bar (a fixed nav strip over a content <iframe>)
+# needs to do. Python's http.server sets no CSP at all, so both routes sidestep the problem by using
+# it as the actual server -- jupyter-server-proxy just proxies to the same kind of process from
+# inside Jupyter's own port instead of running it standalone the way this script does.
 #
 # Usage: scripts/serve_reports.sh [port] [dataset_folder]
 #   port           defaults to 8899 -- this repo's usual multi-agent caveat applies (see
 #                  docs/environment.md's "Multi-agent worktrees" section): if another agent might be
 #                  serving reports at the same time, ask the user which port to use rather than
-#                  trusting this default to be free.
+#                  trusting this default to be free. (The /output/... route above doesn't have this
+#                  problem at all.)
 #   dataset_folder defaults to /workspace/output/trn_dataset (the flagship demo's dataset)
 #
 # Runs in the foreground -- Ctrl-C to stop. Once running, tunnel the port the same way as
