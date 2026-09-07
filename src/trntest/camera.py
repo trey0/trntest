@@ -64,15 +64,44 @@ _LIGHTWEIGHT_BORESIGHT_CORRECTION = np.array(
 )
 
 # Fixed, isotropic, centered-principal-point sensor model -- shared by `build_camera`'s default
-# (`fixed_sensor=True`) and `lightweight_footprint_lonlat_deg` alike, valid within the nominal
-# off-nadir envelope (`NOMINAL_OFF_NADIR_THRESHOLD_DEG`, in the same *post-boresight-correction* sense
-# as `Camera.off_nadir_deg`/`build_camera`'s own `off_nadir_deg` local -- not the raw SPICE-frame
-# off-nadir `camera_pose_moon_me` returns, which sits several degrees lower due to WAC-VIS's own
-# roughly-constant boresight-vs-frame offset). Derived from a manifest sample spanning its altitude
+# (`fixed_sensor=True`) and `lightweight_footprint_lonlat_deg` alike, valid within a disk around the
+# nominal boresight pointing direction (see `nominal_boresight_pitch_yaw_deg`/
+# `NOMINAL_POINTING_DISK_RADIUS_DEG` below). Derived from a manifest sample spanning its altitude
 # bands; see notebooks/sensor_calibration_scoping.py. A centered principal point needs no separate
 # `cv` constant -- it's exactly `image_size / 2.0`.
 FIXED_FOCAL_LENGTH_PX = 1342.522354
-NOMINAL_OFF_NADIR_THRESHOLD_DEG = 10.0
+
+# The nominal boresight pointing direction (see `boresight_pitch_yaw_deg`'s own pitch/yaw
+# convention), measured with `k == _REVERSED_TIME_K` -- the yaw-flip state this project's real
+# manifest sample happens to be in. Yaw (cross-track) is small but real, not noise: consistently
+# negative across the sample (individual candidates: -0.09 to -0.07 deg, std ~0.01 deg, not scattered
+# around zero), and a same-magnitude, sign-flipped value (+0.11 deg) showed up independently in a
+# real opposite-yaw-state sample, matching this constant's own mirrored value (+0.08 deg) to within
+# 0.03 deg. `build_camera`'s fixed-sensor path rejects any pose whose own `boresight_pitch_yaw_deg`
+# lands more than `NOMINAL_POINTING_DISK_RADIUS_DEG` from this point (after
+# `nominal_boresight_pitch_yaw_deg` mirrors it for the opposite yaw state) -- not a same-sized
+# tolerance on off-nadir *magnitude* alone, which would accept any azimuth at a given magnitude,
+# including one this project has no evidence for. See notebooks/sensor_calibration_scoping.py.
+NOMINAL_BORESIGHT_PITCH_DEG = 7.111994
+NOMINAL_BORESIGHT_YAW_DEG = -0.078893
+NOMINAL_POINTING_DISK_RADIUS_DEG = 5.0
+
+
+def nominal_boresight_pitch_yaw_deg(k: int) -> tuple[float, float]:
+    """`(NOMINAL_BORESIGHT_PITCH_DEG, NOMINAL_BORESIGHT_YAW_DEG)`, mirrored for the opposite yaw-flip
+    state.
+
+    :param k: This pose's yaw-flip state, from `boresight_rotation_k`.
+    :returns: The nominal pointing direction to compare this pose's own `boresight_pitch_yaw_deg`
+        against -- unmirrored for `k == _REVERSED_TIME_K` (the state the constants above were
+        measured in), negated on both axes for `k == _FORWARD_TIME_K`. A 180-degree yaw flip rotates
+        the whole spacecraft together, so it mirrors the boresight's pitch/yaw the same way it
+        flips `_FORWARD_TIME_K`/`_REVERSED_TIME_K` -- confirmed against one real sample from a
+        manifest ~6 months apart (the opposite state), which landed within 1 degree of the mirrored
+        point.
+    """
+    sign = 1.0 if k == _REVERSED_TIME_K else -1.0
+    return sign * NOMINAL_BORESIGHT_PITCH_DEG, sign * NOMINAL_BORESIGHT_YAW_DEG
 
 
 def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.ndarray) -> int:
@@ -208,27 +237,27 @@ def off_nadir_and_slant_range(c_km: np.ndarray, boresight_me: np.ndarray) -> tup
     return off_nadir_deg, slant_range_km
 
 
-def off_nadir_tilt_components_deg(
-    c_km: np.ndarray, r_cam_to_me: np.ndarray, forward_step_me_km: np.ndarray
+def boresight_pitch_yaw_deg(
+    c_km: np.ndarray, boresight_me: np.ndarray, forward_step_me_km: np.ndarray
 ) -> tuple[float, float]:
-    """Decompose a camera's off-nadir tilt into along-track/cross-track components (degrees), using
-    the same tangent-plane convention as `pixel_ray_cam`.
+    """Decompose a boresight direction's off-nadir tilt into along-track ("pitch")/cross-track
+    ("yaw") components (degrees), using the same tangent-plane convention as `pixel_ray_cam`.
 
     :param c_km: Camera center (MOON_ME, km).
-    :param r_cam_to_me: Camera-to-MOON_ME rotation.
+    :param boresight_me: Boresight direction (unit vector, MOON_ME frame).
     :param forward_step_me_km: "Forward in time" ground-track direction (MOON_ME, not normalized),
-        e.g. from `ground_track_step_km` -- defines the along-track axis this decomposes against.
-    :returns: `(tilt_along_deg, tilt_cross_deg)`, signed; both 0 for a boresight exactly at nadir.
+        e.g. from `ground_track_step_km` -- defines the along-track (pitch) axis this decomposes
+        against; cross-track (yaw) is the other one.
+    :returns: `(pitch_deg, yaw_deg)`, signed; both 0 for a boresight exactly at nadir.
     """
     nadir = -c_km / np.linalg.norm(c_km)
     along = forward_step_me_km - np.dot(forward_step_me_km, nadir) * nadir
     along = along / np.linalg.norm(along)
     cross = np.cross(nadir, along)
-    boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
     b_nadir = np.dot(boresight_me, nadir)
-    tilt_along_deg = np.degrees(np.arctan2(np.dot(boresight_me, along), b_nadir))
-    tilt_cross_deg = np.degrees(np.arctan2(np.dot(boresight_me, cross), b_nadir))
-    return tilt_along_deg, tilt_cross_deg
+    pitch_deg = np.degrees(np.arctan2(np.dot(boresight_me, along), b_nadir))
+    yaw_deg = np.degrees(np.arctan2(np.dot(boresight_me, cross), b_nadir))
+    return pitch_deg, yaw_deg
 
 
 def camera_pose_moon_me(et: float):
@@ -594,8 +623,9 @@ def build_camera(
         EDR via `solve_corrected_fov`, snug-fit to its own real WAC crop footprint -- for
         recalibrating those constants (see notebooks/sensor_calibration_scoping.py), not normal use.
     :returns: The resulting `Camera`.
-    :raises AssertionError: if `fixed_sensor` and this pose's `off_nadir_deg` exceeds
-        `NOMINAL_OFF_NADIR_THRESHOLD_DEG` -- the fixed sensor model isn't validated past that envelope.
+    :raises AssertionError: if `fixed_sensor` and this pose's own boresight pointing direction
+        (`boresight_pitch_yaw_deg`) lands more than `NOMINAL_POINTING_DISK_RADIUS_DEG` from
+        `nominal_boresight_pitch_yaw_deg` -- the fixed sensor model isn't validated past that disk.
     """
     # Boresight re-aiming: the raw SPICE pose (`camera_pose_moon_me`, boresight = the nominal
     # `LRO_LROCWAC_VIS` frame's Z axis) is not used directly as the synthetic camera's final
@@ -671,9 +701,14 @@ def build_camera(
     boresight_me = boresight_me / np.linalg.norm(boresight_me)
     off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
     if fixed_sensor:
-        assert off_nadir_deg < NOMINAL_OFF_NADIR_THRESHOLD_DEG, (
-            f"off_nadir_deg={off_nadir_deg:.2f} exceeds the fixed sensor model's validated nominal "
-            f"envelope ({NOMINAL_OFF_NADIR_THRESHOLD_DEG} deg) -- pass fixed_sensor=False to solve a "
+        pitch_deg, yaw_deg = boresight_pitch_yaw_deg(c_meters / 1000.0, boresight_me, forward_step_km)
+        nominal_pitch_deg, nominal_yaw_deg = nominal_boresight_pitch_yaw_deg(k)
+        pointing_distance_deg = float(np.hypot(pitch_deg - nominal_pitch_deg, yaw_deg - nominal_yaw_deg))
+        assert pointing_distance_deg < NOMINAL_POINTING_DISK_RADIUS_DEG, (
+            f"boresight pointing (pitch={pitch_deg:.2f}, yaw={yaw_deg:.2f}) deg is "
+            f"{pointing_distance_deg:.2f} deg from the fixed sensor model's validated nominal "
+            f"pointing (pitch={nominal_pitch_deg:.2f}, yaw={nominal_yaw_deg:.2f}) -- exceeds the "
+            f"{NOMINAL_POINTING_DISK_RADIUS_DEG} deg disk radius; pass fixed_sensor=False to solve a "
             "per-EDR fit instead"
         )
 

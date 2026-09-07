@@ -84,38 +84,45 @@ def test_cross_track_width_km_nadir_pointing():
     assert width > 0
 
 
-def test_off_nadir_tilt_components_deg_nadir_pointing_is_zero():
+def test_boresight_pitch_yaw_deg_nadir_pointing_is_zero():
     c_km = np.array([0.0, 0.0, 3000.0])
-    r_cam_to_me = np.diag([1.0, -1.0, -1.0])  # boresight toward -Z (nadir)
+    boresight_me = np.array([0.0, 0.0, -1.0])  # nadir
     forward_step_km = np.array([1.0, 0.0, 0.0])
-    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, forward_step_km)
-    assert tilt_along_deg == pytest.approx(0.0, abs=1e-9)
-    assert tilt_cross_deg == pytest.approx(0.0, abs=1e-9)
+    pitch_deg, yaw_deg = camera.boresight_pitch_yaw_deg(c_km, boresight_me, forward_step_km)
+    assert pitch_deg == pytest.approx(0.0, abs=1e-9)
+    assert yaw_deg == pytest.approx(0.0, abs=1e-9)
 
 
-def test_off_nadir_tilt_components_deg_pure_along_track_tilt():
+def test_boresight_pitch_yaw_deg_pure_along_track_tilt():
     c_km = np.array([0.0, 0.0, 3000.0])
     nadir = np.array([0.0, 0.0, -1.0])
     along = np.array([1.0, 0.0, 0.0])
     theta_deg = 5.0
     boresight_me = np.cos(np.radians(theta_deg)) * nadir + np.sin(np.radians(theta_deg)) * along
-    r_cam_to_me = camera.look_at_rotation(boresight_me, np.eye(3))
-    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, along)
-    assert tilt_along_deg == pytest.approx(theta_deg, abs=1e-6)
-    assert tilt_cross_deg == pytest.approx(0.0, abs=1e-6)
+    pitch_deg, yaw_deg = camera.boresight_pitch_yaw_deg(c_km, boresight_me, along)
+    assert pitch_deg == pytest.approx(theta_deg, abs=1e-6)
+    assert yaw_deg == pytest.approx(0.0, abs=1e-6)
 
 
-def test_off_nadir_tilt_components_deg_pure_cross_track_tilt():
+def test_boresight_pitch_yaw_deg_pure_cross_track_tilt():
     c_km = np.array([0.0, 0.0, 3000.0])
     nadir = np.array([0.0, 0.0, -1.0])
     along = np.array([1.0, 0.0, 0.0])
     cross = np.cross(nadir, along)
     theta_deg = 5.0
     boresight_me = np.cos(np.radians(theta_deg)) * nadir + np.sin(np.radians(theta_deg)) * cross
-    r_cam_to_me = camera.look_at_rotation(boresight_me, np.eye(3))
-    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, along)
-    assert tilt_along_deg == pytest.approx(0.0, abs=1e-6)
-    assert tilt_cross_deg == pytest.approx(theta_deg, abs=1e-6)
+    pitch_deg, yaw_deg = camera.boresight_pitch_yaw_deg(c_km, boresight_me, along)
+    assert pitch_deg == pytest.approx(0.0, abs=1e-6)
+    assert yaw_deg == pytest.approx(theta_deg, abs=1e-6)
+
+
+def test_nominal_boresight_pitch_yaw_deg_mirrors_for_forward_time_k():
+    pitch_deg, yaw_deg = camera.nominal_boresight_pitch_yaw_deg(camera._REVERSED_TIME_K)
+    assert pitch_deg == camera.NOMINAL_BORESIGHT_PITCH_DEG
+    assert yaw_deg == camera.NOMINAL_BORESIGHT_YAW_DEG
+    mirrored_pitch_deg, mirrored_yaw_deg = camera.nominal_boresight_pitch_yaw_deg(camera._FORWARD_TIME_K)
+    assert mirrored_pitch_deg == -camera.NOMINAL_BORESIGHT_PITCH_DEG
+    assert mirrored_yaw_deg == -camera.NOMINAL_BORESIGHT_YAW_DEG
 
 
 def test_along_track_extent_km_matches_direct_ground_point_decomposition():

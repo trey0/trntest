@@ -18,27 +18,30 @@
 #
 # Goal: one fixed pinhole sensor model -- isotropic focal length, principal point exactly at image
 # center (`cu = cv = image_size / 2`) -- that reliably renders inside real WAC crop footprints across
-# "nominal" EDRs, plus an off-nadir threshold for rejecting non-nominal ones before dataset
-# generation. Per-EDR ground truth here (a real crop's own footprint corners, and the focal length a
-# symmetric FOV needs to just cover them) comes from this project's existing camera-pose pipeline; this
-# notebook only asks what size and shape the *fixed* model should be, not how that pipeline works.
+# "nominal" EDRs, plus a rejection rule for non-nominal ones before dataset generation. Per-EDR
+# ground truth here (a real crop's own footprint corners, and the focal length a symmetric FOV needs
+# to just cover them) comes from this project's existing camera-pose pipeline; this notebook only
+# asks what size and shape the *fixed* model should be, not how that pipeline works.
 #
 # Two geometric quantities matter, and they aren't coupled the way "off-nadir angle" alone would
 # suggest:
 # - **Size** -- the focal length needed to keep a render inside a crop's along-track extent -- tracks
 #   altitude, not off-nadir angle.
-# - **Near/far asymmetry** -- how far a crop's own footprint extends fore vs. aft of the boresight --
-#   tracks the *along-track* component of off-nadir tilt. Under a centered principal point, the
-#   *cross-track* component doesn't produce this kind of asymmetry; it only changes how much of the
-#   fixed focal length's own margin goes unused.
+# - **Pointing direction** -- decomposed as pitch (along-track) and yaw (cross-track) degrees from
+#   true nadir (`camera.boresight_pitch_yaw_deg`). A real EDR's boresight sits at a consistent,
+#   non-zero nominal point, not at nadir itself, so the rejection rule this notebook derives is a
+#   disk of some radius around that point -- both axes checked together, not just how far off-nadir
+#   a candidate is.
 
 # %%
+import dataclasses
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 import trntest
-from trntest import camera, spice_kernels, tie_points
+from trntest import camera, catalog, spice_kernels, tie_points
 from trntest.config import MOON_RADIUS_KM
 
 images = trntest.read_manifest("dataset_manifest.csv")
@@ -51,13 +54,13 @@ print(f"{len(dataset)} manifest rows")
 # %% [markdown]
 # ## Cheap, ISIS-free geometry sweep
 #
-# For every manifest row: altitude, slant range, total off-nadir angle, and its along-track/
-# cross-track decomposition (`camera.off_nadir_tilt_components_deg`) -- pure SPICE, no ISIS, so this
-# covers the whole manifest in seconds regardless of which entries have been populated. `off_nadir_deg`
-# here is `camera_pose_moon_me`'s raw SPICE-frame angle, not the post-boresight-correction
-# `Camera.off_nadir_deg` `build_camera` itself reports (WAC-VIS's real boresight sits several degrees
-# off the raw frame's nominal axis) -- a cheap screening signal for picking candidates worth a closer
-# look, not the quantity the eventual rejection threshold is expressed in. See "What would keeping
+# For every manifest row: altitude, slant range, total off-nadir angle, and its pitch/yaw
+# decomposition (`camera.boresight_pitch_yaw_deg`, fed the *raw* SPICE-frame boresight here) -- pure
+# SPICE, no ISIS, so this covers the whole manifest in seconds regardless of which entries have been
+# populated. `off_nadir_deg`/`pitch_deg`/`yaw_deg` here are the raw SPICE-frame quantities, not the
+# post-boresight-correction ones `build_camera` itself reports (WAC-VIS's real boresight sits several
+# degrees off the raw frame's nominal axis) -- a cheap screening signal for picking candidates worth a
+# closer look, not the quantity the eventual rejection rule is expressed in. See "What would keeping
 # each outlier cost?" below for the real, corrected values on the candidates this notebook samples.
 
 # %%
@@ -72,7 +75,8 @@ for entry in dataset:
     et = camera.frame_et(frame_timing, center_frame_index)
     c_m, r_cam_to_me, slant_range_km, off_nadir_deg = camera.camera_pose_moon_me(et)
     forward_step_km = camera.ground_track_step_km(frame_timing, center_frame_index)
-    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_m / 1000.0, r_cam_to_me, forward_step_km)
+    boresight_raw = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
+    pitch_deg, yaw_deg = camera.boresight_pitch_yaw_deg(c_m / 1000.0, boresight_raw, forward_step_km)
 
     rows.append(
         dict(
@@ -81,8 +85,8 @@ for entry in dataset:
             altitude_km=np.linalg.norm(c_m / 1000.0) - MOON_RADIUS_KM,
             slant_range_km=slant_range_km,
             off_nadir_deg=off_nadir_deg,
-            tilt_along_deg=tilt_along_deg,
-            tilt_cross_deg=tilt_cross_deg,
+            pitch_deg=pitch_deg,
+            yaw_deg=yaw_deg,
             n_frames_for_square_crop=row["n_frames_for_square_crop"],
         )
     )
@@ -96,11 +100,11 @@ geometry_df.describe()
 # Left: footprint size (`n_frames_for_square_crop`) tracks altitude, which tracks latitude through
 # LRO's eccentric, near-polar orbit -- not a curvature effect (a few-degree FOV over ~100 km is far
 # too small for the Moon's own shape to matter), an orbital-mechanics one. Right: off-nadir tilt is
-# almost entirely a cross-track effect -- `tilt_along_deg` sits in a narrow band across nearly every
-# row, while `tilt_cross_deg` is what separates the outliers.
+# almost entirely a yaw (cross-track) effect -- `pitch_deg` sits in a narrow band across nearly every
+# row, while `yaw_deg` is what separates the outliers.
 
 # %%
-TIGHT_CLUSTER_DEG = 2.0  # marks the visual gap below, not yet the adopted threshold -- see below
+TIGHT_CLUSTER_DEG = 2.0  # marks the visual gap below, a screening cut -- not the final rejection rule
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -111,19 +115,19 @@ axes[0].set_title("Altitude vs. latitude, colored by n_frames_for_square_crop")
 
 nominal = geometry_df["off_nadir_deg"] < TIGHT_CLUSTER_DEG
 axes[1].scatter(
-    geometry_df.loc[nominal, "tilt_along_deg"],
-    geometry_df.loc[nominal, "tilt_cross_deg"],
+    geometry_df.loc[nominal, "pitch_deg"],
+    geometry_df.loc[nominal, "yaw_deg"],
     label=f"off_nadir < {TIGHT_CLUSTER_DEG} deg",
 )
 axes[1].scatter(
-    geometry_df.loc[~nominal, "tilt_along_deg"],
-    geometry_df.loc[~nominal, "tilt_cross_deg"],
+    geometry_df.loc[~nominal, "pitch_deg"],
+    geometry_df.loc[~nominal, "yaw_deg"],
     color="red",
     label=f"off_nadir >= {TIGHT_CLUSTER_DEG} deg",
 )
-axes[1].set_xlabel("tilt_along_deg")
-axes[1].set_ylabel("tilt_cross_deg")
-axes[1].set_title("Off-nadir tilt decomposition")
+axes[1].set_xlabel("pitch_deg")
+axes[1].set_ylabel("yaw_deg")
+axes[1].set_title("Raw boresight pitch/yaw")
 axes[1].legend()
 plt.tight_layout()
 
@@ -138,18 +142,18 @@ plt.tight_layout()
 # %%
 outliers = geometry_df[geometry_df["off_nadir_deg"] >= TIGHT_CLUSTER_DEG].sort_values("off_nadir_deg", ascending=False)
 print(f"{len(outliers)} of {len(geometry_df)} rows exceed off_nadir_deg >= {TIGHT_CLUSTER_DEG}:")
-outliers[["product_id", "center_lat_deg", "off_nadir_deg", "tilt_along_deg", "tilt_cross_deg"]]
+outliers[["product_id", "center_lat_deg", "off_nadir_deg", "pitch_deg", "yaw_deg"]]
 
 # %% [markdown]
 # ## Sensor size across the tight cluster
 #
-# `camera.build_camera`'s own real, ISIS-derived `fu`, solved fresh per EDR (`fixed_sensor=False` --
+# `camera.build_camera`'s real, ISIS-derived `fu`, solved fresh per EDR (`fixed_sensor=False` --
 # `entry.camera` itself now returns the fixed model this notebook is scoping, so getting the real
 # per-EDR ground truth means calling `build_camera` directly) for one candidate per altitude band
 # identified above, all inside the tight cluster and already crop-cached from prior work, to keep this
-# fast. `fu` doesn't depend on where `cv` ends up -- it's set purely by how many pixels are needed to
-# span a crop's own near+far along-track extent -- so this is meaningful on its own, before deciding
-# anything about `cv`.
+# fast. `fu` doesn't depend on the boresight's pointing direction -- it's set purely by how many
+# pixels are needed to span a crop's own near+far along-track extent -- so this is meaningful on its
+# own, before deciding anything about pointing.
 
 # %%
 tight_sample_ids = [
@@ -166,7 +170,7 @@ solved_cameras: dict[str, camera.Camera] = {}
 def solved_camera(product_id: str) -> camera.Camera:
     """This EDR's own real per-EDR sensor fit -- the ground truth this notebook measures the fixed
     model against, and the only way to examine an EDR outside its nominal envelope at all, since
-    `entry.camera` (`fixed_sensor=True`) asserts `off_nadir_deg` is within it."""
+    `entry.camera` (`fixed_sensor=True`) asserts it's within the nominal pointing disk."""
     if product_id not in solved_cameras:
         solved_cameras[product_id] = camera.build_camera(entries[product_id].per_image_config, fixed_sensor=False)
     return solved_cameras[product_id]
@@ -179,21 +183,35 @@ def crop_footprint(product_id: str) -> dict:
     )
 
 
+def corrected_pitch_yaw_deg(product_id: str) -> tuple[float, float]:
+    """The *corrected* (post-boresight-correction) boresight's own pitch/yaw -- what
+    `NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG` are measured in."""
+    cam = solved_camera(product_id)
+    c_km = np.array(cam.camera_center_moon_me_m) / 1000.0
+    boresight_me = np.array(cam.r_cam_to_me)[:, 2]  # unaffected by the k-twist -- see camera.py's build_camera
+    frame_timing = entries[product_id].frame_timing
+    forward_step_km = camera.ground_track_step_km(frame_timing, cam.center_frame_index)
+    return camera.boresight_pitch_yaw_deg(c_km, boresight_me, forward_step_km)
+
+
 tight_summary = pd.DataFrame(
-    {
-        "fu": {pid: solved_camera(pid).focal_length_u_px for pid in tight_sample_ids},
-        "corrected_off_nadir_deg": {pid: solved_camera(pid).off_nadir_deg for pid in tight_sample_ids},
-    }
+    [
+        dict(product_id=pid, fu=solved_camera(pid).focal_length_u_px, pitch_deg=p, yaw_deg=y)
+        for pid, (p, y) in ((pid, corrected_pitch_yaw_deg(pid)) for pid in tight_sample_ids)
+    ]
 )
 print(tight_summary)
-tight_fu = tight_summary["fu"]
+tight_fu = tight_summary.set_index("product_id")["fu"]
 recommended_f_tight = tight_fu.max()
 print(f"\nrecommended_f (tight cluster only) = {recommended_f_tight:.2f}")
 
 # %% [markdown]
-# `corrected_off_nadir_deg` above (`build_camera`'s own, post-correction `off_nadir_deg`) sits several
-# degrees above the raw sweep's values for these same rows -- expected, and this is the quantity the
-# eventual rejection threshold actually needs to be expressed in.
+# `pitch_deg`/`yaw_deg` above are the *corrected* boresight's own pointing direction -- several
+# degrees off from the raw sweep's values for these same rows (expected: WAC-VIS's real boresight
+# sits several degrees off the raw SPICE frame's nominal axis). Yaw is small but *not* noise: all 5
+# values are consistently negative (-0.09 to -0.07 deg, std ~0.01 deg) rather than scattered around
+# zero -- a real, small, repeatable bias, not a rounding artifact. This is the nominal pointing
+# direction the disk-based rejection rule is centered on.
 
 # %% [markdown]
 # ## Centered principal point: does it fit?
@@ -242,18 +260,27 @@ tight_margins
 # %% [markdown]
 # ## What would keeping each outlier cost?
 #
-# Each outlier's own required `fu`, and its centered-principal-point margins at whatever shared `f`
-# the resulting sample needs -- to see whether admitting an outlier costs a little unused margin
-# (fine) or breaks the centered assumption outright (not fine).
+# Each outlier's own required `fu`, and its distance -- both pitch and yaw together, not off-nadir
+# magnitude alone -- from the nominal pointing point measured above, to see whether admitting an
+# outlier costs a little unused margin (fine) or lands far outside the disk (not fine).
 
 # %%
+NOMINAL_BORESIGHT_PITCH_DEG = tight_summary["pitch_deg"].mean()
+NOMINAL_BORESIGHT_YAW_DEG = tight_summary["yaw_deg"].mean()
+
+
+def disk_distance_deg(product_id: str) -> float:
+    pitch_deg, yaw_deg = corrected_pitch_yaw_deg(product_id)
+    return float(np.hypot(pitch_deg - NOMINAL_BORESIGHT_PITCH_DEG, yaw_deg - NOMINAL_BORESIGHT_YAW_DEG))
+
+
 outlier_ids = list(outliers["product_id"])
 entries.update({pid: dataset[pid] for pid in outlier_ids})
 outlier_summary = pd.DataFrame(
-    {
-        "fu": {pid: solved_camera(pid).focal_length_u_px for pid in outlier_ids},
-        "corrected_off_nadir_deg": {pid: solved_camera(pid).off_nadir_deg for pid in outlier_ids},
-    }
+    [
+        dict(product_id=pid, fu=solved_camera(pid).focal_length_u_px, disk_distance_deg=disk_distance_deg(pid))
+        for pid in outlier_ids
+    ]
 )
 print(f"Outlier fu vs. tight cluster range ({tight_fu.min():.1f} - {tight_fu.max():.1f}):")
 print(outlier_summary)
@@ -261,7 +288,7 @@ print(outlier_summary)
 moderate_ids = ["M1327244120CE", "M1327251520CE"]
 extreme_ids = ["M1327258213CE", "M1327265552CE"]
 
-recommended_f = pd.concat([tight_fu, outlier_summary["fu"].loc[moderate_ids]]).max()
+recommended_f = pd.concat([tight_fu, outlier_summary.set_index("product_id")["fu"].loc[moderate_ids]]).max()
 print(f"\nrecommended_f (tight cluster + moderate outliers) = {recommended_f:.2f}")
 
 # %%
@@ -272,7 +299,7 @@ for pid in tight_sample_ids + moderate_ids + extreme_ids:
         dict(
             product_id=pid,
             group="tight" if pid in tight_sample_ids else ("moderate" if pid in moderate_ids else "extreme"),
-            corrected_off_nadir_deg=solved_camera(pid).off_nadir_deg,
+            disk_distance_deg=disk_distance_deg(pid),
             near_margin_km=near_km,
             far_margin_km=far_km,
         )
@@ -284,40 +311,142 @@ cost_df
 # The two moderate outliers need `fu` up to ~1345 -- about 4% above the tight cluster's own max
 # (~1292) -- and at that shared, larger `f` their own centered margins come out comparable to the
 # tight cluster's own range (one far margin lands just under it, ~2.7 km vs. a ~3.0 km floor -- not a
-# meaningful difference). Cheap to keep.
+# meaningful difference). Their pitch/yaw distance from nominal (2.6, 4.3 deg) stays inside a 5 deg
+# disk. Cheap to keep.
 #
-# The two extreme outliers are a different story at that same `f`: one (`M1327258213CE`) comes out
-# **negative** on its far margin -- an actual coverage failure, not just reduced margin. The other
-# (`M1327265552CE`) stays positive but thinner than every tight-cluster candidate's own margin. Neither
-# fits the centered-principal-point premise the way the rest of the manifest does -- this is the
-# along-track-tilt-driven asymmetry breaking down once cross-track tilt (which a centered `cu` never
-# corrects for) gets large enough to distort the along-track corners too, not a small stretch of an
-# otherwise-fine fit.
+# The two extreme outliers are a different story: 14.6 and 18.4 deg from nominal, an order of
+# magnitude past the moderate outliers and nowhere near a 5 deg disk. At the shared `f` above, one
+# (`M1327258213CE`) also comes out **negative** on its far margin -- an actual coverage failure, not
+# just reduced margin. Neither fits the centered-principal-point premise the way the rest of the
+# manifest does -- this is the yaw-driven asymmetry breaking down once cross-track tilt (which a
+# centered `cu` never corrects for) gets large enough to distort the along-track corners too, not a
+# small stretch of an otherwise-fine fit.
 #
-# `corrected_off_nadir_deg` above is what a threshold needs to be expressed in (see the caveat on the
-# raw sweep, above) -- and it separates the same two groups just as cleanly: the tight cluster plus the
-# two moderate outliers span 6.30-7.67 deg; the two extreme outliers span 17.83-18.46 deg, an ~10 deg
-# gap with nothing in it. Keeping literally every row would mean carrying these two anyway, past
-# `corrected_off_nadir_deg = 18.46` -- not a small stretch, the same conclusion the margin check above
-# already reached from a different angle.
-#
-# **`THRESHOLD_DEG = 10.0`**: sits centrally in that gap -- keeps the two moderate outliers, excludes
-# the two extreme ones.
+# **`NOMINAL_POINTING_DISK_RADIUS_DEG = 5.0`**: keeps the two moderate outliers (2.6, 4.3 deg from
+# nominal), excludes the two extreme ones (14.6, 18.4 deg) with a wide margin either side of the cut.
 
 # %%
-THRESHOLD_DEG = 10.0
+NOMINAL_POINTING_DISK_RADIUS_DEG = 5.0
 sample_product_ids = tight_sample_ids + moderate_ids
-print(f"THRESHOLD_DEG = {THRESHOLD_DEG}")
+print(f"NOMINAL_BORESIGHT_PITCH_DEG = {NOMINAL_BORESIGHT_PITCH_DEG:.4f}")
+print(f"NOMINAL_BORESIGHT_YAW_DEG = {NOMINAL_BORESIGHT_YAW_DEG}")
+print(f"NOMINAL_POINTING_DISK_RADIUS_DEG = {NOMINAL_POINTING_DISK_RADIUS_DEG}")
 print(f"fu = fv = {recommended_f:.2f}")
 print(f"cu = cv = {image_size / 2.0:.2f}")
 
 # %% [markdown]
+# ## Does the nominal pointing direction hold in the opposite yaw-flip state?
+#
+# LRO's WAC is body-fixed and periodically does a 180-degree yaw flip (~every 6 months) --
+# `camera.boresight_rotation_k` already tracks which state a pose is in. If the nominal pointing
+# direction above is a real, physical fact (not an artifact of this one manifest's short time window),
+# a manifest from the opposite state should show it mirrored on both axes: the whole spacecraft
+# rotates together, so both the raw attitude bias and the hardware boresight correction should flip
+# sign together.
+#
+# Checked directly: a real catalog query ~6 months after this manifest's own window (chosen only for
+# the yaw-flip cadence, not cherry-picked for geometry), a cheap raw-pose sweep across latitude, and
+# one real ISIS-corrected sample.
+
+# %%
+opposite_window_start = pd.Timestamp("2020-05-01", tz="UTC")
+opposite_candidates = catalog.list_products(
+    session.config, catalog.EDR_PRODUCT_TYPE, opposite_window_start, opposite_window_start + pd.Timedelta(days=1)
+)
+opposite_candidates = opposite_candidates.sort_values("center_lat_deg").reset_index(drop=True)
+opposite_picks = opposite_candidates.iloc[
+    [0, len(opposite_candidates) // 4, len(opposite_candidates) // 2, 3 * len(opposite_candidates) // 4, -1]
+]
+
+opposite_rows = []
+for _, row in opposite_picks.iterrows():
+    per_image_config = dataclasses.replace(
+        session.config,
+        edr_volume=row["volume"],
+        edr_subdir=row["subdir"],
+        edr_doy=str(row["doy"]),
+        edr_product=row["product_id"],
+    )
+    frame_timing = camera.fetch_frame_timing(per_image_config)
+    spice_kernels.fetch_and_furnish(frame_timing.start_time, per_image_config)
+    center_frame_index = frame_timing.nframes / 2.0
+    et = camera.frame_et(frame_timing, center_frame_index)
+    c_m, r_cam_to_me, _, off_nadir_deg = camera.camera_pose_moon_me(et)
+    forward_step_km = camera.ground_track_step_km(frame_timing, center_frame_index)
+    k = camera.boresight_rotation_k(r_cam_to_me, forward_step_km)
+    boresight_raw = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
+    pitch_deg, yaw_deg = camera.boresight_pitch_yaw_deg(c_m / 1000.0, boresight_raw, forward_step_km)
+    opposite_rows.append(
+        dict(
+            product_id=row["product_id"],
+            volume=row["volume"],
+            subdir=row["subdir"],
+            doy=row["doy"],
+            center_lat_deg=row["center_lat_deg"],
+            off_nadir_deg=off_nadir_deg,
+            k=k,
+            pitch_deg=pitch_deg,
+            yaw_deg=yaw_deg,
+        )
+    )
+
+opposite_df = pd.DataFrame(opposite_rows)
+print(f"Original manifest's own k (all 9 samples above): {solved_camera(tight_sample_ids[0]).boresight_rotation_k}")
+opposite_df[["product_id", "center_lat_deg", "off_nadir_deg", "k", "pitch_deg", "yaw_deg"]]
+
+# %% [markdown]
+# `k` is the opposite of the original manifest's for every candidate here, and raw `pitch_deg`/
+# `yaw_deg` mirror the original tight cluster's own raw values on both axes -- confirms the yaw-flip
+# signature. Now the real, ISIS-corrected check: the most nominal-looking candidate from this set (by
+# `off_nadir_deg`), through the full `build_camera(fixed_sensor=False)` re-aim.
+
+# %%
+opposite_pick = opposite_df.loc[opposite_df["off_nadir_deg"].idxmin()]
+opposite_per_image_config = dataclasses.replace(
+    session.config,
+    edr_volume=opposite_pick["volume"],
+    edr_subdir=opposite_pick["subdir"],
+    edr_doy=str(opposite_pick["doy"]),
+    edr_product=opposite_pick["product_id"],
+    target_frame_index=0,
+    output_dir=session.config.output_dir / "opposite_yaw_check" / opposite_pick["product_id"],
+)
+opposite_frame_timing = camera.fetch_frame_timing(opposite_per_image_config)
+opposite_per_image_config = dataclasses.replace(
+    opposite_per_image_config, target_frame_index=round(opposite_frame_timing.nframes / 2.0 - 35)
+)
+opposite_cam = camera.build_camera(opposite_per_image_config, fixed_sensor=False)
+opposite_c_km = np.array(opposite_cam.camera_center_moon_me_m) / 1000.0
+opposite_boresight_me = np.array(opposite_cam.r_cam_to_me)[:, 2]
+opposite_forward_step_km = camera.ground_track_step_km(opposite_frame_timing, opposite_cam.center_frame_index)
+opposite_pitch_deg, opposite_yaw_deg = camera.boresight_pitch_yaw_deg(
+    opposite_c_km, opposite_boresight_me, opposite_forward_step_km
+)
+mirrored_pitch_deg, mirrored_yaw_deg = -NOMINAL_BORESIGHT_PITCH_DEG, -NOMINAL_BORESIGHT_YAW_DEG
+
+print(f"{opposite_pick['product_id']}: k={opposite_cam.boresight_rotation_k}")
+print(f"  corrected pitch={opposite_pitch_deg:.2f}, yaw={opposite_yaw_deg:.2f} deg")
+print(f"  mirrored nominal: pitch={mirrored_pitch_deg:.2f}, yaw={mirrored_yaw_deg:.2f} deg")
+print(
+    f"  distance from mirrored nominal: "
+    f"{np.hypot(opposite_pitch_deg - mirrored_pitch_deg, opposite_yaw_deg - mirrored_yaw_deg):.2f} deg"
+)
+
+# %% [markdown]
+# This one candidate lands close to the mirrored nominal point -- consistent with the "the whole
+# spacecraft rotates together" model, on a single real sample from the opposite state (not a full
+# recalibration of it). `camera.nominal_boresight_pitch_yaw_deg` implements exactly this: unmirrored
+# for `k == _REVERSED_TIME_K` (the state this manifest's own samples are in), negated on both axes for
+# `k == _FORWARD_TIME_K`.
+
+# %% [markdown]
 # ## Side experiment: does letting `cv` float buy anything?
 #
-# `camera.solve_corrected_fov` (today's per-EDR machinery) doesn't center `cv` -- it shifts it to
-# balance near/far margins exactly, using up whatever slack a shared `f` leaves. Given the centered
-# margins above are already comfortably positive for every kept candidate, is a fitted `cv` worth the
-# extra per-EDR complexity? Compare both variants directly, across the final 7-candidate sample.
+# `camera.solve_corrected_fov` (the `fixed_sensor=False` per-EDR machinery) doesn't center `cv` -- it
+# shifts it to balance near/far margins exactly, using up whatever slack a shared `f` leaves. Given
+# the centered margins above are already comfortably positive for every kept candidate, is a fitted
+# `cv` worth the extra per-EDR complexity? Compare both variants directly, across the final
+# 7-candidate sample.
 
 # %%
 fit_cv = (
@@ -343,13 +472,16 @@ side_df.pivot(index="product_id", columns="cv_variant", values=["near_margin_km"
 # %% [markdown]
 # ## Recommendation
 #
-# **Rejection criterion**: exclude any EDR whose `build_camera`-reported (post-correction)
-# `off_nadir_deg >= 10.0` before generating a `hillshade`/`reproject` pair from it.
+# **Rejection rule**: exclude any EDR whose `build_camera`-reported (post-correction) boresight
+# pointing direction lands more than `NOMINAL_POINTING_DISK_RADIUS_DEG` from
+# `nominal_boresight_pitch_yaw_deg(k)` before generating a `hillshade`/`reproject` pair from it.
 #
 # **Fixed sensor parameters** (at `image_size` pixels, isotropic, centered principal point):
 
 # %%
-print(f"THRESHOLD_DEG = {THRESHOLD_DEG}")
+print(f"NOMINAL_BORESIGHT_PITCH_DEG = {NOMINAL_BORESIGHT_PITCH_DEG:.6f}")
+print(f"NOMINAL_BORESIGHT_YAW_DEG = {NOMINAL_BORESIGHT_YAW_DEG}")
+print(f"NOMINAL_POINTING_DISK_RADIUS_DEG = {NOMINAL_POINTING_DISK_RADIUS_DEG}")
 print(f"image_size = {image_size}")
-print(f"fu = fv = {recommended_f:.2f}")
+print(f"FIXED_FOCAL_LENGTH_PX = {recommended_f:.6f}")
 print(f"cu = cv = {image_size / 2.0:.2f}")

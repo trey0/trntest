@@ -195,7 +195,7 @@ lint's notebook checks).
 | [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment/` rows below) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). |
 | [`real_hapke_params.ipynb`][real_hapke_params.ipynb] | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
-| [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and nominal off-nadir envelope (`camera.NOMINAL_OFF_NADIR_THRESHOLD_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
+| [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 

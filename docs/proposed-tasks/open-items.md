@@ -73,7 +73,8 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
   own FOV polygons no longer pay this cost, see the item just below, but a footprint-outlier check
   specifically would still need real per-entry accuracy, not the approximation now used for the map).
-- **`build_camera`'s fixed-sensor path (`fixed_sensor=True`, the default) asserts `off_nadir_deg <
-  NOMINAL_OFF_NADIR_THRESHOLD_DEG`**, but only fails at generation time, after fetching/processing an
+- **`build_camera`'s fixed-sensor path (`fixed_sensor=True`, the default) asserts a pose's own
+  boresight pointing direction lands within `NOMINAL_POINTING_DISK_RADIUS_DEG` of
+  `nominal_boresight_pitch_yaw_deg`**, but only fails at generation time, after fetching/processing an
   EDR's real crop — a cheaper pre-generation filter (skip a catalog candidate outright before any ISIS
   work, in `candidate_window.py`) is a natural follow-up, not yet done.
