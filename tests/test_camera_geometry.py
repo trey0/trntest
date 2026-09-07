@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import spiceypy as spice
 
 from trntest import camera
 from trntest.config import TrntestConfig
@@ -81,6 +82,64 @@ def test_cross_track_width_km_nadir_pointing():
     half_angle_rad = np.radians(10.0)
     width = camera.cross_track_width_km(c_km, r_cam_to_me, half_angle_rad)
     assert width > 0
+
+
+def test_off_nadir_tilt_components_deg_nadir_pointing_is_zero():
+    c_km = np.array([0.0, 0.0, 3000.0])
+    r_cam_to_me = np.diag([1.0, -1.0, -1.0])  # boresight toward -Z (nadir)
+    forward_step_km = np.array([1.0, 0.0, 0.0])
+    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, forward_step_km)
+    assert tilt_along_deg == pytest.approx(0.0, abs=1e-9)
+    assert tilt_cross_deg == pytest.approx(0.0, abs=1e-9)
+
+
+def test_off_nadir_tilt_components_deg_pure_along_track_tilt():
+    c_km = np.array([0.0, 0.0, 3000.0])
+    nadir = np.array([0.0, 0.0, -1.0])
+    along = np.array([1.0, 0.0, 0.0])
+    theta_deg = 5.0
+    boresight_me = np.cos(np.radians(theta_deg)) * nadir + np.sin(np.radians(theta_deg)) * along
+    r_cam_to_me = camera.look_at_rotation(boresight_me, np.eye(3))
+    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, along)
+    assert tilt_along_deg == pytest.approx(theta_deg, abs=1e-6)
+    assert tilt_cross_deg == pytest.approx(0.0, abs=1e-6)
+
+
+def test_off_nadir_tilt_components_deg_pure_cross_track_tilt():
+    c_km = np.array([0.0, 0.0, 3000.0])
+    nadir = np.array([0.0, 0.0, -1.0])
+    along = np.array([1.0, 0.0, 0.0])
+    cross = np.cross(nadir, along)
+    theta_deg = 5.0
+    boresight_me = np.cos(np.radians(theta_deg)) * nadir + np.sin(np.radians(theta_deg)) * cross
+    r_cam_to_me = camera.look_at_rotation(boresight_me, np.eye(3))
+    tilt_along_deg, tilt_cross_deg = camera.off_nadir_tilt_components_deg(c_km, r_cam_to_me, along)
+    assert tilt_along_deg == pytest.approx(0.0, abs=1e-6)
+    assert tilt_cross_deg == pytest.approx(theta_deg, abs=1e-6)
+
+
+def test_along_track_extent_km_matches_direct_ground_point_decomposition():
+    moon_radius_km = 1737.4
+    boresight_ground_km = np.array(spice.latrec(moon_radius_km, 0.0, 0.0))
+    along_track_axis_me = np.array([0.0, 0.0, 1.0])  # local "north" at the equator, tangent to nadir
+    near_ground_km = np.array(spice.latrec(moon_radius_km, 0.0, -np.radians(0.5)))
+    far_ground_km = np.array(spice.latrec(moon_radius_km, 0.0, np.radians(0.5)))
+    expected_near_km = -float(np.dot(near_ground_km - boresight_ground_km, along_track_axis_me))
+    expected_far_km = float(np.dot(far_ground_km - boresight_ground_km, along_track_axis_me))
+
+    def lonlat_deg(ground_km):
+        _, lon, lat = spice.reclat(ground_km)
+        return np.degrees(lon), np.degrees(lat)
+
+    footprint = {
+        "top_left": lonlat_deg(near_ground_km),
+        "top_right": lonlat_deg(near_ground_km),
+        "bottom_left": lonlat_deg(far_ground_km),
+        "bottom_right": lonlat_deg(far_ground_km),
+    }
+    near_km, far_km = camera.along_track_extent_km(footprint, boresight_ground_km, along_track_axis_me)
+    assert near_km == pytest.approx(expected_near_km)
+    assert far_km == pytest.approx(expected_far_km)
 
 
 def test_footprint_lonlat_center_is_nadir():

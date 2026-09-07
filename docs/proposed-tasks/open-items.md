@@ -89,6 +89,18 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   EDR frames**, producing a single, precalculated, cross-manifest-validated `.tsai`-equivalent
   parameter set (FOV/principal-point and boresight correction) that the whole pipeline — not just
   the overview map — could eventually rely on instead of resolving `solve_corrected_fov`/the
-  boresight re-aim fresh per entry via ISIS. That larger change is out of scope for what landed here;
-  `lightweight_footprint_lonlat_deg`'s own module-level constants in `camera.py` are the one place to
-  update once it exists, with no other caller needing to change.
+  boresight re-aim fresh per entry via ISIS. `notebooks/sensor_calibration_scoping.ipynb` is that
+  calibration pass: sweeps off-nadir/altitude across the full manifest (pure SPICE, no ISIS) to
+  separate footprint-*size* variation (altitude/latitude-driven, via `n_frames_for_square_crop`) from
+  footprint-*shape* variation (along-track-tilt-driven, via `cv`'s offset from center); measures real
+  `(fu, fv, cv)` via `solve_corrected_fov` across 7 real candidates spanning the manifest's altitude
+  bands, including the two moderate off-nadir outliers; and checks a fully centered principal point
+  (`cu = cv = image_size / 2`) against each candidate's own real crop footprint via the new
+  `camera.along_track_extent_km`, finding no coverage cost. Recommends `off_nadir_deg < 5.0` as the
+  nominal-EDR threshold (the two extreme outliers need a `cv` offset 2.5-3.5x the rest of the
+  manifest's range and don't fit this sensor model at all; the two moderate ones cost only ~4% more
+  `f`) and a centered, isotropic `(fu, fv, cu, cv)` — its last cell prints the resulting values. Not
+  yet pinned anywhere: once the numbers are trusted, `lightweight_footprint_lonlat_deg`'s module-level
+  constants (and eventually `build_camera()`'s own per-EDR `solve_corrected_fov` call, and a real
+  rejection check somewhere in dataset generation) are the places to update, with no other caller
+  needing to change.
