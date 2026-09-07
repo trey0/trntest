@@ -45,26 +45,16 @@ PDS_NS = {
 _FORWARD_TIME_K = 1  # forward_step_me_km projects to -X_raw
 _REVERSED_TIME_K = 3  # forward_step_me_km projects to +X_raw -- also Camera.reverse_crop_along_track
 
-# `lightweight_footprint_lonlat_deg`'s calibration -- see that function's own docstring for what
-# these represent and why they're provisional. Measured once, live, from `build_camera`'s real,
-# ISIS-refined output for the reference candidate `M1327210646CE` (2026-09-07):
-#   - `_LIGHTWEIGHT_BORESIGHT_CORRECTION`: the rotation applied to the raw SPICE attitude, before
-#     any `rotation_about_boresight(k)` relabeling, to reproduce `look_at_rotation`'s own re-aimed
-#     result for this one candidate (`r_cam_to_me_raw.T @ r_cam_to_me_pretwist`) -- 5.15 degrees,
-#     matching one of the two real measurements `docs/history.md`'s Phase 29 already recorded
-#     (5.75/5.15 deg on two different candidates), not a new independent data point. Applied before
-#     the `k`-twist (which is itself still computed fresh per pose, cheaply, from raw SPICE alone),
-#     since the twist is a separate, later relabeling step, not part of the boresight fix itself.
-#   - `_LIGHTWEIGHT_FOCAL_LENGTH_PX`/`_LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX`: this candidate's own
-#     `solve_corrected_fov` output (`cu` is always exactly `image_size/2` by that function's own
-#     construction, never approximated; `cv`'s offset from that and the shared isotropic `f` both
-#     vary somewhat with `n_frames_for_square_crop`, which differs per manifest row -- 65-78 frames
-#     across today's real manifest -- so this part is a genuine size approximation, not exact,
-#     unlike the boresight correction above).
-# A stand-in until a properly derived, cross-manifest-validated constant set replaces it -- e.g. a
-# calibration pass across many "nominal" EDR frames, per the user's own framing. Swapping in a
-# better-measured value here is a complete fix; no caller of `lightweight_footprint_lonlat_deg`
-# needs to change.
+# `lightweight_footprint_lonlat_deg`'s boresight-correction approximation -- see that function's own
+# docstring for what it stands in for. Measured once, live, from `build_camera`'s real, ISIS-refined
+# re-aim for the reference candidate `M1327210646CE` (2026-09-07): the rotation applied to the raw
+# SPICE attitude, before any `rotation_about_boresight(k)` relabeling, to reproduce `look_at_rotation`'s
+# own re-aimed result for this one candidate (`r_cam_to_me_raw.T @ r_cam_to_me_pretwist`) -- 5.15
+# degrees, matching one of the two real measurements `docs/history.md`'s Phase 29 already recorded
+# (5.75/5.15 deg on two different candidates), not a new independent data point. Applied before the
+# `k`-twist (which is itself still computed fresh per pose, cheaply, from raw SPICE alone), since the
+# twist is a separate, later relabeling step, not part of the boresight fix itself. Only cross-checked
+# against one of Phase 29's two candidates, not a larger validated set.
 _LIGHTWEIGHT_BORESIGHT_CORRECTION = np.array(
     [
         [9.95965571e-01, -1.59937148e-17, 8.97361720e-02],
@@ -72,8 +62,17 @@ _LIGHTWEIGHT_BORESIGHT_CORRECTION = np.array(
         [-8.97359441e-02, -2.25368232e-03, 9.95963042e-01],
     ]
 )
-_LIGHTWEIGHT_FOCAL_LENGTH_PX = 1282.878596239123
-_LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX = 687.1319961956264 - 658.0  # cv - image_size/2, measured at image_size=1316
+
+# Fixed, isotropic, centered-principal-point sensor model -- shared by `build_camera`'s default
+# (`fixed_sensor=True`) and `lightweight_footprint_lonlat_deg` alike, valid within the nominal
+# off-nadir envelope (`NOMINAL_OFF_NADIR_THRESHOLD_DEG`, in the same *post-boresight-correction* sense
+# as `Camera.off_nadir_deg`/`build_camera`'s own `off_nadir_deg` local -- not the raw SPICE-frame
+# off-nadir `camera_pose_moon_me` returns, which sits several degrees lower due to WAC-VIS's own
+# roughly-constant boresight-vs-frame offset). Derived from a manifest sample spanning its altitude
+# bands; see notebooks/sensor_calibration_scoping.py. A centered principal point needs no separate
+# `cv` constant -- it's exactly `image_size / 2.0`.
+FIXED_FOCAL_LENGTH_PX = 1342.522354
+NOMINAL_OFF_NADIR_THRESHOLD_DEG = 10.0
 
 
 def boresight_rotation_k(r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.ndarray) -> int:
@@ -578,14 +577,25 @@ def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
         f.write("\n".join(lines) + "\n")
 
 
-def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Path | None = None) -> Camera:
+def build_camera(
+    config: TrntestConfig | None = None,
+    output_tsai_path: str | Path | None = None,
+    *,
+    fixed_sensor: bool = True,
+) -> Camera:
     """Fetch the target frame's timing, pose the camera from SPICE trajectory data, and write the
     resulting `.tsai` Pinhole camera file.
 
     :param config: Project config; defaults to `load_config()`.
     :param output_tsai_path: Where to write the `.tsai` file; defaults to
         `config.output_dir/camera_frame<target_frame_index>.tsai`.
+    :param fixed_sensor: If `True` (default), use the fixed, isotropic, centered-principal-point
+        sensor model (`FIXED_FOCAL_LENGTH_PX`). If `False`, solve `(fu, fv, cu, cv)` fresh for this
+        EDR via `solve_corrected_fov`, snug-fit to its own real WAC crop footprint -- for
+        recalibrating those constants (see notebooks/sensor_calibration_scoping.py), not normal use.
     :returns: The resulting `Camera`.
+    :raises AssertionError: if `fixed_sensor` and this pose's `off_nadir_deg` exceeds
+        `NOMINAL_OFF_NADIR_THRESHOLD_DEG` -- the fixed sensor model isn't validated past that envelope.
     """
     # Boresight re-aiming: the raw SPICE pose (`camera_pose_moon_me`, boresight = the nominal
     # `LRO_LROCWAC_VIS` frame's Z axis) is not used directly as the synthetic camera's final
@@ -608,14 +618,14 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     # for accuracy -- a hand-tuned constant-tilt "fix" doesn't work, since the offset isn't a
     # constant rotation correction (see above).
     #
-    # FOV correction: `solve_corrected_fov` (see its own docstring) then shrinks the naive symmetric
-    # `fu=fv` FOV so the render stays inside the WAC crop's own footprint -- reuses the same
-    # stitched cube's crop (`tie_points.crop_footprint_corners_for_camera`, one more cheap,
-    # idempotent ISIS `crop` call) as its ground truth. Applied here, not only for the not-yet-built
-    # `reproject` product type, so `hillshade` and a future `reproject` share byte-identical
-    # `(fu, fv, cu, cv)` -- deliberate, for pixel-grid-identical SSIM/diff-style comparison between
-    # them later; `crop` (the real image) is unaffected, naturally larger, and doesn't need FOV
-    # parity with the other two. See docs/reproject-fov-investigation.md.
+    # Sensor model: `fixed_sensor` (default) skips any per-EDR FOV solve and just uses
+    # `FIXED_FOCAL_LENGTH_PX`/a centered principal point -- `hillshade` and `reproject` share it
+    # automatically, byte-identical, for pixel-grid-identical SSIM/diff-style comparison between them.
+    # `fixed_sensor=False` instead calls `solve_corrected_fov` (see its own docstring) to shrink the
+    # naive symmetric `fu=fv` FOV so the render stays inside this one EDR's own real WAC crop
+    # footprint -- reuses the same stitched cube's crop (`tie_points.crop_footprint_corners_for_camera`,
+    # one more cheap, idempotent ISIS `crop` call) as its ground truth. See
+    # docs/reproject-fov-investigation.md for that solve's own derivation.
     config = config or load_config()
     frame_timing = fetch_frame_timing(config)
     spice_kernels.fetch_and_furnish(frame_timing.start_time, config)
@@ -660,6 +670,12 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
     boresight_me = target_ground_km - c_meters / 1000.0
     boresight_me = boresight_me / np.linalg.norm(boresight_me)
     off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
+    if fixed_sensor:
+        assert off_nadir_deg < NOMINAL_OFF_NADIR_THRESHOLD_DEG, (
+            f"off_nadir_deg={off_nadir_deg:.2f} exceeds the fixed sensor model's validated nominal "
+            f"envelope ({NOMINAL_OFF_NADIR_THRESHOLD_DEG} deg) -- pass fixed_sensor=False to solve a "
+            "per-EDR fit instead"
+        )
 
     r_cam_to_me_pretwist = look_at_rotation(boresight_me, r_cam_to_me_raw)
     # Pre-twist X is along-track (py, up to sign) regardless of k, per the sensor-model axis
@@ -676,9 +692,9 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
 
     # Provisional camera, naive symmetric FOV -- only its crop-window fields
     # (reverse_crop_along_track/center_frame_index/n_frames_for_square_crop) are used below, all
-    # already known at this point; its own fu/fv/cu/cv are provisional, replaced by
-    # solve_corrected_fov's result right after -- see that function's docstring for why the naive
-    # symmetric FOV overshoots the real crop.
+    # already known at this point; its own fu/fv/cu/cv are provisional, replaced below by either the
+    # fixed sensor model or (`fixed_sensor=False`) `solve_corrected_fov`'s own result -- see that
+    # function's docstring for why the naive symmetric FOV overshoots the real crop.
     half_angle_rad = np.radians(config.wac_vis_color_fov_deg / 2.0)
     provisional_fu = (config.image_size / 2.0) / np.tan(half_angle_rad)
     provisional_cu = config.image_size / 2.0
@@ -704,13 +720,17 @@ def build_camera(config: TrntestConfig | None = None, output_tsai_path: str | Pa
         tsai_path=output_tsai_path,
     )
 
-    from trntest import tie_points  # noqa: PLC0415 -- circular otherwise (tie_points imports Camera)
+    if fixed_sensor:
+        fu = fv = FIXED_FOCAL_LENGTH_PX
+        cu = cv = config.image_size / 2.0
+    else:
+        from trntest import tie_points  # noqa: PLC0415 -- circular otherwise (tie_points imports Camera)
 
-    crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, provisional_camera, config)
-    cross_track_axis_me = r_cam_to_me[:, 0]
-    fu, fv, cu, cv = solve_corrected_fov(
-        c_meters / 1000.0, r_cam_to_me, along_track_direction_me, cross_track_axis_me, crop_footprint, config
-    )
+        crop_footprint = tie_points.crop_footprint_corners_for_camera(frame_timing, provisional_camera, config)
+        cross_track_axis_me = r_cam_to_me[:, 0]
+        fu, fv, cu, cv = solve_corrected_fov(
+            c_meters / 1000.0, r_cam_to_me, along_track_direction_me, cross_track_axis_me, crop_footprint, config
+        )
 
     write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
     footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, config.image_size)
@@ -732,11 +752,11 @@ def lightweight_footprint_lonlat_deg(
     frame_timing: FrameTiming, target_frame_index: int, config: TrntestConfig | None = None
 ) -> dict[str, tuple[float, float] | None]:
     """A cheap, ISIS-free approximation of `hillshade`/`reproject`'s own FOV footprint -- pure SPICE
-    plus the fixed, once-measured calibration constants above, no `build_camera`/ISIS pipeline call
-    at all. Usable for any manifest row regardless of whether it's been populated yet -- unlike
-    `build_camera`, whose accuracy comes from re-aiming against a real generated crop's own ISIS
-    ground truth (`docs/history.md`'s Phase 29: this offset genuinely isn't derivable from any SPICE
-    kernel data this project furnishes, only from a real acquired image).
+    plus a fixed approximation of the boresight re-aim, no `build_camera`/ISIS pipeline call at all.
+    Usable for any manifest row regardless of whether it's been populated yet -- unlike `build_camera`,
+    whose boresight re-aim comes from a real generated crop's own ISIS ground truth (`docs/history.md`'s
+    Phase 29: that offset genuinely isn't derivable from any SPICE kernel data this project furnishes,
+    only from a real acquired image).
 
     Intended for `overview_map.plot_overview_map`, which only needs an approximate footprint at
     whole-Moon map scale for every entry, not the exact pixel-accurate value the real demo
@@ -749,9 +769,10 @@ def lightweight_footprint_lonlat_deg(
     :param target_frame_index: The manifest row's own target frame index (`row["start_frame"]`,
         i.e. `config.target_frame_index`) -- same convention `build_camera` uses.
     :param config: Project config; `load_config()` if not given.
-    :returns: Same shape as `Camera.footprint_lonlat_deg` -- an approximation of it, not a
-        substitute for it; see the calibration constants' own comment for what's exact (`cu`, the
-        boresight-correction direction) versus approximate (FOV size, `cv`).
+    :returns: Same shape as `Camera.footprint_lonlat_deg` -- an approximation of it in one respect
+        only: the boresight-correction rotation (`_LIGHTWEIGHT_BORESIGHT_CORRECTION`). The sensor
+        model itself (`FIXED_FOCAL_LENGTH_PX`, centered `cu`/`cv`) is the same one `build_camera`'s
+        default path uses.
     """
     config = config or load_config()
     crop_info = compute_n_frames_for_square_crop(frame_timing, target_frame_index, config)
@@ -761,13 +782,12 @@ def lightweight_footprint_lonlat_deg(
     forward_step_km = ground_track_step_km(frame_timing, center_frame_index)
     k = boresight_rotation_k(r_cam_to_me_raw, forward_step_km)
     r_cam_to_me = r_cam_to_me_raw @ _LIGHTWEIGHT_BORESIGHT_CORRECTION @ rotation_about_boresight(k)
-    cu = config.image_size / 2.0
-    cv = cu + _LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX
+    cu = cv = config.image_size / 2.0
     return footprint_lonlat(
         c_meters / 1000.0,
         r_cam_to_me,
-        _LIGHTWEIGHT_FOCAL_LENGTH_PX,
-        _LIGHTWEIGHT_FOCAL_LENGTH_PX,
+        FIXED_FOCAL_LENGTH_PX,
+        FIXED_FOCAL_LENGTH_PX,
         cu,
         cv,
         config.image_size,

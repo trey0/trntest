@@ -190,7 +190,7 @@ def test_lightweight_footprint_lonlat_deg_composes_boresight_correction_and_k_tw
     np.testing.assert_allclose(c_km_arg, c_meters_raw / 1000.0)
     expected_r = r_cam_to_me_raw @ camera._LIGHTWEIGHT_BORESIGHT_CORRECTION @ camera.rotation_about_boresight(1)
     np.testing.assert_allclose(r_cam_to_me_arg, expected_r)
-    assert fu_arg == fv_arg == camera._LIGHTWEIGHT_FOCAL_LENGTH_PX
+    assert fu_arg == fv_arg == camera.FIXED_FOCAL_LENGTH_PX
     assert cu_arg == config.image_size / 2.0
-    assert cv_arg == pytest.approx(config.image_size / 2.0 + camera._LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX)
+    assert cv_arg == config.image_size / 2.0
     assert size_arg == config.image_size
