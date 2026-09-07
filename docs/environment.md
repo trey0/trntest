@@ -85,6 +85,13 @@ checkout). All of this — main checkout and every worktree — sits under the s
   writing to the same `output/` at once means one agent's run silently clobbers another's. Each
   worktree agent should write to its own `output/<worktree-name>/` subfolder instead (e.g.
   `trntest_ws/output/a1/`) so concurrent agents can't step on each other.
+- **`output/<worktree-name>/` is ephemeral, scoped to that worktree's own lifetime** —
+  `scripts/cleanup_worktrees.sh delete` removes it along with the worktree, branch, and Docker
+  image (see docs/collaboration.md's "Publish valuable output before cleanup" section for the
+  collaboration side of this). Before that happens, publish anything worth keeping: move/copy it to
+  its own stably-named subfolder directly under the shared `output/` root, not nested inside any
+  worktree's own `output/<name>/` — `output/trn_dataset` already works this way for the main
+  checkout's own runs.
 - **The Docker image tag/Compose project name must also be per-worktree.** `docker compose run
   --rm` rebuilds the image from whatever's currently on disk in that checkout; if two worktrees
   share one image tag, whichever agent's build finishes last silently becomes the image the

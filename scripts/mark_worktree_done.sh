@@ -5,7 +5,9 @@ set -euo pipefail
 # scripts/cleanup_worktrees.sh looks for before ever proposing to delete a worktree by default. See
 # docs/collaboration.md's "Recommend branch cleanup at session closeout" section: an agent runs this
 # when the user says they're done with the session, in place of the "close session -> delete
-# worktree?" prompt Claude Code's CLI has but Claude Desktop doesn't.
+# worktree?" prompt Claude Code's CLI has but Claude Desktop doesn't. cleanup_worktrees.sh delete
+# also removes this worktree's own output/<name>/ directory -- see docs/collaboration.md's "Publish
+# valuable output before cleanup" section first if a real production run lives there.
 #
 # Run from within the worktree being marked (not the main checkout). Writes a gitignored
 # .session-done file at the worktree root; safe to re-run (overwrites the timestamp/note).
