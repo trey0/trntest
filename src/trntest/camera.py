@@ -209,6 +209,29 @@ def off_nadir_and_slant_range(c_km: np.ndarray, boresight_me: np.ndarray) -> tup
     return off_nadir_deg, slant_range_km
 
 
+def off_nadir_tilt_components_deg(
+    c_km: np.ndarray, r_cam_to_me: np.ndarray, forward_step_me_km: np.ndarray
+) -> tuple[float, float]:
+    """Decompose a camera's off-nadir tilt into along-track/cross-track components (degrees), using
+    the same tangent-plane convention as `pixel_ray_cam`.
+
+    :param c_km: Camera center (MOON_ME, km).
+    :param r_cam_to_me: Camera-to-MOON_ME rotation.
+    :param forward_step_me_km: "Forward in time" ground-track direction (MOON_ME, not normalized),
+        e.g. from `ground_track_step_km` -- defines the along-track axis this decomposes against.
+    :returns: `(tilt_along_deg, tilt_cross_deg)`, signed; both 0 for a boresight exactly at nadir.
+    """
+    nadir = -c_km / np.linalg.norm(c_km)
+    along = forward_step_me_km - np.dot(forward_step_me_km, nadir) * nadir
+    along = along / np.linalg.norm(along)
+    cross = np.cross(nadir, along)
+    boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
+    b_nadir = np.dot(boresight_me, nadir)
+    tilt_along_deg = np.degrees(np.arctan2(np.dot(boresight_me, along), b_nadir))
+    tilt_cross_deg = np.degrees(np.arctan2(np.dot(boresight_me, cross), b_nadir))
+    return tilt_along_deg, tilt_cross_deg
+
+
 def camera_pose_moon_me(et: float):
     """Return (C_meters, R_cam_to_moon_me, slant_range_km) for the WAC VIS channel at time et."""
     state, _ = spice.spkezr("LRO", et, "MOON_ME", "NONE", "MOON")
@@ -415,6 +438,33 @@ def _corner_ground_km(
     return c_km + t * direction_me
 
 
+def along_track_extent_km(
+    footprint_lonlat_deg: dict, boresight_ground_km: np.ndarray, along_track_axis_me: np.ndarray
+) -> tuple[float, float]:
+    """Near/far along-track ground distance (km, positive magnitudes) from `boresight_ground_km` to
+    a footprint's corners, averaged over each side's two corners and decomposed onto
+    `along_track_axis_me` -- the same measure `solve_corrected_fov` fits against, exposed standalone
+    for evaluating an arbitrary camera's own footprint (e.g. via `footprint_lonlat`) against a real
+    crop's.
+
+    :param footprint_lonlat_deg: 4-corner (+ optional `"center"`) footprint, lon/lat deg -- e.g.
+        `footprint_lonlat`'s return value, or `tie_points.crop_footprint_corners_for_camera`'s.
+    :param boresight_ground_km: Ground point (MOON_ME, km) the near/far distances are measured from.
+    :param along_track_axis_me: Camera's along-track (py) axis, MOON_ME frame.
+    :returns: `(near_km, far_km)`.
+    """
+    along_km = {}
+    for name, lonlat in footprint_lonlat_deg.items():
+        if name == "center" or lonlat is None:
+            continue
+        lon, lat = lonlat
+        ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(lon), np.radians(lat)))
+        along_km[name] = float(np.dot(ground_km - boresight_ground_km, along_track_axis_me))
+    near_km = -np.mean([v for v in along_km.values() if v < 0])
+    far_km = np.mean([v for v in along_km.values() if v >= 0])
+    return near_km, far_km
+
+
 def solve_corrected_fov(
     c_km: np.ndarray,
     r_cam_to_me: np.ndarray,
@@ -478,15 +528,9 @@ def solve_corrected_fov(
         rel = ground_km - boresight_ground_km
         return float(np.dot(rel, cross_track_axis_me)), float(np.dot(rel, along_track_axis_me))
 
-    along_track_km = {}
-    for name, lonlat in crop_footprint_lonlat.items():
-        if name == "center" or lonlat is None:
-            continue
-        lon, lat = lonlat
-        ground_km = np.array(spice.latrec(MOON_RADIUS_KM, np.radians(lon), np.radians(lat)))
-        _, along_track_km[name] = decompose_km(ground_km)
-    target_near_km = -np.mean([v for v in along_track_km.values() if v < 0])
-    target_far_km = np.mean([v for v in along_track_km.values() if v >= 0])
+    target_near_km, target_far_km = along_track_extent_km(
+        crop_footprint_lonlat, boresight_ground_km, along_track_axis_me
+    )
 
     def solve_half_angle_v(half_angle_u: float, target_km: float, sign_v: float, hi: float = np.radians(45.0)) -> float:
         """Bisect for the along-track half-angle (radians) whose corner ray (at the given, fixed
