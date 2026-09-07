@@ -198,13 +198,13 @@ class TrnTestEntry:
 
     def log_path(self, product_type: str) -> Path:
         """Where `tasks._generate_entry` captures this entry/product_type's console output
-        (stdout/stderr, plus a traceback on failure) -- `self.log_dir / f"{product_type}_log.txt"`.
-        `.txt`, not `.log` -- a plain `python3 -m http.server` (what serves this folder, see
-        `docs/report-generation.md`'s "Viewing reports" section) doesn't know the `.log` extension
-        and would otherwise serve it as `application/octet-stream`, which browsers download instead
-        of displaying; `.txt` is a real stdlib-recognized `mimetypes` extension, so no custom server
-        is needed just to view a log. Only written when that product type is actually generated (a
-        no-op `generate()` call, because it already exists, never touches this file)."""
+        (stdout/stderr, plus a traceback on failure). Only written when that product type is
+        actually generated -- a no-op `generate()` call, because it already exists, never touches
+        this file."""
+        # ".txt", not ".log": a plain `python3 -m http.server` (what serves this folder, see
+        # docs/report-generation.md's "Viewing reports" section) doesn't know the ".log" extension
+        # and would otherwise serve it as application/octet-stream, which browsers download instead
+        # of displaying; ".txt" is a real stdlib-recognized mimetypes extension.
         return self.log_dir / f"{product_type}_log.txt"
 
 
@@ -391,8 +391,8 @@ class TrnTestDataSet:
         Like `populate()`/`populate_via_workers()`, not safe to run concurrently with itself against
         the same dataset folder (writes shared files).
 
-        Finishes by displaying a clickable link to the freshly-written `reports/index.html`
-        (`report.print_viewing_url`) -- the point of this call having just refreshed it.
+        Finishes by printing a link to the freshly-written `reports/index.html`
+        (`report.print_viewing_url`).
         """
         from trntest import overview_map, report  # noqa: PLC0415 -- circular otherwise (both
         # import TrnTestDataSet/TrnTestEntry from this module)

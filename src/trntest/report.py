@@ -62,23 +62,22 @@ def load_entry(dataset_folder: str, entry_index: int) -> TrnTestEntry:
 
 def _logs_link_html(entry: TrnTestEntry, logs_prefix: str) -> str:
     """A single link to this entry's whole `log_dir` folder if any generator log has been captured
-    for it yet, else an em-dash placeholder. One link to the folder, not one per generator -- the
-    folder already groups every `<product_type>_log.txt` that exists, so a directory listing (e.g.
-    a plain `python -m http.server`, which autoindexes a folder with no `index.html` of its own) is
-    enough for picking the generator of interest, without this code needing to enumerate
-    `entry.images_by_type` itself.
+    for it yet, else an em-dash placeholder.
 
-    **Only works when browsing via a real static file server** -- either the
-    `jupyter-server-proxy`-backed `/output/...` route (`config/jupyter_server_config.py`) or the
-    standalone `scripts/serve_reports.sh`, see `docs/report-generation.md`'s "Viewing reports"
-    section for both. Jupyter Server's own `/files/...` route returns 403 for a bare directory URL
-    (no autoindex), confirmed live; it can serve an individual `<product_type>_log.txt` file
-    directly but not list a folder of them.
+    Only works when browsing via a real static file server (the `/output/...` route or
+    `scripts/serve_reports.sh`, see `docs/report-generation.md`'s "Viewing reports" section) --
+    Jupyter's own `/files/...` route can serve an individual log file directly but not list a
+    directory.
 
     :param logs_prefix: Relative path from the linking page to `<dataset_folder>/logs/`, e.g.
         `"../logs"` from `reports/overview_table.html`, `"../../logs"` from
         `reports/<edr_product>/report.html`.
     """
+    # One link to the folder, not one per generator: the folder already groups every
+    # <product_type>_log.txt that exists, so a directory listing (autoindexed by a plain
+    # `python -m http.server`, confirmed live -- Jupyter's own /files/... route 403s on a bare
+    # directory URL instead) is enough for picking the generator of interest, without needing to
+    # enumerate entry.images_by_type here.
     if not entry.log_dir.is_dir():
         return "&mdash;"
     return f'<a href="{logs_prefix}/{entry.edr_product}/">logs/</a>'
@@ -365,26 +364,19 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
 
 
 def print_viewing_url(dataset: TrnTestDataSet) -> None:
-    """Prints a link to this dataset's freshly-(re)written `reports/index.html`, via the
-    `jupyter-server-proxy`-backed `/output/...` route (`config/jupyter_server_config.py`) -- called
-    by `TrnTestDataSet.write_index()` so someone who just ran `populate()`/`write_index()` doesn't
-    have to remember `docs/report-generation.md`'s "Viewing reports" section to find where to look.
+    """Prints a link to this dataset's `reports/index.html`, reachable via the `/output/...` route
+    (see `docs/report-generation.md`'s "Viewing reports" section) -- called by
+    `TrnTestDataSet.write_index()`.
 
-    Silently does nothing if `dataset.folder` isn't actually under `dataset.config.output_dir` -- a
-    customized `output_dir` (see `config.py`'s `TRNTEST_OUTPUT_DIR`) the `/output/...` proxy (which
-    always serves `/workspace/output`, hardcoded in `config/jupyter_server_config.py`) can't reach,
-    so no valid link can be built.
-
-    A plain `print()`, deliberately not `IPython.display.display(Markdown(...))` (`summary()`'s own
-    convention elsewhere in this module): outside a live IPython kernel -- `populate()`/
-    `write_index()`'s other realistic callers, e.g. a plain `docker compose run demo python3 -c
-    "..."` script or a `populate_via_workers()` batch job with no notebook attached at all --
-    `display()` falls back to an unhelpful bare object repr (confirmed live: `get_ipython()` is
-    `None` there, and `Markdown.__repr__` isn't the rendered source), silently dropping the URL
-    entirely. Plain `print()` always shows the real URL text in every context, and JupyterLab's own
-    output area still auto-linkifies a bare URL in printed text, so nothing is lost in the notebook
-    case either.
+    Does nothing if `dataset.folder` isn't under `dataset.config.output_dir`, since no valid
+    `/output/...` link can be built in that case.
     """
+    # A plain print(), not IPython.display.display(Markdown(...)) (summary()'s own convention
+    # elsewhere in this module): outside a live IPython kernel -- e.g. a plain `docker compose run
+    # demo python3 -c "..."` script, or a populate_via_workers() batch job with no notebook attached
+    # -- display() falls back to an unhelpful bare object repr instead of the URL (confirmed live:
+    # get_ipython() is None there). print() always shows the real URL, and JupyterLab's own output
+    # area still auto-linkifies a bare URL in printed text, so nothing is lost in the notebook case.
     try:
         relative = dataset.folder.relative_to(dataset.config.output_dir)
     except ValueError:

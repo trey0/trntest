@@ -149,16 +149,13 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
 @contextlib.contextmanager
 def _capture_generator_log(log_path: Path, product_type: str) -> Iterator[None]:
     """Redirects stdout/stderr to `log_path` for the duration of one product type's `generate()`
-    call, so a production run's console output (this codebase's own `print()` diagnostics --
-    `dem_ortho.py`/`candidate_window.py` -- plus `subprocess_utils.run_quiet`'s failure-path
-    stdout/stderr dump) lands somewhere durable instead of vanishing into whichever process happened
-    to run the task (a `populate()` notebook cell no one is watching, or one of
-    `populate_via_workers()`'s worker processes, whose own stdout is redirected wholesale into
-    `<output_dir>/.huey/consumer.log`, every worker's output interleaved together).
-
-    `report.py`'s overview table and per-entry summary link to `entry.log_dir` (this file's parent)
-    once it exists -- see `TrnTestEntry.log_dir`'s own docstring.
-    """
+    call."""
+    # Without this, a production run's console output (this codebase's own `print()` diagnostics --
+    # dem_ortho.py/candidate_window.py -- plus subprocess_utils.run_quiet's failure-path stdout/
+    # stderr dump) vanishes into whichever process happened to run the task: a populate() notebook
+    # cell no one is watching, or one of populate_via_workers()'s worker processes, whose own stdout
+    # is redirected wholesale into <output_dir>/.huey/consumer.log, every worker's output
+    # interleaved together.
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as log_file, contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
         print(f"=== {product_type} generation started {datetime.now(UTC).isoformat()} ===")
