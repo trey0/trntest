@@ -7,7 +7,7 @@ class hierarchy (`TrnTestProduct`/`TrnTestImage`/etc.) those properties construc
 **Only one `populate()` call should run against a given dataset folder at a time** -- for
 multi-worker parallel population, use `populate_via_workers()` instead.
 
-`PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade", "report")`;
+`PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade", "report", "gallery")`;
 `reproject` is implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
 """
 # An incrementally/resumably populated alternative to candidate_window.generate_dataset()'s flat,
@@ -29,6 +29,11 @@ multi-worker parallel population, use `populate_via_workers()` instead.
 # (TrnTestReport._generate_impl calls entry.hillshade.generate() itself) rather than relying on
 # callers passing product_types in a particular order -- same reasoning TrnTestReprojectImage
 # already applies via entry.crop_result's cached_property chain.
+#
+# gallery (TrnTestGalleryThumb, see src/trntest/trn_products.py) is default-on for the same reason
+# as report: cheap (a couple of matplotlib renders, no new SPICE/ISIS/sat_sim of its own) and
+# self-ensures its own entry.reproject dependency the same way. See docs/report-generation.md's
+# "Gallery" section.
 
 import functools
 from collections.abc import Iterator
@@ -55,7 +60,7 @@ from trntest.config import TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
 from trntest.orientation import DisplayRotations
 
-PRODUCT_TYPES = ("crop", "hillshade", "report")  # "reproject" is implemented
+PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")  # "reproject" is implemented
 # (TrnTestReprojectImage) but opt-in only -- pass product_types=(..., "reproject") explicitly; see
 # module docstring.
 
@@ -182,9 +187,19 @@ class TrnTestEntry:
     def report(self) -> trn_products.TrnTestReport:
         return trn_products.TrnTestReport(self)
 
+    @functools.cached_property
+    def gallery_thumb(self) -> trn_products.TrnTestGalleryThumb:
+        return trn_products.TrnTestGalleryThumb(self)
+
     @property
     def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]:
-        return {"crop": self.crop, "hillshade": self.hillshade, "reproject": self.reproject, "report": self.report}
+        return {
+            "crop": self.crop,
+            "hillshade": self.hillshade,
+            "reproject": self.reproject,
+            "report": self.report,
+            "gallery": self.gallery_thumb,
+        }
 
     @property
     def log_dir(self) -> Path:
@@ -376,9 +391,11 @@ class TrnTestDataSet:
         `report.problem_flags`), `<folder>/reports/overview_table.html` (one row per entry, linking
         to its own `reports/<edr_product>/report.html`, alongside the same status/problem info),
         `<folder>/reports/index.html` (a persistent nav bar over a content iframe defaulting to the
-        overview table -- see `report.write_index_html`'s own docstring for its design), and
-        `<folder>/reports/overview_map.png` (`overview_map.write_overview_map`) -- covers every
-        entry in the dataset, not just ones touched by whatever call (if any) triggered this.
+        overview table -- see `report.write_index_html`'s own docstring for its design),
+        `<folder>/reports/gallery.html` (`report.write_gallery_html` -- a blink-thumbnail table, one
+        entry per cell, synchronized across the whole page), and `<folder>/reports/overview_map.png`
+        (`overview_map.write_overview_map`) -- covers every entry in the dataset, not just ones
+        touched by whatever call (if any) triggered this.
 
         `status.csv`/`reports/index.html` are cheap/pure-Python (no subprocess); the overview map is
         not -- it builds a real `Camera` (a SPICE pose rebuild) for every entry to get its FOV
@@ -403,7 +420,8 @@ class TrnTestDataSet:
         status_df = self.status(product_types)
         status_df["problems"] = ["; ".join(report.problem_flags(entry)) for entry in self]
         status_df.to_csv(self.folder / "status.csv", index=False)
-        report.write_index_html(self, status_df)
+        report.write_index_html(self, status_df)  # also (re)writes overview_table.html/gallery.html
+        # -- see that function's own docstring.
         if write_overview_map:
             overview_map.write_overview_map(self, self.config)
         report.print_viewing_url(self)

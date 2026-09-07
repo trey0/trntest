@@ -1,9 +1,9 @@
 # Report generation: per-entry HTML reports + dataset-wide site
 
 A small, templated HTML report per dataset entry, cheap enough to regenerate for every entry, plus
-a four-page site tying them together (a nav bar, an overview map, an overview table, and the
-per-entry reports themselves) — an alternative to `notebooks/image_generation.py`'s single-entry,
-read-top-to-bottom demo notebook for looking at *many* entries side by side.
+a five-page site tying them together (a nav bar, an overview map, an overview table, a blink-comparator
+gallery, and the per-entry reports themselves) — an alternative to `notebooks/image_generation.py`'s
+single-entry, read-top-to-bottom demo notebook for looking at *many* entries side by side.
 
 ## Mechanism
 
@@ -60,25 +60,29 @@ does:
 ## Report as a product type
 
 `TrnTestReport` (`src/trntest/trn_products.py`) is a `TrnTestProduct` alongside `TrnTestCropImage`/
-`TrnTestHillshadeImage`/`TrnTestReprojectImage` — `entry.report`, `"report"` in `PRODUCT_TYPES`
-(default-on, unlike opt-in `reproject`). Not a bolt-on: `task_state`/`truncate`/`status` already
-treat any `images_by_type` entry generically, so plugging `report` in gets its task-queue lifecycle,
-failure tracking, and backfilling of already-populated entries for free — including under
-`populate_via_workers()`, where it parallelizes across entries the same way crop/hillshade do.
-`TrnTestReport._generate_impl` self-ensures its one dependency (`entry.reproject.generate()`, a
-no-op once done) rather than relying on callers passing `product_types` in a particular order, the
-same pattern `TrnTestReprojectImage` uses for its own dependency on `entry.crop_result`.
+`TrnTestHillshadeImage`/`TrnTestReprojectImage`/`TrnTestGalleryThumb` — `entry.report`, `"report"` in
+`PRODUCT_TYPES` (default-on, unlike opt-in `reproject`). Not a bolt-on: `task_state`/`truncate`/
+`status` already treat any `images_by_type` entry generically, so plugging `report` in gets its
+task-queue lifecycle, failure tracking, and backfilling of already-populated entries for free —
+including under `populate_via_workers()`, where it parallelizes across entries the same way
+crop/hillshade do. `TrnTestReport._generate_impl` self-ensures its one dependency
+(`entry.reproject.generate()`, a no-op once done) rather than relying on callers passing
+`product_types` in a particular order, the same pattern `TrnTestReprojectImage` uses for its own
+dependency on `entry.crop_result` — and `TrnTestGalleryThumb` uses this same pattern for its own
+`entry.reproject` dependency, see "Gallery" below.
 
-The nav bar/overview table/overview map are a different shape — one file summarizing every entry,
-not one entry's own artifact — so they're a separate step, `TrnTestDataSet.write_index()`, run once
-(not per worker) after `populate()`/`populate_via_workers()`'s task-queue loop. It writes
+The nav bar/overview table/overview map/gallery are a different shape — one file summarizing every
+entry, not one entry's own artifact — so they're a separate step, `TrnTestDataSet.write_index()`, run
+once (not per worker) after `populate()`/`populate_via_workers()`'s task-queue loop. It writes
 `<dataset_folder>/status.csv` (`status()` plus a `problems` column from
 `trntest.report.problem_flags`), `<dataset_folder>/reports/overview_table.html`
-(`report.write_overview_table_html`), `<dataset_folder>/reports/index.html` (`report.write_index_html`
-— the nav bar, see below), and `<dataset_folder>/reports/overview_map.png`
-(`overview_map.write_overview_map`) — the last two are each individually skippable
+(`report.write_overview_table_html`), `<dataset_folder>/reports/gallery.html`
+(`report.write_gallery_html`, see "Gallery" below), `<dataset_folder>/reports/index.html`
+(`report.write_index_html` — the nav bar, see below), and `<dataset_folder>/reports/overview_map.png`
+(`overview_map.write_overview_map`) — the last one is skippable
 (`write_index(write_overview_map=False)`; `write_overview_map` has its own real per-entry SPICE
-cost — see `docs/batch-generation.md` for why that matters at scale).
+cost — see `docs/batch-generation.md` for why that matters at scale). The others are cheap,
+pure-Python/file-existence checks, no subprocess or SPICE of their own.
 
 The overview table's trailing `logs` column links to an entry's whole `log_dir` folder
 (`<dataset_folder>/logs/<edr_product>/`, `TrnTestEntry.log_dir`, holding whatever
@@ -106,8 +110,14 @@ than on every `write_index()` call — see "Overview map" below.)
 <dataset_folder>/reports/
   index.html              # TrnTestDataSet.write_index() -- persistent nav bar + content iframe
   overview_table.html     # TrnTestDataSet.write_index() -- one row per entry, status/problems
+  gallery.html            # TrnTestDataSet.write_index() -- one blink thumbnail per entry, synced
   overview_map.png        # TrnTestDataSet.write_index() -- overview_map.write_overview_map()
   map.html                # ditto -- thin <img> wrapper, the nav bar's actual "Map" link target
+  gallery/
+    0_base.jpg              # TrnTestGalleryThumb -- overlay-hidden frame, keyed by entry.index --
+    0_overlay.jpg           # downscaled + JPEG (not overlay_frames()'s native report-quality PNG)
+    1_base.jpg              # so a real 100+-entry gallery page doesn't load tens/hundreds of MB
+    1_overlay.jpg           # of full-resolution images at once -- see TrnTestGalleryThumb's docstring
   <edr_product>/
     report.py             # notebooks/report_template.py with {{ }} substituted -- kept for provenance
     report.ipynb           # jupytext-synced + papermill-executed -- also kept for debugging
@@ -122,7 +132,7 @@ than on every `write_index()` call — see "Overview map" below.)
     crop_log.txt            # tasks._capture_generator_log -- one file per product type actually
     hillshade_log.txt       # generated (console output + traceback on failure), linked from both
     report_log.txt          # overview_table.html's `logs` column and this entry's own report page
-                             # ".txt", not ".log" -- a real stdlib-mimetypes-recognized extension,
+    gallery_log.txt         # ".txt", not ".log" -- a real stdlib-mimetypes-recognized extension,
                              # so a plain http.server displays it inline instead of downloading it
 ```
 
@@ -192,7 +202,7 @@ independent of the `/output/...` route above.
 `report.write_index_html` (`src/trntest/report.py`) writes `reports/index.html`: a single document
 with a fixed nav `<div>` (CSS flexbox, `flex: 0 0 auto`) above one content `<iframe>`
 (`flex: 1 1 auto`) — not a `<frameset>`, purely a styling choice (both forms hit the same CSP wall
-above regardless). Layout, left to right: the dataset name (bold), `Map`/`Table` links
+above regardless). Layout, left to right: the dataset name (bold), `Map`/`Table`/`Gallery` links
 (content-frame-targeted via plain `<a target="content">`, no JS needed), Prev/Next buttons (adjacent
 to each other, each disabled at its own end of the entry range), then a plain number `<input>` (not
 a `<select>` — a dropdown with one `<option>` per entry doesn't scale to a many-hundred-entry
@@ -250,6 +260,40 @@ applies this codebase's existing per-edge unwrap-then-clip technique
 (`illumination.unwrap_relative_deg`, also used by
 `dataset_selection_plots._underline_segments`) to each of the polygon's 4 edges, inserting a `nan`
 at any edge that crosses the seam so a single `ax.plot` call skips drawing across the break.
+
+## Gallery
+
+`report.write_gallery_html` writes `reports/gallery.html`: a CSS grid of blink-comparator
+thumbnails, one per entry, linked from the nav bar's "Gallery" link. Matches the per-entry report's
+own top image (`entry.reproject.plot_overlay`) content-wise, but each entry's overlay-hidden/
+overlay-shown pair is persisted as two separate small JPEGs (`TrnTestGalleryThumb`, see "Report as a
+product type" above) rather than one embedded GIF, specifically so this page can blink every
+thumbnail in the grid in lockstep with one shared `setInterval` timer — a systematic registration
+issue across many entries reads as a single wave across the whole page; each per-entry report's own
+GIF instead loops independently, phased however that GIF happened to start, which doesn't support
+this kind of at-a-glance dataset-wide comparison. JPEG, downscaled to `TrnTestGalleryThumb._THUMB_MAX_PX`
+(320px), not `overlay_frames()`'s native ~900px report-quality PNG: a real dataset's gallery page
+loads every entry's pair into one browser tab at once, so full-resolution PNGs across 100+ entries
+would mean tens to hundreds of MB on a single page for content only ever displayed a couple hundred
+pixels wide.
+
+Like the overview map, this page can be (re)built at any time regardless of how much of the dataset
+has actually been populated: it reads each entry's own `TrnTestGalleryThumb.exists()` directly off
+disk rather than calling `.generate()`, and renders a plain "(no data yet)" placeholder — instead of
+a broken image — for any entry whose pair (or half of it, e.g. an interrupted `generate()`) isn't
+there yet. Each entry's index number is drawn as a small absolutely-positioned `<span>` in the
+gallery page's own HTML/CSS, not composited into the thumbnails themselves — legible over light or
+dark thumbnail content either way, and independent of `TrnTestGalleryThumb`'s own image content
+(which uses `plotting.render_overlay_frames(..., show_chrome=False)` to drop matplotlib's own
+title/axis-tick/axis-label chrome entirely, since a small grid cell has no room to spare for it and
+the index label already identifies the entry). Each thumbnail links to that entry's own
+`reports/<edr_product>/report.html` where it already exists (same "report doesn't exist yet"
+fallback as `write_overview_table_html`'s own product-id column).
+
+The two frames are absolutely stacked inside a fixed-aspect-ratio `.thumb` box and toggled via
+`display` (not `opacity`, which would blend rather than switch), with `object-fit: contain` on each
+`<img>` so every thumbnail occupies the same on-page size regardless of that entry's own frame
+dimensions (which vary slightly footprint to footprint) without distorting the image.
 
 ## Current report content
 

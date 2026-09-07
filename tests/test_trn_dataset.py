@@ -198,8 +198,9 @@ def test_populate_drives_every_task_to_done(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
 
-    # product_types scoped to crop/hillshade -- "report" (PRODUCT_TYPES' third default member) isn't
-    # faked here and would otherwise attempt a real jupytext/papermill/nbconvert pipeline.
+    # product_types scoped to crop/hillshade -- "report"/"gallery" (PRODUCT_TYPES' other two default
+    # members) aren't faked here and would otherwise attempt a real jupytext/papermill/nbconvert
+    # pipeline / a real reproject render.
     ds.populate(product_types=("crop", "hillshade"))
 
     status = ds.status()
@@ -610,20 +611,55 @@ def test_report_backfills_an_already_populated_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
     ds.populate(product_types=("crop", "hillshade"))
     assert trn_dataset.task_state(ds[0], "report") == "pending"
 
-    ds.populate()  # default PRODUCT_TYPES now includes "report"
+    ds.populate()  # default PRODUCT_TYPES now includes "report"/"gallery"
 
     status = ds.status().set_index("product_id")
     assert (status.loc["P1"] == "done").all()
+
+
+def test_gallery_plugs_into_task_queue_generically(tmp_path, monkeypatch):
+    """`gallery` isn't special-cased anywhere in the task queue -- same generic
+    `task_state`/`truncate`/`populate` treatment `report` gets, see
+    `test_report_plugs_into_task_queue_generically`."""
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+
+    assert trn_dataset.task_state(entry, "gallery") == "pending"
+
+    ds.populate(product_types=("gallery",))
+    assert trn_dataset.task_state(entry, "gallery") == "done"
+    assert entry.gallery_thumb.exists()
+
+    ds.truncate(entry, product_types=("gallery",))
+    assert trn_dataset.task_state(entry, "gallery") == "pending"
+    assert not entry.gallery_thumb.exists()
+
+
+def test_gallery_html_shows_placeholder_for_missing_thumbnails(tmp_path):
+    """An entry whose gallery thumbnail hasn't been generated yet shows a plain "(no data yet)"
+    placeholder instead of a broken image -- `write_gallery_html` (via `write_index()`) can be run at
+    any time regardless of how much of the dataset has actually been populated, like
+    `write_overview_map`."""
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+
+    ds.write_index()
+
+    gallery_html = (ds.folder / "reports" / "gallery.html").read_text()
+    assert "(no data yet)" in gallery_html
+    assert "gallery/0_base.jpg" not in gallery_html
 
 
 def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
     images = pd.DataFrame(
         {
             "product_id": ["P1", "P2"],
@@ -644,8 +680,15 @@ def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
     assert "P1/report.html" in overview_table_html
     assert "P2/report.html" in overview_table_html
 
+    gallery_html = (ds.folder / "reports" / "gallery.html").read_text()
+    assert "gallery/0_base.jpg" in gallery_html and "gallery/0_overlay.jpg" in gallery_html
+    assert "gallery/1_base.jpg" in gallery_html and "gallery/1_overlay.jpg" in gallery_html
+    assert 'href="P1/report.html"' in gallery_html and 'href="P2/report.html"' in gallery_html
+    assert "(no data yet)" not in gallery_html
+
     index_html = (ds.folder / "reports" / "index.html").read_text()
     assert "overview_table.html" in index_html  # the nav bar's content iframe default
+    assert "gallery.html" in index_html  # the nav bar's own Gallery link
     assert '"P1"' in index_html and '"P2"' in index_html  # the jump-to-entry productIds array
 
 
@@ -682,6 +725,7 @@ def test_populate_write_index_false_skips_status_csv_and_index_html(tmp_path, mo
     monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
     monkeypatch.setattr(trn_products.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
     ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
 
     ds.populate(write_index=False)
