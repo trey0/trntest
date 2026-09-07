@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 import trntest
-from trntest import camera, spice_kernels
+from trntest import camera, spice_kernels, tie_points
 from trntest.config import MOON_RADIUS_KM
 
 images = trntest.read_manifest("dataset_manifest.csv")
@@ -53,7 +53,12 @@ print(f"{len(dataset)} manifest rows")
 #
 # For every manifest row: altitude, slant range, total off-nadir angle, and its along-track/
 # cross-track decomposition (`camera.off_nadir_tilt_components_deg`) -- pure SPICE, no ISIS, so this
-# covers the whole manifest in seconds regardless of which entries have been populated.
+# covers the whole manifest in seconds regardless of which entries have been populated. `off_nadir_deg`
+# here is `camera_pose_moon_me`'s raw SPICE-frame angle, not the post-boresight-correction
+# `Camera.off_nadir_deg` `build_camera` itself reports (WAC-VIS's real boresight sits several degrees
+# off the raw frame's nominal axis) -- a cheap screening signal for picking candidates worth a closer
+# look, not the quantity the eventual rejection threshold is expressed in. See "What would keeping
+# each outlier cost?" below for the real, corrected values on the candidates this notebook samples.
 
 # %%
 rows = []
@@ -138,10 +143,13 @@ outliers[["product_id", "center_lat_deg", "off_nadir_deg", "tilt_along_deg", "ti
 # %% [markdown]
 # ## Sensor size across the tight cluster
 #
-# `entry.camera`'s real, ISIS-derived `fu` for one candidate per altitude band identified above, all
-# inside the tight cluster and already crop-cached from prior work, to keep this fast. `fu` doesn't
-# depend on where `cv` ends up -- it's set purely by how many pixels are needed to span a crop's own
-# near+far along-track extent -- so this is meaningful on its own, before deciding anything about `cv`.
+# `camera.build_camera`'s own real, ISIS-derived `fu`, solved fresh per EDR (`fixed_sensor=False` --
+# `entry.camera` itself now returns the fixed model this notebook is scoping, so getting the real
+# per-EDR ground truth means calling `build_camera` directly) for one candidate per altitude band
+# identified above, all inside the tight cluster and already crop-cached from prior work, to keep this
+# fast. `fu` doesn't depend on where `cv` ends up -- it's set purely by how many pixels are needed to
+# span a crop's own near+far along-track extent -- so this is meaningful on its own, before deciding
+# anything about `cv`.
 
 # %%
 tight_sample_ids = [
@@ -152,16 +160,40 @@ tight_sample_ids = [
     "M1327218124CE",  # ~59 deg lat, high-altitude band
 ]
 entries = {pid: dataset[pid] for pid in tight_sample_ids}
+solved_cameras: dict[str, camera.Camera] = {}
 
 
-def required_fu(product_id: str) -> float:
-    return entries[product_id].camera.focal_length_u_px
+def solved_camera(product_id: str) -> camera.Camera:
+    """This EDR's own real per-EDR sensor fit -- the ground truth this notebook measures the fixed
+    model against, and the only way to examine an EDR outside its nominal envelope at all, since
+    `entry.camera` (`fixed_sensor=True`) asserts `off_nadir_deg` is within it."""
+    if product_id not in solved_cameras:
+        solved_cameras[product_id] = camera.build_camera(entries[product_id].per_image_config, fixed_sensor=False)
+    return solved_cameras[product_id]
 
 
-tight_fu = pd.Series({pid: required_fu(pid) for pid in tight_sample_ids}, name="fu")
-print(tight_fu)
+def crop_footprint(product_id: str) -> dict:
+    entry = entries[product_id]
+    return tie_points.crop_footprint_corners_for_camera(
+        entry.frame_timing, solved_camera(product_id), entry.per_image_config
+    )
+
+
+tight_summary = pd.DataFrame(
+    {
+        "fu": {pid: solved_camera(pid).focal_length_u_px for pid in tight_sample_ids},
+        "corrected_off_nadir_deg": {pid: solved_camera(pid).off_nadir_deg for pid in tight_sample_ids},
+    }
+)
+print(tight_summary)
+tight_fu = tight_summary["fu"]
 recommended_f_tight = tight_fu.max()
 print(f"\nrecommended_f (tight cluster only) = {recommended_f_tight:.2f}")
+
+# %% [markdown]
+# `corrected_off_nadir_deg` above (`build_camera`'s own, post-correction `off_nadir_deg`) sits several
+# degrees above the raw sweep's values for these same rows -- expected, and this is the quantity the
+# eventual rejection threshold actually needs to be expressed in.
 
 # %% [markdown]
 # ## Centered principal point: does it fit?
@@ -175,14 +207,13 @@ print(f"\nrecommended_f (tight cluster only) = {recommended_f_tight:.2f}")
 
 # %%
 def margins_km(product_id: str, f: float, cv: float) -> tuple[float, float]:
-    entry = entries[product_id]
-    cam = entry.camera
+    cam = solved_camera(product_id)
     c_km = np.array(cam.camera_center_moon_me_m) / 1000.0
     r_cam_to_me = np.array(cam.r_cam_to_me)
     along_track_axis_me = np.array(cam.camera_along_track_direction_moon_me)
     boresight_ground_km = camera.boresight_ground_point_km(c_km, r_cam_to_me)
     target_near_km, target_far_km = camera.along_track_extent_km(
-        entry.crop_footprint, boresight_ground_km, along_track_axis_me
+        crop_footprint(product_id), boresight_ground_km, along_track_axis_me
     )
     footprint = camera.footprint_lonlat(c_km, r_cam_to_me, f, f, image_size / 2.0, cv, image_size)
     achieved_near_km, achieved_far_km = camera.along_track_extent_km(
@@ -218,14 +249,19 @@ tight_margins
 # %%
 outlier_ids = list(outliers["product_id"])
 entries.update({pid: dataset[pid] for pid in outlier_ids})
-outlier_fu = pd.Series({pid: entries[pid].camera.focal_length_u_px for pid in outlier_ids}, name="fu")
+outlier_summary = pd.DataFrame(
+    {
+        "fu": {pid: solved_camera(pid).focal_length_u_px for pid in outlier_ids},
+        "corrected_off_nadir_deg": {pid: solved_camera(pid).off_nadir_deg for pid in outlier_ids},
+    }
+)
 print(f"Outlier fu vs. tight cluster range ({tight_fu.min():.1f} - {tight_fu.max():.1f}):")
-print(outlier_fu.to_string())
+print(outlier_summary)
 
 moderate_ids = ["M1327244120CE", "M1327251520CE"]
 extreme_ids = ["M1327258213CE", "M1327265552CE"]
 
-recommended_f = pd.concat([tight_fu, outlier_fu.loc[moderate_ids]]).max()
+recommended_f = pd.concat([tight_fu, outlier_summary["fu"].loc[moderate_ids]]).max()
 print(f"\nrecommended_f (tight cluster + moderate outliers) = {recommended_f:.2f}")
 
 # %%
@@ -236,6 +272,7 @@ for pid in tight_sample_ids + moderate_ids + extreme_ids:
         dict(
             product_id=pid,
             group="tight" if pid in tight_sample_ids else ("moderate" if pid in moderate_ids else "extreme"),
+            corrected_off_nadir_deg=solved_camera(pid).off_nadir_deg,
             near_margin_km=near_km,
             far_margin_km=far_km,
         )
@@ -255,14 +292,20 @@ cost_df
 # fits the centered-principal-point premise the way the rest of the manifest does -- this is the
 # along-track-tilt-driven asymmetry breaking down once cross-track tilt (which a centered `cu` never
 # corrects for) gets large enough to distort the along-track corners too, not a small stretch of an
-# otherwise-fine fit. Keeping literally every row would mean carrying these two anyway, past
-# `off_nadir_deg = 17.42` -- nowhere near "~5 deg", and not just a wider margin.
+# otherwise-fine fit.
 #
-# **`THRESHOLD_DEG = 5.0`**: keeps the two moderate outliers (comfortably past their 3.84 deg, with
-# room before the 14.03 deg jump), excludes the two extreme ones.
+# `corrected_off_nadir_deg` above is what a threshold needs to be expressed in (see the caveat on the
+# raw sweep, above) -- and it separates the same two groups just as cleanly: the tight cluster plus the
+# two moderate outliers span 6.30-7.67 deg; the two extreme outliers span 17.83-18.46 deg, an ~10 deg
+# gap with nothing in it. Keeping literally every row would mean carrying these two anyway, past
+# `corrected_off_nadir_deg = 18.46` -- not a small stretch, the same conclusion the margin check above
+# already reached from a different angle.
+#
+# **`THRESHOLD_DEG = 10.0`**: sits centrally in that gap -- keeps the two moderate outliers, excludes
+# the two extreme ones.
 
 # %%
-THRESHOLD_DEG = 5.0
+THRESHOLD_DEG = 10.0
 sample_product_ids = tight_sample_ids + moderate_ids
 print(f"THRESHOLD_DEG = {THRESHOLD_DEG}")
 print(f"fu = fv = {recommended_f:.2f}")
@@ -279,7 +322,7 @@ print(f"cu = cv = {image_size / 2.0:.2f}")
 # %%
 fit_cv = (
     image_size / 2.0
-    + pd.Series({pid: entries[pid].camera.principal_point_v_px - image_size / 2.0 for pid in sample_product_ids}).mean()
+    + pd.Series({pid: solved_camera(pid).principal_point_v_px - image_size / 2.0 for pid in sample_product_ids}).mean()
 )
 
 side_rows = []
@@ -300,8 +343,8 @@ side_df.pivot(index="product_id", columns="cv_variant", values=["near_margin_km"
 # %% [markdown]
 # ## Recommendation
 #
-# **Rejection criterion**: exclude any EDR with `off_nadir_deg >= 5.0` before generating a
-# `hillshade`/`reproject` pair from it.
+# **Rejection criterion**: exclude any EDR whose `build_camera`-reported (post-correction)
+# `off_nadir_deg >= 10.0` before generating a `hillshade`/`reproject` pair from it.
 #
 # **Fixed sensor parameters** (at `image_size` pixels, isotropic, centered principal point):
 

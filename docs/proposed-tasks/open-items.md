@@ -73,34 +73,7 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
   own FOV polygons no longer pay this cost, see the item just below, but a footprint-outlier check
   specifically would still need real per-entry accuracy, not the approximation now used for the map).
-- **`camera.lightweight_footprint_lonlat_deg`'s calibration constants are provisional, measured from
-  a single candidate (`M1327210646CE`) on 2026-09-07.** `overview_map.plot_overview_map` now uses
-  this cheap, ISIS-free approximation for every entry's FOV footprint (populated or not), instead of
-  `entry.camera` — a real, measured win (a full 81-row map dropped from ~20-30 minutes to ~370s cold
-  / ~1s warm, since it no longer needs a full ISIS pipeline run per not-yet-populated entry). But
-  `_LIGHTWEIGHT_BORESIGHT_CORRECTION` (the fixed re-aim rotation) was only cross-checked against one
-  of the two candidates `docs/history.md`'s Phase 29 already measured (5.15 deg, matching exactly —
-  not new independent evidence of universality), and `_LIGHTWEIGHT_FOCAL_LENGTH_PX`/
-  `_LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX` are known to vary somewhat with `n_frames_for_square_crop`
-  (65-78 frames across today's real manifest), so they're a genuine size approximation, not exact,
-  for every entry except the one it was measured from. Fine at whole-Moon map scale (visually
-  confirmed against all 81 real manifest rows, no degenerate/outlier polygons), but per the user's
-  own framing this is a stand-in for a proper fix: **a real calibration pass across many "nominal"
-  EDR frames**, producing a single, precalculated, cross-manifest-validated `.tsai`-equivalent
-  parameter set (FOV/principal-point and boresight correction) that the whole pipeline — not just
-  the overview map — could eventually rely on instead of resolving `solve_corrected_fov`/the
-  boresight re-aim fresh per entry via ISIS. `notebooks/sensor_calibration_scoping.ipynb` is that
-  calibration pass: sweeps off-nadir/altitude across the full manifest (pure SPICE, no ISIS) to
-  separate footprint-*size* variation (altitude/latitude-driven, via `n_frames_for_square_crop`) from
-  footprint-*shape* variation (along-track-tilt-driven, via `cv`'s offset from center); measures real
-  `(fu, fv, cv)` via `solve_corrected_fov` across 7 real candidates spanning the manifest's altitude
-  bands, including the two moderate off-nadir outliers; and checks a fully centered principal point
-  (`cu = cv = image_size / 2`) against each candidate's own real crop footprint via the new
-  `camera.along_track_extent_km`, finding no coverage cost. Recommends `off_nadir_deg < 5.0` as the
-  nominal-EDR threshold (the two extreme outliers need a `cv` offset 2.5-3.5x the rest of the
-  manifest's range and don't fit this sensor model at all; the two moderate ones cost only ~4% more
-  `f`) and a centered, isotropic `(fu, fv, cu, cv)` — its last cell prints the resulting values. Not
-  yet pinned anywhere: once the numbers are trusted, `lightweight_footprint_lonlat_deg`'s module-level
-  constants (and eventually `build_camera()`'s own per-EDR `solve_corrected_fov` call, and a real
-  rejection check somewhere in dataset generation) are the places to update, with no other caller
-  needing to change.
+- **`build_camera`'s fixed-sensor path (`fixed_sensor=True`, the default) asserts `off_nadir_deg <
+  NOMINAL_OFF_NADIR_THRESHOLD_DEG`**, but only fails at generation time, after fetching/processing an
+  EDR's real crop — a cheaper pre-generation filter (skip a catalog candidate outright before any ISIS
+  work, in `candidate_window.py`) is a natural follow-up, not yet done.
