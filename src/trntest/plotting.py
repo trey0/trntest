@@ -929,6 +929,7 @@ def _render_overlay_figure(
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
     margin_frac: float = 0.3,
+    show_chrome: bool = True,
 ):
     """Build one `Figure` for `plot_overlay`/`plot_overlay_toggle`.
 
@@ -940,12 +941,16 @@ def _render_overlay_figure(
     :param overlay_vmax: Overlay display stretch maximum.
     :param overlay_cmap: Overlay colormap.
     :param overlay_alpha: Overlay opacity.
-    :param title: Figure title.
+    :param title: Figure title -- ignored when `show_chrome` is `False`.
     :param outline_geoseries: Overlay footprint outline to draw, or `None` to skip.
     :param overlay_outline_color: Outline color.
     :param layers: Additional vector annotation layers (see `OverlayLayer`), drawn after
         `outline_geoseries`, in list order.
     :param margin_frac: See `plot_overlay`'s docstring.
+    :param show_chrome: Draw the title, tick labels, and axis labels. `False` (for
+        `TrnTestGalleryThumb`'s small gallery-table thumbnails, where that space is better spent on
+        image content and an index label is drawn separately in the gallery page's own HTML instead)
+        strips all of it down to just the plotted image.
     :returns: The `Figure`.
     """
     # Identical rendering path (figsize, draw order, axis-limit restore, km tick formatting)
@@ -981,6 +986,18 @@ def _render_overlay_figure(
         layer.plot(ax)
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
+    if not show_chrome:
+        # Just the plotted image -- no title, ticks, or axis labels -- for a gallery-table
+        # thumbnail's own limited space. `ax.set_title("")` is required, not redundant with
+        # `axis("off")`: xarray's own `plot.imshow` auto-titles the axes from non-dim coordinates
+        # (e.g. "band = 1, spatial_ref = 0") as a side effect of the overlay's `imshow` call above,
+        # and `axis("off")` only hides ticks/spines/labels, not that already-set title text.
+        # `pad=0` (unlike the `show_chrome=True` path's default padding below) since there's no
+        # label/tick text left to reserve margin room for.
+        ax.set_title("")
+        ax.axis("off")
+        fig.tight_layout(pad=0)
+        return fig
     ax.set_title(title)
     # Both rasters are in a local projected CRS (meters), not raw lon/lat -- see
     # `dem_ortho.fetch_dem_and_ortho`'s docstring for why (an isotropic-meter grid, unlike Lunaserv's
@@ -1061,7 +1078,49 @@ def plot_overlay_toggle(
     # not the surrounding words -- per explicit user feedback, the goal is for the blinking GIF to
     # visually read as a checkbox ticking on/off in place, not as title text jumping around alongside
     # the image.
-    if overlay_label is not None:
+    base_frame, overlay_frame, width_px, height_px = render_overlay_frames(
+        base_raster_path,
+        overlay_raster_path,
+        overlay_cmap,
+        title,
+        overlay_label,
+        show_overlay_outline,
+        overlay_outline_color,
+        fill_overlay_nodata,
+        layers,
+        margin_frac,
+    )
+    gif_b64 = _blink_gif_b64(base_frame, overlay_frame, initial_visible, blink_interval_ms)
+    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
+    return IPython.display.HTML(html)
+
+
+def render_overlay_frames(
+    base_raster_path,
+    overlay_raster_path,
+    overlay_cmap: str = "gray",
+    title: str = "Overlay (geo-aligned)",
+    overlay_label: str | None = None,
+    show_overlay_outline: bool = True,
+    overlay_outline_color: str = "red",
+    fill_overlay_nodata: bool = True,
+    layers: list[OverlayLayer] | None = None,
+    margin_frac: float = 0.3,
+    show_chrome: bool = True,
+) -> tuple[Image.Image, Image.Image, int, int]:
+    """Renders `plot_overlay_toggle`'s two frames (overlay hidden, overlay shown) as plain `PIL`
+    images, without GIF-encoding them -- the part of that function that's actually reusable by a
+    caller that wants the two frames as separate persisted files (`trn_products.TrnTestGalleryThumb`)
+    rather than blinked together into one embedded GIF. See `plot_overlay_toggle`'s own docstring for
+    every parameter's meaning; this is the same rendering path, split out one level.
+
+    :param show_chrome: See `_render_overlay_figure`'s own docstring. `title`/`overlay_label` are
+        unused (no title is drawn at all) when this is `False`.
+    :returns: `(base_frame, overlay_frame, width_px, height_px)`.
+    """
+    if not show_chrome:
+        base_title = overlay_title = None
+    elif overlay_label is not None:
         base_title = f"{title}: ☐ {overlay_label}"
         overlay_title = f"{title}: ☑ {overlay_label}"
     else:
@@ -1087,6 +1146,7 @@ def plot_overlay_toggle(
         overlay_outline_color,
         layers,
         margin_frac,
+        show_chrome,
     )
     overlay_frame, _, _ = _render_overlay_frame(
         base,
@@ -1102,11 +1162,9 @@ def plot_overlay_toggle(
         overlay_outline_color,
         layers,
         margin_frac,
+        show_chrome,
     )
-
-    gif_b64 = _blink_gif_b64(base_frame, overlay_frame, initial_visible, blink_interval_ms)
-    html = f'<img src="data:image/gif;base64,{gif_b64}" width="{width_px}" height="{height_px}">'
-    return IPython.display.HTML(html)
+    return base_frame, overlay_frame, width_px, height_px
 
 
 def _render_overlay_frame(
@@ -1123,6 +1181,7 @@ def _render_overlay_frame(
     overlay_outline_color,
     layers: list[OverlayLayer] | None = None,
     margin_frac: float = 0.3,
+    show_chrome: bool = True,
 ):
     """Render one `_render_overlay_figure(...)` frame to a `PIL.Image`.
 
@@ -1139,6 +1198,7 @@ def _render_overlay_frame(
     :param overlay_outline_color: Outline color.
     :param layers: Additional vector annotation layers.
     :param margin_frac: See `plot_overlay`'s docstring.
+    :param show_chrome: See `_render_overlay_figure`'s own docstring.
     :returns: `(image, width_px, height_px)`.
     """
     # Deliberately no `bbox_inches="tight"` and no per-call `dpi=` override on `savefig` -- both
@@ -1162,6 +1222,7 @@ def _render_overlay_frame(
         overlay_outline_color,
         layers,
         margin_frac,
+        show_chrome,
     )
     width_px, height_px = fig.get_size_inches() * fig.dpi
     buf = io.BytesIO()

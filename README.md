@@ -24,11 +24,12 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 **Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
 `notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
 `populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by default)
-writes the rest of a four-page report site — an overview map, an overview table, and a persistent
-nav bar tying them together with the per-entry reports. See `docs/report-generation.md` for the full
-design, including how to browse it. A real population run across a full selected dataset hasn't
-happened yet — see `docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks
-assessment done ahead of attempting one.
+writes the rest of a five-page report site — an overview map, an overview table, a blink-comparator
+gallery, and a persistent nav bar tying them together with the per-entry reports. See
+`docs/report-generation.md` for the full design, including how to browse it. A real population run
+across a full selected dataset hasn't happened yet — see
+`docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks assessment done ahead
+of attempting one.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -237,13 +238,13 @@ lint's notebook checks).
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
 | [`ortho_wac_emp.py`][ortho_wac_emp.py] | Live default ortho/texture source: fetches/caches WAC_EMP's own PDS4 archive tile directly (no Lunaserv WMS display stretch) and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/wac-emp-pds4.md`](docs/data-sources/wac-emp-pds4.md). |
 | [`overview_map.py`][overview_map.py] | Dataset-wide ground-track overview plot (`plot_overview_map`/`write_overview_map`) — global backdrop + sub-solar-point day/night mask + each entry's real FOV footprint polygon and index label. Called by `write_index()` (pass `write_overview_map=False` there to skip it); linked from the nav bar's "Map" link — see `docs/report-generation.md`. |
-| [`plotting.py`][plotting.py] | Generic raster-display primitives (`plot_raster`, `read_raster_band`) plus generator-comparison figures: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`) and a quantitative brightness diff (`compute_brightness_matched_diff`). |
+| [`plotting.py`][plotting.py] | Generic raster-display primitives (`plot_raster`, `read_raster_band`) plus generator-comparison figures: raw-pixel/geometry checks (`plot_render_vs_basemap`, `plot_overlay`/`plot_overlay_toggle`/`plot_zoom_blink`, `render_overlay_frames` — the two plain-image frames behind `plot_overlay_toggle`'s GIF, also used by `TrnTestGalleryThumb`) and a quantitative brightness diff (`compute_brightness_matched_diff`). |
 | [`pose_alignment/control_network.py`][pose_alignment/control_network.py] | Converts `tie_point_matching.py`'s 2D tie points into ISIS control points for a `jigsaw` bundle adjustment — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`pose_alignment/tie_point_matching.py`][pose_alignment/tie_point_matching.py] | Feature-matches a map-projected WAC crop against the basemap and fits a 2D correction (similarity/affine/homography) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`pose_alignment/wac_camera_model.py`][pose_alignment/wac_camera_model.py] | Hand-rolled Python forward projector for the WAC Pushframe camera (ground-to-image) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). On the back burner, not wired into the main pipeline. |
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
-| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Also writes the dataset-wide `reports/overview_table.html` and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/report-generation.md` for the full design. |
+| [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Also writes the dataset-wide `reports/overview_table.html`, `reports/gallery.html` (a synchronized blink-comparator thumbnail grid, one per entry — `write_gallery_html`, `TrnTestGalleryThumb`), and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/report-generation.md` for the full design. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
@@ -252,7 +253,7 @@ lint's notebook checks).
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
 | [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
-| [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all four product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, default-on in `PRODUCT_TYPES`, self-ensuring its `hillshade` dependency). Split out of `trn_dataset.py`. |
+| [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `reproject` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `reproject` dependency — both default-on in `PRODUCT_TYPES`). Split out of `trn_dataset.py`. |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
 [cache.py]: src/trntest/cache.py

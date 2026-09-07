@@ -1,10 +1,10 @@
 """Product-type classes for one `TrnTestEntry`: `TrnTestProduct` (`crop`/`hillshade`/`reproject`/
-`report`, generated once, on demand, and tracked by the task queue via `exists()`/`generate()`),
-`TrnTestImage` (the `TrnTestProduct` subclass adding plot-comparison geometry for the three raster
-types), and their four concrete implementations (`TrnTestCropImage`, `TrnTestHillshadeImage`,
-`TrnTestReprojectImage`, `TrnTestReport`). Split out of `trn_dataset.py`, which keeps
-`TrnTestEntry`/`TrnTestDataSet` -- see that module's own docstring for the dataset-folder/task-queue
-side of this split.
+`report`/`gallery`, generated once, on demand, and tracked by the task queue via
+`exists()`/`generate()`), `TrnTestImage` (the `TrnTestProduct` subclass adding plot-comparison
+geometry for the three raster types), and their five concrete implementations (`TrnTestCropImage`,
+`TrnTestHillshadeImage`, `TrnTestReprojectImage`, `TrnTestReport`, `TrnTestGalleryThumb`). Split out
+of `trn_dataset.py`, which keeps `TrnTestEntry`/`TrnTestDataSet` -- see that module's own docstring
+for the dataset-folder/task-queue side of this split.
 """
 
 from __future__ import annotations
@@ -21,9 +21,11 @@ from trntest.dem_ortho import DemOrthoResult
 if TYPE_CHECKING:
     # Annotation-only below (never constructed or isinstance-checked here) -- constructing a
     # `TrnTestCropImage`/etc. is `TrnTestEntry`'s own job (its `crop`/`hillshade`/`reproject`/
-    # `report` properties), not this module's, so a real top-level import here would recreate the
-    # exact cycle that split avoids: `trn_dataset.py` needs this module for real (to construct
-    # those instances), so this module can only need `trn_dataset.py` for types.
+    # `report`/`gallery_thumb` properties), not this module's, so a real top-level import here would
+    # recreate the exact cycle that split avoids: `trn_dataset.py` needs this module for real (to
+    # construct those instances), so this module can only need `trn_dataset.py` for types.
+    from PIL import Image
+
     from trntest.trn_dataset import TrnTestEntry
 
 
@@ -163,6 +165,22 @@ class TrnTestImage(TrnTestProduct):
             layers=layers,
             margin_frac=margin_frac,
         )
+
+    def overlay_frames(self, margin_frac: float = 0.3) -> tuple[Image.Image, Image.Image]:
+        """Like `plot_overlay`, but returns the raw `(base_frame, overlay_frame)` pair
+        (`plotting.render_overlay_frames`) instead of a blink-GIF `HTML` wrapper, with axis
+        ticks/labels/title stripped (`show_chrome=False`) -- used by `TrnTestGalleryThumb` to persist
+        the pair as separate gallery-table thumbnail files rather than embed them in a notebook cell.
+        """
+        self._require_generated()
+        base_frame, overlay_frame, _, _ = plotting.render_overlay_frames(
+            self.entry.dem_ortho_result.ortho,
+            self._mapprojected_path(),
+            overlay_label=plotting.mathtt(self.generator_name),
+            margin_frac=margin_frac,
+            show_chrome=False,
+        )
+        return base_frame, overlay_frame
 
     def plot_zoom_blink_over(self, other: TrnTestImage | None = None, crop_px: int = 200, show_self_first: bool = True):
         """Blink comparator (`plotting.plot_zoom_blink`) between this image's own map-projected
@@ -418,3 +436,66 @@ class TrnTestReport(TrnTestProduct):
         # (trn_products.py) to construct product instances.
 
         report.generate_report(str(self.entry.dataset_folder), self.entry.index, self.report_dir)
+
+
+class TrnTestGalleryThumb(TrnTestProduct):
+    """The two static frames (overlay hidden, overlay shown) behind the per-entry report's own top
+    image (`entry.reproject.plot_overlay`), persisted as separate small JPEGs rather than one
+    embedded GIF -- `reports/gallery/report.write_gallery_html`'s per-entry source images, letting
+    that page blink every entry's pair in lockstep with one shared JS timer instead of however each
+    entry's own independently-looping GIF happens to be phased.
+
+    Downscaled to `_THUMB_MAX_PX` on the long edge and saved as JPEG (`_THUMB_JPEG_QUALITY`), not the
+    full report-quality PNG `overlay_frames()` renders -- a real dataset's gallery page loads every
+    entry's pair into one browser tab at once (100+ entries isn't unusual), so full-resolution PNGs
+    there would mean tens to hundreds of MB of images on a single page; a small JPEG is plenty for a
+    grid cell only ever displayed a couple hundred pixels wide.
+
+    Keyed by `entry.index`, not `edr_product` like every other product type's own file naming --
+    `write_gallery_html` builds the whole gallery page by guessing every entry's file paths from
+    `range(len(dataset))` alone (like `write_overview_map` builds its footprints from live SPICE
+    state, not from stored per-entry files), without needing to open each entry's manifest row first,
+    and shows "(no data yet)" for an index whose pair isn't there yet.
+    """
+
+    # Not a TrnTestImage: this doesn't need its own comparison geometry (rotation_k/width_km/etc.)
+    # -- it just persists frames TrnTestReprojectImage's own overlay_frames() already knows how to
+    # render, the same relationship TrnTestReport has to entry.reproject.
+
+    _THUMB_MAX_PX = 320  # comfortably more than the gallery page's own ~220px CSS display width
+    # (room for high-DPI screens) but nowhere near overlay_frames()'s native ~900px -- see the class
+    # docstring for why that gap matters at real dataset scale.
+    _THUMB_JPEG_QUALITY = 82  # visually clean at this size/content (grayscale imagery, no fine
+    # text) while keeping files small; PIL's default (75) shows visible blocking on the red
+    # footprint-outline edge at this resolution.
+
+    @property
+    def gallery_dir(self) -> Path:
+        return self.entry.dataset_folder / "reports" / "gallery"
+
+    @property
+    def raster_path(self) -> Path:
+        return self.gallery_dir / f"{self.entry.index}_base.jpg"
+
+    @property
+    def sidecar_json_path(self) -> Path:
+        return self.gallery_dir / f"{self.entry.index}_overlay.jpg"  # not JSON -- reuses the
+        # "second generated file" slot every other product type has, same trick TrnTestReport uses
+        # for its own .ipynb.
+
+    @property
+    def generator_name(self) -> str:
+        return "gallery"
+
+    def _generate_impl(self) -> None:
+        self.entry.reproject.generate()  # self-ensures its own dependency, same pattern
+        # TrnTestReport uses for the same reason: this renders the identical reproject-over-basemap
+        # content report.reproject_overlay does.
+        base_frame, overlay_frame = self.entry.reproject.overlay_frames(margin_frac=0.15)  # matches
+        # report.reproject_overlay's own margin_frac.
+        self.gallery_dir.mkdir(parents=True, exist_ok=True)
+        for frame, path in ((base_frame, self.raster_path), (overlay_frame, self.sidecar_json_path)):
+            frame.thumbnail((self._THUMB_MAX_PX, self._THUMB_MAX_PX))  # in place; already RGB
+            # (overlay_frames()'s frames are always .convert("RGB")), so no alpha channel for
+            # JPEG's lack of transparency support to trip over.
+            frame.save(path, format="JPEG", quality=self._THUMB_JPEG_QUALITY)

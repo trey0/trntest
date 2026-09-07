@@ -31,6 +31,13 @@ JUPYTER_PORT_ENV_VAR = "TRNTEST_JUPYTER_PORT"  # set by docker-compose.yml -- se
 NAV_SYNC_MESSAGE_SOURCE = "trntest-report"  # shared between generate_report's injected postMessage
 # call and write_index_html's own listener for it -- see both docstrings.
 
+GALLERY_THUMB_DISPLAY_WIDTH_PX = 220  # CSS display width for each cell in write_gallery_html's
+# grid -- the underlying PNGs (TrnTestGalleryThumb) are rendered at full report-quality size; only
+# their display size in the gallery table is scaled down here.
+
+GALLERY_BLINK_INTERVAL_MS = 700  # matches plotting.plot_overlay_toggle's own default, so a gallery
+# thumbnail blinks at the same rate its own entry's per-entry report page does.
+
 
 def render_template(text: str, params: dict[str, str]) -> str:
     """Substitute `{{ name }}` placeholders in `text` with `params[name]`.
@@ -263,11 +270,103 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
     (dataset.folder / "reports" / "overview_table.html").write_text(html)
 
 
+def write_gallery_html(dataset: TrnTestDataSet) -> None:
+    """Writes `<dataset.folder>/reports/gallery.html`: a grid of blink-comparator thumbnails, one
+    per entry, matching the per-entry report's own top image (`entry.reproject.plot_overlay`) but
+    kept as two plain images (`entry.gallery_thumb`, `TrnTestGalleryThumb`) rather than one embedded
+    GIF -- so a single shared JS timer can blink every entry's pair in lockstep, instead of each
+    report page's own GIF looping independently, however it happens to be phased. A systematic
+    registration issue across many entries is easy to spot this way; an issue on just one or two
+    entries is not (that's still what each entry's own report page is for).
+
+    Reads each entry's frame pair directly off disk (`TrnTestGalleryThumb.exists()`/`raster_path`/
+    `sidecar_json_path`) rather than calling `.generate()` -- like `overview_map.write_overview_map`,
+    this can be (re)built at any time regardless of how much of the dataset has been populated so
+    far; an entry whose pair isn't there yet (including a half-written one, e.g. from an interrupted
+    `generate()`) shows a plain "(no data yet)" placeholder instead of a broken image. Each
+    thumbnail links to that entry's own `reports/<edr_product>/report.html` where it already exists
+    (same "no report yet" fallback as `write_overview_table_html`'s own product-id column), and
+    carries its `entry.index` as a small overlay label drawn in this page's own HTML/CSS rather than
+    baked into the PNGs themselves -- so the index is legible over light or dark thumbnail content
+    either way, and stays independent of `TrnTestGalleryThumb`'s own image content.
+
+    The two images are absolutely stacked (`position: absolute`, both `top:0; left:0`) inside a
+    fixed-aspect-ratio `.thumb` box and swapped via `display`, not `opacity` -- `object-fit: contain`
+    on each keeps every thumbnail the same on-page size regardless of that entry's own frame
+    dimensions (which can vary slightly footprint to footprint), without distorting the image.
+    """
+    cells_html = []
+    for entry in dataset:
+        thumb = entry.gallery_thumb
+        if thumb.exists():
+            content_html = (
+                f'<img class="base" src="gallery/{thumb.raster_path.name}">'
+                f'<img class="overlay" src="gallery/{thumb.sidecar_json_path.name}">'
+            )
+        else:
+            content_html = '<div class="missing">(no data yet)</div>'
+        thumb_html = f'<div class="thumb"><span class="idx">{entry.index}</span>{content_html}</div>'
+        if entry.report.exists():
+            thumb_html = f'<a href="{entry.edr_product}/report.html">{thumb_html}</a>'
+        cells_html.append(f'<div class="cell">{thumb_html}</div>')
+    name = dataset.name
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<title>{name} gallery</title>
+<style>
+  body {{ font-family: sans-serif; margin: 10px; }}
+  h1 {{ font-size: 16px; }}
+  #grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax({GALLERY_THUMB_DISPLAY_WIDTH_PX}px, 1fr));
+    gap: 8px;
+  }}
+  .cell a {{ color: inherit; text-decoration: none; }}
+  .thumb {{
+    position: relative; width: 100%; aspect-ratio: 1 / 1;
+    background: #eee; overflow: hidden; border: 1px solid #ccc;
+  }}
+  .thumb img {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }}
+  .thumb .base {{ display: none; }}
+  .missing {{
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; color: #888; font-size: 12px; text-align: center;
+  }}
+  .idx {{
+    position: absolute; top: 2px; left: 2px; z-index: 1;
+    background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; padding: 1px 5px; border-radius: 2px;
+  }}
+</style>
+</head>
+<body>
+<h1>{name} gallery</h1>
+<div id="grid">
+{"".join(cells_html)}
+</div>
+<script>
+  let showOverlay = true;
+  setInterval(function () {{
+    showOverlay = !showOverlay;
+    document.querySelectorAll(".thumb .base").forEach(function (img) {{
+      img.style.display = showOverlay ? "none" : "block";
+    }});
+    document.querySelectorAll(".thumb .overlay").forEach(function (img) {{
+      img.style.display = showOverlay ? "block" : "none";
+    }});
+  }}, {GALLERY_BLINK_INTERVAL_MS});
+</script>
+</body>
+</html>"""
+    (dataset.folder / "reports" / "gallery.html").write_text(html)
+
+
 def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
     """Writes `<dataset.folder>/reports/index.html`: the persistent nav bar (dataset name, links to
-    the map/table, prev/next, a jump-to-entry number box) over a content `<iframe>` that defaults to
-    `overview_table.html` -- also (re)written here via `write_overview_table_html`, so one
-    `write_index_html` call refreshes both files. See `TrnTestDataSet.write_index`.
+    the map/table/gallery, prev/next, a jump-to-entry number box) over a content `<iframe>` that
+    defaults to `overview_table.html` -- `overview_table.html`/`gallery.html` are also (re)written
+    here (via `write_overview_table_html`/`write_gallery_html`), so one `write_index_html` call
+    refreshes all three files. See `TrnTestDataSet.write_index`.
 
     A single document with a nav `<div>` (CSS flexbox, `flex: 0 0 auto`) above one content `<iframe>`
     (`flex: 1 1 auto`), not a `<frameset>` split into separate nav/content pages -- purely a styling
@@ -294,6 +393,7 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
     index on load, regardless of how it was navigated to.
     """
     write_overview_table_html(dataset, status_df)
+    write_gallery_html(dataset)
     product_ids_json = json.dumps(list(dataset.images["product_id"]))
     name = dataset.name
     n_entries = len(dataset.images)
@@ -320,6 +420,7 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
   <span id="dsname">{name}</span>
   <a href="map.html" target="content">Map</a>
   <a href="overview_table.html" target="content">Table</a>
+  <a href="gallery.html" target="content">Gallery</a>
   |
   <button id="prevBtn" onclick="step(-1)">&laquo; Prev</button>
   <button id="nextBtn" onclick="step(1)">Next &raquo;</button>
