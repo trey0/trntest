@@ -132,4 +132,4 @@ EXPOSE 8888
 # SSH-tunnel-only, single-user server (see
 # docker-compose.yml's own port-binding comment) -- a locally-running malicious page could otherwise
 # more easily probe it, but that's not meaningfully worse than the existing no-auth posture.
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=", "--NotebookApp.password=", "--ServerApp.allow_origin=*"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=", "--NotebookApp.password=", "--ServerApp.allow_origin=*", "--config=/workspace/config/jupyter_server_config.py"]

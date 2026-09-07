@@ -8,7 +8,12 @@ product type for it, not one task per `(entry, product_type)`) -- see `_generate
 docstring for why.
 """
 
+import contextlib
 import subprocess
+import traceback
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
 
 from huey import SqliteHuey
 
@@ -83,6 +88,9 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
     """Shared body for `generate_product`/`generate_product_parallel` below: generate every product
     type in `product_types` for `entry` within a single task.
 
+    Each product type actually generated (not already `exists()`) has its own `generate()` call's
+    console output captured to `entry.log_path(product_type)` -- see `_capture_generator_log`.
+
     :param entry: A `TrnTestEntry` (not a picklable `(dataset_folder, product_id)` pair -- see
         `generate_product_parallel`'s own comment for why the object itself is passed).
     :param product_types: Product types to generate for this entry.
@@ -118,15 +126,47 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
     errors = {}
     for product_type in product_types:
         image = entry.images_by_type[product_type]
-        try:
+        if image.exists():
+            # Already done -- generate() below would be a no-op anyway, but skipping the log-capture
+            # block entirely avoids clobbering a prior real attempt's log with an empty one.
             results[product_type] = image.generate()
-        except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "this
-            # product type failed," not KeyboardInterrupt/SystemExit, which must propagate
-            # immediately -- and every other product type must still get its own chance to run.
-            errors[product_type] = exc
+            continue
+        with _capture_generator_log(entry.log_path(product_type), product_type):
+            try:
+                results[product_type] = image.generate()
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "this
+                # product type failed," not KeyboardInterrupt/SystemExit, which must propagate
+                # immediately -- and every other product type must still get its own chance to run.
+                traceback.print_exc()  # into the redirected log file -- otherwise this failure's
+                # only trace is EntryGenerationError's own str(exc) summary, which drops the
+                # traceback entirely.
+                errors[product_type] = exc
     if errors:
         raise EntryGenerationError(errors)
     return results
+
+
+@contextlib.contextmanager
+def _capture_generator_log(log_path: Path, product_type: str) -> Iterator[None]:
+    """Redirects stdout/stderr to `log_path` for the duration of one product type's `generate()`
+    call."""
+    # Without this, a production run's console output (this codebase's own `print()` diagnostics --
+    # dem_ortho.py/candidate_window.py -- plus subprocess_utils.run_quiet's failure-path stdout/
+    # stderr dump) vanishes into whichever process happened to run the task: a populate() notebook
+    # cell no one is watching, or one of populate_via_workers()'s worker processes, whose own stdout
+    # is redirected wholesale into <output_dir>/.huey/consumer.log, every worker's output
+    # interleaved together.
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "w") as log_file, contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
+        print(f"=== {product_type} generation started {datetime.now(UTC).isoformat()} ===")
+        try:
+            yield
+        finally:
+            # "ended", not "finished"/"succeeded": the caller catches generate()'s own exception
+            # before this `with` block exits, so this line always runs on the way out regardless of
+            # whether the attempt above it succeeded or failed (a traceback, printed by the caller,
+            # already appears above this line in the failure case).
+            print(f"=== {product_type} generation ended {datetime.now(UTC).isoformat()} ===")
 
 
 @huey.task()

@@ -26,11 +26,9 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 `populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by default)
 writes the rest of a four-page report site — an overview map, an overview table, and a persistent
 nav bar tying them together with the per-entry reports. See `docs/report-generation.md` for the full
-design, including why **the nav bar cannot be viewed through JupyterLab's own server at all** (a
-real, structural CSP limitation — use `scripts/serve_reports.sh` instead). A real population run
-across a full selected dataset hasn't happened yet — see
-`docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks assessment done
-ahead of attempting one.
+design, including how to browse it. A real population run across a full selected dataset hasn't
+happened yet — see `docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks
+assessment done ahead of attempting one.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
@@ -80,9 +78,10 @@ Fetched WMS tiles and SPICE kernels persist there across container rebuilds (see
 ## Development setup
 
 The Docker image (`docker compose build`, above) already has `trntest` installed in editable mode
-plus `ruff`, `mypy`, `pytest`, `jupytext`, `jupyterlab`, and `ipykernel` — nothing further to
-install for that path. jupytext's JupyterLab integration (`jupyterlab-jupytext`) registers
-automatically as part of the `jupytext` install — no separate `jupyter labextension install` step.
+plus this repo's full dev tooling (lint/type-check/test, Jupyter and its notebook tooling) —
+nothing further to install for that path. jupytext's JupyterLab integration (`jupyterlab-jupytext`)
+registers automatically as part of the `jupytext` install — no separate `jupyter labextension
+install` step.
 
 Lint/type-check/test-only, without the notebook/ASP/GDAL stack, also works in a plain host venv
 with Python 3.11+:

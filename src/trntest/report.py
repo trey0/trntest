@@ -4,6 +4,7 @@ the dataset-wide nav bar/overview table (`write_index_html`/`write_overview_tabl
 `TrnTestDataSet.write_index`)."""
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -22,6 +23,10 @@ _TEMPLATE_PATH = _REPO_ROOT / "notebooks" / "report_template.py"
 
 LOW_SUN_ELEVATION_DEG_THRESHOLD = 10.0  # first-guess placeholder -- tune once a real batch run
 # shows what's actually worth flagging.
+
+JUPYTER_PORT_ENV_VAR = "TRNTEST_JUPYTER_PORT"  # set by docker-compose.yml -- see that file's own
+# comment for why it's passed through as a real container env var, not just used for the host-side
+# port mapping.
 
 NAV_SYNC_MESSAGE_SOURCE = "trntest-report"  # shared between generate_report's injected postMessage
 # call and write_index_html's own listener for it -- see both docstrings.
@@ -55,8 +60,32 @@ def load_entry(dataset_folder: str, entry_index: int) -> TrnTestEntry:
     return TrnTestDataSet.open(dataset_folder, session.config)[int(entry_index)]
 
 
+def _logs_link_html(entry: TrnTestEntry, logs_prefix: str) -> str:
+    """A single link to this entry's whole `log_dir` folder if any generator log has been captured
+    for it yet, else an em-dash placeholder.
+
+    Only works when browsing via a real static file server (the `/output/...` route or
+    `scripts/serve_reports.sh`, see `docs/report-generation.md`'s "Viewing reports" section) --
+    Jupyter's own `/files/...` route can serve an individual log file directly but not list a
+    directory.
+
+    :param logs_prefix: Relative path from the linking page to `<dataset_folder>/logs/`, e.g.
+        `"../logs"` from `reports/overview_table.html`, `"../../logs"` from
+        `reports/<edr_product>/report.html`.
+    """
+    # One link to the folder, not one per generator: the folder already groups every
+    # <product_type>_log.txt that exists, so a directory listing (autoindexed by a plain
+    # `python -m http.server`, confirmed live -- Jupyter's own /files/... route 403s on a bare
+    # directory URL instead) is enough for picking the generator of interest, without needing to
+    # enumerate entry.images_by_type here.
+    if not entry.log_dir.is_dir():
+        return "&mdash;"
+    return f'<a href="{logs_prefix}/{entry.edr_product}/">logs/</a>'
+
+
 def summary(entry: TrnTestEntry) -> None:
-    """Display a one-line Markdown summary of `entry` (product ID, orbit, center, sun geometry).
+    """Display a one-line Markdown summary of `entry` (product ID, orbit, center, sun geometry,
+    links to this entry's own captured generator logs).
 
     Sun azimuth/elevation are computed fresh via `illumination.sun_azimuth_elevation_deg` at
     `entry.camera`'s own footprint center/epoch -- the same call `hapke_shade_ortho` itself uses for
@@ -68,11 +97,15 @@ def summary(entry: TrnTestEntry) -> None:
     center = entry.camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, entry.camera.et)
+    # "../../logs": report.html lives at reports/<edr_product>/report.html, two levels below the
+    # dataset folder that logs/ is a sibling of.
+    logs_link = _logs_link_html(entry, "../../logs")
     display(
         Markdown(
             f"**{entry.product_id}** -- orbit {row['orbit_number']}, "
             f"center ({row['center_lat_deg']:.3f}, {row['center_lon_deg']:.3f}), "
-            f"sun elevation {elevation_deg:.1f} deg, azimuth {azimuth_deg:.1f} deg"
+            f"sun elevation {elevation_deg:.1f} deg, azimuth {azimuth_deg:.1f} deg "
+            f"-- logs: {logs_link}"
         )
     )
 
@@ -200,8 +233,14 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
     into `index.html`'s content frame by default (see `write_index_html`). Deliberately plain -- no
     styling/JS beyond that, just a table; fine if a link is momentarily broken because that entry's
     report doesn't exist yet.
+
+    The trailing `logs` column links to this entry's whole `log_dir` folder (see
+    `_logs_link_html`) if anything has been captured there -- useful precisely when something
+    failed, since a `failed` status here is the moment that folder is most worth a look, without
+    having to first open the entry's own report page (which may not exist yet if `report` itself is
+    what failed).
     """
-    header_cells = "".join(f"<th>{col}</th>" for col in status_df.columns)
+    header_cells = "".join(f"<th>{col}</th>" for col in status_df.columns) + "<th>logs</th>"
     rows_html = []
     for _, row in status_df.iterrows():
         entry = dataset[row["product_id"]]
@@ -211,7 +250,9 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
         else:
             product_cell = f"{label} (no report yet)"
         other_cells = "".join(f"<td>{row[col]}</td>" for col in status_df.columns[1:])
-        rows_html.append(f"<tr><td>{product_cell}</td>{other_cells}</tr>")
+        logs_cell = _logs_link_html(entry, "../logs")  # overview_table.html lives directly under
+        # reports/, one level below the dataset folder that logs/ is a sibling of.
+        rows_html.append(f"<tr><td>{product_cell}</td>{other_cells}<td>{logs_cell}</td></tr>")
     name = dataset.name
     html = (
         f"<html><head><title>{name} reports</title></head><body>"
@@ -320,3 +361,26 @@ def write_index_html(dataset: TrnTestDataSet, status_df) -> None:
 </body>
 </html>"""
     (dataset.folder / "reports" / "index.html").write_text(html)
+
+
+def print_viewing_url(dataset: TrnTestDataSet) -> None:
+    """Prints a link to this dataset's `reports/index.html`, reachable via the `/output/...` route
+    (see `docs/report-generation.md`'s "Viewing reports" section) -- called by
+    `TrnTestDataSet.write_index()`.
+
+    Does nothing if `dataset.folder` isn't under `dataset.config.output_dir`, since no valid
+    `/output/...` link can be built in that case.
+    """
+    # A plain print(), not IPython.display.display(Markdown(...)) (summary()'s own convention
+    # elsewhere in this module): outside a live IPython kernel -- e.g. a plain `docker compose run
+    # demo python3 -c "..."` script, or a populate_via_workers() batch job with no notebook attached
+    # -- display() falls back to an unhelpful bare object repr instead of the URL (confirmed live:
+    # get_ipython() is None there). print() always shows the real URL, and JupyterLab's own output
+    # area still auto-linkifies a bare URL in printed text, so nothing is lost in the notebook case.
+    try:
+        relative = dataset.folder.relative_to(dataset.config.output_dir)
+    except ValueError:
+        return
+    port = os.environ.get(JUPYTER_PORT_ENV_VAR, "8888")
+    url = f"http://localhost:{port}/output/{relative}/reports/index.html"
+    print(f"View this dataset's reports: {url}")

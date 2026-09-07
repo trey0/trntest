@@ -141,12 +141,34 @@ up `workers`, rather than pointing a large worker count at an entirely cold cach
 if still present — it does no harm sitting idle, but it does hold the worker processes and the
 consumer log file open.
 
-**Where to look when something fails.** The consumer subprocess's own stdout/stderr (not the
-individual task tracebacks huey stores) go to `<output_dir>/.huey/consumer.log` — check there for
-consumer-level problems (a worker crashing, `-k process` health-check restarts) that wouldn't show
-up in a per-task `TaskException`. This file is overwritten (not appended) on every
-`populate_via_workers()` call, so check it *before* starting another batch if you need to debug a
-prior run's failure.
+**Where to look when something fails.** Two different logs, at two different scopes:
+
+- **Per-entry, per-generator logs**: `<dataset_folder>/logs/<edr_product>/<product_type>_log.txt` —
+  the
+  console output (this codebase's own `print()` diagnostics, plus a full traceback on failure) of
+  that one `generate()` call, captured by `tasks._capture_generator_log` regardless of which process
+  ran it (a `populate()` notebook cell, or one of `populate_via_workers()`'s worker processes). This
+  is almost always the right first stop for "why did entry X's product type Y fail" — both
+  `reports/overview_table.html` (a `logs` column, most useful exactly when a row shows `failed`) and
+  each per-entry report page's own summary line link to the entry's whole `logs/<edr_product>/`
+  folder (`report._logs_link_html`), not one link per generator file, so you don't need to construct
+  any path by hand; pick the specific `<product_type>_log.txt` you want from that folder's own
+  listing.
+  Only written when that product type is actually (re)generated — an already-`done` type's prior log
+  is left alone, never silently cleared by a later no-op `generate()` call.
+
+  **This folder link only works when browsing via a real static file server** — either the
+  `jupyter-server-proxy`-backed `/output/...` route on the same JupyterLab server, or the standalone
+  `scripts/serve_reports.sh` (see `docs/report-generation.md`'s "Viewing reports" section for both).
+  Confirmed live that Jupyter's own `/files/...` route 403s on a bare directory URL (no autoindex
+  support at all); it can serve one already-known `<product_type>_log.txt` file directly, just not list
+  a folder of them.
+- **The consumer subprocess's own stdout/stderr** (not per-task output, which lives in the
+  per-generator logs above) go to `<output_dir>/.huey/consumer.log` — check there for
+  consumer-level problems (a worker crashing, `-k process` health-check restarts) that wouldn't show
+  up in a per-task `TaskException`. This file is overwritten (not appended) on every
+  `populate_via_workers()` call, so check it *before* starting another batch if you need to debug a
+  prior run's failure.
 
 ## Verification
 
