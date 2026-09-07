@@ -16,13 +16,15 @@ set -euo pipefail
 #
 #   scripts/cleanup_worktrees.sh delete [--all-marked] [<name> ...]
 #       Removes the named worktree(s): `git worktree remove`, deletes the local branch and its
-#       origin copy (if present), and removes the per-worktree Docker image
-#       (trntest-lunar-demo-<name>). `--all-marked` expands to every worktree currently eligible for
-#       default deletion (re-checked fresh at delete time, not reused from an earlier `list` call).
-#       Every name is re-verified merged into origin/main right before deletion regardless of how it
-#       was selected -- this script will never delete a branch with unmerged commits. Never removes
-#       the main checkout or the worktree it's currently being run from. Does not touch a worktree's
-#       generated output/ directory -- clean that up separately if you don't need it.
+#       origin copy (if present), removes the per-worktree Docker image
+#       (trntest-lunar-demo-<name>), and removes the worktree's own output/<name>/ directory (see
+#       docs/collaboration.md's "Publish valuable output before cleanup" section -- publish anything
+#       worth keeping from it first, this step does not ask again). `--all-marked` expands to every
+#       worktree currently eligible for default deletion (re-checked fresh at delete time, not
+#       reused from an earlier `list` call). Every name is re-verified merged into origin/main right
+#       before deletion regardless of how it was selected -- this script will never delete a branch
+#       with unmerged commits. Never removes the main checkout or the worktree it's currently being
+#       run from.
 #
 # All deletion is opt-in per worktree: this script never deletes anything on its own (e.g. via cron)
 # and `delete` always requires the caller to name what to remove, whether individually or via
@@ -84,7 +86,9 @@ collect_worktrees() {
 print_list() {
     collect_worktrees
     local any_default=0 any_candidate=0
-    echo "Marked for deletion (session flagged done, branch fully merged):"
+    echo "Marked for deletion (session flagged done, branch fully merged) --" \
+        "'delete' also removes each one's own output/<name>/ directory, so publish anything" \
+        "worth keeping from it first:"
     for i in "${!wt_name[@]}"; do
         if [[ "${wt_marked[$i]}" == 1 && "${wt_merged[$i]}" == 1 ]]; then
             local marked_at
@@ -154,6 +158,19 @@ do_delete() {
             echo "Refusing to delete '$name': branch '$branch' has commits not in origin/main." >&2
             continue
         fi
+        # Resolve the worktree's own output/ dir before `git worktree remove` deletes its
+        # docker/.env -- prefer that file's own TRNTEST_HOST_OUTPUT_DIR (what docker compose
+        # actually used there) over the <workspace>/output/<name> convention, in case it was ever
+        # overridden.
+        local output_dir=""
+        if [[ -f "$path/docker/.env" ]]; then
+            output_dir="$(sed -n 's/^TRNTEST_HOST_OUTPUT_DIR=//p' "$path/docker/.env" | tail -n1)"
+        fi
+        if [[ -z "$output_dir" ]]; then
+            local workspace_root
+            workspace_root="$(dirname "$(dirname "$main_checkout")")"
+            output_dir="$workspace_root/output/$name"
+        fi
         echo "Removing worktree '$name' ($path, branch $branch)..."
         git worktree remove --force "$path"
         git branch -D "$branch"
@@ -163,6 +180,10 @@ do_delete() {
         local image="trntest-lunar-demo-$name"
         if docker image inspect "$image" >/dev/null 2>&1; then
             docker rmi "$image"
+        fi
+        if [[ -d "$output_dir" ]]; then
+            rm -rf "$output_dir"
+            echo "Removed output directory $output_dir."
         fi
         echo "Done with '$name'."
     done

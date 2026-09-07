@@ -18,13 +18,27 @@ very large ones), pushing each batch to the branch as you go. Don't `git push or
 until the user has reviewed that specific batch and given the go-ahead — an earlier approval for one
 batch doesn't carry over to the next.
 
+## Publish valuable output before cleanup
+
+`output/<worktree-name>/` is scoped to that worktree — `scripts/cleanup_worktrees.sh delete` removes
+it along with the branch and Docker image, so anything left there when a worktree is cleaned up is
+gone for good. If a run produces something substantial enough to be worth keeping past this session
+— a real production run (e.g. `populate()`/`populate_via_workers()` across a full dataset), not a
+single-entry validation run or routine notebook output — ask the user whether to publish it: move/
+copy it to its own stably-named subfolder directly under the shared `output/` root (see
+docs/environment.md's "Multi-agent worktrees" section) rather than leaving it in the worktree's own
+ephemeral folder. Most output doesn't rise to this bar; don't ask reflexively for every run.
+
 ## Recommend branch cleanup at session closeout
 
 When the user brings up wrapping up a session, proactively recommend cleaning up this session's
-worktree/branch. Left alone, these accumulate as cruft — both on this VPS (worktree checkouts,
-several GB each, plus their own Docker images) and on `origin` (stale branches). This is a
-closeout-time recommendation, not a mid-session rule: deleting/recreating branches to start new work
-within one agent's own session isn't worth worrying about.
+worktree/branch — and before doing so, check this session's own `output/<worktree-name>/` for
+anything that meets the "Publish valuable output before cleanup" bar above, since
+`scripts/mark_worktree_done.sh`/`cleanup_worktrees.sh` will delete it along with everything else.
+Left alone, worktrees accumulate as cruft — both on this VPS (worktree checkouts, several GB each,
+plus their own Docker images) and on `origin` (stale branches). This is a closeout-time
+recommendation, not a mid-session rule: deleting/recreating branches to start new work within one
+agent's own session isn't worth worrying about.
 
 Claude Code's CLI prompts to delete a session's worktree when you close it; Claude Desktop has no
 equivalent event, so nothing ever proposes cleanup on its own there. This repo's stand-in: run
@@ -34,8 +48,9 @@ A *different*, later session (never the one being closed — it can't safely rem
 runs `scripts/cleanup_worktrees.sh list` to see what's now safe to remove (marked done *and* fully
 merged) versus other candidates that are missing one of those two conditions, then
 `scripts/cleanup_worktrees.sh delete ...` to actually remove a worktree, its local + `origin`
-branch, and its Docker image together. Only ever delete what the user has confirmed from that list —
-a worktree merged but not marked, or marked but not merged, might still be someone's live or
+branch, its Docker image, and its own `output/<name>/` directory together. Only ever delete what the
+user has confirmed from that list — a worktree merged but not marked, or marked but not merged, might
+still be someone's live or
 resumable work.
 
 ## Preserve valuable spikes
