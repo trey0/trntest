@@ -15,15 +15,19 @@ cache/
   naif/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/data/spk/...
   naif/.../extras/mk/...
   lunaserv/<layer>/<bbox>_<width>x<height>_<format>.tif
-  lroc_edr/<volume>/DATA/<subdir>/<doy>/WAC/<product>.*
+  <lroc_edr_dataset>/<volume>/DATA/<subdir>/<doy>/WAC/<product>.IMG   (raw WAC EDR -- conditional, see below)
   isisdata/base/...   (ISIS's own mission-independent reference data)
   isisdata/lro/...    (LRO/WAC calibration files, and -- see below -- WAC CK kernels ISIS resolves)
   astropedia/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif   (one whole file, ~10GB -- see below)
   robbins_craters/lunar_crater_database_robbins_2018.zip   (one whole file, ~92MB -- see docs/data-sources/robbins-craters.md)
   isis_ck_resolution/<edr_product>.json   (persisted spiceinit CK resolution -- see below)
+  wac_crop/<edr_product>_crop.cub   (the WAC crop pipeline's own real output -- see below)
   naif_latest_metakernel/<year>.txt   (persisted "latest metakernel" resolution -- see below)
   torch/hub/checkpoints/...   (LightGlue/DISK pretrained weights -- see below)
 ```
+
+(`<lroc_edr_dataset>` is `config.lroc_edr_dataset`, e.g. `LRO-L-LROC-2-EDR-V1.0` -- not a fixed
+literal path segment.)
 
 `isisdata/` is ISIS3's own reference data, fetched by `isis_wac.ensure_isisdata()` (see
 `docs/external-tools.md`'s "ISIS Pushframe pipeline" section). Fully re-fetchable and safe to prune before
@@ -103,6 +107,52 @@ run what it furnishes (see `docs/data-sources/spice-kernels-isis.md` for why). T
   kernel-file download above matters afterward. No retry/backoff around the `spiceinit` call itself:
   a cold-cache failure surfaces immediately, per explicit user direction ("I'd rather have a
   relatively prompt exception and manually retry later").
+
+## WAC crop caching -- caching the pipeline's real output, not its raw input
+
+The raw WAC EDR `.IMG` a manifest row's `crop` generator fetches is unlike every other entry in
+this cache: it has **no cross-entry reuse value**. Everything above (SPICE kernels, WAC_EMP tiles,
+the GLD100 DEM) gets fetched once and read by many different footprints/entries over time; the raw
+EDR is fetched and consumed by exactly one dataset row, 1:1 with `edr_product`. Caching it
+permanently bought nothing except protecting against redoing *that one entry's own* pipeline from
+scratch -- and the thing actually worth protecting that way is the pipeline's **output**, not its
+input: the crop cube (`isis_wac.crop_for_camera`'s result) is the expensive-to-reproduce, per-product
+artifact (a multi-subprocess ISIS toolchain run, including two live `spiceinit web=yes` calls), and
+unlike the raw EDR, a copy of it *is* useful to any dataset/agent that ever touches this same
+`edr_product` again.
+
+So the roles are flipped from how `cache/` is normally used elsewhere in this file: `config.
+delete_full_raw_edr` (default `True`) controls whether the raw EDR is ever published into the
+permanent, shared `cache/` tree at all --
+
+- `True` (default): fetched into this entry's own disposable `_work/<entry>/isis/` scratch instead
+  (`isis_wac.fetch_edr_img`, `cache.cached_get` rooted there) -- never makes cache/'s "keep forever"
+  promise, since we already know we're about to discard it.
+- `False`: fetched into the permanent `cache/` tree as normal (mirrored path, same as every other
+  `cache.fetch_lroc_file` caller). Set this for interactive/repeated re-runs
+  (`image_generation.ipynb`, small `populate()` test batches) so retries don't hit PDS again.
+
+Meanwhile, `cache/wac_crop/<edr_product>_crop.cub` is always published (`isis_wac.
+ensure_crop_for_camera`, via `product_io.atomic_publish`) the first time a product's pipeline
+actually runs, regardless of the flag above -- this is the tier that gets the normal "fetch/derive
+once, keep forever" treatment, following the same precedent as `isis_ck_resolution/` above (a
+computed, not fetched, result cached by identity, not just raw bytes). `isis_wac.cached_crop_path`
+computes this path from `edr_product` alone, no I/O -- so `build_camera`/`crop_footprint_corners_for_camera`/
+`crop_result` can all check for an already-cached crop before touching ISIS at all. This relies on
+today's one-`target_frame_index`-per-`edr_product` invariant (`docs/intermediate-product-discipline.md`
+already leans on the same assumption for `_work/<edr_product>/`'s own keying) -- if a future manifest
+ever needed two different crop windows for the same `edr_product`, this cache tier would need a
+richer key.
+
+`config.delete_isis_intermediates` (default `True`) governs the *other* half: once the crop is
+published to `cache/wac_crop/`, `_work/<entry>/isis/` (split/calibrated/stitched cubes, and the raw
+EDR too if the flag above routed it there) is wiped entirely -- nothing else in the pipeline reads
+those files again. Set `False` to preserve them for debugging a pipeline problem.
+
+`TrnTestDataSet.truncate(..., invalidate_crop_cache=True)` deletes the `cache/wac_crop/` entry
+directly, forcing real reprocessing on the next `populate()` -- default `False`, since this cache
+entry is shared across every dataset pointing at the same `cache_root`, not scoped to one dataset
+folder (see `docs/environment.md`'s "Multi-agent worktrees" section).
 
 ## Lunaserv WMS caching
 

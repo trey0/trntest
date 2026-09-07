@@ -113,7 +113,7 @@ def crop_footprint_corners_for_camera(
     `isis_campt.ground_point_at_pixel`) at the cropped cube's pixels, `_CROP_EDGE_MARGIN_PX` in from
     each edge -- not the deprecated `_crop_footprint_corners_spice_approx`'s SPICE ray-trace.
 
-    Requires `isis_wac.run_pipeline` and `isis_wac.crop_for_camera`'s output to exist.
+    Requires `isis_wac.ensure_crop_for_camera`'s output to exist.
 
     :returns: dict of `{corner_name: (lon_deg, lat_deg)}`, keys from `CORNER_NAMES` plus `"center"`.
     """
@@ -124,13 +124,13 @@ def crop_footprint_corners_for_camera(
     # edge pixel succeeds; ground-to-image at that same resulting lon/lat then fails) -- an
     # edge-region numerical limitation in the tool itself.
     #
-    # By the time this runs (from select_tie_points/orientation.compute_display_rotations/
-    # candidate_window.generate_dataset, all after camera.build_camera(), which already runs run_pipeline
-    # internally to re-aim the synthetic boresight), the stitched cube already exists; crop_for_camera
-    # is a cheap plain ISIS `crop`, idempotently reused if already run for this product.
+    # `ensure_crop_for_camera` is cheap the vast majority of the time this is reached (from
+    # select_tie_points/orientation.compute_display_rotations/candidate_window.generate_dataset, all
+    # after camera.build_camera(), which by now has usually already caused this same product's crop
+    # to be cached) -- a plain cache-path existence check, no ISIS calls at all. Only genuinely runs
+    # the full pipeline on this product's first-ever generation.
     config = config or load_config()
-    stitched = isis_wac.run_pipeline(camera.reverse_crop_along_track, frame_timing, config)
-    crop = isis_wac.crop_for_camera(stitched, camera, config)
+    crop = isis_wac.ensure_crop_for_camera(camera, frame_timing, camera.reverse_crop_along_track, config)
     height = camera.n_frames_for_square_crop * wac_format.VIS_BLOCK_HEIGHT
     m = _CROP_EDGE_MARGIN_PX
 

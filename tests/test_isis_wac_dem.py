@@ -2,6 +2,7 @@ import csv
 import dataclasses
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -384,6 +385,113 @@ def test_run_pipeline_reuses_existing_stitched_cube_without_rerunning_lrowac2isi
     mock_lrowac2isis.assert_not_called()
     assert result.cub_path == stitched_path
     assert result.flip is True
+
+
+def test_fetch_edr_img_lands_under_spike_dir_when_delete_full_raw_edr_true(tmp_path):
+    config = dataclasses.replace(
+        TrntestConfig(),
+        output_dir=tmp_path / "_work" / "TESTPRODUCT",
+        cache_root=tmp_path / "cache",
+        edr_product="TESTPRODUCT",
+        delete_full_raw_edr=True,
+    )
+    with patch.object(isis_wac.cache, "cached_get", return_value=Path("fake")) as mock_cached_get:
+        isis_wac.fetch_edr_img(config)
+
+    mock_cached_get.assert_called_once()
+    _, kwargs = mock_cached_get.call_args
+    assert kwargs["cache_root"] == isis_wac._spike_dir(config)
+
+
+def test_fetch_edr_img_lands_under_permanent_cache_when_delete_full_raw_edr_false(tmp_path):
+    config = dataclasses.replace(
+        TrntestConfig(),
+        output_dir=tmp_path / "_work" / "TESTPRODUCT",
+        cache_root=tmp_path / "cache",
+        edr_product="TESTPRODUCT",
+        delete_full_raw_edr=False,
+    )
+    with patch.object(isis_wac.cache, "fetch_lroc_file", return_value=Path("fake")) as mock_fetch_lroc_file:
+        isis_wac.fetch_edr_img(config)
+
+    mock_fetch_lroc_file.assert_called_once()
+    _, kwargs = mock_fetch_lroc_file.call_args
+    assert kwargs["cache_root"] == config.cache_root
+
+
+def test_crop_window_for_camera_delegates_to_crop_window_for_frame():
+    camera = SimpleNamespace(center_frame_index=100.0, n_frames_for_square_crop=20)
+    assert isis_wac.crop_window_for_camera(camera) == isis_wac.crop_window_for_frame(100.0, 20)
+
+
+def test_cached_crop_path_is_pure_path_arithmetic(tmp_path):
+    config = dataclasses.replace(TrntestConfig(), cache_root=tmp_path, edr_product="TESTPRODUCT")
+    assert isis_wac.cached_crop_path(config) == tmp_path / "wac_crop" / "TESTPRODUCT_crop.cub"
+
+
+def test_ensure_crop_for_camera_reuses_cached_crop_without_running_pipeline(tmp_path):
+    config = dataclasses.replace(TrntestConfig(), cache_root=tmp_path, edr_product="TESTPRODUCT")
+    cached = isis_wac.cached_crop_path(config)
+    cached.parent.mkdir(parents=True)
+    cached.write_text("already cached crop")
+
+    with patch.object(isis_wac, "run_pipeline") as mock_run_pipeline:
+        with patch.object(isis_wac, "crop_for_camera") as mock_crop_for_camera:
+            result = isis_wac.ensure_crop_for_camera(camera=None, frame_timing=None, flip=True, config=config)
+
+    mock_run_pipeline.assert_not_called()
+    mock_crop_for_camera.assert_not_called()
+    assert result.cub_path == cached
+
+
+def test_ensure_crop_for_camera_first_time_publishes_to_cache_and_wipes_spike_dir(tmp_path):
+    config = dataclasses.replace(
+        TrntestConfig(),
+        output_dir=tmp_path / "_work" / "TESTPRODUCT",
+        cache_root=tmp_path / "cache",
+        edr_product="TESTPRODUCT",
+        delete_isis_intermediates=True,
+    )
+    spike_dir = isis_wac._spike_dir(config)
+    (spike_dir / "TESTPRODUCT.vis.even.cub").write_text("intermediate cube")
+    crop_cub = spike_dir / "TESTPRODUCT.vis.cal.stitched.crop.cub"
+    crop_cub.write_text("the real crop bytes")
+
+    with patch.object(isis_wac, "run_pipeline", return_value="fake-stitched") as mock_run_pipeline:
+        with patch.object(
+            isis_wac, "crop_for_camera", return_value=isis_wac.CropResult(cub_path=crop_cub)
+        ) as mock_crop_for_camera:
+            result = isis_wac.ensure_crop_for_camera(
+                camera="fake-camera", frame_timing="fake-timing", flip=True, config=config
+            )
+
+    mock_run_pipeline.assert_called_once_with(True, "fake-timing", config)
+    mock_crop_for_camera.assert_called_once_with("fake-stitched", "fake-camera", config)
+    cached = isis_wac.cached_crop_path(config)
+    assert result.cub_path == cached
+    assert cached.read_text() == "the real crop bytes"
+    assert not spike_dir.exists()
+
+
+def test_ensure_crop_for_camera_preserves_spike_dir_when_delete_isis_intermediates_false(tmp_path):
+    config = dataclasses.replace(
+        TrntestConfig(),
+        output_dir=tmp_path / "_work" / "TESTPRODUCT",
+        cache_root=tmp_path / "cache",
+        edr_product="TESTPRODUCT",
+        delete_isis_intermediates=False,
+    )
+    spike_dir = isis_wac._spike_dir(config)
+    crop_cub = spike_dir / "TESTPRODUCT.vis.cal.stitched.crop.cub"
+    crop_cub.write_text("the real crop bytes")
+
+    with patch.object(isis_wac, "run_pipeline", return_value="fake-stitched"):
+        with patch.object(isis_wac, "crop_for_camera", return_value=isis_wac.CropResult(cub_path=crop_cub)):
+            isis_wac.ensure_crop_for_camera(camera="fake-camera", frame_timing="fake-timing", flip=True, config=config)
+
+    assert spike_dir.exists()
+    assert crop_cub.exists()
+    assert isis_wac.cached_crop_path(config).read_text() == "the real crop bytes"
 
 
 def test_apply_pose_correction_to_crop_copies_and_runs_tabledump_then_csv2table(tmp_path):

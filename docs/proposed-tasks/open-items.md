@@ -71,5 +71,24 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   tie-point pixel residual (not computed anywhere today — `tie_points.py` only produces ground-truth
   pixel *locations* for overlay plotting, no image-based comparison), and a footprint-geometry
   outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
-  own FOV polygons already pay this same cost, but for a different, on-demand, presentation-only
-  purpose, see `docs/report-generation.md`'s "Overview map" section).
+  own FOV polygons no longer pay this cost, see the item just below, but a footprint-outlier check
+  specifically would still need real per-entry accuracy, not the approximation now used for the map).
+- **`camera.lightweight_footprint_lonlat_deg`'s calibration constants are provisional, measured from
+  a single candidate (`M1327210646CE`) on 2026-09-07.** `overview_map.plot_overview_map` now uses
+  this cheap, ISIS-free approximation for every entry's FOV footprint (populated or not), instead of
+  `entry.camera` — a real, measured win (a full 81-row map dropped from ~20-30 minutes to ~370s cold
+  / ~1s warm, since it no longer needs a full ISIS pipeline run per not-yet-populated entry). But
+  `_LIGHTWEIGHT_BORESIGHT_CORRECTION` (the fixed re-aim rotation) was only cross-checked against one
+  of the two candidates `docs/history.md`'s Phase 29 already measured (5.15 deg, matching exactly —
+  not new independent evidence of universality), and `_LIGHTWEIGHT_FOCAL_LENGTH_PX`/
+  `_LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX` are known to vary somewhat with `n_frames_for_square_crop`
+  (65-78 frames across today's real manifest), so they're a genuine size approximation, not exact,
+  for every entry except the one it was measured from. Fine at whole-Moon map scale (visually
+  confirmed against all 81 real manifest rows, no degenerate/outlier polygons), but per the user's
+  own framing this is a stand-in for a proper fix: **a real calibration pass across many "nominal"
+  EDR frames**, producing a single, precalculated, cross-manifest-validated `.tsai`-equivalent
+  parameter set (FOV/principal-point and boresight correction) that the whole pipeline — not just
+  the overview map — could eventually rely on instead of resolving `solve_corrected_fov`/the
+  boresight re-aim fresh per entry via ISIS. That larger change is out of scope for what landed here;
+  `lightweight_footprint_lonlat_deg`'s own module-level constants in `camera.py` are the one place to
+  update once it exists, with no other caller needing to change.

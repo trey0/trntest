@@ -12,6 +12,7 @@ import pandas as pd
 import rasterio
 
 from trntest import cache, illumination, spice_kernels, tie_points
+from trntest import camera as camera_module
 from trntest.config import TrntestConfig, load_config
 from trntest.trn_dataset import TrnTestDataSet
 
@@ -88,41 +89,21 @@ def _require_point(corner: tuple[float, float] | None) -> tuple[float, float]:
     return corner
 
 
-def _unwrap_ring_relative_to_first(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """`ring`'s points, with longitude unwrapped onto the branch nearest the first point's own
-    longitude -- same technique as `geo_utils.footprint_bbox_deg`, so a ring crossing +/-180 forms
-    one geometrically contiguous shape (possibly outside `[-180, 180]`) instead of jumping across the
-    whole plot when its own extent (e.g. a bounding-box corner) is computed."""
-    ref_lon = ring[0][0]
-    return [(illumination.unwrap_relative_deg(ref_lon, lon), lat) for lon, lat in ring]
+def _antimeridian_split_xy(points: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
+    """`points`' lon/lat as `(lons, lats)` for a single `ax.plot` call, with a `nan` inserted at any
+    edge that crosses +/-180 -- matplotlib skips drawing a line across a `nan`, avoiding a spurious
+    line straight across the whole plot wherever the path (a closed FOV ring, or an open ground
+    track) straddles the antimeridian (plain matplotlib has no built-in geographic wraparound). Same
+    per-edge unwrap-then-clip technique as `dataset_selection_plots._underline_segments`,
+    generalized from one line segment to an arbitrary-length path -- works identically whether
+    `points` closes back on itself (a ring) or not (a track), since only consecutive pairs matter.
 
-
-def _upper_right_label_point(ring: list[tuple[float, float]]) -> tuple[float, float]:
-    """The label anchor for one entry's FOV ring: its bounding box's upper-right corner (max
-    longitude, max latitude among its own points) -- not any single actual vertex, and not the
-    footprint's center (a center label collides with the polygon interior/edges). Unwraps first
-    (`_unwrap_ring_relative_to_first`) so a ring that crosses +/-180 still gets its true upper-right
-    corner, then wraps the result back into `[-180, 180]` for display.
+    :param points: Ordered lon/lat points, degrees -- a closed ring (first point repeated at the
+        end) or an open path, either works.
     """
-    unwrapped = _unwrap_ring_relative_to_first(ring)
-    max_lon = max(lon for lon, _ in unwrapped)
-    max_lat = max(lat for _, lat in unwrapped)
-    return ((max_lon + 180.0) % 360.0) - 180.0, max_lat
-
-
-def _antimeridian_split_xy(ring: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
-    """`ring`'s lon/lat points as `(lons, lats)` for a single `ax.plot` call, with a `nan` inserted
-    at any edge that crosses +/-180 -- matplotlib skips drawing a line across a `nan`, avoiding a
-    spurious line straight across the whole plot for a footprint that straddles the antimeridian
-    (plain matplotlib has no built-in geographic wraparound). Same per-edge unwrap-then-clip
-    technique as `dataset_selection_plots._underline_segments`, generalized from one line segment to
-    a closed ring.
-
-    :param ring: Closed polygon points (first point repeated at the end), degrees.
-    """
-    lons = [ring[0][0]]
-    lats = [ring[0][1]]
-    for (lon0, lat0), (lon1, lat1) in zip(ring, ring[1:], strict=False):
+    lons = [points[0][0]]
+    lats = [points[0][1]]
+    for (lon0, lat0), (lon1, lat1) in zip(points, points[1:], strict=False):
         lon1_unwrapped = illumination.unwrap_relative_deg(lon0, lon1)
         boundary = 180.0 if lon1_unwrapped > lon0 else -180.0
         crosses = lon1_unwrapped != lon0 and min(lon0, lon1_unwrapped) <= boundary <= max(lon0, lon1_unwrapped)
@@ -136,15 +117,37 @@ def _antimeridian_split_xy(ring: list[tuple[float, float]]) -> tuple[list[float]
     return lons, lats
 
 
+GROUND_TRACK_STEP_S = 60.0  # LRO covers ~1.6 km/s -- ~96km/sample, plenty smooth at whole-Moon
+# map scale; far coarser than _LRO_ORBITAL_PERIOD_S (113 min), so consecutive orbits' own tracks
+# (which may land close together in MOON_ME -- the Moon barely rotates between them) are still each
+# fully resolved, not aliased into each other by an overly coarse step.
+
+
+def _ground_track_lonlat(dataset: TrnTestDataSet) -> list[tuple[float, float]]:
+    """Sub-spacecraft ground track (`illumination.spacecraft_lonlat_deg`) sampled every
+    `GROUND_TRACK_STEP_S` across `dataset`'s own real time span (earliest `start_time` to latest
+    `stop_time`) -- pure position-vector geometry, no shape model, no per-entry camera cost.
+    """
+    start_et = illumination.utc_to_et(pd.to_datetime(dataset.images["start_time"]).min().to_pydatetime())
+    stop_et = illumination.utc_to_et(pd.to_datetime(dataset.images["stop_time"]).max().to_pydatetime())
+    n_samples = max(2, round((stop_et - start_et) / GROUND_TRACK_STEP_S) + 1)
+    return [illumination.spacecraft_lonlat_deg(et) for et in np.linspace(start_et, stop_et, n_samples)]
+
+
 def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = None) -> plt.Figure:
     """Ground-track-style overview of every entry in `dataset`: a whole-Moon backdrop layered over a
-    day/night mask at the dataset's temporal midpoint, with each entry's own FOV footprint (a
-    straight-line quadrilateral through its camera's 4 corner points -- fine at this whole-Moon
-    zoom level, no need for the real geodesic edges) and an `entry.index` label.
+    day/night mask at the dataset's temporal midpoint, the sub-spacecraft ground track across the
+    dataset's own time span underneath, and each entry's own FOV footprint on top (a straight-line
+    quadrilateral through its camera's 4 corner points -- fine at this whole-Moon zoom level, no need
+    for the real geodesic edges). No per-entry index label -- real datasets pack footprints too
+    densely for one to stay readable; `status.csv`/the overview table are the place to look up a
+    specific entry.
 
-    Builds a real `Camera` per entry (`entry.camera.footprint_lonlat_deg`) to get its footprint
-    corners -- a real per-entry SPICE cost (unlike everything else this function reads, which comes
-    straight from the manifest), worth it for genuine FOV polygons rather than center-point markers.
+    Uses `camera.lightweight_footprint_lonlat_deg` per entry to get its footprint corners -- a
+    cheap, ISIS-free SPICE approximation (see that function's own docstring for what it trades away
+    and why), not `entry.camera` -- deliberately, so this map never needs a full ISIS pipeline run
+    for a not-yet-populated entry, and never needs branching logic on population state at all: every
+    entry gets the same treatment regardless of whether it's `done` or `pending`.
 
     :returns: The `Figure`.
     """
@@ -163,19 +166,16 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     extent = (-180, 180, -90, 90)
     ax.imshow(day_night, cmap="gray", vmin=0, vmax=1, extent=extent)
     ax.imshow(backdrop, cmap="gray", extent=extent, alpha=BACKDROP_ALPHA)
+    track_lons, track_lats = _antimeridian_split_xy(_ground_track_lonlat(dataset))
+    ax.plot(track_lons, track_lats, color="darkblue", linewidth=0.5, alpha=0.6, zorder=1)
     for entry in dataset:
-        corners = entry.camera.footprint_lonlat_deg
+        per_image_config = entry.per_image_config
+        corners = camera_module.lightweight_footprint_lonlat_deg(
+            entry.frame_timing, per_image_config.target_frame_index, per_image_config
+        )
         ring = [_require_point(corners[name]) for name in (*tie_points.CORNER_NAMES, tie_points.CORNER_NAMES[0])]
         lons, lats = _antimeridian_split_xy(ring)
-        ax.plot(lons, lats, color="darkred", linewidth=0.8)
-        ax.annotate(
-            str(entry.index),
-            _upper_right_label_point(ring),
-            xytext=(3, 3),
-            textcoords="offset points",
-            color="darkred",
-            fontsize=7,
-        )
+        ax.plot(lons, lats, color="darkred", linewidth=0.8, zorder=2)
     ax.set_xlim(-180, 180)
     ax.set_ylim(-90, 90)
     ax.set_xticks(range(-180, 181, 30))

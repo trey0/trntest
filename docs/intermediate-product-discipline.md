@@ -76,12 +76,19 @@ module docstring. Filenames key on `edr_product` (`M1327210646CE` →
 existing per-image folder convention — the two are always equal in today's real manifest, so this
 split is currently low-risk, just future-proofing.
 
-**The real WAC pipeline's own raw-EDR scratch** (`_work/<edr_product>/isis/` — stitched cube,
-calibration intermediates, `isis_wac._spike_dir`) lives inside each `TrnTestDataSet`'s own
-`_work/`, one distinguished subtree per entry, not a shared cross-dataset scratch location
-(`isis_wac.run_pipeline`/`crop_for_camera` are still idempotent, so re-running against the same
-already-populated entry is still cheap — just no longer shared *across* dataset folders). Was
-`config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path, until 2026-08-23: the
-cross-dataset reuse that separation used to serve isn't load-bearing (real datasets are
-non-overlapping in `edr_product` by construction), and keeping this subtree distinguished lets it
-survive routine `_work/<entry>/` pruning that excludes `isis/`.
+**The real WAC pipeline's own raw-EDR scratch** (`_work/<edr_product>/isis/` — split, calibrated,
+and stitched cubes, `isis_wac._spike_dir`) lives inside each `TrnTestDataSet`'s own `_work/`, one
+subtree per entry. Was `config.scratch_dir/isis_wac/<edr_product>/`, a workspace-level shared path,
+until 2026-08-23: the cross-dataset reuse that separation used to serve isn't load-bearing (real
+datasets are non-overlapping in `edr_product` by construction).
+
+As of the crop-preferred refactor below, this subtree is purely disposable, no longer a special
+case: `isis_wac.ensure_crop_for_camera` wipes it entirely once the crop is safely published to
+`cache/wac_crop/<edr_product>_crop.cub` (`config.delete_isis_intermediates`, default `True`) — same
+lifecycle as the rest of `_work/<entry>/`, not exempted from pruning. Cross-dataset reuse moved with
+it: `cache/wac_crop/` (keyed by `edr_product`, shared across every `TrnTestDataSet` pointing at the
+same `cache_root`, not scoped to one dataset folder) is now where that benefit lives, rather than
+this `_work/`-local scratch. `build_camera`/`crop_footprint_corners_for_camera`/`TrnTestEntry.
+crop_result` all check `isis_wac.cached_crop_path` before ever touching ISIS, so re-populating an
+already-generated entry (from any dataset) is cheap without needing this scratch subtree to still
+exist. See `docs/caching.md`'s "WAC crop caching" section for the full rationale.

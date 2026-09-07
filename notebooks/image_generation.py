@@ -54,7 +54,10 @@ from trntest import craters, plotting, tie_points
 images = trntest.read_manifest("dataset_manifest.csv")
 print(f"Rendering EDR product: {images.iloc[0]['edr_product']} (from dataset_manifest.csv)")
 
-session = trntest.Session()
+# Repeated interactive re-runs of this notebook shouldn't hit the external PDS server again on
+# every run -- see docs/caching.md's "raw WAC EDR caching" section.
+config = dataclasses.replace(trntest.load_config(), delete_full_raw_edr=False)
+session = trntest.Session(config=config)
 
 # %% [markdown]
 # ## Phase 2: generate the selected image + SPICE-derived camera pose
@@ -65,13 +68,19 @@ session = trntest.Session()
 # `dataset.populate(limit=1)` drives it through the pipeline: a pinhole camera posed from LRO's real
 # position/orientation (`MOON_ME` frame) at that row's timestamp, the DEM/ortho fetch, and both
 # `hillshade` and `crop`.
+#
+# `write_index=False`: this notebook never reads `status.csv`/`reports/index.html`/the overview
+# map `populate()` would otherwise (re)generate by default, and that default rebuilds a real
+# `Camera` for *every* entry in the whole manifest, not just this one -- see
+# `docs/batch-generation.md`. Skipping it keeps this cell's cost bounded to entry 0 alone,
+# regardless of manifest size or how many other entries happen to be cache-warm already.
 
 # %%
 PRODUCT_TYPES = ("crop", "hillshade", "reproject")  # "reproject" is opt-in; included here for Phase 8 below.
 
 dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
 dataset.truncate(dataset[0], product_types=PRODUCT_TYPES)
-dataset.populate(limit=1, product_types=PRODUCT_TYPES)
+dataset.populate(limit=1, product_types=PRODUCT_TYPES, write_index=False)
 entry = dataset[0]
 
 camera = entry.camera

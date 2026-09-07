@@ -2,7 +2,8 @@
 
 The real WAC image itself: a footprint-matched crop of the same LROC WAC EDR `hillshade`/`reproject`
 are posed against, calibrated and made geometrically usable via ISIS3. `trn_products.TrnTestCropImage`;
-entry points `isis_wac.run_pipeline`/`crop_for_camera`.
+entry point `isis_wac.ensure_crop_for_camera` (falls through to `run_pipeline`/`crop_for_camera` only
+on this product's first-ever generation).
 
 ## Data sources
 
@@ -26,3 +27,13 @@ entry points `isis_wac.run_pipeline`/`crop_for_camera`.
    [`reproject.md`](reproject.md).
 
 See [`../external-tools.md`](../external-tools.md) for ISIS app flags and gotchas.
+
+## Where the crop actually lives
+
+The crop's real published home is `cache/wac_crop/<edr_product>_crop.cub` (permanent, shared across
+every dataset, keyed by `edr_product`) — not `_work/<entry>/isis/`, which by default
+(`config.delete_isis_intermediates=True`) is wiped entirely right after the crop is published there,
+alongside the raw EDR and every other pipeline intermediate. `TrnTestDataSet`'s own
+`crop/<edr_product>_crop.cub` (see `docs/intermediate-product-discipline.md`) remains a per-dataset
+copy of it, as today. See [`../caching.md`](../caching.md)'s "WAC crop caching" section for the full
+rationale and the two config flags governing this.

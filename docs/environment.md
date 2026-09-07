@@ -154,6 +154,15 @@ automatically.
   cold fetch of this file at the same time will race on that same partial file. In practice this
   only matters once (it's cached forever after) — check `cache/astropedia/*.tif` already exists
   before kicking off a full pipeline run if you're unsure whether another agent got there first.
+- **`cache/wac_crop/<edr_product>_crop.cub` is a shared, cross-dataset cache, not scoped to one
+  worktree's dataset folder.** Any `TrnTestDataSet` (any worktree, any agent) that shares this
+  session's `cache_root` and generates the same `edr_product` reuses this same cached crop — a real
+  benefit, not a bug, but it means `TrnTestDataSet.truncate(..., invalidate_crop_cache=True)` in
+  *your* worktree can force a *different* agent's dataset to redo real ISIS reprocessing (including
+  live `spiceinit web=yes` calls) the next time it touches that same `edr_product`. Default is
+  `invalidate_crop_cache=False` for exactly this reason — only pass `True` when you actually need to
+  verify an ISIS-pipeline code change from a clean slate. See `docs/caching.md`'s "WAC crop caching"
+  section.
 - **Docker images accumulate per worktree** (`trntest-lunar-demo-<name>`, several GB each once
   ISIS/ASP are installed — see "Docker images" above), and a merged worktree checkout itself is
   several more GB. `scripts/cleanup_worktrees.sh list` finds worktrees safe to remove (flagged done

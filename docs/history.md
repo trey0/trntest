@@ -6089,3 +6089,79 @@ stretch up past 60 but not up to 79").
 not fetched" to the confirmed facts above; `docs/proposed-tasks/production-run-readiness.md`'s
 latitude-coverage section updated to reflect the new, mostly-resolved state (not yet re-verified
 against `trn_dataset`'s own manifest specifically).
+
+## Phase 117 (2026-09-07) — Crop-preferred WAC pipeline, cache/scratch realignment, and a cheap overview-map footprint
+
+Started from `production-run-readiness.md`'s disk-space finding: `_work/<entry>/isis/` (the WAC
+EDR-to-crop ISIS pipeline's own scratch) measured ~223-260MB/entry, of which only the 14MB crop is
+ever read again once generated. First pass proposed deleting the dead weight (raw EDR from `cache/`,
+intermediates from `_work/`) behind two new config flags — the user pushed back: deleting something
+just published into the *permanent* `cache/` tree is a confusing new twist on an existing one
+(`_work/<entry>/isis/` already had a lifecycle mismatched with the rest of `_work/`). Better fix,
+landed instead: **flip which artifact gets the "keep forever" treatment**. The raw EDR has no
+cross-entry reuse value (1:1 with `edr_product`) — `config.delete_full_raw_edr` (default `True`) now
+fetches it into disposable `_work/<entry>/isis/` scratch instead of publishing it to `cache/` at all
+(`False` restores the old behavior, for `image_generation.ipynb`'s own repeated-re-run case, so it
+doesn't hit PDS again on every run). The crop — the actual expensive-to-reproduce, per-product
+artifact — gets published to a new permanent, cross-dataset cache tier instead:
+`cache/wac_crop/<edr_product>_crop.cub` (`isis_wac.cached_crop_path`/`ensure_crop_for_camera`,
+`product_io.atomic_publish`). `config.delete_isis_intermediates` (default `True`) then wipes
+`_work/<entry>/isis/` entirely once the crop is safely cached — no more "except this one file"
+carve-out; the directory is purely disposable now, same lifecycle as the rest of `_work/<entry>/`.
+`camera.build_camera`/`tie_points.crop_footprint_corners_for_camera`/`TrnTestEntry.crop_result` all
+check `cached_crop_path` before touching ISIS at all, so a re-populated entry (any dataset, any
+worktree sharing `cache_root`) is cheap without needing `_work/` to still hold anything.
+`TrnTestDataSet.truncate(..., invalidate_crop_cache=False)` can delete the cache entry to force real
+reprocessing, default off since it's a cross-dataset-shared resource, not scoped to one dataset
+folder (`docs/environment.md`'s "Multi-agent worktrees" section got a note on this).
+
+**A second, unrelated cross-session merge landed mid-session** (`ab4fba8`, WAC_EMP polar tiles) —
+pulled cleanly (one real, trivial merge conflict in `production-run-readiness.md`, pure line-ordering
+from two sessions both appending to the same doc, not a content disagreement).
+
+**Verifying this surfaced a second, much bigger problem**: running `image_generation.ipynb` end to
+end (to confirm the crop-cache change) took 20-30+ minutes instead of the expected ~1, because
+`dataset.populate(limit=1)`'s default `write_index=True` triggers `write_index()`'s own
+`write_overview_map=True` default — which builds a real `Camera` (full ISIS pipeline, if not cached)
+for *every* entry in the 81-row manifest, not just the one being populated. Pre-existing, already-
+documented behavior (`docs/batch-generation.md`), not something this session's own change caused —
+just newly visible because a fresh worktree's dataset folder had nothing warm yet. Fixed narrowly
+first: the notebook never reads `status.csv`/`index.html`/the overview map at all, so
+`write_index=False` on its own `populate()` call removes the cost entirely (confirmed: full notebook
+re-run dropped to 119.89s total, clean sequential re-execution).
+
+**Then went further, per the user's own push**: the overview map's FOV polygons are supposed to
+represent `hillshade`/`reproject`'s own synthetic camera, and that camera's true parameters are
+determined the moment a manifest row exists, independent of whether it's been populated — so there's
+no real reason `plot_overview_map` needs `entry.camera` (and its ISIS dependency) at all, for any
+entry, populated or not. Investigated whether `build_camera`'s ISIS-dependent boresight re-aim could
+be replaced with a fixed correction: yes, per `docs/history.md`'s own Phase 29 — that entry already
+found "a real, roughly-constant ~5-6 degree angular gap" with "frame-relative, not time- or
+geometry-dependent" signature (a fixed hardware/calibration offset), and the *first* attempt to use a
+constant correction failed only because it corrected the wrong rotation (the overall attitude, already
+proven exactly correct) instead of the boresight-direction offset itself. Measured that offset live
+from the one real populated entry (`M1327210646CE`): 5.150 deg, matching one of Phase 29's own two
+recorded values exactly (not new independent evidence of universality across the manifest, just
+confirming the measurement method). New `camera.lightweight_footprint_lonlat_deg`: raw SPICE pose at
+the crop's own designated center frame, the measured fixed boresight-correction matrix, the per-pose
+(cheaply SPICE-computed) `k`-twist, and a fixed FOV/principal-point pair from that same candidate's
+own solved `.tsai` — no ISIS call anywhere in it. `cu` is exact by construction (`solve_corrected_fov`
+always fixes it at `image_size/2`); the FOV size and `cv` offset are a genuine approximation (known
+to vary somewhat with `n_frames_for_square_crop`, 65-78 frames across the real manifest) — flagged as
+provisional in `docs/proposed-tasks/open-items.md`, pending the user's own suggested proper fix (a
+calibration pass across many nominal EDR frames producing one robust, precalculated constant set).
+`overview_map.plot_overview_map` now calls this for every entry uniformly, populated or not — no
+branching on population state, which also closes a real staleness risk the user raised: a map that
+silently omits/never-updates unpopulated entries could look "done" and never get refreshed once they
+actually are populated; a uniform, always-current approximation has no such state to go stale.
+
+**Verification**: `trntest-lint` clean; full suite (375 tests, new coverage for
+`ensure_crop_for_camera`'s cache-hit/first-time/cleanup paths, `fetch_edr_img`'s two branches,
+`truncate`'s `invalidate_crop_cache`, and `lightweight_footprint_lonlat_deg`'s wiring). Real
+end-to-end runs, not just unit tests: a never-before-generated entry through the full pipeline
+(confirmed `cache/wac_crop/` populated, `_work/<entry>/isis/` gone, `reproject` succeeding by reading
+the crop from its new cache location); a second access of that same entry (2.2s, zero ISIS calls,
+`isis/` directory never recreated); the full 81-row overview map (~370s cold — one-time SPICE kernel
+furnish + 80 never-fetched EDR labels, unrelated to ISIS — then **0.95s warm**), with the rendered
+map visually checked against all 81 real manifest rows (correctly clustered by orbit pass, correct
+antimeridian wrap, no degenerate polygons).

@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ import pytest
 from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import TaskException
 
-from trntest import overview_map, report, tasks, trn_dataset, trn_products
+from trntest import isis_wac, overview_map, report, tasks, trn_dataset, trn_products
 from trntest.config import TrntestConfig
 
 
@@ -347,6 +348,65 @@ def test_truncate_clears_stored_results_from_both_queues(tmp_path, monkeypatch):
     ds.truncate(entry, product_types=("crop",))
 
     assert trn_dataset.task_state(entry, "crop", huey_instance=tasks.huey_parallel) == "pending"
+
+
+def _use_fake_per_image_config(monkeypatch, cache_root: Path) -> None:
+    """Stands in for the real `_per_image_config` (needs `edr_volume`/`edr_subdir`/`edr_doy`/
+    `start_frame` manifest columns `_minimal_manifest` deliberately omits) with a fixed
+    `TrntestConfig` per entry, keyed by `edr_product` -- just enough for
+    `isis_wac.cached_crop_path(entry.per_image_config)` to resolve to a real, entry-specific path."""
+    monkeypatch.setattr(
+        trn_dataset.TrnTestEntry,
+        "per_image_config",
+        property(
+            lambda self: dataclasses.replace(TrntestConfig(), cache_root=cache_root, edr_product=self.edr_product)
+        ),
+    )
+
+
+def test_truncate_invalidate_crop_cache_deletes_cached_crop(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    _use_fake_per_image_config(monkeypatch, tmp_path / "cache")
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    cached_crop = isis_wac.cached_crop_path(entry.per_image_config)
+    cached_crop.parent.mkdir(parents=True, exist_ok=True)
+    cached_crop.write_text("cached crop bytes")
+
+    ds.truncate(entry, product_types=("crop",), invalidate_crop_cache=True)
+
+    assert not cached_crop.exists()
+
+
+def test_truncate_leaves_crop_cache_alone_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    _use_fake_per_image_config(monkeypatch, tmp_path / "cache")
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    cached_crop = isis_wac.cached_crop_path(entry.per_image_config)
+    cached_crop.parent.mkdir(parents=True, exist_ok=True)
+    cached_crop.write_text("cached crop bytes")
+
+    ds.truncate(entry, product_types=("crop",))  # invalidate_crop_cache defaults to False
+
+    assert cached_crop.exists()
+
+
+def test_truncate_invalidate_crop_cache_is_noop_outside_crop_product_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    _use_fake_per_image_config(monkeypatch, tmp_path / "cache")
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("hillshade",))
+    cached_crop = isis_wac.cached_crop_path(entry.per_image_config)
+    cached_crop.parent.mkdir(parents=True, exist_ok=True)
+    cached_crop.write_text("cached crop bytes")
+
+    ds.truncate(entry, product_types=("hillshade",), invalidate_crop_cache=True)
+
+    assert cached_crop.exists()
 
 
 # -- populate_via_workers() (huey_parallel-backed) -----------------------------------------------

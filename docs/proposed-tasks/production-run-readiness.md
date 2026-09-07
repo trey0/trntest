@@ -40,6 +40,18 @@ these takes free space from 17GB to ~25GB — still not enough for the full 81-r
 buffer. Ask the user before deleting (these are other past worktrees' output, not this session's own
 scratch).
 
+**Update, same day**: the "`_work/` is retained by design, no pruning mechanism exists" statement
+above no longer holds for the `crop` generator's own `_work/<entry>/isis/` subtree specifically —
+measured at ~223-260MB/entry (raw+calibrated split cubes, the full stitched swath, plus the 14MB
+crop), of which only the crop itself is ever read again once generated. `isis_wac.
+ensure_crop_for_camera` now publishes the crop to a new permanent, cross-dataset cache tier
+(`cache/wac_crop/<edr_product>_crop.cub`) and wipes the rest of `_work/<entry>/isis/` by default
+(`config.delete_isis_intermediates`) — per-entry footprint there drops to ~0 post-generation. See
+`docs/caching.md`'s "WAC crop caching" section. Doesn't change the `_work/` estimate for the *other*
+per-entry subtrees (DEM/ortho tiles, pre-copy render output) — those are still retained as before, so
+the ~660MB/entry average above should be revised downward but not eliminated once someone re-measures
+against a fresh entry.
+
 ## Latitude coverage: mostly resolved since this assessment was written
 
 `notebooks/dataset_manifest.csv`'s 81 rows span `center_lat_deg` from -68.2° to +73.2°. At the time
@@ -76,10 +88,19 @@ be at risk from this specific bug, though they haven't been individually reteste
 ## This session's new features are untested past 2 entries
 
 `overview_map`'s per-entry footprint-polygon labels (`_upper_right_label_point`, `darkred` outlines)
-and `write_index()`'s overall runtime have only been exercised at n=2. Nothing specific is known to
-be wrong at larger scale, but nothing has confirmed it's right either — e.g. whether footprint labels
-stay legible with 50+ overlapping entries on one global map, or whether `write_index()`'s per-entry
-`Camera` rebuild for the overview map takes an acceptable amount of wall-clock time at that count.
+have only been exercised at n=2 for actual *legibility* at scale — visually checked against the real
+81-row manifest in a later session (all real, non-degenerate polygons, correctly clustered by orbit
+pass, antimeridian wrap handled correctly) but not specifically evaluated for whether labels stay
+readable with 50+ overlapping entries.
+
+**Resolved in a later session**: `write_index()`'s per-entry `Camera` rebuild for the overview map —
+this doc's own original concern about wall-clock time at scale — is gone. `overview_map.
+plot_overview_map` now uses `camera.lightweight_footprint_lonlat_deg` (a cheap, ISIS-free SPICE
+approximation) instead of `entry.camera`, for every entry regardless of population state. Measured
+against the real 81-row manifest: ~370s cold (first-ever kernel furnish + per-entry EDR label
+fetches, a one-time cost), ~1s warm. See `docs/proposed-tasks/open-items.md` for the one real
+caveat this introduces (the approximation's calibration constants are provisional, measured from a
+single candidate).
 
 ## Recommended sequencing
 

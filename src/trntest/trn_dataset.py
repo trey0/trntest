@@ -104,17 +104,34 @@ class TrnTestEntry:
 
     @functools.cached_property
     def stitched(self) -> isis_wac.FramestitchResult:
-        """The stitched WAC cube."""
+        """The full stitched WAC cube -- a diagnostic accessor, not on `crop_result`'s own hot path
+        (see that property below). Always forces a full ISIS reprocessing pass if this product's
+        `_work/<edr_product>/isis/` scratch has been cleaned up (the default, once the crop is
+        cached -- see `isis_wac.ensure_crop_for_camera`), since nothing but this accessor still needs
+        the stitched cube itself. Real consumers: `notebooks/pose_alignment_spike.py`'s
+        `isis_campt.resolve_ground_to_image_model`, which genuinely needs the full (not cropped)
+        cube."""
         # Idempotent with the cube self.camera (via build_camera) already produced internally --
         # see isis_wac.run_pipeline's own comment for why re-deriving it here, rather than caching
-        # it off camera, is cheap, not duplicated ISIS work.
+        # it off camera, is cheap, not duplicated ISIS work -- *when* the stitched cube is still on
+        # disk. If it isn't, this is genuinely expensive (full ISIS pipeline + live spiceinit web
+        # calls), by design: keep `delete_isis_intermediates=False` while debugging if you need this
+        # repeatedly.
         return isis_wac.run_pipeline(self.camera.reverse_crop_along_track, self.frame_timing, self.per_image_config)
 
     @functools.cached_property
     def crop_result(self) -> isis_wac.CropResult:
-        """The private crop cube (`_work/<edr_product>/isis/...`) -- distinct from
-        `TrnTestCropImage.raster_path`, the published copy `crop.generate()` makes of it."""
-        return isis_wac.crop_for_camera(self.stitched, self.camera, self.per_image_config)
+        """The crop cube, from its real published home (`cache/wac_crop/<edr_product>_crop.cub`,
+        see `isis_wac.cached_crop_path`) -- distinct from `TrnTestCropImage.raster_path`, the
+        per-dataset published copy `crop.generate()` makes of it.
+
+        Doesn't route through `self.stitched`: cheap (a cache-path existence check only) whenever
+        this product's crop has already been generated at all, by any dataset, not just this one --
+        see `isis_wac.ensure_crop_for_camera`.
+        """
+        return isis_wac.ensure_crop_for_camera(
+            self.camera, self.frame_timing, self.camera.reverse_crop_along_track, self.per_image_config
+        )
 
     @functools.cached_property
     def crop_footprint(self) -> dict:
@@ -370,6 +387,7 @@ class TrnTestDataSet:
         self,
         entries: "TrnTestEntry | list[TrnTestEntry] | None" = None,
         product_types: tuple[str, ...] = PRODUCT_TYPES,
+        invalidate_crop_cache: bool = False,
     ) -> None:
         """Delete already-generated product file(s) (`raster_path`/`sidecar_json_path`) and any
         task-queue result state for `entries` (a single `TrnTestEntry`, a list of them, or `None`
@@ -380,6 +398,20 @@ class TrnTestDataSet:
         reuses those where still valid (see `TrnTestEntry.dem_ortho_result`'s own resume-from-files
         check); delete `dataset.folder / "_work" / <edr_product>` yourself first if you also want
         those re-fetched from scratch.
+
+        :param invalidate_crop_cache: If `"crop"` is in `product_types`, also delete each entry's
+            cached crop cube (`cache/wac_crop/<edr_product>_crop.cub`, see
+            `isis_wac.cached_crop_path`) -- without this (the default), a subsequent `populate()`
+            reuses the already-cached crop (cheap, matching this function's own "leaves `_work/`
+            intermediates alone, reuses what's still valid" philosophy for every *other* product
+            type) rather than genuinely re-running ISIS. Set `True` only when you actually need to
+            force real reprocessing -- e.g. verifying an ISIS-pipeline code change still works from a
+            clean slate, not routine report/hillshade re-testing. This cache entry is **shared across
+            every dataset pointing at the same `cache_root`**, keyed by `edr_product` alone, not
+            scoped to this dataset folder -- invalidating it here can force a *different* dataset (or
+            a concurrent worktree agent's own dataset, if it shares `cache_root`) to redo real ISIS
+            work the next time it touches that same `edr_product`. See docs/environment.md's
+            "Multi-agent worktrees" section.
         """
         # For forcing a clean re-run -- e.g. a notebook that always wants fresh output reflecting
         # the latest pipeline code rather than silently reusing a stale prior run, unlike
@@ -403,6 +435,8 @@ class TrnTestDataSet:
                 image = entry.images_by_type[product_type]
                 image.raster_path.unlink(missing_ok=True)
                 image.sidecar_json_path.unlink(missing_ok=True)
+            if invalidate_crop_cache and "crop" in product_types:
+                isis_wac.cached_crop_path(entry.per_image_config).unlink(missing_ok=True)
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 

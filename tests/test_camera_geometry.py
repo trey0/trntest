@@ -1,7 +1,10 @@
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
 from trntest import camera
+from trntest.config import TrntestConfig
 
 
 def test_rotation_about_boresight_identity():
@@ -93,3 +96,42 @@ def test_footprint_lonlat_center_is_nadir():
     lon, lat = footprint["center"]
     assert lon == pytest.approx(0.0, abs=1e-6)
     assert lat == pytest.approx(90.0, abs=1e-6)
+
+
+def test_lightweight_footprint_lonlat_deg_composes_boresight_correction_and_k_twist_then_delegates():
+    # Only the SPICE-touching helpers below are mocked -- no `isis_wac`/`isis_campt` call is ever
+    # reached (there's no real ISIS binary or furnished kernel in this test environment; a real
+    # attempt would raise/hang, not silently succeed), confirming this path is genuinely ISIS-free.
+    frame_timing = camera.FrameTiming(start_time=None, sclk_start="fake", interframe_delay_s=1.0, nframes=500)
+    config = TrntestConfig(image_size=1316)
+    c_meters_raw = np.array([1.0, 2.0, 3.0])
+    r_cam_to_me_raw = np.diag([1.0, -1.0, -1.0])
+    forward_step_km = np.array([0.0, 0.0, 1.0])
+
+    with patch.object(
+        camera, "compute_n_frames_for_square_crop", return_value={"n_frames_for_square_crop": 70}
+    ) as mock_n_frames:
+        with patch.object(camera, "frame_et", return_value=123.0) as mock_frame_et:
+            with patch.object(camera, "camera_pose_moon_me", return_value=(c_meters_raw, r_cam_to_me_raw, 0.0, 0.0)):
+                with patch.object(camera, "ground_track_step_km", return_value=forward_step_km):
+                    with patch.object(camera, "boresight_rotation_k", return_value=1) as mock_k:
+                        with patch.object(camera, "footprint_lonlat", return_value={"center": (1.0, 2.0)}) as mock_fp:
+                            result = camera.lightweight_footprint_lonlat_deg(
+                                frame_timing, target_frame_index=100, config=config
+                            )
+
+    assert result == {"center": (1.0, 2.0)}
+    mock_n_frames.assert_called_once_with(frame_timing, 100, config)
+    # center_frame_index = target_frame_index + n_frames_for_square_crop / 2.0
+    mock_frame_et.assert_called_once_with(frame_timing, 100 + 35.0)
+    mock_k.assert_called_once()
+
+    args, kwargs = mock_fp.call_args
+    c_km_arg, r_cam_to_me_arg, fu_arg, fv_arg, cu_arg, cv_arg, size_arg = args
+    np.testing.assert_allclose(c_km_arg, c_meters_raw / 1000.0)
+    expected_r = r_cam_to_me_raw @ camera._LIGHTWEIGHT_BORESIGHT_CORRECTION @ camera.rotation_about_boresight(1)
+    np.testing.assert_allclose(r_cam_to_me_arg, expected_r)
+    assert fu_arg == fv_arg == camera._LIGHTWEIGHT_FOCAL_LENGTH_PX
+    assert cu_arg == config.image_size / 2.0
+    assert cv_arg == pytest.approx(config.image_size / 2.0 + camera._LIGHTWEIGHT_PRINCIPAL_POINT_V_OFFSET_PX)
+    assert size_arg == config.image_size

@@ -133,6 +133,22 @@ DEFAULT_ISIS_KERNEL_BASE_URL = "https://asc-isisdata.s3.us-west-2.amazonaws.com/
 # docs/data-sources/spice-kernels-isis.md.
 DEFAULT_WAC_CK_SOURCE = "isis_resolved"
 
+# Whether `isis_wac.fetch_edr_img` publishes the raw WAC EDR `.IMG` into the permanent, shared
+# `cache/` tree (`False`) or fetches it into this entry's own disposable `_work/<entry>/isis/`
+# scratch instead (`True`, the default). Unlike every other `cache/` entry, the raw EDR has no
+# cross-entry reuse value -- it's fetched and used by exactly one dataset row, 1:1 with
+# `edr_product` -- so caching it permanently buys nothing once `cache/wac_crop/` (see
+# `isis_wac.cached_crop_path`) holds the actual expensive-to-reproduce, reusable artifact. Set
+# `False` for interactive/repeated re-runs (`image_generation.ipynb`, small `populate()` test
+# batches) to avoid hitting the external PDS server again on every re-run. See docs/caching.md.
+DEFAULT_DELETE_FULL_RAW_EDR = True
+
+# Whether `isis_wac.ensure_crop_for_camera` wipes `_work/<entry>/isis/` entirely once the crop is
+# safely published to `cache/wac_crop/` (`True`, the default) or leaves the split/calibrated/
+# stitched intermediates (and the raw EDR, if the flag above also routed it there) in place.
+# Set `False` to preserve evidence for debugging a pipeline problem. See docs/caching.md.
+DEFAULT_DELETE_ISIS_INTERMEDIATES = True
+
 
 @dataclasses.dataclass(frozen=True)
 class TrntestConfig:
@@ -175,6 +191,9 @@ class TrntestConfig:
     wac_vis_color_fov_deg: float = DEFAULT_WAC_VIS_COLOR_FOV_DEG
     dem_target_gsd_m: float = DEFAULT_DEM_TARGET_GSD_M
     dem_padding_fraction: float = DEFAULT_DEM_PADDING_FRACTION
+
+    delete_full_raw_edr: bool = DEFAULT_DELETE_FULL_RAW_EDR
+    delete_isis_intermediates: bool = DEFAULT_DELETE_ISIS_INTERMEDIATES
 
 
 _PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")

@@ -241,8 +241,15 @@ class TrnTestCropImage(TrnTestImage):
         return "crop_px"
 
     def _generate_impl(self) -> None:
+        # `entry.camera.reverse_crop_along_track`, not `entry.stitched.flip` -- identical value (the
+        # latter is set from the former by `run_pipeline`'s every caller), but avoids pulling in
+        # `entry.stitched`'s full ISIS pipeline dependency just for a bool already sitting on the
+        # camera.
         isd = isis_campt.run_isd_generate_for_crop(
-            self.entry.crop_result, self.entry.camera, self.entry.stitched.flip, self.entry.per_image_config
+            self.entry.crop_result,
+            self.entry.camera,
+            self.entry.camera.reverse_crop_along_track,
+            self.entry.per_image_config,
         )
         self.raster_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(self.entry.crop_result.cub_path, self.raster_path)

@@ -39,7 +39,7 @@ import rasterio.windows
 from trntest import cache, geo_utils
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
-from trntest.product_io import atomic_publish_path, writes_product
+from trntest.product_io import atomic_publish, atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
 from trntest.wac_format import SAMPLES, VIS_BLOCK_HEIGHT
 
@@ -125,16 +125,30 @@ def fetch_edr_img(config: TrntestConfig | None = None) -> EdrFetchResult:
     # Not its `.xml` label, which `camera.fetch_frame_timing()` already fetches -- `lrowac2isis`
     # needs the EDR's own `.IMG`, not the label.
     config = config or load_config()
-    img_path = cache.fetch_lroc_file(
-        config.lroc_edr_dataset,
-        config.edr_volume,
-        config.edr_subdir,
-        config.edr_doy,
-        config.edr_product,
-        "IMG",
-        cache_root=config.cache_root,
-        base_url=config.lroc_base_url,
-    )
+    if config.delete_full_raw_edr:
+        # Unlike the `False` branch below, deliberately not published into the permanent, shared
+        # `cache/` tree -- the raw EDR has no cross-entry reuse value (1:1 with `edr_product`), so
+        # there's nothing to gain from a "keep forever" promise once `cache/wac_crop/` (see
+        # `cached_crop_path`) holds the actual reusable artifact. Lands as a plain file alongside
+        # this entry's other ISIS scratch, reusing `cached_get`'s retry/backoff/pacing machinery,
+        # just rooted at disposable `_spike_dir` instead of `config.cache_root`.
+        img_path = cache.cached_get(
+            f"{config.lroc_base_url}{config.lroc_edr_dataset}/{config.edr_volume}/DATA/"
+            f"{config.edr_subdir}/{config.edr_doy}/WAC/{config.edr_product}.IMG",
+            f"{config.edr_product}.IMG",
+            cache_root=_spike_dir(config),
+        )
+    else:
+        img_path = cache.fetch_lroc_file(
+            config.lroc_edr_dataset,
+            config.edr_volume,
+            config.edr_subdir,
+            config.edr_doy,
+            config.edr_product,
+            "IMG",
+            cache_root=config.cache_root,
+            base_url=config.lroc_base_url,
+        )
     return EdrFetchResult(img_path=img_path)
 
 
@@ -144,11 +158,15 @@ def _spike_dir(config: TrntestConfig) -> Path:
     :param config: Project config.
     :returns: The directory path, created if needed.
     """
-    # Kept separate from the rest of `_work/<entry>/` so it survives routine pruning that the cheaper
-    # stuff doesn't need to -- it's the single most expensive thing here to regenerate (a
-    # multi-subprocess ISIS toolchain run). Keyed by entry (dataset-scoped), not by `edr_product` alone
-    # (a prior, workspace-level layout): datasets are non-overlapping in `edr_product` by construction,
-    # so the cross-dataset-reuse the old layout enabled isn't actually load-bearing.
+    # Purely disposable ISIS scratch -- same lifecycle as the rest of `_work/<entry>/`, no special
+    # treatment. The one thing worth keeping past a single generation run, the crop, has its real
+    # published home in `cache/wac_crop/` (see `cached_crop_path`/`ensure_crop_for_camera`), not
+    # here -- `ensure_crop_for_camera` wipes this directory entirely once the crop is safely cached
+    # there, when `config.delete_isis_intermediates` (the default). Keyed by entry (dataset-scoped),
+    # not by `edr_product` alone (a prior, workspace-level layout): datasets are non-overlapping in
+    # `edr_product` by construction, so the cross-dataset-reuse the old layout enabled isn't actually
+    # load-bearing -- `cache/wac_crop/`, keyed by `edr_product`, is where real cross-dataset reuse
+    # now happens instead.
     d = config.output_dir / "isis"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -502,21 +520,37 @@ def run_pipeline(flip: bool, frame_timing: FrameTiming, config: TrntestConfig | 
     return run_framestitch(even, odd, flip=flip, config=config)
 
 
+def crop_window_for_frame(center_frame_index: float, n_frames_for_square_crop: int) -> rasterio.windows.Window:
+    """The pixel window `crop_for_camera` should crop the stitched cube to, for a footprint centered
+    at `center_frame_index` spanning `n_frames_for_square_crop` frames.
+
+    :param center_frame_index: The footprint's center, in original EDR frame units.
+    :param n_frames_for_square_crop: The footprint's height, in original EDR frames.
+    :returns: The crop `Window`, in the stitched cube's own pixel space.
+    """
+    # The stitched cube preserves `wac_format.VIS_BLOCK_HEIGHT` (14) lines per original EDR frame,
+    # not 1 -- `lrowac2isis` does not TDI-sum each frame down to one line, it keeps the same
+    # per-frame line structure the raw WAC frame format itself has. So both `center_frame_index` and
+    # `n_frames_for_square_crop` need to be scaled by that factor to land on the crop this camera
+    # pose's own FOV covers.
+    #
+    # Takes plain numbers, not a `Camera`, so `camera.build_camera`'s own not-yet-a-`Camera` boresight
+    # computation (`center_frame_index`/`crop_info["n_frames_for_square_crop"]` locals, computed
+    # before a `Camera` exists) can reuse this exact math to find the same window a full `Camera`
+    # would, when checking whether a cached crop already covers the pixel it needs.
+    height = n_frames_for_square_crop * VIS_BLOCK_HEIGHT
+    center_line = center_frame_index * VIS_BLOCK_HEIGHT
+    line_start = round(center_line - height / 2)
+    return rasterio.windows.Window(col_off=0, row_off=line_start, width=SAMPLES, height=height)
+
+
 def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
     """The pixel window `crop_for_camera` should crop the stitched cube to for `camera`'s footprint.
 
     :param camera: The camera whose footprint determines the crop window.
     :returns: The crop `Window`, in the stitched cube's own pixel space.
     """
-    # The stitched cube preserves `wac_format.VIS_BLOCK_HEIGHT` (14) lines per original EDR frame,
-    # not 1 -- `lrowac2isis` does not TDI-sum each frame down to one line, it keeps the same
-    # per-frame line structure the raw WAC frame format itself has. So both
-    # `camera.center_frame_index` and `camera.n_frames_for_square_crop` need to be scaled by that
-    # factor to land on the crop this camera pose's own FOV covers.
-    height = camera.n_frames_for_square_crop * VIS_BLOCK_HEIGHT
-    center_line = camera.center_frame_index * VIS_BLOCK_HEIGHT
-    line_start = round(center_line - height / 2)
-    return rasterio.windows.Window(col_off=0, row_off=line_start, width=SAMPLES, height=height)
+    return crop_window_for_frame(camera.center_frame_index, camera.n_frames_for_square_crop)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -566,6 +600,53 @@ def crop_for_camera(stitched: FramestitchResult, camera: Camera, config: Trntest
                 ]
             )
     return CropResult(cub_path=out_path)
+
+
+def cached_crop_path(config: TrntestConfig) -> Path:
+    """Where `ensure_crop_for_camera` publishes this product's crop in the permanent, shared
+    `cache/` tree -- pure path arithmetic, no I/O, so callers can check for an already-cached crop
+    before paying for any part of the pipeline (`fetch_edr_img` included).
+
+    Keyed by `edr_product` alone, not also the crop window/frame index -- relies on the same
+    one-`target_frame_index`-per-`edr_product` invariant `docs/intermediate-product-discipline.md`
+    already documents and accepts elsewhere in this codebase (today's real manifest never repeats an
+    `edr_product` with a different target frame). See docs/caching.md.
+    """
+    return config.cache_root / "wac_crop" / f"{config.edr_product}_crop.cub"
+
+
+def ensure_crop_for_camera(
+    camera: Camera, frame_timing: FrameTiming, flip: bool, config: TrntestConfig | None = None
+) -> CropResult:
+    """The crop for `camera`'s footprint, reusing an already-cached crop directly (no ISIS calls, no
+    network, no `run_pipeline`) if this product's pipeline already ran once; otherwise runs
+    `run_pipeline` + `crop_for_camera` (today's full pipeline, writing scratch intermediates under
+    `_spike_dir` as always), publishes the result to `cached_crop_path`, and cleans up what's no
+    longer needed now that the crop is safely cached.
+
+    :param camera: Camera whose footprint determines the crop window.
+    :param frame_timing: This product's frame timing (only used if the pipeline actually has to run).
+    :param flip: Should be `camera.reverse_crop_along_track` (only used if the pipeline actually has
+        to run) -- see `run_pipeline`'s own docstring.
+    :param config: Project config; `load_config()` if not given.
+    :returns: A `CropResult` pointing at `cached_crop_path(config)`.
+    """
+    config = config or load_config()
+    cached = cached_crop_path(config)
+    if cached.exists():
+        return CropResult(cub_path=cached)
+
+    stitched = run_pipeline(flip, frame_timing, config)
+    crop = crop_for_camera(stitched, camera, config)
+    with atomic_publish(cached) as tmp:
+        shutil.copy(crop.cub_path, tmp)
+    if config.delete_isis_intermediates:
+        # The crop's real published home is `cached` now -- nothing in `_spike_dir` (split/
+        # calibrated/stitched cubes, and the raw EDR if `delete_full_raw_edr` routed it here too)
+        # is needed again. Whole-directory delete, not "everything except the crop": that copy is
+        # redundant with `cached` the moment it's published.
+        shutil.rmtree(_spike_dir(config))
+    return CropResult(cub_path=cached)
 
 
 def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
