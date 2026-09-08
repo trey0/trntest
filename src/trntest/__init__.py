@@ -16,7 +16,7 @@ for the underlying free functions, each independently callable with an explicit 
 """
 
 from trntest import overview_map, plotting, report
-from trntest.camera import Camera, FrameTiming, build_camera, fetch_frame_timing
+from trntest.camera import Camera, FrameTiming, build_camera, build_spice_camera, fetch_frame_timing
 from trntest.candidate_window import (
     DATASET_COLUMNS,
     GenerationResult,
@@ -32,7 +32,7 @@ from trntest.render import RenderResult, read_csm_state, run_sat_sim
 from trntest.session import Session
 from trntest.spice_kernels import fetch_and_furnish
 from trntest.tie_points import resolve_crop_pixels, select_tie_points
-from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry
+from trntest.trn_dataset import SPICE_DATASET_COLUMNS, TrnTestDataSet, TrnTestEntry, TrnTestEntryEdr, TrnTestEntrySpice
 from trntest.trn_products import TrnTestImage, TrnTestProduct, TrnTestReport
 
 __all__ = [
@@ -48,6 +48,7 @@ __all__ = [
     "CATALOG_COLUMNS",
     "DATASET_COLUMNS",
     "build_camera",
+    "build_spice_camera",
     "fetch_frame_timing",
     "fetch_dem_and_ortho",
     "select_tie_points",
@@ -64,6 +65,9 @@ __all__ = [
     "overview_map",
     "TrnTestDataSet",
     "TrnTestEntry",
+    "TrnTestEntryEdr",
+    "TrnTestEntrySpice",
+    "SPICE_DATASET_COLUMNS",
     "TrnTestProduct",
     "TrnTestImage",
     "TrnTestReport",

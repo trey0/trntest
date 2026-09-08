@@ -137,7 +137,6 @@ class Camera:
     """SPICE-derived pose and geometry for the synthetic camera, as returned by `build_camera`."""
 
     et: float
-    center_frame_index: float
     camera_center_moon_me_m: list
     camera_along_track_direction_moon_me: list  # unit vector, MOON_ME frame, not a velocity -- the
     # sensor's own along-track (py) axis, pre-twist X per the sensor-model axis convention comment
@@ -156,10 +155,18 @@ class Camera:
     footprint_lonlat_deg: dict[str, tuple[float, float] | None]
     render_cross_track_km: float  # the render's own actual footprint width -- != cross_track_width_km
     render_along_track_km: float  # once solve_corrected_fov shrinks the FOV; see that function's docstring
-    cross_track_width_km: float
-    km_per_frame: float
-    n_frames_for_square_crop: int
     tsai_path: Path
+    # The four fields below only mean anything for a real WAC EDR's own along-track framing (an
+    # index into, and a frame-count/ground-rate derived from, that EDR's own framelet sequence) --
+    # `None` for a `trn_dataset.TrnTestEntrySpice` camera (`build_spice_camera`), which has no EDR
+    # frame sequence to index into. Confirmed by grep that every consumer of these four
+    # (`trn_products.TrnTestCropImage`, `tie_points.py`, `isis_wac.py`,
+    # `orientation.compute_display_rotations`'s crop half, `plotting.py`'s crop-vs-basemap sizing)
+    # is only ever reached from EDR/crop code paths, never from a SPICE-only camera's.
+    center_frame_index: float | None = None
+    cross_track_width_km: float | None = None
+    km_per_frame: float | None = None
+    n_frames_for_square_crop: int | None = None
 
     @property
     def reverse_crop_along_track(self) -> bool:
@@ -371,6 +378,21 @@ def ground_track_step_km(frame_timing: FrameTiming, frame_index: float, n: int =
     # docs/data-sources/lroc-wac-edr-cdr.md, "Pass-dependent sensor axis convention").
     c0_m, r0, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index))
     c1_m, r1, _, _ = camera_pose_moon_me(frame_et(frame_timing, frame_index + n))
+    ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)
+    ground1 = boresight_ground_point_km(c1_m / 1000.0, r1)
+    return ground1 - ground0
+
+
+def ground_track_step_km_at(et: float, forward_step_seconds: float = 10.0) -> np.ndarray:
+    """`ground_track_step_km`'s equivalent needing only an ephemeris time, not a `FrameTiming` --
+    for callers with no EDR interframe timing to work from (`build_spice_camera`,
+    `lightweight_pointing_disk_distance_deg_at`). Approximates "forward in time" as the raw
+    boresight's own ground-track step over `forward_step_seconds` of wall-clock time rather than `n`
+    real framelets -- adequate for `boresight_rotation_k`'s discrete axis choice, since orbital
+    ground-track direction doesn't meaningfully change on this timescale.
+    """
+    c0_m, r0, _, _ = camera_pose_moon_me(et)
+    c1_m, r1, _, _ = camera_pose_moon_me(et + forward_step_seconds)
     ground0 = boresight_ground_point_km(c0_m / 1000.0, r0)
     ground1 = boresight_ground_point_km(c1_m / 1000.0, r1)
     return ground1 - ground0
@@ -606,6 +628,25 @@ def write_tsai(path, c_meters, r_cam_to_me, fu, fv, cu, cv):
         f.write("\n".join(lines) + "\n")
 
 
+def read_tsai(path: str | Path) -> dict[str, float]:
+    """Parse `fu`/`fv`/`cu`/`cv` back out of a VERSION_4 Pinhole `.tsai` file written by
+    `write_tsai` -- the inverse operation. Used by `build_spice_camera` to reuse an existing
+    camera's own intrinsics (not its pose) as a template.
+
+    :returns: `{"fu": ..., "fv": ..., "cu": ..., "cv": ...}`.
+    :raises AssertionError: if any of the four fields is missing from the file.
+    """
+    values: dict[str, float] = {}
+    with open(path) as f:
+        for line in f:
+            key, sep, value = line.partition("=")
+            if sep and key.strip() in ("fu", "fv", "cu", "cv"):
+                values[key.strip()] = float(value.strip())
+    missing = {"fu", "fv", "cu", "cv"} - values.keys()
+    assert not missing, f"{path}: .tsai file missing expected field(s) {sorted(missing)!r}"
+    return values
+
+
 def build_camera(
     config: TrntestConfig | None = None,
     output_tsai_path: str | Path | None = None,
@@ -783,6 +824,78 @@ def build_camera(
     )
 
 
+def build_spice_camera(
+    et: float,
+    template_tsai_path: str | Path,
+    config: TrntestConfig,
+    output_tsai_path: str | Path,
+) -> Camera:
+    """Pose a camera purely from SPICE trajectory data at ephemeris time `et`, reusing
+    `template_tsai_path`'s own intrinsics (`fu`/`fv`/`cu`/`cv`, via `read_tsai`) -- no EDR, no
+    `FrameTiming`, no ISIS pipeline call anywhere in this path, unlike `build_camera`. See
+    `trn_dataset.TrnTestEntrySpice`, the sole caller.
+
+    Boresight re-aiming: `build_camera`'s own re-aim needs a real EDR crop as ISIS ground truth (see
+    that function's own docstring) -- unavailable here by construction (that's the whole point of a
+    SPICE-only camera), so this applies `_LIGHTWEIGHT_BORESIGHT_CORRECTION` instead, the same fixed,
+    approximate correction `lightweight_footprint_lonlat_deg` already uses for the overview map's own
+    footprint estimate. Less accurate than `build_camera`'s real per-EDR re-aim (see that constant's
+    own derivation comment near this module's top) -- an accepted limitation of having no acquired
+    image to refine the pose against, not a bug.
+
+    :param et: SPICE ephemeris time (TDB seconds) to pose the camera at.
+    :param template_tsai_path: An existing `.tsai` file (typically from a real `build_camera` call,
+        e.g. with its default `fixed_sensor=True`) whose `fu`/`fv`/`cu`/`cv` are reused -- only the
+        intrinsics are read back out; that file's own `C`/`R` pose is discarded.
+    :param config: Project config -- only `image_size` matters here, and only insofar as it should
+        match whatever `template_tsai_path` was itself generated with.
+    :param output_tsai_path: Where to write this pose's own `.tsai` file.
+    :returns: The resulting `Camera`. `center_frame_index`/`cross_track_width_km`/`km_per_frame`/
+        `n_frames_for_square_crop` are all `None` (see `Camera`'s own docstring comment) -- there's
+        no EDR framelet sequence for this pose to index into.
+    """
+    intrinsics = read_tsai(template_tsai_path)
+    fu, fv, cu, cv = intrinsics["fu"], intrinsics["fv"], intrinsics["cu"], intrinsics["cv"]
+
+    c_meters, r_cam_to_me_raw, _, _ = camera_pose_moon_me(et)
+    forward_step_km = ground_track_step_km_at(et)
+    k = boresight_rotation_k(r_cam_to_me_raw, forward_step_km)
+
+    # Mirrors build_camera's own pretwist/twist split (see its docstring): along_track_direction_me
+    # is read off the *pretwist* rotation, before rotation_about_boresight(k) relabels px/py.
+    r_cam_to_me_pretwist = r_cam_to_me_raw @ _LIGHTWEIGHT_BORESIGHT_CORRECTION
+    along_track_direction_me = r_cam_to_me_pretwist[:, 0]
+    r_cam_to_me = r_cam_to_me_pretwist @ rotation_about_boresight(k)
+
+    boresight_me = r_cam_to_me @ np.array([0.0, 0.0, 1.0])
+    off_nadir_deg, slant_range_km = off_nadir_and_slant_range(c_meters / 1000.0, boresight_me)
+
+    output_tsai_path = Path(output_tsai_path)
+    output_tsai_path.parent.mkdir(parents=True, exist_ok=True)
+    write_tsai(output_tsai_path, c_meters, r_cam_to_me, fu, fv, cu, cv)
+
+    footprint = footprint_lonlat(c_meters / 1000.0, r_cam_to_me, fu, fv, cu, cv, config.image_size)
+    render_cross_track_km, render_along_track_km = footprint_width_height_km(footprint, MOON_RADIUS_KM)
+
+    return Camera(
+        et=et,
+        camera_center_moon_me_m=c_meters.tolist(),
+        camera_along_track_direction_moon_me=along_track_direction_me.tolist(),
+        r_cam_to_me=r_cam_to_me.tolist(),
+        boresight_rotation_k=k,
+        slant_range_km=slant_range_km,
+        off_nadir_deg=off_nadir_deg,
+        focal_length_u_px=fu,
+        focal_length_v_px=fv,
+        principal_point_u_px=cu,
+        principal_point_v_px=cv,
+        footprint_lonlat_deg=footprint,
+        render_cross_track_km=render_cross_track_km,
+        render_along_track_km=render_along_track_km,
+        tsai_path=output_tsai_path,
+    )
+
+
 def lightweight_footprint_lonlat_deg(
     frame_timing: FrameTiming, target_frame_index: int, config: TrntestConfig | None = None
 ) -> dict[str, tuple[float, float] | None]:
@@ -876,11 +989,5 @@ def lightweight_pointing_disk_distance_deg_at(et: float, forward_step_seconds: f
     :returns: Approximate distance (degrees) from the nominal pointing disk's center.
     """
     c_meters, r_cam_to_me, _, _ = camera_pose_moon_me(et)
-    c_km = c_meters / 1000.0
-    ground0_km = boresight_ground_point_km(c_km, r_cam_to_me)
-
-    c_meters_2, r_cam_to_me_2, _, _ = camera_pose_moon_me(et + forward_step_seconds)
-    ground1_km = boresight_ground_point_km(c_meters_2 / 1000.0, r_cam_to_me_2)
-
-    forward_step_km = ground1_km - ground0_km
-    return lightweight_pointing_disk_distance_deg(c_km, r_cam_to_me, forward_step_km)
+    forward_step_km = ground_track_step_km_at(et, forward_step_seconds)
+    return lightweight_pointing_disk_distance_deg(c_meters / 1000.0, r_cam_to_me, forward_step_km)

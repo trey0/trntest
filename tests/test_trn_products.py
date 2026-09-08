@@ -64,7 +64,7 @@ class _FakeImage(trn_products.TrnTestImage):
 
 def test_crop_and_hillshade_path_naming(tmp_path):
     folder = tmp_path / "ds"
-    entry = trn_dataset.TrnTestEntry(
+    entry = trn_dataset.TrnTestEntryEdr(
         pd.Series({"product_id": "M1327210646CE", "edr_product": "M1327210646CE"}), folder, TrntestConfig()
     )
 
@@ -91,7 +91,7 @@ def test_hillshade_and_reproject_mapprojected_path_are_generator_scoped(tmp_path
             "start_frame": 440,
         }
     )
-    entry = trn_dataset.TrnTestEntry(row, folder, TrntestConfig())
+    entry = trn_dataset.TrnTestEntryEdr(row, folder, TrntestConfig())
     work_dir = folder / "_work" / "M1327210646CE"
 
     captured_out_paths = []
@@ -114,20 +114,20 @@ def test_hillshade_and_reproject_mapprojected_path_are_generator_scoped(tmp_path
 
 
 def test_image_exists_false_before_generate(tmp_path):
-    entry = trn_dataset.TrnTestEntry(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
+    entry = trn_dataset.TrnTestEntryEdr(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
     image = _FakeImage(entry)
     assert not image.exists()
 
 
 def test_image_require_generated_raises_before_generate(tmp_path):
-    entry = trn_dataset.TrnTestEntry(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
+    entry = trn_dataset.TrnTestEntryEdr(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
     image = _FakeImage(entry)
     with pytest.raises(FileNotFoundError):
         image._require_generated()
 
 
 def test_image_generate_is_idempotent(tmp_path):
-    entry = trn_dataset.TrnTestEntry(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
+    entry = trn_dataset.TrnTestEntryEdr(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
     image = _FakeImage(entry)
 
     first = image.generate()

@@ -198,6 +198,7 @@ lint's notebook checks).
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
 | [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
+| [`spice_entry_poc.ipynb`][spice_entry_poc.ipynb] | Proof of concept for `TrnTestEntrySpice` — five `hillshade`-only entries posed purely from SPICE trajectory data along one real orbit, no EDR involved. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
 [image_generation.ipynb]: notebooks/image_generation.ipynb
@@ -210,6 +211,7 @@ lint's notebook checks).
 [report_template.py]: notebooks/report_template.py
 [sensor_calibration_scoping.ipynb]: notebooks/sensor_calibration_scoping.ipynb
 [sfs_validation.ipynb]: notebooks/sfs_validation.ipynb
+[spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
 [wac_isis.ipynb]: notebooks/wac_isis.ipynb
 
 ## Source files (`src/trntest/`)
@@ -252,8 +254,8 @@ lint's notebook checks).
 | [`subprocess_utils.py`][subprocess_utils.py] | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
-| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
-| [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `reproject` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `reproject` dependency — both default-on in `PRODUCT_TYPES`). Split out of `trn_dataset.py`. |
+| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` (abstract, two concrete kinds — `TrnTestEntryEdr`/`TrnTestEntrySpice`, see the module's own docstring) — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
+| [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `primary_image` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `primary_image` dependency — both default-on in `PRODUCT_TYPES`, `TrnTestEntryEdr`-only). Split out of `trn_dataset.py`. |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
 [cache.py]: src/trntest/cache.py

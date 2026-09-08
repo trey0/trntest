@@ -1,14 +1,31 @@
 """A self-contained, resumable dataset folder: `TrnTestDataSet` (a manifest + typed `crop`/
 `hillshade`/`reproject`/`reports` subfolders) and `TrnTestEntry` (one manifest row's shared, cached
-state, including `entry.crop`/`entry.hillshade`/`entry.reproject`/`entry.report` -- each a
-`trn_products.py` product instance). See `trn_products.py`'s own docstring for the product-type
-class hierarchy (`TrnTestProduct`/`TrnTestImage`/etc.) those properties construct.
+state, including `entry.hillshade`/`entry.primary_image` -- each a `trn_products.py` product
+instance). See `trn_products.py`'s own docstring for the product-type class hierarchy
+(`TrnTestProduct`/`TrnTestImage`/etc.) those properties construct.
+
+`TrnTestEntry` is an abstract base with two concrete kinds, both constructed by
+`TrnTestDataSet.__getitem__` based on the dataset's own `entry_kind`:
+
+- `TrnTestEntryEdr` (`entry_kind="edr"`, the default): built from a real WAC EDR, today's original
+  full-featured behavior -- `crop`/`hillshade`/`reproject`/`report`/`gallery` all supported.
+- `TrnTestEntrySpice` (`entry_kind="spice"`): posed purely from SPICE trajectory data at an
+  arbitrary time, no EDR at all -- a proof of concept supporting only `hillshade`. See that class's
+  own docstring.
+
+Each entry has a `primary_generator` (a key into its own `images_by_type`) and a derived
+`primary_image` property -- the "representative" product other code (`report.py`'s
+`primary_overlay`/`primary_zoom_blink`, `TrnTestReport`/`TrnTestGalleryThumb`) displays instead of
+hardcoding a specific generator name, so the same code works for either entry kind.
 
 **Only one `populate()` call should run against a given dataset folder at a time** -- for
 multi-worker parallel population, use `populate_via_workers()` instead.
 
-`PRODUCT_TYPES` (`populate()`/`status()`'s default) is `("crop", "hillshade", "report", "gallery")`;
-`reproject` is implemented but opt-in (pass `product_types=(..., "reproject")` explicitly).
+`PRODUCT_TYPES` (`("crop", "hillshade", "report", "gallery")`) and `SPICE_PRODUCT_TYPES`
+(`("hillshade",)`) are `TrnTestDataSet.default_product_types`'s two possible values, per
+`entry_kind` -- `populate()`/`status()`/etc. fall back to it when not given `product_types`
+explicitly. `reproject` is implemented but opt-in for `entry_kind="edr"` (pass
+`product_types=(..., "reproject")` explicitly); it doesn't exist at all for `entry_kind="spice"`.
 """
 # An incrementally/resumably populated alternative to candidate_window.generate_dataset()'s flat,
 # all-at-once output layout, driven by trntest.tasks's huey task queue -- see that module's
@@ -35,11 +52,17 @@ multi-worker parallel population, use `populate_via_workers()` instead.
 # self-ensures its own entry.reproject dependency the same way. See docs/report-generation.md's
 # "Gallery" section.
 
+import abc
+import dataclasses
 import functools
+import json
+import shutil
+import typing
 from collections.abc import Iterator
 from pathlib import Path
 
 import pandas as pd
+import spiceypy as spice
 from huey import Huey
 from huey.api import Result, TaskWrapper
 from huey.exceptions import TaskException
@@ -51,6 +74,7 @@ from trntest import (
     hapke,
     isis_wac,
     orientation,
+    spice_kernels,
     tasks,
     tie_points,
     trn_products,
@@ -62,24 +86,41 @@ from trntest.orientation import DisplayRotations
 
 PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")  # "reproject" is implemented
 # (TrnTestReprojectImage) but opt-in only -- pass product_types=(..., "reproject") explicitly; see
-# module docstring.
+# module docstring. `TrnTestDataSet`'s own default for `entry_kind="edr"` (see `default_product_types`).
+
+SPICE_PRODUCT_TYPES = ("hillshade",)  # `TrnTestDataSet`'s own default for `entry_kind="spice"` --
+# crop/reproject/report/gallery all need a real EDR that a SPICE-only dataset doesn't have (see
+# `TrnTestEntrySpice`'s own docstring).
+
+SPICE_DATASET_COLUMNS = ["product_id", "utc_time"]  # minimal manifest schema for entry_kind="spice"
+# -- `utc_time` is parsed back to a real `datetime`/`Timestamp` by `candidate_window.read_manifest`'s
+# own `date_columns` parameter, the same way EDR manifests parse `start_time`/`stop_time`.
+
+_DATASET_META_FILENAME = "dataset_meta.json"  # {"entry_kind", "primary_generator"} -- see
+# `TrnTestDataSet.create`/`open`.
+_SPICE_TEMPLATE_TSAI_FILENAME = "camera_template.tsai"  # entry_kind="spice"'s shared intrinsics
+# template, copied in by `create()` -- see `TrnTestEntrySpice`/`camera.build_spice_camera`.
 
 
-class TrnTestEntry:
-    """One manifest row's shared, cached, expensive-to-derive state, reused by every product-type
-    image built from it (`entry.crop`/`entry.hillshade`/`entry.reproject`)."""
+class TrnTestEntry(abc.ABC):
+    """Abstract base for one manifest row's shared, cached, expensive-to-derive state, reused by
+    every product-type image built from it. Two concrete kinds -- `TrnTestEntryEdr` (built from a
+    real WAC EDR, today's original and still primary behavior) and `TrnTestEntrySpice` (SPICE-only,
+    no EDR involved at all) -- share this base's `dem_ortho_result`/`hillshade`/`primary_image`
+    machinery but differ in how `camera`/`per_image_config` are derived and which product types
+    `images_by_type` exposes. `TrnTestDataSet.__getitem__` constructs the right one based on its own
+    `entry_kind`."""
 
     # functools.cached_property throughout, so each dependency is fetched/computed at most once no
-    # matter how many of entry.crop/entry.hillshade's methods touch it.
+    # matter how many of an entry's own product accessors touch it.
 
-    def __init__(self, row: pd.Series, dataset_folder: Path, config: TrntestConfig):
+    def __init__(
+        self, row: pd.Series, dataset_folder: Path, config: TrntestConfig, primary_generator: str = "reproject"
+    ):
         self.row = row
         self.dataset_folder = Path(dataset_folder)
         self.config = config
-
-    @property
-    def edr_product(self) -> str:
-        return self.row["edr_product"]
+        self.primary_generator = primary_generator  # a key into images_by_type -- see primary_image
 
     @property
     def product_id(self) -> str:
@@ -92,6 +133,125 @@ class TrnTestEntry:
         whether this entry was looked up by position or by `product_id`) -- `report.load_entry`'s
         primary lookup key."""
         return int(self.row.name)
+
+    @property
+    @abc.abstractmethod
+    def identifier(self) -> str:
+        """Stable per-entry string used for on-disk file naming (`raster_path`/`sidecar_json_path`
+        in `trn_products.py`, `log_dir` below) -- `edr_product` for `TrnTestEntryEdr` (keeping every
+        existing on-disk filename byte-identical), a timestamp for `TrnTestEntrySpice` (which has no
+        EDR product id to use)."""
+
+    @functools.cached_property
+    @abc.abstractmethod
+    def per_image_config(self) -> TrntestConfig: ...
+
+    @functools.cached_property
+    @abc.abstractmethod
+    def camera(self) -> Camera: ...
+
+    @functools.cached_property
+    @abc.abstractmethod
+    def rotations(self) -> DisplayRotations:
+        """North-up display rotation (see `orientation.py`'s module docstring). Both concrete kinds
+        implement this -- `TrnTestEntryEdr` via `orientation.compute_display_rotations` (both the
+        synthetic and crop halves), `TrnTestEntrySpice` via `compute_synthetic_display_rotation`
+        alone (placeholder `k_crop`/`dev_crop_deg` -- no crop exists to compute a real one for)."""
+
+    @property
+    def _dem_extra_footprint(self) -> dict | None:
+        """Extra footprint corners to union into `dem_ortho_result`'s own fetch AOI, if any.
+        `None` here; overridden by `TrnTestEntryEdr` to return its own WAC crop footprint (the
+        fetched DEM/ortho must cover both the synthetic camera's FOV and the real crop's own extent)
+        -- a `TrnTestEntrySpice` has no crop to cover, so `None` is exactly right for it too, not
+        just a placeholder."""
+        return None
+
+    @functools.cached_property
+    def dem_ortho_result(self) -> DemOrthoResult:
+        """The DEM/ortho pair for this entry -- resumed from a prior `generate()` run's own files
+        on disk if present, else fetched fresh from Lunaserv/Astropedia."""
+        # The resumability win `dataset.populate()`'s second-run-near-instant behavior depends on,
+        # since a fresh fetch is by far the most expensive part of generating either product type.
+        # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
+        # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
+        # (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
+        # *other*-mode ortho left over from before any default changed (or from a one-off
+        # non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho`
+        # below picks up the same defaults itself.
+        ortho_path = self.per_image_config.output_dir / dem_ortho.ortho_shaded_filename(
+            hapke.DEFAULT_HAPKE_SHADING,
+            hapke.DEFAULT_ALONG_TRACK_CORRECTION,
+            hapke.DEFAULT_REAL_HAPKE_PARAMS,
+            dem_ortho.DEFAULT_ORTHO_SOURCE,
+        )
+        dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
+        if ortho_path.exists() and dem_path.exists():
+            return dem_ortho.result_from_files(ortho_path, dem_path)
+        return dem_ortho.fetch_dem_and_ortho(
+            self.camera, self.per_image_config, extra_footprint_lonlat_deg=self._dem_extra_footprint
+        )
+
+    @functools.cached_property
+    def hillshade(self) -> trn_products.TrnTestHillshadeImage:
+        return trn_products.TrnTestHillshadeImage(self)
+
+    @property
+    def primary_image(self) -> trn_products.TrnTestImage:
+        """This entry's own designated "representative" product -- `images_by_type[
+        self.primary_generator]`. `"reproject"` for a `TrnTestEntryEdr` (the fullest pipeline: real
+        acquisition geometry, real WAC texture), `"hillshade"` for a `TrnTestEntrySpice` (the only
+        generator that exists there -- see that class's own docstring). `report.py`'s
+        `primary_overlay`/`primary_zoom_blink` and `trn_products.TrnTestReport`/`TrnTestGalleryThumb`
+        all go through this instead of hardcoding a generator name, so they work unmodified for
+        either kind.
+
+        `primary_generator` is expected to always name one of the raster/`TrnTestImage` product
+        types (`"crop"`/`"hillshade"`/`"reproject"`), never `"report"`/`"gallery"` -- both
+        `TrnTestDataSet.create`'s own defaults and this class's own `images_by_type` implementations
+        maintain that; not re-checked here.
+        """
+        return typing.cast("trn_products.TrnTestImage", self.images_by_type[self.primary_generator])
+
+    @property
+    @abc.abstractmethod
+    def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]: ...
+
+    @property
+    def log_dir(self) -> Path:
+        """This entry's captured-log folder -- `<dataset_folder>/logs/<identifier>/`, holding
+        whichever generator logs (`log_path`) have actually been captured so far. Only created
+        (`_capture_generator_log`'s own `mkdir`) once at least one log has been written, so
+        `.is_dir()` doubles as "has anything been captured for this entry yet" -- `report.py`'s
+        overview table/summary link to this folder as a whole (one link, not one per generator) once
+        it exists, rather than enumerating individual `<product_type>_log.txt` files themselves."""
+        return self.dataset_folder / "logs" / self.identifier
+
+    def log_path(self, product_type: str) -> Path:
+        """Where `tasks._generate_entry` captures this entry/product_type's console output
+        (stdout/stderr, plus a traceback on failure). Only written when that product type is
+        actually generated -- a no-op `generate()` call, because it already exists, never touches
+        this file."""
+        # ".txt", not ".log": a plain `python3 -m http.server` (what serves this folder, see
+        # docs/report-generation.md's "Viewing reports" section) doesn't know the ".log" extension
+        # and would otherwise serve it as application/octet-stream, which browsers download instead
+        # of displaying; ".txt" is a real stdlib-recognized mimetypes extension.
+        return self.log_dir / f"{product_type}_log.txt"
+
+
+class TrnTestEntryEdr(TrnTestEntry):
+    """A `TrnTestEntry` built from a real WAC EDR -- today's original, full-featured behavior: reads
+    the EDR's own frame timing, poses the camera via `camera.build_camera` (real ISIS-refined
+    boresight re-aim against a real crop), and supports all five product types (`crop`/`hillshade`/
+    `reproject`/`report`/`gallery`)."""
+
+    @property
+    def edr_product(self) -> str:
+        return self.row["edr_product"]
+
+    @property
+    def identifier(self) -> str:
+        return self.edr_product
 
     @functools.cached_property
     def per_image_config(self) -> TrntestConfig:
@@ -142,30 +302,9 @@ class TrnTestEntry:
     def crop_footprint(self) -> dict:
         return tie_points.crop_footprint_corners_for_camera(self.frame_timing, self.camera, self.per_image_config)
 
-    @functools.cached_property
-    def dem_ortho_result(self) -> DemOrthoResult:
-        """The DEM/ortho pair for this entry -- resumed from a prior `generate()` run's own files
-        on disk if present, else fetched fresh from Lunaserv/Astropedia."""
-        # The resumability win `dataset.populate()`'s second-run-near-instant behavior depends on,
-        # since a fresh fetch is by far the most expensive part of generating either product type.
-        # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
-        # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
-        # (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
-        # *other*-mode ortho left over from before any default changed (or from a one-off
-        # non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho`
-        # below picks up the same defaults itself.
-        ortho_path = self.per_image_config.output_dir / dem_ortho.ortho_shaded_filename(
-            hapke.DEFAULT_HAPKE_SHADING,
-            hapke.DEFAULT_ALONG_TRACK_CORRECTION,
-            hapke.DEFAULT_REAL_HAPKE_PARAMS,
-            dem_ortho.DEFAULT_ORTHO_SOURCE,
-        )
-        dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
-        if ortho_path.exists() and dem_path.exists():
-            return dem_ortho.result_from_files(ortho_path, dem_path)
-        return dem_ortho.fetch_dem_and_ortho(
-            self.camera, self.per_image_config, extra_footprint_lonlat_deg=self.crop_footprint
-        )
+    @property
+    def _dem_extra_footprint(self) -> dict | None:
+        return self.crop_footprint
 
     @functools.cached_property
     def rotations(self) -> DisplayRotations:
@@ -174,10 +313,6 @@ class TrnTestEntry:
     @functools.cached_property
     def crop(self) -> trn_products.TrnTestCropImage:
         return trn_products.TrnTestCropImage(self)
-
-    @functools.cached_property
-    def hillshade(self) -> trn_products.TrnTestHillshadeImage:
-        return trn_products.TrnTestHillshadeImage(self)
 
     @functools.cached_property
     def reproject(self) -> trn_products.TrnTestReprojectImage:
@@ -201,26 +336,59 @@ class TrnTestEntry:
             "gallery": self.gallery_thumb,
         }
 
-    @property
-    def log_dir(self) -> Path:
-        """This entry's captured-log folder -- `<dataset_folder>/logs/<edr_product>/`, holding
-        whichever generator logs (`log_path`) have actually been captured so far. Only created
-        (`_capture_generator_log`'s own `mkdir`) once at least one log has been written, so
-        `.is_dir()` doubles as "has anything been captured for this entry yet" -- `report.py`'s
-        overview table/summary link to this folder as a whole (one link, not one per generator) once
-        it exists, rather than enumerating individual `<product_type>_log.txt` files themselves."""
-        return self.dataset_folder / "logs" / self.edr_product
 
-    def log_path(self, product_type: str) -> Path:
-        """Where `tasks._generate_entry` captures this entry/product_type's console output
-        (stdout/stderr, plus a traceback on failure). Only written when that product type is
-        actually generated -- a no-op `generate()` call, because it already exists, never touches
-        this file."""
-        # ".txt", not ".log": a plain `python3 -m http.server` (what serves this folder, see
-        # docs/report-generation.md's "Viewing reports" section) doesn't know the ".log" extension
-        # and would otherwise serve it as application/octet-stream, which browsers download instead
-        # of displaying; ".txt" is a real stdlib-recognized mimetypes extension.
-        return self.log_dir / f"{product_type}_log.txt"
+class TrnTestEntrySpice(TrnTestEntry):
+    """A `TrnTestEntry` posed purely from SPICE trajectory data at an arbitrary, SPICE-resolvable
+    ephemeris time -- no WAC EDR, no ISIS pipeline, no real acquired image anywhere in its own
+    construction. A proof of concept, deliberately narrow: only `hillshade` is supported
+    (`images_by_type` has no `crop`/`reproject`/`report`/`gallery` -- those all fundamentally need a
+    real EDR's own pixel data). See `camera.build_spice_camera`'s own docstring for the pose-accuracy
+    tradeoff this makes by having no real crop to refine the boresight re-aim against.
+
+    Constructed with a shared `template_tsai_path` (this dataset's `camera_template.tsai`, see
+    `TrnTestDataSet.create(entry_kind="spice", ...)`) -- only its intrinsics (`fu`/`fv`/`cu`/`cv`)
+    are reused; each entry still poses its own extrinsics fresh from SPICE at its own `row["utc_time"]`.
+    """
+
+    def __init__(
+        self,
+        row: pd.Series,
+        dataset_folder: Path,
+        config: TrntestConfig,
+        template_tsai_path: Path,
+        primary_generator: str = "hillshade",
+    ):
+        super().__init__(row, dataset_folder, config, primary_generator)
+        self.template_tsai_path = Path(template_tsai_path)
+
+    @property
+    def identifier(self) -> str:
+        return self.row["utc_time"].strftime("%Y%m%dT%H%M%S")
+
+    @functools.cached_property
+    def per_image_config(self) -> TrntestConfig:
+        # No edr_* overrides -- nothing on this entry's own code path (camera/dem_ortho_result/
+        # hillshade rendering) ever reads them, unlike TrnTestEntryEdr's per_image_config.
+        return dataclasses.replace(self.config, output_dir=self.dataset_folder / "_work" / self.identifier)
+
+    @functools.cached_property
+    def camera(self) -> Camera:
+        utc_dt = self.row["utc_time"].to_pydatetime()
+        spice_kernels.fetch_and_furnish(utc_dt, self.per_image_config)
+        et = spice.utc2et(utc_dt.strftime("%Y-%m-%dT%H:%M:%S"))
+        output_tsai_path = self.per_image_config.output_dir / f"camera_{self.identifier}.tsai"
+        return camera_module.build_spice_camera(et, self.template_tsai_path, self.per_image_config, output_tsai_path)
+
+    @functools.cached_property
+    def rotations(self) -> DisplayRotations:
+        k_synthetic, dev_synthetic = orientation.compute_synthetic_display_rotation(self.camera)
+        # k_crop/dev_crop_deg are meaningless placeholders here -- no TrnTestCropImage is ever
+        # constructed for this entry kind (see images_by_type below), so nothing ever reads them.
+        return DisplayRotations(k_synthetic=k_synthetic, dev_synthetic_deg=dev_synthetic, k_crop=0, dev_crop_deg=0.0)
+
+    @property
+    def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]:
+        return {"hillshade": self.hillshade}
 
 
 class TrnTestDataSet:
@@ -232,10 +400,24 @@ class TrnTestDataSet:
     # Task-queue state itself lives outside the dataset folder -- see trntest.tasks's docstring for
     # why.
 
-    def __init__(self, folder: Path | str, images: pd.DataFrame, config: TrntestConfig):
+    def __init__(
+        self,
+        folder: Path | str,
+        images: pd.DataFrame,
+        config: TrntestConfig,
+        *,
+        entry_kind: str = "edr",
+        primary_generator: str | None = None,
+    ):
+        assert entry_kind in ("edr", "spice"), f"entry_kind={entry_kind!r} must be 'edr' or 'spice'"
         self.folder = Path(folder)
         self.images = images.reset_index(drop=True)
         self.config = config
+        self.entry_kind = entry_kind
+        # "reproject" (today's implicit choice everywhere report/gallery code used to hardcode
+        # entry.reproject) for "edr"; "hillshade" (the only generator entry_kind="spice" actually
+        # has) for "spice" -- see TrnTestEntry.primary_image.
+        self.primary_generator = primary_generator or ("hillshade" if entry_kind == "spice" else "reproject")
 
     @property
     def name(self) -> str:
@@ -243,25 +425,70 @@ class TrnTestDataSet:
         separate stored field, since the folder name already serves as the standard identifier."""
         return self.folder.name
 
+    @property
+    def default_product_types(self) -> tuple[str, ...]:
+        """`populate`/`populate_via_workers`/`status`/`write_index`/`truncate`'s own default
+        `product_types` when the caller doesn't pass one explicitly -- `PRODUCT_TYPES` for
+        `entry_kind="edr"`, `SPICE_PRODUCT_TYPES` for `"spice"` (crop/reproject/report/gallery all
+        need a real EDR that kind doesn't have)."""
+        return PRODUCT_TYPES if self.entry_kind == "edr" else SPICE_PRODUCT_TYPES
+
     @classmethod
-    def create(cls, folder: Path | str, images: pd.DataFrame, config: TrntestConfig | None = None) -> "TrnTestDataSet":
+    def create(
+        cls,
+        folder: Path | str,
+        images: pd.DataFrame,
+        config: TrntestConfig | None = None,
+        *,
+        entry_kind: str = "edr",
+        primary_generator: str | None = None,
+        template_tsai_path: Path | str | None = None,
+    ) -> "TrnTestDataSet":
         """Idempotent: (re)writes `manifest.csv` from `images`, ensures `crop`/`hillshade`/
         `reproject`/`reports`/`logs`/`_work` exist. Never touches already-generated product files --
-        those live under `crop`/`hillshade`, untouched by this call."""
+        those live under `crop`/`hillshade`, untouched by this call.
+
+        :param entry_kind: `"edr"` (default, today's original behavior) or `"spice"` (see
+            `TrnTestEntrySpice`). Persisted to `dataset_meta.json` so `open()` recovers it.
+        :param primary_generator: Which generator `TrnTestEntry.primary_image` resolves to for every
+            entry in this dataset -- defaults to `"reproject"` for `"edr"`, `"hillshade"` for
+            `"spice"` (its only generator).
+        :param template_tsai_path: Required for `entry_kind="spice"`: an existing `.tsai` file (see
+            `camera.build_spice_camera`) whose intrinsics every entry in this dataset shares --
+            copied into the dataset folder as `camera_template.tsai`.
+        """
         config = config or load_config()
         folder = Path(folder)
         for sub in ("crop", "hillshade", "reproject", "reports", "logs", "_work"):
             (folder / sub).mkdir(parents=True, exist_ok=True)
+        if entry_kind == "spice":
+            assert template_tsai_path is not None, "entry_kind='spice' requires template_tsai_path"
+            shutil.copy(template_tsai_path, folder / _SPICE_TEMPLATE_TSAI_FILENAME)
+        dataset = cls(folder, images, config, entry_kind=entry_kind, primary_generator=primary_generator)
+        (folder / _DATASET_META_FILENAME).write_text(
+            json.dumps({"entry_kind": dataset.entry_kind, "primary_generator": dataset.primary_generator})
+        )
         candidate_window.write_manifest(images, folder / "manifest.csv")
-        return cls(folder, images, config)
+        return dataset
 
     @classmethod
     def open(cls, folder: Path | str, config: TrntestConfig | None = None) -> "TrnTestDataSet":
-        """Reads `manifest.csv` from an existing folder -- no `images` needed."""
+        """Reads `manifest.csv` (plus `dataset_meta.json`, if present) from an existing folder -- no
+        `images` needed."""
         config = config or load_config()
         folder = Path(folder)
-        images = candidate_window.read_manifest(folder / "manifest.csv")
-        return cls(folder, images, config)
+        meta_path = folder / _DATASET_META_FILENAME
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            entry_kind, primary_generator = meta["entry_kind"], meta["primary_generator"]
+        else:
+            # Predates entry_kind support entirely -- every such dataset is "edr" (the only kind
+            # that existed then), with "reproject" the implicit primary_generator report/gallery
+            # code already hardcoded before TrnTestEntry.primary_image existed.
+            entry_kind, primary_generator = "edr", "reproject"
+        date_columns = ("utc_time",) if entry_kind == "spice" else ("start_time", "stop_time")
+        images = candidate_window.read_manifest(folder / "manifest.csv", date_columns=date_columns)
+        return cls(folder, images, config, entry_kind=entry_kind, primary_generator=primary_generator)
 
     def __len__(self) -> int:
         return len(self.images)
@@ -282,11 +509,19 @@ class TrnTestDataSet:
             row = self.images[matches].iloc[0]
         else:
             row = self.images.iloc[key]
-        return TrnTestEntry(row, self.folder, self.config)
+        if self.entry_kind == "spice":
+            return TrnTestEntrySpice(
+                row,
+                self.folder,
+                self.config,
+                self.folder / _SPICE_TEMPLATE_TSAI_FILENAME,
+                primary_generator=self.primary_generator,
+            )
+        return TrnTestEntryEdr(row, self.folder, self.config, self.primary_generator)
 
     def populate(
         self,
-        product_types: tuple[str, ...] = PRODUCT_TYPES,
+        product_types: tuple[str, ...] | None = None,
         retry_failed: bool = False,
         limit: int | None = None,
         write_index: bool = True,
@@ -312,6 +547,7 @@ class TrnTestDataSet:
         #
         # Not safe to run from more than one process concurrently against the same dataset folder
         # -- see this module's own docstring.
+        product_types = product_types or self.default_product_types
         if retry_failed:
             for entry in self:
                 if any(task_state(entry, pt) == "failed" for pt in product_types):
@@ -327,7 +563,7 @@ class TrnTestDataSet:
 
     def populate_via_workers(
         self,
-        product_types: tuple[str, ...] = PRODUCT_TYPES,
+        product_types: tuple[str, ...] | None = None,
         retry_failed: bool = False,
         limit: int | None = None,
         workers: int = 4,
@@ -357,6 +593,7 @@ class TrnTestDataSet:
         # `populate_via_workers()` call should run against a given dataset folder at a time -- this
         # just moves where the single caller's own parallelism comes from, it doesn't add
         # cross-process claim safety.
+        product_types = product_types or self.default_product_types
         if retry_failed:
             for entry in self:
                 if any(task_state(entry, pt, huey_instance=tasks.huey_parallel) == "failed" for pt in product_types):
@@ -373,20 +610,21 @@ class TrnTestDataSet:
         if write_index:
             self.write_index(product_types)
 
-    def status(self, product_types: tuple[str, ...] = PRODUCT_TYPES, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
+    def status(self, product_types: tuple[str, ...] | None = None, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
         """Per-entry, per-product-type status: `done`/`failed`/`pending` (see `task_state`).
 
         :param huey_instance: Which queue's stored results to check for `failed` -- `tasks.huey`
             (`populate()`'s queue, the default) or `tasks.huey_parallel`
             (`populate_via_workers()`'s). `done` is unaffected either way (always disk-based).
         """
+        product_types = product_types or self.default_product_types
         rows = [
             {"product_id": entry.product_id, **{pt: task_state(entry, pt, huey_instance) for pt in product_types}}
             for entry in self
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
 
-    def write_index(self, product_types: tuple[str, ...] = PRODUCT_TYPES, write_overview_map: bool = True) -> None:
+    def write_index(self, product_types: tuple[str, ...] | None = None, write_overview_map: bool = True) -> None:
         """Writes `<folder>/status.csv` (`status()` plus a `problems` column, see
         `report.problem_flags`), `<folder>/reports/overview_table.html` (one row per entry, linking
         to its own `reports/<edr_product>/report.html`, alongside the same status/problem info),
@@ -405,21 +643,34 @@ class TrnTestDataSet:
         call `overview_map.write_overview_map(self)` directly whenever an up-to-date map is actually
         needed.
 
+        For `entry_kind="spice"`, only `status.csv` is written -- `report.write_index_html`/
+        `overview_map.write_overview_map` both assume an EDR-shaped manifest and `entry.reproject`-
+        based report content that a SPICE-only dataset doesn't have; full report/gallery HTML
+        generation for that kind is out of scope for now (see `TrnTestEntrySpice`'s own docstring).
+
         Like `populate()`/`populate_via_workers()`, not safe to run concurrently with itself against
         the same dataset folder (writes shared files).
 
         Finishes by printing a link to the freshly-written `reports/index.html`
-        (`report.print_viewing_url`).
+        (`report.print_viewing_url`) -- for `entry_kind="edr"` only, see above.
         """
         from trntest import overview_map, report  # noqa: PLC0415 -- circular otherwise (both
         # import TrnTestDataSet/TrnTestEntry from this module)
 
+        product_types = product_types or self.default_product_types
         # mkdir here rather than relying on create() having already run -- some callers (e.g. this
         # project's own tests) construct a TrnTestDataSet directly.
         (self.folder / "reports").mkdir(parents=True, exist_ok=True)
         status_df = self.status(product_types)
         status_df["problems"] = ["; ".join(report.problem_flags(entry)) for entry in self]
         status_df.to_csv(self.folder / "status.csv", index=False)
+        if self.entry_kind != "edr":
+            print(
+                f"{self.folder}: wrote status.csv for {len(self.images)} entries "
+                f"(entry_kind={self.entry_kind!r} -- report/gallery HTML generation isn't supported "
+                "for this kind yet)"
+            )
+            return
         report.write_index_html(self, status_df)  # also (re)writes overview_table.html/gallery.html
         # -- see that function's own docstring.
         if write_overview_map:
@@ -429,7 +680,7 @@ class TrnTestDataSet:
     def truncate(
         self,
         entries: "TrnTestEntry | list[TrnTestEntry] | None" = None,
-        product_types: tuple[str, ...] = PRODUCT_TYPES,
+        product_types: tuple[str, ...] | None = None,
         invalidate_crop_cache: bool = False,
     ) -> None:
         """Delete already-generated product file(s) (`raster_path`/`sidecar_json_path`), their
@@ -473,6 +724,7 @@ class TrnTestDataSet:
         # `product_types` keeps its own file untouched, so its own `task_state()` still reports
         # correctly via `image.exists()` regardless of whether the entry's shared stored result
         # got cleared.
+        product_types = product_types or self.default_product_types
         target_entries = list(self) if entries is None else entries if isinstance(entries, list) else [entries]
         for entry in target_entries:
             for product_type in product_types:

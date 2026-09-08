@@ -86,6 +86,22 @@ def rotate_pixel_coords(col: float, row: float, k: int, height: int, width: int)
     return col, row
 
 
+def compute_synthetic_display_rotation(camera: Camera) -> tuple[int, float]:
+    """The synthetic-render half of `compute_display_rotations` -- needs only `camera`, no
+    `FrameTiming`/crop, so it's also usable for a `trn_dataset.TrnTestEntrySpice` camera (no real WAC
+    crop to compute a `k_crop` counterpart for).
+
+    :param camera: The synthetic camera for this pose.
+    :returns: `(k_synthetic, dev_synthetic_deg)`.
+    """
+    r_synthetic = np.array(camera.r_cam_to_me)
+    synthetic_center = camera.footprint_lonlat_deg["center"]
+    assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
+    synthetic_center_lon, synthetic_center_lat = synthetic_center
+    north_synthetic = north_tangent_km(tie_points.lonlat_to_ground_km(synthetic_center_lon, synthetic_center_lat))
+    return best_k_for_north_up(r_synthetic[:, 0], -r_synthetic[:, 1], north_synthetic, candidates=(0, 1, 2, 3))
+
+
 def compute_display_rotations(
     camera: Camera, frame_timing: FrameTiming, config: TrntestConfig | None = None
 ) -> DisplayRotations:
@@ -98,18 +114,12 @@ def compute_display_rotations(
     :returns: The chosen rotations, for display only (see the module docstring).
     """
     config = config or load_config()
+    assert camera.center_frame_index is not None, "compute_display_rotations needs a real EDR-built camera"
 
     _, r_crop_raw, _, _ = camera_pose_moon_me(frame_et(frame_timing, camera.center_frame_index))
     crop_corners = tie_points.crop_footprint_corners_for_camera(frame_timing, camera, config)
 
-    r_synthetic = np.array(camera.r_cam_to_me)
-    synthetic_center = camera.footprint_lonlat_deg["center"]
-    assert synthetic_center is not None, "synthetic camera's own boresight does not intersect the Moon"
-    synthetic_center_lon, synthetic_center_lat = synthetic_center
-    north_synthetic = north_tangent_km(tie_points.lonlat_to_ground_km(synthetic_center_lon, synthetic_center_lat))
-    k_synthetic, dev_synthetic = best_k_for_north_up(
-        r_synthetic[:, 0], -r_synthetic[:, 1], north_synthetic, candidates=(0, 1, 2, 3)
-    )
+    k_synthetic, dev_synthetic = compute_synthetic_display_rotation(camera)
 
     crop_center_lon, crop_center_lat = crop_corners["center"]
     north_crop = north_tangent_km(tie_points.lonlat_to_ground_km(crop_center_lon, crop_center_lat))

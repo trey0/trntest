@@ -6165,3 +6165,64 @@ the crop from its new cache location); a second access of that same entry (2.2s,
 furnish + 80 never-fetched EDR labels, unrelated to ISIS — then **0.95s warm**), with the rendered
 map visually checked against all 81 real manifest rows (correctly clustered by orbit pass, correct
 antimeridian wrap, no degenerate polygons).
+
+## Phase 118 (2026-09-08) — `TrnTestEntrySpice`: an EDR-free entry kind, proof of concept
+
+Motivated by the observation that a `hillshade` render doesn't actually need a real WAC EDR — only
+a camera model (time, 6-DOF pose, pinhole intrinsics), which can in principle be evaluated at any
+SPICE-resolvable time, not just a real acquisition's own timestamp. `crop`/`reproject` genuinely do
+need an EDR's own pixel data, so they can't generalize the same way.
+
+**Design, per the user's own two corrections to the first-pass proposal**: `TrnTestEntry` becomes
+`abc.ABC` with two concrete kinds, `TrnTestEntryEdr` (today's original behavior, moved verbatim) and
+`TrnTestEntrySpice` (new). `TrnTestDataSet` itself was extended to handle both (an `entry_kind`
+field, `dataset_meta.json` alongside `manifest.csv`), rather than a separate sibling dataset class —
+the user's call, since it shares one manifest-reload story. And rather than quietly aliasing
+`entry.crop`/`entry.reproject` to `entry.hillshade` for the EDR-free kind (this session's own first
+idea, rejected as confusing), a new `primary_generator`/`primary_image` concept was introduced:
+`"reproject"` for `TrnTestEntryEdr` (today's implicit choice, now explicit — `report.py`'s
+`reproject_overlay`/`reproject_zoom_blink` renamed `primary_overlay`/`primary_zoom_blink`, routed
+through `entry.primary_image` instead of a hardcoded generator name), `"hillshade"` for
+`TrnTestEntrySpice` (its only real generator).
+
+**Camera construction**: new `camera.build_spice_camera(et, template_tsai_path, config,
+output_tsai_path)` — reuses the pure-SPICE approximate boresight correction
+(`_LIGHTWEIGHT_BORESIGHT_CORRECTION`) `lightweight_footprint_lonlat_deg` already uses for the
+overview map, since there's no real EDR crop to refine the boresight against the way `build_camera`
+does. New `camera.read_tsai` (the inverse of `write_tsai`) reads back a template `.tsai`'s own
+intrinsics — per the user's own correction to this session's first draft, that template comes from
+the *exact call production already makes* (`camera.build_camera(...)` with its default
+`fixed_sensor=True`), not a fresh one-off fit; only its intrinsics are kept, its own pose (specific
+to whichever reference EDR drove the call) is discarded. `Camera`'s four EDR-framing-only fields
+(`center_frame_index`/`cross_track_width_km`/`km_per_frame`/`n_frames_for_square_crop`) became
+`| None`, confirmed by grep that every consumer of them is only ever reached from EDR/crop code
+paths.
+
+**Two real bugs found by actually running the new proof-of-concept notebook**, not caught by lint/
+mypy/the existing test suite: `tasks.py`'s `_generate_entry` hardcoded `entry.edr_product` for its
+captured-log header (crashed every `TrnTestEntrySpice` population attempt with an `AttributeError`,
+outside any `try` block so it wasn't even recorded as a normal per-product-type failure) — fixed to
+`entry.identifier` (the new generic accessor every entry kind has, `edr_product` for `Edr`, a
+compact UTC timestamp for `Spice`). And a live one: `populate()`'s `retry_failed=False` default means
+a stored `huey` failure from a broken first attempt (this session's own bug, above) silently blocks
+every later re-run from re-attempting that entry at all, since `task_state()` reports `failed`, not
+`pending`, once a failure is on record — recovered via `dataset.truncate()` (clears stored results
+across both `huey`/`huey_parallel`), not by deleting the dataset folder (task ids key off the folder
+path itself, so a fresh folder doesn't clear stale state).
+
+New `notebooks/spice_entry_poc.py`: reruns `select_datasets.py`'s own orbit-selection pipeline
+(same parameters, so it names the same first selected dataset), narrows to just that sequence's
+first orbit, takes the first/last acceptable EDR's own timestamp as `np.linspace` endpoints (3
+interpolated points between them, 5 total), and renders `hillshade` for each. One real, honest
+finding kept rather than engineered around: the first of the 5 timepoints landed at 83.5°N, past
+Astropedia GLD100's ±79° coverage edge — an evenly-spaced SPICE sequence (unlike a hand-picked EDR)
+can wander off the DEM's covered latitude band. The notebook reports this per entry and displays
+whichever succeeded, rather than papering over it.
+
+**Verification**: `trntest-lint` clean; full 401-test suite clean (two test doubles in
+`tests/_fake_worker_task.py` needed the same `edr_product` → `identifier` update as the real bug
+above). `image_generation.ipynb` re-run end-to-end to confirm `TrnTestEntryEdr`'s split-out behavior
+is byte-identical to before (only its `.ipynb` outputs refreshed, `.py` source untouched by the
+diff). `spice_entry_poc.ipynb` itself run clean top-to-bottom after both bugs above were fixed: 4 of
+5 entries rendered, the 5th's DEM-coverage failure surfaced in its own captured log and in the
+notebook's own status print, not hidden.

@@ -132,7 +132,7 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
             # block entirely avoids clobbering a prior real attempt's log with an empty one.
             results[product_type] = image.generate()
             continue
-        with _capture_generator_log(entry.log_path(product_type), product_type, entry.edr_product):
+        with _capture_generator_log(entry.log_path(product_type), product_type, entry.identifier):
             try:
                 results[product_type] = image.generate()
             except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "this
@@ -148,7 +148,7 @@ def _generate_entry(entry, product_types: tuple[str, ...]) -> dict:
 
 
 @contextlib.contextmanager
-def _capture_generator_log(log_path: Path, product_type: str, edr_product: str) -> Iterator[None]:
+def _capture_generator_log(log_path: Path, product_type: str, identifier: str) -> Iterator[None]:
     """Redirects stdout/stderr to `log_path` for the duration of one product type's `generate()`
     call."""
     # Without this, a production run's console output (this codebase's own `print()` diagnostics --
@@ -164,9 +164,9 @@ def _capture_generator_log(log_path: Path, product_type: str, edr_product: str) 
         contextlib.redirect_stderr(log_file),
         trace.enable(),
     ):
-        # edr_product in the header, not just log_path's own parent directory name, so the entry is
+        # identifier in the header, not just log_path's own parent directory name, so the entry is
         # still identifiable if this file's content is copied elsewhere without its path.
-        print(f"=== {edr_product} {product_type} generation started {datetime.now(UTC).isoformat()} ===")
+        print(f"=== {identifier} {product_type} generation started {datetime.now(UTC).isoformat()} ===")
         try:
             yield
         finally:
@@ -174,7 +174,7 @@ def _capture_generator_log(log_path: Path, product_type: str, edr_product: str) 
             # before this `with` block exits, so this line always runs on the way out regardless of
             # whether the attempt above it succeeded or failed (a traceback, printed by the caller,
             # already appears above this line in the failure case).
-            print(f"=== {edr_product} {product_type} generation ended {datetime.now(UTC).isoformat()} ===")
+            print(f"=== {identifier} {product_type} generation ended {datetime.now(UTC).isoformat()} ===")
 
 
 @huey.task()

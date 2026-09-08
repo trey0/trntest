@@ -14,7 +14,7 @@ import rasterio
 from trntest import cache, illumination, spice_kernels, tie_points
 from trntest import camera as camera_module
 from trntest.config import TrntestConfig, load_config
-from trntest.trn_dataset import TrnTestDataSet
+from trntest.trn_dataset import TrnTestDataSet, TrnTestEntryEdr
 
 GLOBAL_BACKDROP_LAYER = "luna_wac_global"  # see docs/data-sources/lunaserv-wms.md's "Layers of
 # interest" -- real, if slightly noisy, whole-Moon coverage; acceptable at this map's opacity as a
@@ -169,6 +169,7 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     track_lons, track_lats = _antimeridian_split_xy(_ground_track_lonlat(dataset))
     ax.plot(track_lons, track_lats, color="darkblue", linewidth=0.5, alpha=0.6, zorder=1)
     for entry in dataset:
+        assert isinstance(entry, TrnTestEntryEdr), "plot_overview_map is EDR-only for now"
         per_image_config = entry.per_image_config
         corners = camera_module.lightweight_footprint_lonlat_deg(
             entry.frame_timing, per_image_config.target_frame_index, per_image_config

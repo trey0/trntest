@@ -551,9 +551,15 @@ def crop_window_for_frame(center_frame_index: float, n_frames_for_square_crop: i
 def crop_window_for_camera(camera: Camera) -> rasterio.windows.Window:
     """The pixel window `crop_for_camera` should crop the stitched cube to for `camera`'s footprint.
 
-    :param camera: The camera whose footprint determines the crop window.
+    :param camera: The camera whose footprint determines the crop window -- must be a real
+        EDR-built camera (`camera.build_camera`'s output, not `build_spice_camera`'s), since this
+        indexes into an EDR's own framelet sequence.
     :returns: The crop `Window`, in the stitched cube's own pixel space.
     """
+    assert camera.center_frame_index is not None and camera.n_frames_for_square_crop is not None, (
+        "crop_window_for_camera needs a real EDR-built camera (center_frame_index/"
+        "n_frames_for_square_crop) -- not a SPICE-only one"
+    )
     return crop_window_for_frame(camera.center_frame_index, camera.n_frames_for_square_crop)
 
 

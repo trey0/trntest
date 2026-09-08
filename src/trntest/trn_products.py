@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     # construct those instances), so this module can only need `trn_dataset.py` for types.
     from PIL import Image
 
-    from trntest.trn_dataset import TrnTestEntry
+    from trntest.trn_dataset import TrnTestEntry, TrnTestEntryEdr
 
 
 class TrnTestProduct(abc.ABC):
@@ -105,7 +105,7 @@ class TrnTestImage(TrnTestProduct):
     def _require_generated(self) -> None:
         if not self.exists():
             raise FileNotFoundError(
-                f"{self.render_label} not generated yet for {self.entry.edr_product} -- "
+                f"{self.render_label} not generated yet for {self.entry.identifier} -- "
                 "call .generate() or dataset.populate() first"
             )
 
@@ -222,13 +222,17 @@ class TrnTestCropImage(TrnTestImage):
     # The sidecar ISD is accurately-scoped but not reprojection-reliable -- see
     # isis_campt.run_isd_generate_for_crop.
 
+    entry: TrnTestEntryEdr  # only ever constructed via TrnTestEntryEdr.images_by_type -- narrows
+    # the base's entry: TrnTestEntry for this class's own EDR-only accessors (crop_result,
+    # crop_footprint) below, no TrnTestEntrySpice ever constructs one of these.
+
     @property
     def raster_path(self) -> Path:
-        return self.entry.dataset_folder / "crop" / f"{self.entry.edr_product}_crop.cub"
+        return self.entry.dataset_folder / "crop" / f"{self.entry.identifier}_crop.cub"
 
     @property
     def sidecar_json_path(self) -> Path:
-        return self.entry.dataset_folder / "crop" / f"{self.entry.edr_product}_crop.json"
+        return self.entry.dataset_folder / "crop" / f"{self.entry.identifier}_crop.json"
 
     @property
     def rotation_k(self) -> int:
@@ -236,11 +240,14 @@ class TrnTestCropImage(TrnTestImage):
 
     @property
     def width_km(self) -> float:
+        assert self.entry.camera.cross_track_width_km is not None, "TrnTestEntryEdr's own camera always has this"
         return self.entry.camera.cross_track_width_km
 
     @property
     def height_km(self) -> float:
-        return self.entry.camera.n_frames_for_square_crop * self.entry.camera.km_per_frame
+        n_frames, km_per_frame = self.entry.camera.n_frames_for_square_crop, self.entry.camera.km_per_frame
+        assert n_frames is not None and km_per_frame is not None, "TrnTestEntryEdr's own camera always has these"
+        return n_frames * km_per_frame
 
     @property
     def footprint_lonlat_deg(self) -> dict:
@@ -291,11 +298,11 @@ class TrnTestHillshadeImage(TrnTestImage):
 
     @property
     def raster_path(self) -> Path:
-        return self.entry.dataset_folder / "hillshade" / f"{self.entry.edr_product}_hillshade.tif"
+        return self.entry.dataset_folder / "hillshade" / f"{self.entry.identifier}_hillshade.tif"
 
     @property
     def sidecar_json_path(self) -> Path:
-        return self.entry.dataset_folder / "hillshade" / f"{self.entry.edr_product}_hillshade.json"
+        return self.entry.dataset_folder / "hillshade" / f"{self.entry.identifier}_hillshade.json"
 
     @property
     def rotation_k(self) -> int:
@@ -367,13 +374,16 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
     # (this class's own texture source) is unaffected and naturally larger, providing the margin
     # reproject's render needs.
 
+    entry: TrnTestEntryEdr  # only ever constructed via TrnTestEntryEdr.images_by_type -- narrows
+    # the base's entry: TrnTestEntry for _reproject_dem_ortho's own crop_result access below.
+
     @property
     def raster_path(self) -> Path:
-        return self.entry.dataset_folder / "reproject" / f"{self.entry.edr_product}_reproject.tif"
+        return self.entry.dataset_folder / "reproject" / f"{self.entry.identifier}_reproject.tif"
 
     @property
     def sidecar_json_path(self) -> Path:
-        return self.entry.dataset_folder / "reproject" / f"{self.entry.edr_product}_reproject.json"
+        return self.entry.dataset_folder / "reproject" / f"{self.entry.identifier}_reproject.json"
 
     @property
     def render_label(self) -> str:
@@ -408,7 +418,7 @@ class TrnTestReport(TrnTestProduct):
 
     @property
     def report_dir(self) -> Path:
-        return self.entry.dataset_folder / "reports" / self.entry.edr_product
+        return self.entry.dataset_folder / "reports" / self.entry.identifier
 
     @property
     def raster_path(self) -> Path:
@@ -427,8 +437,8 @@ class TrnTestReport(TrnTestProduct):
         return self.raster_path.exists()  # report.html is the deliverable; the .ipynb is a byproduct
 
     def _generate_impl(self) -> None:
-        self.entry.reproject.generate()  # self-ensures its own dependency (report_template.py
-        # displays entry.reproject's own raster) rather than relying on callers passing
+        self.entry.primary_image.generate()  # self-ensures its own dependency (report_template.py
+        # displays entry.primary_image's own raster) rather than relying on callers passing
         # product_types in a particular order -- same reasoning TrnTestReprojectImage already
         # applies via entry.crop_result's cached_property chain. A no-op if already done.
         from trntest import report  # noqa: PLC0415 -- circular otherwise: report.py imports
@@ -440,7 +450,7 @@ class TrnTestReport(TrnTestProduct):
 
 class TrnTestGalleryThumb(TrnTestProduct):
     """The two static frames (overlay hidden, overlay shown) behind the per-entry report's own top
-    image (`entry.reproject.plot_overlay`), persisted as separate small JPEGs rather than one
+    image (`entry.primary_image.plot_overlay`), persisted as separate small JPEGs rather than one
     embedded GIF -- `reports/gallery/report.write_gallery_html`'s per-entry source images, letting
     that page blink every entry's pair in lockstep with one shared JS timer instead of however each
     entry's own independently-looping GIF happens to be phased.
@@ -451,7 +461,7 @@ class TrnTestGalleryThumb(TrnTestProduct):
     there would mean tens to hundreds of MB of images on a single page; a small JPEG is plenty for a
     grid cell only ever displayed a couple hundred pixels wide.
 
-    Keyed by `entry.index`, not `edr_product` like every other product type's own file naming --
+    Keyed by `entry.index`, not `entry.identifier` like every other product type's own file naming --
     `write_gallery_html` builds the whole gallery page by guessing every entry's file paths from
     `range(len(dataset))` alone (like `write_overview_map` builds its footprints from live SPICE
     state, not from stored per-entry files), without needing to open each entry's manifest row first,
@@ -460,7 +470,7 @@ class TrnTestGalleryThumb(TrnTestProduct):
 
     # Not a TrnTestImage: this doesn't need its own comparison geometry (rotation_k/width_km/etc.)
     # -- it just persists frames TrnTestReprojectImage's own overlay_frames() already knows how to
-    # render, the same relationship TrnTestReport has to entry.reproject.
+    # render, the same relationship TrnTestReport has to entry.primary_image.
 
     _THUMB_MAX_PX = 320  # comfortably more than the gallery page's own ~220px CSS display width
     # (room for high-DPI screens) but nowhere near overlay_frames()'s native ~900px -- see the class
@@ -488,11 +498,11 @@ class TrnTestGalleryThumb(TrnTestProduct):
         return "gallery"
 
     def _generate_impl(self) -> None:
-        self.entry.reproject.generate()  # self-ensures its own dependency, same pattern
-        # TrnTestReport uses for the same reason: this renders the identical reproject-over-basemap
-        # content report.reproject_overlay does.
-        base_frame, overlay_frame = self.entry.reproject.overlay_frames(margin_frac=0.15)  # matches
-        # report.reproject_overlay's own margin_frac.
+        self.entry.primary_image.generate()  # self-ensures its own dependency, same pattern
+        # TrnTestReport uses for the same reason: this renders the identical primary-image-over-
+        # basemap content report.primary_overlay does.
+        base_frame, overlay_frame = self.entry.primary_image.overlay_frames(margin_frac=0.15)  # matches
+        # report.primary_overlay's own margin_frac.
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
         for frame, path in ((base_frame, self.raster_path), (overlay_frame, self.sidecar_json_path)):
             frame.thumbnail((self._THUMB_MAX_PX, self._THUMB_MAX_PX))  # in place; already RGB

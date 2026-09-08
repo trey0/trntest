@@ -378,6 +378,11 @@ def plot_isis_comparison(
     # not the real crop's own (unrelated) window.
     synthetic_width_km = camera.render_cross_track_km
     synthetic_height_km = camera.render_along_track_km
+    assert (
+        camera.cross_track_width_km is not None
+        and camera.n_frames_for_square_crop is not None
+        and camera.km_per_frame is not None
+    ), "a real WAC crop panel needs a real EDR-built camera"
     crop_width_km = camera.cross_track_width_km
     crop_height_km = camera.n_frames_for_square_crop * camera.km_per_frame
 

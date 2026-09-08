@@ -491,10 +491,13 @@ def write_manifest(images: pd.DataFrame, path: Path | str) -> None:
     images.to_csv(path, index=False)
 
 
-def read_manifest(path: Path | str) -> pd.DataFrame:
+def read_manifest(path: Path | str, date_columns: tuple[str, ...] = ("start_time", "stop_time")) -> pd.DataFrame:
     """Read a manifest CSV written by `write_manifest`.
 
     :param path: Input CSV path.
-    :returns: The rows, with `start_time`/`stop_time` parsed as dates.
+    :param date_columns: Which columns to parse as dates -- default matches `DATASET_COLUMNS`'s own
+        EDR-oriented shape; `trn_dataset.TrnTestDataSet`'s `entry_kind="spice"` manifests pass
+        `("utc_time",)` instead.
+    :returns: The rows, with `date_columns` parsed as dates.
     """
-    return pd.read_csv(path, parse_dates=["start_time", "stop_time"])
+    return pd.read_csv(path, parse_dates=list(date_columns))

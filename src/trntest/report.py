@@ -14,7 +14,7 @@ from trntest import illumination
 from trntest.config import load_config
 from trntest.session import Session
 from trntest.subprocess_utils import run_quiet
-from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry
+from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry, TrnTestEntryEdr
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -87,7 +87,7 @@ def _logs_link_html(entry: TrnTestEntry, logs_prefix: str) -> str:
     # enumerate entry.images_by_type here.
     if not entry.log_dir.is_dir():
         return "&mdash;"
-    return f'<a href="{logs_prefix}/{entry.edr_product}/">logs/</a>'
+    return f'<a href="{logs_prefix}/{entry.identifier}/">logs/</a>'
 
 
 def summary(entry: TrnTestEntry) -> None:
@@ -117,8 +117,10 @@ def summary(entry: TrnTestEntry) -> None:
     )
 
 
-def reproject_overlay(entry: TrnTestEntry):
-    """Display `entry`'s reproject render as an overlay-toggle GIF over the basemap.
+def primary_overlay(entry: TrnTestEntry):
+    """Display `entry`'s primary-generator render (`entry.primary_image` -- `reproject` for a
+    `TrnTestEntryEdr`, `hillshade` for a `TrnTestEntrySpice`) as an overlay-toggle GIF over the
+    basemap.
 
     `margin_frac` is set to roughly half `plot_overlay`'s own default (0.3 -> 0.15) so more of the
     report's fixed page width goes to the overlay itself rather than basemap padding.
@@ -126,16 +128,17 @@ def reproject_overlay(entry: TrnTestEntry):
     :returns: An `IPython.display.HTML` object -- bare last expression, no trailing `;`, same
         requirement as `TrnTestImage.plot_overlay`.
     """
-    return entry.reproject.plot_overlay(margin_frac=0.15)
+    return entry.primary_image.plot_overlay(margin_frac=0.15)
 
 
-def reproject_zoom_blink(entry: TrnTestEntry):
-    """Display a full-resolution zoom blink between `entry`'s reproject render and the basemap.
+def primary_zoom_blink(entry: TrnTestEntry):
+    """Display a full-resolution zoom blink between `entry`'s primary-generator render
+    (`entry.primary_image`) and the basemap.
 
     :returns: An `IPython.display.HTML` object -- same bare-last-expression requirement as
-        `reproject_overlay`.
+        `primary_overlay`.
     """
-    return entry.reproject.plot_zoom_blink_over()
+    return entry.primary_image.plot_zoom_blink_over()
 
 
 def generate_report(dataset_folder: str, entry_index: int, report_dir: Path) -> None:
@@ -251,6 +254,7 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
     rows_html = []
     for _, row in status_df.iterrows():
         entry = dataset[row["product_id"]]
+        assert isinstance(entry, TrnTestEntryEdr), "write_overview_table_html is EDR-only for now"
         label = f"{entry.index}: {row['product_id']}"
         if entry.report.exists():
             product_cell = f'<a href="{entry.edr_product}/report.html">{label}</a>'
@@ -272,7 +276,7 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
 
 def write_gallery_html(dataset: TrnTestDataSet) -> None:
     """Writes `<dataset.folder>/reports/gallery.html`: a grid of blink-comparator thumbnails, one
-    per entry, matching the per-entry report's own top image (`entry.reproject.plot_overlay`) but
+    per entry, matching the per-entry report's own top image (`entry.primary_image.plot_overlay`) but
     kept as two plain images (`entry.gallery_thumb`, `TrnTestGalleryThumb`) rather than one embedded
     GIF -- so a single shared JS timer can blink every entry's pair in lockstep, instead of each
     report page's own GIF looping independently, however it happens to be phased. A systematic
@@ -297,6 +301,7 @@ def write_gallery_html(dataset: TrnTestDataSet) -> None:
     """
     cells_html = []
     for entry in dataset:
+        assert isinstance(entry, TrnTestEntryEdr), "write_gallery_html is EDR-only for now"
         thumb = entry.gallery_thumb
         if thumb.exists():
             content_html = (

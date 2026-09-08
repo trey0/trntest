@@ -418,7 +418,7 @@ def _use_fake_per_image_config(monkeypatch, cache_root: Path) -> None:
     `TrntestConfig` per entry, keyed by `edr_product` -- just enough for
     `isis_wac.cached_crop_path(entry.per_image_config)` to resolve to a real, entry-specific path."""
     monkeypatch.setattr(
-        trn_dataset.TrnTestEntry,
+        trn_dataset.TrnTestEntryEdr,
         "per_image_config",
         property(
             lambda self: dataclasses.replace(TrntestConfig(), cache_root=cache_root, edr_product=self.edr_product)
@@ -763,14 +763,14 @@ def test_overview_table_links_to_a_failed_entrys_log_dir(tmp_path, monkeypatch):
 
 
 def test_problem_flags_low_sun_elevation(tmp_path):
-    entry = trn_dataset.TrnTestEntry(
+    entry = trn_dataset.TrnTestEntryEdr(
         pd.Series({"product_id": "P1", "edr_product": "P1", "sun_elevation_deg": 2.0}), tmp_path, TrntestConfig()
     )
     assert any("low sun elevation" in flag for flag in report.problem_flags(entry))
 
 
 def test_problem_flags_tolerates_a_missing_column(tmp_path):
-    entry = trn_dataset.TrnTestEntry(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
+    entry = trn_dataset.TrnTestEntryEdr(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
     assert report.problem_flags(entry) == []
 
 

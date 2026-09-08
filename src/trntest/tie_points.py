@@ -131,6 +131,9 @@ def crop_footprint_corners_for_camera(
     # the full pipeline on this product's first-ever generation.
     config = config or load_config()
     crop = isis_wac.ensure_crop_for_camera(camera, frame_timing, camera.reverse_crop_along_track, config)
+    assert camera.n_frames_for_square_crop is not None, (
+        "crop_footprint_corners_for_camera needs a real EDR-built camera"
+    )
     height = camera.n_frames_for_square_crop * wac_format.VIS_BLOCK_HEIGHT
     m = _CROP_EDGE_MARGIN_PX
 

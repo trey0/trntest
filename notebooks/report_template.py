@@ -20,7 +20,7 @@ import trntest; entry = trntest.report.load_entry("{{ dataset_folder }}", "{{ en
 trntest.report.summary(entry)
 
 # %%
-trntest.report.reproject_overlay(entry)
+trntest.report.primary_overlay(entry)
 
 # %%
-trntest.report.reproject_zoom_blink(entry)
+trntest.report.primary_zoom_blink(entry)
