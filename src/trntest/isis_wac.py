@@ -752,6 +752,15 @@ def run_cam2map_for_crop(
     # `PROJ: proj_create_from_name` error to stderr here (an ISIS/GDAL `PROJ_LIB` environment mismatch)
     # -- harmless: the output CRS/transform were verified correct (matching `dem_ortho_result`'s own
     # projection exactly) despite it, and the process still exits 0.
+    #
+    # `-mask none`: without it, gdal_translate also writes an external `.msk` sidecar next to
+    # whatever temp path it's given (atomic_publish_path's rename only moves the .tif itself, so the
+    # sidecar was left behind under its old, now-orphaned tmp name on every call -- a small but
+    # permanent leak). Confirmed redundant, not lossy: the source cube already carries a real per-band
+    # `NoData Value` (verified via gdalinfo), which gdal_translate copies onto the output .tif's own
+    # band metadata regardless of `-mask` -- the sidecar was just GDAL's separate validity-mask
+    # encoding of that same nodata value, which nothing here reads (this codebase checks `nodata`
+    # directly, e.g. via rasterio).
     config = config or load_config()
     # _work/<entry>/crop/ -- generator-scoped, even though this is also reused by
     # TrnTestReprojectImage's own texture-source step: it's the crop's own mapproject output regardless
@@ -763,29 +772,27 @@ def run_cam2map_for_crop(
     map_path = out_dir / (crop.cub_path.stem + ".ortho.map")
     map_path.write_text(_orthographic_map_pvl(dem_ortho_result))
 
-    mapproj_cub = out_dir / (crop.cub_path.stem + "-cam2map.cub")
-    # atomic_publish_path also fixes a real pre-existing gap as a side effect: this function had no
-    # existence guard at all, so a second call for the same crop (e.g. plot_overlay() called twice)
-    # used to hit ISIS's own "to= already exists" refusal on mapproj_cub. cam2map now always writes to
-    # a guaranteed-fresh temp path, and the final rename replaces any prior mapproj_cub atomically (a
-    # plain POSIX rename over an existing destination, unlike ISIS's own to= semantics).
-    with atomic_publish_path(mapproj_cub) as tmp_cub:
+    mapproj_tif = out_dir / (crop.cub_path.stem + "-cam2map.tif")
+    # The intermediate cam2map cube (~5x mapproj_tif's own size, since gdal_translate below drops it
+    # to one band) is never read again once that translate succeeds -- a `TemporaryDirectory` means it
+    # never lands in out_dir/_work at all, rather than sticking around unread the way it used to. A
+    # fresh tmp_dir per call also keeps ISIS's own "to= already exists" refusal from ever firing here,
+    # same as atomic_publish_path's fresh-temp-path guarantee did before this change.
+    with atomic_publish_path(mapproj_tif) as tmp_tif, tempfile.TemporaryDirectory() as tmp_dir:
+        mapproj_cub = Path(tmp_dir) / (crop.cub_path.stem + "-cam2map.cub")
         run_quiet(
             [
                 "cam2map",
                 f"from={crop.cub_path}",
                 f"map={map_path}",
-                f"to={tmp_cub}",
+                f"to={mapproj_cub}",
                 "pixres=map",
                 "defaultrange=camera",
                 "warpalgorithm=forwardpatch",
                 "patchsize=1",
             ]
         )
-
-    mapproj_tif = out_dir / (crop.cub_path.stem + "-cam2map.tif")
-    with atomic_publish_path(mapproj_tif) as tmp_tif:
-        run_quiet(["gdal_translate", "-b", "1", str(mapproj_cub), str(tmp_tif)])
+        run_quiet(["gdal_translate", "-b", "1", "-mask", "none", str(mapproj_cub), str(tmp_tif)])
     return mapproj_tif
 
 

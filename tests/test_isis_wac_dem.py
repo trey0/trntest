@@ -217,8 +217,13 @@ def test_run_cam2map_for_crop_writes_under_work_entry_crop(tmp_path):
     assert mock_run_quiet.call_count == 2
     cam2map_cmd = mock_run_quiet.call_args_list[0].args[0]
     assert cam2map_cmd[0] == "cam2map"
+    # The intermediate cam2map cube is scratch, not a published artifact -- it's written under a
+    # TemporaryDirectory rather than expected_dir, and gone once the call returns (the whole point of
+    # this test: confirm it never lingers in _work the way it used to).
     to_arg = next(a for a in cam2map_cmd if a.startswith("to="))
-    assert Path(to_arg.removeprefix("to=")).parent == expected_dir
+    mapproj_cub_path = Path(to_arg.removeprefix("to="))
+    assert mapproj_cub_path.parent != expected_dir
+    assert not mapproj_cub_path.exists()
     assert any(str(expected_dir) in arg for arg in cam2map_cmd if arg.startswith("map="))
 
 
