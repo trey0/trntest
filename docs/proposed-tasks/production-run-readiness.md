@@ -8,49 +8,36 @@ readiness assessment done 2026-09-06, before attempting that, so a future sessio
 re-derive it. Nothing below has been acted on yet — it's a list of what to check/fix first, plus a
 recommended sequencing.
 
-## Disk space: the most urgent blocker, and it's already tight today
+## Disk space: resolved — no longer a blocker for a full run
 
-```
-/mnt/trntest        98G total,  76G used,  17G available (82% full)
-  cache/            59G  (naif 18G, pds_wac_emp 16G, isisdata 13G, astropedia/GLD100 9.8G, ...)
-  output/           14G  (spread across worktrees, several orphaned -- see below)
-```
+This section originally flagged disk as "the most urgent blocker" at 17GB free against an estimated
+40-45GB full-run cost. Both halves of that math turned out stale by the time anyone re-measured
+against a real, fresh entry (see below) — disk is no longer a real constraint on this manifest.
 
-**Per-entry disk footprint**, measured directly from the 2 already-populated entries:
-**440MB–886MB each** (avg ~660MB), overwhelmingly `_work/` — the ISIS/ASP intermediates (stitched
-cubes, DEM/ortho tiles, pre-copy render output). Per `docs/intermediate-product-discipline.md`,
-`_work/` is retained by design; confirmed no pruning mechanism exists anywhere in the codebase today
-(the doc's mention of "routine `_work/` pruning" is aspirational, not implemented) — this cost
-accumulates and stays.
+**Current state**: 24GB free (up from 17GB) — the orphaned-worktree `output/` reclaim this section
+used to recommend as an "easy win" has since happened (`git worktree list` now shows only the main
+checkout plus active worktrees, no leftovers).
 
-**Extrapolated to the full 81-row manifest**: of those 81, 24 sit above WAC_EMP's ±60° coverage
-limit and are guaranteed to fail outright (see below), so a full run would really only populate
-~55-57 entries. At ~660MB each that's **~37GB** for successful entries alone, plus smaller partial
-footprints for the ~24 failures (they fail after `crop` succeeds but before `hillshade`) — call it
-**40-45GB total**. That's ~2.5x the 17GB currently free — a full run as-is would fill the volume
-before finishing.
+**Real per-entry measurement** (not extrapolated — an actual fresh entry run through full `populate()`
+default product types, `crop`+`hillshade`+`report`+`gallery`): **~114MB**, not the ~660MB this section
+originally estimated. Two fixes account for nearly all of the gap, both already landed:
 
-**Easy win, not yet acted on**: ~7.9GB sits in orphaned `output/` folders from worktrees that no
-longer exist (confirmed via `git worktree list` — only the main checkout and one active worktree
-exist; `notebooks-tone-structure-37bc88`, `phase5_validation`, `source-code-org-analysis-52dadf`,
-`phase5_validation_dem_ortho`, `agents-task-granularity-docs-5c060f`,
-`docs-proposed-tasks-style-0defc6`, `crater-sharpness-grading-dad2c9`,
-`crater-sharpness-parallel-workers-83efce`, and a few smaller ones are all leftover). Reclaiming
-these takes free space from 17GB to ~25GB — still not enough for the full 81-row run, but a real
-buffer. Ask the user before deleting (these are other past worktrees' output, not this session's own
-scratch).
+1. `isis_wac.ensure_crop_for_camera` publishes the crop to a permanent, cross-dataset cache tier
+   (`cache/wac_crop/<edr_product>_crop.cub`) and wipes the rest of `_work/<entry>/isis/` by default
+   (`config.delete_isis_intermediates`) — the raw/calibrated/stitched-cube cost drops to ~0/entry
+   post-generation. See `docs/caching.md`'s "WAC crop caching" section.
+2. `isis_wac.run_cam2map_for_crop`'s own intermediate cam2map cube (~59MB/entry — `cam2map` can only
+   write a cube; `gdal_translate` then derives the actual, much-smaller published `.tif` from it) now
+   lands in a real `TemporaryDirectory` instead of `_work/<entry>/crop/`, so it never persists. The
+   `.msk` sidecar `gdal_translate` used to leave behind under an orphaned tmp name is also gone
+   (`-mask none` — confirmed redundant with the source cube's own per-band `NoData` value, nothing
+   lost).
 
-**Update, same day**: the "`_work/` is retained by design, no pruning mechanism exists" statement
-above no longer holds for the `crop` generator's own `_work/<entry>/isis/` subtree specifically —
-measured at ~223-260MB/entry (raw+calibrated split cubes, the full stitched swath, plus the 14MB
-crop), of which only the crop itself is ever read again once generated. `isis_wac.
-ensure_crop_for_camera` now publishes the crop to a new permanent, cross-dataset cache tier
-(`cache/wac_crop/<edr_product>_crop.cub`) and wipes the rest of `_work/<entry>/isis/` by default
-(`config.delete_isis_intermediates`) — per-entry footprint there drops to ~0 post-generation. See
-`docs/caching.md`'s "WAC crop caching" section. Doesn't change the `_work/` estimate for the *other*
-per-entry subtrees (DEM/ortho tiles, pre-copy render output) — those are still retained as before, so
-the ~660MB/entry average above should be revised downward but not eliminated once someone re-measures
-against a fresh entry.
+**Updated full-run estimate**: with the seam/polar latitude fixes below, all 81 manifest rows are
+viable candidates now (not just ~55-57) — at ~114MB/entry that's **~9GB** for a full run, comfortably
+inside the 24GB free. Caveat: this is one real measurement from one typical, low-latitude entry
+(`M1327210646CE`, 38.5°N) — an entry whose footprint mosaics across the 60° seam needs a second
+WAC_EMP tile fetch and will cost somewhat more, but not by an order of magnitude.
 
 ## Latitude coverage: mostly resolved since this assessment was written
 
@@ -111,14 +98,12 @@ single candidate).
 
 ## Recommended sequencing
 
-1. Free disk space first: at minimum reclaim the ~7.9GB of orphaned worktree `output/` (with the
-   user's go-ahead); reconsider whether the full 81-row manifest is the right scope at all given the
-   remaining headroom, versus a deliberately-chosen low-latitude subset.
-2. Run a small trial (10-20 entries) first — not the full run — to get a real per-entry timing number
+1. Run a small trial (10-20 entries) first — not the full run — to get a real per-entry timing number
    for this dataset's own geometry before committing to a much larger batch. No manifest pre-filtering
    is needed for the 60° equirect/polar seam anymore (see "Latitude coverage" above) -- a straddling
-   row now mosaics instead of failing.
-3. Follow `docs/batch-generation.md`'s existing guidance for the real run:
+   row now mosaics instead of failing. Disk space is no longer a reason to narrow scope (see "Disk
+   space" above) -- the full 81-row manifest fits comfortably.
+2. Follow `docs/batch-generation.md`'s existing guidance for the real run:
    `populate_via_workers()`, not sequential `populate()`; `write_index=False` for every call in an
    incremental loop except the last, since `write_overview_map`'s default `True` rebuilds cameras
    for the *entire* already-populated portion on every call otherwise.
