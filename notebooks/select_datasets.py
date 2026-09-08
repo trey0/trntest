@@ -150,6 +150,19 @@ dataset_selection_plots.plot_illuminated_node_scatter(orbits_df, PERIOD_START, P
 # `candidate_window.images_for_window` always uses, just windowed to this one selected span, and only
 # after a cheap catalog-metadata pre-filter narrows the raw candidate list first.
 #
+# Per-candidate evaluation (`candidate_window.evaluate_candidate_image`) also rejects any candidate
+# whose boresight pointing direction lands outside `camera.NOMINAL_POINTING_DISK_RADIUS_DEG` of the
+# nominal pointing disk `build_camera`'s own fixed sensor model was calibrated against (see
+# `notebooks/sensor_calibration_scoping.py`) -- an approximate, ISIS-free estimate
+# (`camera.lightweight_pointing_disk_distance_deg`), so a candidate that narrowly passes here can
+# still occasionally get rejected later, more accurately, by `build_camera`'s own real check.
+# `acceptable_edr_count` above now applies this same pre-filter too (`camera.
+# lightweight_pointing_disk_distance_deg_at`, using each EDR's `(start_time, stop_time)` midpoint as
+# a cheap one-pose-per-candidate proxy -- bare `start_time` was tried first and found not to
+# discriminate at all), so the two statistics stay consistent -- a dataset can still resolve to
+# slightly fewer images than that count suggested, since `evaluate_candidate_image` re-checks with
+# the real per-candidate frame timing rather than the single-pose proxy.
+#
 # Resolves only `selected_datasets.iloc[0]` here, not all `N_DATASETS` picks -- resolving the rest
 # is a `for` loop away.
 

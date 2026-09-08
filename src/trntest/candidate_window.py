@@ -86,14 +86,17 @@ def anchor_start_frame_for_centered_crop(frame_timing: FrameTiming, config: Trnt
 
 
 def evaluate_candidate_image(edr_row: pd.Series, config: TrntestConfig, min_sun_elevation_deg: float) -> dict | None:
-    """Pose the camera for `edr_row` at its midpoint-anchored crop, check sun elevation at the
-    resulting image center, and return the new manifest columns if illuminated, else `None`.
+    """Pose the camera for `edr_row` at its midpoint-anchored crop, check sun elevation and boresight
+    pointing at the resulting image center, and return the new manifest columns if both pass, else
+    `None`.
 
     :param edr_row: One EDR catalog row.
     :param config: Project config.
     :param min_sun_elevation_deg: Minimum sun elevation, degrees, to count as illuminated.
     :returns: `{"start_frame", "center_frame_index", "n_frames_for_square_crop",
-        "sun_elevation_deg"}`, or `None` if not illuminated.
+        "sun_elevation_deg"}`, or `None` if not illuminated or not within
+        `camera.NOMINAL_POINTING_DISK_RADIUS_DEG` of the nominal boresight pointing direction (see
+        `camera.lightweight_pointing_disk_distance_deg`).
     """
     # Uses the lower-level camera.py functions, not build_camera(), so this never writes a .tsai file
     # or touches Lunaserv during selection.
@@ -129,6 +132,15 @@ def evaluate_candidate_image(edr_row: pd.Series, config: TrntestConfig, min_sun_
     ground_km = camera.boresight_ground_point_km(c_meters / 1000.0, r_cam_to_me)
     sun_elevation_deg = illumination.sun_elevation_deg(ground_km, et)
     if sun_elevation_deg < min_sun_elevation_deg:
+        return None
+    # A cheap, approximate pre-filter for camera.build_camera's own real (ISIS-based) rejection --
+    # see camera.lightweight_pointing_disk_distance_deg's own docstring for why this can't be exact.
+    # Rejecting here, before any real crop is ever fetched/processed for this candidate, is the whole
+    # point: build_camera's own assert would catch the same candidate far more expensively, only once
+    # dataset generation actually reaches it.
+    forward_step_km = camera.ground_track_step_km(frame_timing, center_frame_index)
+    disk_distance_deg = camera.lightweight_pointing_disk_distance_deg(c_meters / 1000.0, r_cam_to_me, forward_step_km)
+    if disk_distance_deg >= camera.NOMINAL_POINTING_DISK_RADIUS_DEG:
         return None
     return {
         "start_frame": start_frame,

@@ -125,6 +125,29 @@ def test_nominal_boresight_pitch_yaw_deg_mirrors_for_forward_time_k():
     assert mirrored_yaw_deg == -camera.NOMINAL_BORESIGHT_YAW_DEG
 
 
+def test_lightweight_pointing_disk_distance_deg_zero_at_the_nominal_point():
+    c_km = np.array([0.0, 0.0, 3000.0])
+    nadir = np.array([0.0, 0.0, -1.0])
+    along = np.array([1.0, 0.0, 0.0])
+    cross = np.cross(nadir, along)
+    pitch_rad = np.radians(camera.NOMINAL_BORESIGHT_PITCH_DEG)
+    yaw_rad = np.radians(camera.NOMINAL_BORESIGHT_YAW_DEG)
+    # A tangent-plane construction: boresight_pitch_yaw_deg's own arctan2 definition recovers exactly
+    # (pitch_rad, yaw_rad) from this point, for any positive scale, before normalizing.
+    target_boresight_me = nadir + np.tan(pitch_rad) * along + np.tan(yaw_rad) * cross
+    target_boresight_me = target_boresight_me / np.linalg.norm(target_boresight_me)
+    r_corrected = camera.look_at_rotation(target_boresight_me, np.eye(3))
+    # Undo the lightweight correction so the *raw* pose, once lightweight_pointing_disk_distance_deg
+    # re-applies it, reproduces target_boresight_me exactly.
+    r_cam_to_me_raw = r_corrected @ camera._LIGHTWEIGHT_BORESIGHT_CORRECTION.T
+    forward_step_km = along
+    if camera.boresight_rotation_k(r_cam_to_me_raw, forward_step_km) != camera._REVERSED_TIME_K:
+        forward_step_km = -along  # the state NOMINAL_BORESIGHT_PITCH_DEG/YAW_DEG were measured in
+
+    distance_deg = camera.lightweight_pointing_disk_distance_deg(c_km, r_cam_to_me_raw, forward_step_km)
+    assert distance_deg == pytest.approx(0.0, abs=1e-6)
+
+
 def test_along_track_extent_km_matches_direct_ground_point_decomposition():
     moon_radius_km = 1737.4
     boresight_ground_km = np.array(spice.latrec(moon_radius_km, 0.0, 0.0))

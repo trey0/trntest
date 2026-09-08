@@ -827,3 +827,60 @@ def lightweight_footprint_lonlat_deg(
         cv,
         config.image_size,
     )
+
+
+def lightweight_pointing_disk_distance_deg(
+    c_km: np.ndarray, r_cam_to_me_raw: np.ndarray, forward_step_me_km: np.ndarray
+) -> float:
+    """Cheap, ISIS-free estimate of how far this pose's boresight lands from
+    `nominal_boresight_pitch_yaw_deg`'s own disk center -- pure SPICE, via the same fixed
+    `_LIGHTWEIGHT_BORESIGHT_CORRECTION` approximation `lightweight_footprint_lonlat_deg` uses in
+    place of a real per-pose ISIS re-aim (see that function's own docstring for the caveats this
+    shares: an approximation, not a substitute for `build_camera`'s own real check).
+
+    Intended as a pre-generation filter over many candidates (e.g. `candidate_window.
+    evaluate_candidate_image`), where a real ISIS re-aim per candidate isn't affordable -- reject
+    early if this estimate is already far outside `NOMINAL_POINTING_DISK_RADIUS_DEG`, without waiting
+    for `build_camera`'s own assert to catch it after a real crop's already been fetched/processed.
+
+    :param c_km: Camera center (MOON_ME, km).
+    :param r_cam_to_me_raw: Raw (pre-re-aim) camera-to-MOON_ME rotation.
+    :param forward_step_me_km: "Forward in time" ground-track direction (MOON_ME), e.g. from
+        `ground_track_step_km`.
+    :returns: Approximate distance (degrees) from the nominal pointing disk's center.
+    """
+    k = boresight_rotation_k(r_cam_to_me_raw, forward_step_me_km)
+    boresight_me = (r_cam_to_me_raw @ _LIGHTWEIGHT_BORESIGHT_CORRECTION) @ np.array([0.0, 0.0, 1.0])
+    pitch_deg, yaw_deg = boresight_pitch_yaw_deg(c_km, boresight_me, forward_step_me_km)
+    nominal_pitch_deg, nominal_yaw_deg = nominal_boresight_pitch_yaw_deg(k)
+    return float(np.hypot(pitch_deg - nominal_pitch_deg, yaw_deg - nominal_yaw_deg))
+
+
+def lightweight_pointing_disk_distance_deg_at(et: float, forward_step_seconds: float = 10.0) -> float:
+    """`lightweight_pointing_disk_distance_deg`, needing only an ephemeris time -- no `FrameTiming`/
+    per-candidate EDR label fetch. The "forward in time" direction it needs is approximated from the
+    boresight's own ground-track step over `forward_step_seconds`, rather than
+    `ground_track_step_km`'s real per-frame interframe timing -- adequate for `boresight_rotation_k`'s
+    discrete axis choice and this decomposition's own directional accuracy, since orbital ground-track
+    direction doesn't meaningfully change on this timescale.
+
+    Intended for bulk, catalog-metadata-only candidate scoring (e.g.
+    `dataset_selection.add_acceptable_edr_counts`), where per-candidate network fetches aren't
+    affordable across a whole year's catalog -- a candidate's own `start_time` (already in hand) is
+    enough.
+
+    :param et: SPICE ephemeris time (TDB seconds) -- e.g. from `spice.utc2et` on a catalog row's own
+        `start_time`.
+    :param forward_step_seconds: ET offset used to estimate the forward-in-time ground-track
+        direction.
+    :returns: Approximate distance (degrees) from the nominal pointing disk's center.
+    """
+    c_meters, r_cam_to_me, _, _ = camera_pose_moon_me(et)
+    c_km = c_meters / 1000.0
+    ground0_km = boresight_ground_point_km(c_km, r_cam_to_me)
+
+    c_meters_2, r_cam_to_me_2, _, _ = camera_pose_moon_me(et + forward_step_seconds)
+    ground1_km = boresight_ground_point_km(c_meters_2 / 1000.0, r_cam_to_me_2)
+
+    forward_step_km = ground1_km - ground0_km
+    return lightweight_pointing_disk_distance_deg(c_km, r_cam_to_me, forward_step_km)

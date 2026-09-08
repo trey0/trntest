@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import spiceypy as spice
 
-from trntest import candidate_window, catalog, illumination, maneuver_detection, spice_kernels, tie_points
+from trntest import camera, candidate_window, catalog, illumination, maneuver_detection, spice_kernels, tie_points
 from trntest.config import TrntestConfig
 
 
@@ -104,6 +104,49 @@ def add_maneuver_flags(
     return orbits_df
 
 
+def _pointing_disk_mask(edr_rows: pd.DataFrame, config: TrntestConfig) -> np.ndarray:
+    """Cheap, ISIS-free per-row filter: keeps only rows within `camera.NOMINAL_POINTING_DISK_RADIUS_DEG`
+    of the nominal boresight pointing direction (`camera.lightweight_pointing_disk_distance_deg_at`).
+
+    Uses the midpoint of each row's own `start_time`/`stop_time` as the pose epoch -- not the exact
+    `center_frame_index` epoch `candidate_window.evaluate_candidate_image` computes (that needs a
+    per-candidate EDR label fetch, exactly the cost this bulk pass avoids), but validated close enough
+    in practice: on the 3 real candidates this project already has ground truth for (see
+    `notebooks/sensor_calibration_scoping.py`), the midpoint proxy gave 0.88/2.56/13.19 deg against
+    real per-candidate values of 0.06-0.82/2.6-4.3/14.5-18.4 deg -- same accept/reject outcome in each
+    case, with real margin either side of `NOMINAL_POINTING_DISK_RADIUS_DEG`. Bare `start_time` alone
+    does not work -- checked directly, it gave ~0.9 deg for all three regardless of real pointing,
+    since a raw EDR's own temporal midpoint can sit minutes away from `start_time`.
+
+    Furnishes SPICE kernels per row (no per-candidate network fetch beyond that -- `start_time`/
+    `stop_time`, already in `edr_rows`, are enough).
+
+    :param edr_rows: Rows with `start_time`/`stop_time` columns.
+    :param config: Project config.
+    :returns: Boolean mask, same length/order as `edr_rows`.
+    """
+    kept = []
+    skipped = 0
+    for start_time, stop_time in zip(edr_rows["start_time"], edr_rows["stop_time"], strict=True):
+        target_dt = start_time.to_pydatetime()
+        try:
+            spice_kernels.fetch_and_furnish(target_dt, config)
+            et_start = spice.utc2et(start_time.strftime("%Y-%m-%dT%H:%M:%S"))
+            et_stop = spice.utc2et(stop_time.strftime("%Y-%m-%dT%H:%M:%S"))
+            distance_deg = camera.lightweight_pointing_disk_distance_deg_at((et_start + et_stop) / 2.0)
+            kept.append(distance_deg < camera.NOMINAL_POINTING_DISK_RADIUS_DEG)
+        except (AssertionError, RuntimeError, spice.utils.exceptions.SpiceyError):
+            # A real (if rare -- ~0.6% measured) SPICE coverage edge case, not a bug -- see
+            # candidate_window._evaluate_illuminated_candidates' own comment on the same class of
+            # error. Treated as rejected rather than silently excluded from the count either way, so
+            # this filter never overstates acceptability.
+            kept.append(False)
+            skipped += 1
+    if skipped:
+        print(f"  ({skipped} of {len(edr_rows)} skipped -- SPICE coverage edge case, treated as rejected)")
+    return np.array(kept, dtype=bool)
+
+
 def add_acceptable_edr_counts(
     orbits_df: pd.DataFrame,
     period_start: datetime,
@@ -113,17 +156,20 @@ def add_acceptable_edr_counts(
     max_emission_angle_deg: float = 15.0,
 ) -> pd.DataFrame:
     """Returns a copy of `orbits_df` with an `acceptable_edr_count` column: WAC EDRs in each orbit
-    meeting `min_sun_elevation_deg`/`max_emission_angle_deg` ("typical nadir mapping-mode").
+    meeting `min_sun_elevation_deg`/`max_emission_angle_deg` ("typical nadir mapping-mode") and
+    `camera.NOMINAL_POINTING_DISK_RADIUS_DEG` (see `_pointing_disk_mask`).
     """
     # One catalog query for the whole period (paginated internally by catalog.list_products), then a
-    # vectorized per-EDR filter and a searchsorted bucketing into orbits by epoch -- looping
-    # per-orbit queries against the live ODE API would be slow and needlessly chatty.
+    # vectorized per-EDR sun/emission filter -- looping per-orbit queries against the live ODE API
+    # would be slow and needlessly chatty. The pointing check runs only over rows that already passed
+    # that vectorized filter (not the full, ~3x larger raw catalog), to bound its own per-row SPICE cost.
     edrs_df = catalog.list_products(config, catalog.EDR_PRODUCT_TYPE, period_start, period_end)
     edrs_df["sun_elevation_deg"] = 90.0 - edrs_df["incidence_angle_deg"]
     acceptable = edrs_df[
         (edrs_df["sun_elevation_deg"] > min_sun_elevation_deg)
         & (edrs_df["emission_angle_deg"] < max_emission_angle_deg)
     ]
+    acceptable = acceptable[_pointing_disk_mask(acceptable, config)]
 
     orbit_start_utc = np.array([illumination.et_to_datetime(et) for et in orbits_df["asc_et"]])
     orbit_idx = np.searchsorted(orbit_start_utc, acceptable["start_time"].to_numpy(), side="right") - 1
@@ -133,8 +179,9 @@ def add_acceptable_edr_counts(
     orbits_df = orbits_df.copy()
     orbits_df["acceptable_edr_count"] = edr_counts
     print(
-        f"{len(edrs_df)} WAC EDRs in the period, {len(acceptable)} acceptable "
-        f"(sun_elev > {min_sun_elevation_deg} deg, emission < {max_emission_angle_deg} deg)"
+        f"{len(edrs_df)} WAC EDRs in the period, {len(acceptable)} acceptable (sun_elev > "
+        f"{min_sun_elevation_deg} deg, emission < {max_emission_angle_deg} deg, within "
+        f"{camera.NOMINAL_POINTING_DISK_RADIUS_DEG} deg of nominal boresight pointing)"
     )
     return orbits_df
 
