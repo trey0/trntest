@@ -3,8 +3,10 @@ Lunaserv's WMS render. See docs/data-sources/wac-emp-pds4.md and `dem_ortho.fetc
 """
 
 import math
+from pathlib import Path
 
 import rasterio
+from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import Resampling, transform_bounds
 from rasterio.warp import transform as warp_transform
 from rasterio.windows import from_bounds as window_from_bounds
@@ -16,20 +18,22 @@ from trntest.geo_utils import (
     DEM_FETCH_SAFETY_MARGIN_FRACTION,
     geographic_crs,
     local_orthographic_crs,
+    merge_local_grid_arrays,
     pad_bbox,
-    reproject_raster_to_local_grid,
+    reproject_raster_to_local_grid_array,
 )
 from trntest.hapke import DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM, HAPKE_CALIBRATION_WAVELENGTHS_NM
+from trntest.product_io import atomic_publish
 
 # The WAC_EMP PDS4 archive's equirect (non-polar) tile grid covers only 0-60 deg in each hemisphere
 # -- a separate polar-stereographic tile pair (`P900N`/`P900S`) covers the rest, 60-90 deg each
-# hemisphere, and is also fetched by this project (see `wac_emp_tile_id_for_bbox`'s docstring and
+# hemisphere, and is also fetched by this project (see `wac_emp_tile_ids_for_bbox`'s docstring and
 # docs/data-sources/wac-emp-pds4.md's polar-tile bullet for the confirmed format/coverage facts).
 WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0
 # The archive only offers the polar tile pair at one band/resolution -- this project's own defaults
 # (`DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643`, `ppd=304`) already match it, so every real call
 # site hits this for free; a caller that explicitly requests a different combination for a
-# polar-only footprint gets a clear `ValueError` (`wac_emp_tile_id_for_bbox`), not a wrong tile.
+# polar-only footprint gets a clear `ValueError` (`wac_emp_tile_ids_for_bbox`), not a wrong tile.
 _WAC_EMP_POLAR_WAVELENGTH_NM = 643
 _WAC_EMP_POLAR_PPD = 304
 # The equirect grid's own tiling scheme, confirmed via the archive's directory listing: exactly one
@@ -37,18 +41,80 @@ _WAC_EMP_POLAR_PPD = 304
 # "E300" segment below), and 4 lon zones 90 deg wide each, centered at 45/135/225/315 (0-90, 90-180,
 # 180-270, 270-360, Positive-East).
 _WAC_EMP_LON_ZONE_WIDTH_DEG = 90.0
+_WAC_EMP_N_LON_ZONES = 4
 _WAC_EMP_LAT_BAND_CENTER_CODE = 300  # fixed: (0+60)/2 * 10 -- the tile ID's literal "E300" segment
+# The 3 latitude breakpoints where one WAC_EMP tile's coverage ends and the next begins: the equator
+# (equirect grid's own N/S tile split) and +-WAC_EMP_MAX_ABS_LATITUDE_DEG (equirect/polar split).
+# `_lat_bands_touched` walks the 4 resulting bands (south-polar, south-equirect, north-equirect,
+# north-polar) to find which ones a padded AOI actually overlaps.
+_WAC_EMP_LAT_BREAKPOINTS_DEG = (-90.0, -WAC_EMP_MAX_ABS_LATITUDE_DEG, 0.0, WAC_EMP_MAX_ABS_LATITUDE_DEG, 90.0)
 
 
-def wac_emp_tile_id_for_bbox(
+def _lat_bands_touched(minlat: float, maxlat: float) -> list[tuple[float, float]]:
+    """Which of the 4 fixed WAC_EMP latitude bands (south-polar/south-equirect/north-equirect/
+    north-polar, split at `_WAC_EMP_LAT_BREAKPOINTS_DEG`) a padded AOI's `[minlat, maxlat]` overlaps --
+    2 bands for an AOI straddling one boundary (e.g. the equator, or the equirect/polar split), a real
+    case for this project's own manifest (rows near +-60 deg latitude are common).
+
+    :returns: `(lo, hi)` pairs, ordered south to north.
+    """
+    breakpoints = _WAC_EMP_LAT_BREAKPOINTS_DEG
+    return [(lo, hi) for lo, hi in zip(breakpoints[:-1], breakpoints[1:], strict=True) if maxlat > lo and minlat < hi]
+
+
+def _lon_zones_touched(minlon_norm: float, maxlon_norm: float) -> list[int]:
+    """Which of the 4 fixed 90-deg WAC_EMP longitude zones (0: 0-90, 1: 90-180, 2: 180-270, 3: 270-360)
+    a padded AOI's `[minlon_norm, maxlon_norm]` (both already normalized into `[0, 360)`) overlaps.
+
+    Walks zone indices upward from `minlon_norm`'s own zone, wrapping mod `_WAC_EMP_N_LON_ZONES`, until
+    reaching `maxlon_norm`'s zone -- this also transparently covers an AOI that straddles the 0/360 deg
+    cut itself (`minlon_norm > maxlon_norm` after normalizing, e.g. an AOI centered near true longitude
+    0), since that's just zone 3 followed by zone 0 in this same walk, not a fundamentally different
+    case. Correct as long as the AOI's own true angular width is well under half the Moon's
+    circumference (true for any real camera footprint, padded or not) -- otherwise which "direction"
+    is the short way around is ambiguous, guarded against below rather than assumed.
+
+    :returns: Zone indices, in walk order (not necessarily sorted -- e.g. `[3, 0]` for a 0/360 straddle).
+    """
+    zone_min = int(minlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
+    zone_max = int(maxlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
+    zones = [zone_min]
+    zone = zone_min
+    while zone != zone_max:
+        zone = (zone + 1) % _WAC_EMP_N_LON_ZONES
+        zones.append(zone)
+        if len(zones) > _WAC_EMP_N_LON_ZONES:
+            raise ValueError(
+                f"Camera footprint's padded AOI (longitude range {minlon_norm:.2f}..{maxlon_norm:.2f} "
+                "deg, normalized) spans more than a full turn of longitude -- not a real camera "
+                "footprint; refusing to guess a wrap direction."
+            )
+    return zones
+
+
+def _equirect_tile_id(hemisphere: str, lon_zone: int, wavelength_nm: int, ppd: int) -> str:
+    lon_center_code = round(lon_zone * _WAC_EMP_LON_ZONE_WIDTH_DEG + _WAC_EMP_LON_ZONE_WIDTH_DEG / 2) * 10
+    return f"WAC_EMP_{wavelength_nm}NM_E{_WAC_EMP_LAT_BAND_CENTER_CODE}{hemisphere}{lon_center_code:04d}_{ppd:03d}P"
+
+
+def _polar_tile_id(hemisphere: str) -> str:
+    return f"WAC_EMP_{_WAC_EMP_POLAR_WAVELENGTH_NM}NM_P900{hemisphere}0000_{_WAC_EMP_POLAR_PPD:03d}P"
+
+
+def wac_emp_tile_ids_for_bbox(
     dst_bbox_m: tuple,
     center_lon_deg: float,
     center_lat_deg: float,
     moon_radius_m: float,
     wavelength_nm: int = DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM,
     ppd: int = 304,
-) -> str:
-    """Resolve the single WAC_EMP PDS4 tile (product ID, no extension) that fully covers `dst_bbox_m`.
+) -> list[str]:
+    """Resolve every WAC_EMP PDS4 tile (product ID, no extension) needed to fully cover `dst_bbox_m` --
+    more than one if the padded AOI straddles a tile boundary (the equator, the equirect grid's own
+    90-deg longitude zones, or its +-`WAC_EMP_MAX_ABS_LATITUDE_DEG` split with the polar tile pair).
+    Callers mosaic the returned tiles (`fetch_wac_emp_reflectance`/
+    `reproject_wac_emp_reflectance_to_local_grid`) rather than treating any one of them as sufficient
+    alone.
 
     :param dst_bbox_m: The local-Orthographic working grid's own already-padded bbox, meters -- see
         `dem_ortho.fetch_and_shade_ortho`.
@@ -58,13 +124,13 @@ def wac_emp_tile_id_for_bbox(
     :param wavelength_nm: One of the archive's 7 bands (matches `HAPKE_CALIBRATION_WAVELENGTHS_NM`).
     :param ppd: A resolution the archive offers for that wavelength (every band has 64 ppd; 643nm
         additionally has a 304 ppd product, this project's own default).
-    :returns: The product ID, e.g. `WAC_EMP_643NM_E300N0450_304P` (equirect) or
-        `WAC_EMP_643NM_P900N0000_304P` (polar).
-    :raises ValueError: If `wavelength_nm` isn't one of the archive's bands, if the padded AOI
-        straddles the equirect grid's own equator or `WAC_EMP_MAX_ABS_LATITUDE_DEG` boundary with the
-        polar tile pair (no mosaic across either), if it straddles a 90-deg equirect longitude zone
-        boundary, or if it needs the polar tile pair but `wavelength_nm`/`ppd` isn't the one
-        combination the archive actually offers there.
+    :returns: One or more product IDs, e.g. `["WAC_EMP_643NM_E300N0450_304P"]` (equirect only) or
+        `["WAC_EMP_643NM_E300N0450_304P", "WAC_EMP_643NM_P900N0000_304P"]` (straddling the polar
+        boundary) -- order is the walk order `_lat_bands_touched`/`_lon_zones_touched` produce, not
+        meaningful to callers (they mosaic, not index into this list).
+    :raises ValueError: If `wavelength_nm` isn't one of the archive's bands, if the AOI needs the polar
+        tile pair but `wavelength_nm`/`ppd` isn't the one combination the archive actually offers
+        there, or if the AOI is implausibly wide (`_lon_zones_touched`'s own guard).
     """
     # Product ID format, confirmed via the archive's own S3 bucket listing (see
     # docs/data-sources/wac-emp-pds4.md for the full derivation):
@@ -74,9 +140,7 @@ def wac_emp_tile_id_for_bbox(
     #
     # Uses the same `transform_bounds`-on-the-destination-grid technique
     # `dem_gld100.astropedia_coverage_bbox_deg` uses, not an independently-padded degree-space bbox
-    # (see that function's own trailing comment for why the latter causes corner nodata gaps). No
-    # multi-tile mosaic in this pass, matching `astropedia_coverage_bbox_deg`'s own
-    # no-automatic-fallback stance.
+    # (see that function's own trailing comment for why the latter causes corner nodata gaps).
     if wavelength_nm not in HAPKE_CALIBRATION_WAVELENGTHS_NM:
         raise ValueError(
             f"wavelength_nm={wavelength_nm} is not one of the archive's own bands {HAPKE_CALIBRATION_WAVELENGTHS_NM}"
@@ -85,53 +149,41 @@ def wac_emp_tile_id_for_bbox(
     geo_crs = geographic_crs(moon_radius_m)
     ortho_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
     minlon, minlat, maxlon, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
-
-    # Checked before any longitude-zone logic: near either pole, a padded AOI's own naive lon
-    # min/max (from a plain bbox-corner transform) can be meaningless -- e.g. an AOI that genuinely
-    # encircles the pole spans all 360 deg of longitude at once. Irrelevant here: the polar tile pair
-    # has no longitude zoning at all (one tile per hemisphere, full 360 deg), so this branch never
-    # needs `minlon`/`maxlon`.
-    if minlat > WAC_EMP_MAX_ABS_LATITUDE_DEG or maxlat < -WAC_EMP_MAX_ABS_LATITUDE_DEG:
-        hemisphere = "N" if minlat > WAC_EMP_MAX_ABS_LATITUDE_DEG else "S"
-        if wavelength_nm != _WAC_EMP_POLAR_WAVELENGTH_NM or ppd != _WAC_EMP_POLAR_PPD:
-            raise ValueError(
-                f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) needs "
-                f"the polar-stereographic tile pair, which the archive only offers at "
-                f"{_WAC_EMP_POLAR_WAVELENGTH_NM}nm/{_WAC_EMP_POLAR_PPD}ppd (requested "
-                f"wavelength_nm={wavelength_nm}, ppd={ppd})."
-            )
-        return f"WAC_EMP_{_WAC_EMP_POLAR_WAVELENGTH_NM}NM_P900{hemisphere}0000_{_WAC_EMP_POLAR_PPD:03d}P"
-    if maxlat > WAC_EMP_MAX_ABS_LATITUDE_DEG or minlat < -WAC_EMP_MAX_ABS_LATITUDE_DEG:
-        raise ValueError(
-            f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) straddles "
-            f"the equirect grid's +-{WAC_EMP_MAX_ABS_LATITUDE_DEG} deg boundary with the "
-            "polar-stereographic tile pair -- this project doesn't mosaic across it."
-        )
-    if minlat < 0.0 < maxlat:
-        raise ValueError(
-            f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) straddles "
-            "the equator -- WAC_EMP's equirect tile grid has a separate tile per hemisphere and this "
-            "project doesn't mosaic across the boundary."
-        )
-    hemisphere = "N" if maxlat >= 0.0 else "S"
-
     minlon_norm, maxlon_norm = minlon % 360.0, maxlon % 360.0
-    if minlon_norm > maxlon_norm:
-        raise ValueError(
-            f"Camera footprint's padded AOI (longitude range {minlon:.2f}..{maxlon:.2f} deg) appears "
-            "to straddle the 0/360 deg longitude boundary -- not handled by this tile lookup."
-        )
-    zone_min = int(minlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
-    zone_max = int(maxlon_norm // _WAC_EMP_LON_ZONE_WIDTH_DEG)
-    if zone_min != zone_max:
-        raise ValueError(
-            f"Camera footprint's padded AOI (longitude range {minlon:.2f}..{maxlon:.2f} deg) straddles "
-            f"a WAC_EMP tile's {_WAC_EMP_LON_ZONE_WIDTH_DEG:.0f}-deg longitude zone boundary -- this "
-            "project doesn't mosaic across the boundary."
-        )
-    lon_center_code = round(zone_min * _WAC_EMP_LON_ZONE_WIDTH_DEG + _WAC_EMP_LON_ZONE_WIDTH_DEG / 2) * 10
 
-    return f"WAC_EMP_{wavelength_nm}NM_E{_WAC_EMP_LAT_BAND_CENTER_CODE}{hemisphere}{lon_center_code:04d}_{ppd:03d}P"
+    tile_ids: list[str] = []
+    needs_polar = False
+    for lo, hi in _lat_bands_touched(minlat, maxlat):
+        if hi <= -WAC_EMP_MAX_ABS_LATITUDE_DEG or lo >= WAC_EMP_MAX_ABS_LATITUDE_DEG:
+            # Polar band: no longitude zoning at all (one tile per hemisphere covers the whole cap),
+            # so `minlon`/`maxlon` -- which can be meaningless near a pole an AOI genuinely encircles
+            # -- are never consulted here.
+            needs_polar = True
+            tile_ids.append(_polar_tile_id("N" if lo >= WAC_EMP_MAX_ABS_LATITUDE_DEG else "S"))
+        else:
+            hemisphere = "N" if lo >= 0.0 else "S"
+            for zone in _lon_zones_touched(minlon_norm, maxlon_norm):
+                tile_ids.append(_equirect_tile_id(hemisphere, zone, wavelength_nm, ppd))
+
+    if needs_polar and (wavelength_nm != _WAC_EMP_POLAR_WAVELENGTH_NM or ppd != _WAC_EMP_POLAR_PPD):
+        raise ValueError(
+            f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) needs "
+            f"the polar-stereographic tile pair, which the archive only offers at "
+            f"{_WAC_EMP_POLAR_WAVELENGTH_NM}nm/{_WAC_EMP_POLAR_PPD}ppd (requested "
+            f"wavelength_nm={wavelength_nm}, ppd={ppd})."
+        )
+
+    # Dedupe while preserving first-seen order -- a degenerate padded AOI could otherwise repeat a
+    # zone (e.g. `_lat_bands_touched` never actually double-counts a band, but keeping this cheap
+    # safety net costs nothing and matches `merge_local_grid_arrays`'s own "no real caller relies on
+    # duplicates" assumption).
+    seen: set[str] = set()
+    deduped = []
+    for tile_id in tile_ids:
+        if tile_id not in seen:
+            seen.add(tile_id)
+            deduped.append(tile_id)
+    return deduped
 
 
 def fetch_wac_emp_reflectance(
@@ -141,30 +193,34 @@ def fetch_wac_emp_reflectance(
     config: TrntestConfig,
     wavelength_nm: int = DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM,
     ppd: int = 304,
-) -> tuple:
-    """Live default ortho/texture source: resolve and fetch/cache the single WAC_EMP PDS4 tile
-    covering `dst_bbox_m`, mirroring `dem_gld100.fetch_dem_astropedia`'s own shape.
+) -> list[tuple]:
+    """Live default ortho/texture source: resolve and fetch/cache every WAC_EMP PDS4 tile covering
+    `dst_bbox_m` (usually one, more if the AOI straddles a tile boundary -- see
+    `wac_emp_tile_ids_for_bbox`), mirroring `dem_gld100.fetch_dem_astropedia`'s own shape per tile.
 
     :param dst_bbox_m: The local-Orthographic working grid's own already-padded bbox, meters.
     :param center_lon_deg: Local Orthographic CRS tangent point longitude, degrees.
     :param center_lat_deg: Local Orthographic CRS tangent point latitude, degrees.
     :param config: Project config (`cache_root`, `wac_emp_base_url`).
-    :param wavelength_nm: Passed through to `wac_emp_tile_id_for_bbox`.
-    :param ppd: Passed through to `wac_emp_tile_id_for_bbox`.
-    :returns: `(local_cached_path, product_id)` -- `reproject_wac_emp_reflectance_to_local_grid` needs
-        only the path (it reads the AOI window directly from the file's own embedded georeferencing);
-        the product ID is returned for logging/cache-busting/debugging.
+    :param wavelength_nm: Passed through to `wac_emp_tile_ids_for_bbox`.
+    :param ppd: Passed through to `wac_emp_tile_ids_for_bbox`.
+    :returns: `[(local_cached_path, product_id), ...]`, one entry per tile --
+        `reproject_wac_emp_reflectance_to_local_grid` needs only the paths (it reads each AOI window
+        directly from the file's own embedded georeferencing); the product IDs are returned for
+        logging/cache-busting/debugging.
     :raises ValueError: If the footprint needs a tile this project doesn't fetch
-        (`wac_emp_tile_id_for_bbox`).
+        (`wac_emp_tile_ids_for_bbox`).
     """
-    product_id = wac_emp_tile_id_for_bbox(
+    product_ids = wac_emp_tile_ids_for_bbox(
         dst_bbox_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M, wavelength_nm=wavelength_nm, ppd=ppd
     )
-    path = cache.fetch_wac_emp_tile(product_id, config.cache_root, config.wac_emp_base_url)
-    return path, product_id
+    return [
+        (cache.fetch_wac_emp_tile(product_id, config.cache_root, config.wac_emp_base_url), product_id)
+        for product_id in product_ids
+    ]
 
 
-def reproject_wac_emp_reflectance_to_local_grid(
+def _reproject_one_wac_emp_tile_to_array(
     wac_emp_path,
     dst_bbox_m,
     dst_width: int,
@@ -172,25 +228,27 @@ def reproject_wac_emp_reflectance_to_local_grid(
     center_lon_deg: float,
     center_lat_deg: float,
     moon_radius_m: float,
-    output_path,
-    resampling: Resampling = Resampling.bilinear,
-    tolerance: float = 0.125,
+    resampling: Resampling,
+    tolerance: float,
 ):
-    """Read just the AOI from the local cached WAC_EMP tile and reproject it onto the per-camera local
-    Orthographic working grid the DEM fetch uses.
+    """Read just the AOI from one local cached WAC_EMP tile and reproject it onto the per-camera local
+    Orthographic working grid the DEM fetch uses -- the single-tile core
+    `reproject_wac_emp_reflectance_to_local_grid` calls once per tile and mosaics.
 
-    :param wac_emp_path: `fetch_wac_emp_reflectance`'s cached file path.
+    :param wac_emp_path: One of `fetch_wac_emp_reflectance`'s cached file paths.
     :param dst_bbox_m: Destination `(minx, miny, maxx, maxy)`, meters, local Orthographic CRS.
     :param dst_width: Destination width, pixels.
     :param dst_height: Destination height, pixels.
     :param center_lon_deg: Destination CRS tangent point longitude, degrees.
     :param center_lat_deg: Destination CRS tangent point latitude, degrees.
     :param moon_radius_m: Sphere radius, meters.
-    :param output_path: Where to write the reprojected reflectance GeoTIFF.
     :param resampling: `rasterio.warp` resampling method.
     :param tolerance: `rasterio.warp.reproject` error tolerance.
-    :returns: `output_path`, as a `Path`. Values are physical reflectance (IEEE754 float32, no
-        embedded display stretch), not Lunaserv WMS-served DN.
+    :returns: The reprojected `(dst_height, dst_width)` array -- `np.nan` (per
+        `reproject_raster_to_local_grid_array`'s `dst_nodata=nan` convention) wherever this tile alone
+        doesn't cover the destination grid (always true for at least part of it when the AOI straddles
+        a tile boundary and this is only one of several tiles covering it). Values are physical
+        reflectance (IEEE754 float32, no embedded display stretch), not Lunaserv WMS-served DN.
     """
     # Mirrors `dem_gld100.reproject_astropedia_elevation_to_local_grid`'s window-read-then-warp shape,
     # except the AOI window comes directly from `dst_bbox_m` transformed into the file's own embedded
@@ -234,7 +292,19 @@ def reproject_wac_emp_reflectance_to_local_grid(
                 left, right = left - circumference_m, right - circumference_m
         window = window_from_bounds(left, bottom, right, top, transform=src.transform)
         src_transform = window_transform(window, src.transform)
-        reflectance = src.read(1, window=window)
+        # `boundless=True` (not this project's usual plain windowed read): unlike the old single-tile
+        # lookup this replaced, a tile returned by `wac_emp_tile_ids_for_bbox` when the AOI straddles a
+        # boundary only covers *part* of `dst_bbox_m` by construction -- the window computed above
+        # legitimately extends past this tile's own raster on the side the other tile(s) cover instead.
+        # A plain (non-boundless) read would silently clip to the tile's real extent, returning an
+        # array smaller than `window` while `src_transform` above still describes the *unclipped*
+        # window's own origin -- misregistering every pixel by the clipped amount. `boundless=True`
+        # always returns exactly `window`'s own shape, filled with `fill_value` beyond the tile's real
+        # data, which `reproject`'s `src_nodata` below (and `merge_local_grid_arrays` after it) then
+        # correctly treats as "not covered by this tile" rather than misplaced real data.
+        if src_nodata is None:
+            src_nodata = float("nan")
+        reflectance = src.read(1, window=window, boundless=True, fill_value=src_nodata)
 
         if not is_equirect:
             warp_src_crs, warp_src_transform = src.crs, src_transform
@@ -270,7 +340,7 @@ def reproject_wac_emp_reflectance_to_local_grid(
                 src_transform.f,
             )
 
-    return reproject_raster_to_local_grid(
+    return reproject_raster_to_local_grid_array(
         reflectance,
         warp_src_crs,
         warp_src_transform,
@@ -280,9 +350,77 @@ def reproject_wac_emp_reflectance_to_local_grid(
         center_lon_deg,
         center_lat_deg,
         moon_radius_m,
-        output_path,
-        resampling=resampling,
-        tolerance=tolerance,
+        resampling,
+        tolerance,
         src_nodata=src_nodata,
         dst_nodata=float("nan"),
     )
+
+
+def reproject_wac_emp_reflectance_to_local_grid(
+    wac_emp_paths: list,
+    dst_bbox_m,
+    dst_width: int,
+    dst_height: int,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    moon_radius_m: float,
+    output_path,
+    resampling: Resampling = Resampling.bilinear,
+    tolerance: float = 0.125,
+):
+    """Reproject one or more local cached WAC_EMP tiles onto the per-camera local Orthographic working
+    grid the DEM fetch uses, mosaicking them if there's more than one (a straddling AOI, per
+    `wac_emp_tile_ids_for_bbox`) rather than requiring a single tile to cover the whole grid.
+
+    :param wac_emp_paths: `fetch_wac_emp_reflectance`'s cached file paths -- one per tile; the usual
+        case is a single-element list.
+    :param dst_bbox_m: Destination `(minx, miny, maxx, maxy)`, meters, local Orthographic CRS.
+    :param dst_width: Destination width, pixels.
+    :param dst_height: Destination height, pixels.
+    :param center_lon_deg: Destination CRS tangent point longitude, degrees.
+    :param center_lat_deg: Destination CRS tangent point latitude, degrees.
+    :param moon_radius_m: Sphere radius, meters.
+    :param output_path: Where to write the reprojected reflectance GeoTIFF.
+    :param resampling: `rasterio.warp` resampling method.
+    :param tolerance: `rasterio.warp.reproject` error tolerance.
+    :returns: `output_path`, as a `Path`. Values are physical reflectance (IEEE754 float32, no
+        embedded display stretch), not Lunaserv WMS-served DN.
+    """
+    # Each tile is read/warped independently (`_reproject_one_wac_emp_tile_to_array`, which already
+    # applies the equirect antimeridian-branch-cut fix per its own source CRS), then merged with
+    # `merge_local_grid_arrays` -- correct regardless of which combination of tile projection families
+    # (equirect, polar, or one of each) is involved, since the merge step only ever sees the shared
+    # destination grid, never the source tiles' own differing CRSs.
+    arrays = [
+        _reproject_one_wac_emp_tile_to_array(
+            wac_emp_path,
+            dst_bbox_m,
+            dst_width,
+            dst_height,
+            center_lon_deg,
+            center_lat_deg,
+            moon_radius_m,
+            resampling,
+            tolerance,
+        )
+        for wac_emp_path in wac_emp_paths
+    ]
+    merged = merge_local_grid_arrays(arrays)
+
+    dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
+    dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)
+    profile = {
+        "driver": "GTiff",
+        "height": dst_height,
+        "width": dst_width,
+        "count": 1,
+        "dtype": "float32",
+        "crs": dst_crs,
+        "transform": dst_transform,
+        "nodata": None,
+    }
+    with atomic_publish(Path(output_path)) as tmp:
+        with rasterio.open(tmp, "w", **profile) as dst:
+            dst.write(merged, 1)
+    return Path(output_path)
