@@ -73,3 +73,12 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
   own FOV polygons no longer pay this cost, see the item just below, but a footprint-outlier check
   specifically would still need real per-entry accuracy, not the approximation now used for the map).
+- **`TrnTestEntrySpice` datasets (`trn_dataset.py`) have no report/gallery HTML.**
+  `TrnTestDataSet.write_index()` writes `status.csv` only for `entry_kind="spice"` and returns early
+  — `report.write_index_html`/`overview_map.write_overview_map` both assume EDR-only manifest columns
+  a SPICE manifest (`product_id`/`utc_time` only) doesn't have (`report.summary` reads
+  `row["orbit_number"]`/`center_lat_deg`/`center_lon_deg`; `overview_map._ground_track_lonlat` reads
+  `start_time`/`stop_time`), and both now assert `isinstance(entry, TrnTestEntryEdr)` rather than
+  silently mishandling a `TrnTestEntrySpice` entry. `TrnTestReport`/`TrnTestGalleryThumb` themselves
+  already go through `entry.primary_image` generically, so the remaining work is specifically these
+  two EDR-column assumptions, not the product classes.
