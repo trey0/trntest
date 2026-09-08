@@ -10,78 +10,89 @@ from trntest import ortho_wac_emp
 from trntest.config import MOON_RADIUS_M
 
 
-def test_wac_emp_tile_id_for_bbox_resolves_known_northern_tile():
+def test_wac_emp_tile_ids_for_bbox_resolves_known_northern_tile():
     # Real, confirmed tile (docs/data-sources.md): 90-180E, 0-60N -- center (135, 30).
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, 30.0, MOON_RADIUS_M)
-    assert tile_id == "WAC_EMP_643NM_E300N1350_304P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 135.0, 30.0, MOON_RADIUS_M)
+    assert tile_ids == ["WAC_EMP_643NM_E300N1350_304P"]
 
 
-def test_wac_emp_tile_id_for_bbox_resolves_southern_hemisphere():
+def test_wac_emp_tile_ids_for_bbox_resolves_southern_hemisphere():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, -30.0, MOON_RADIUS_M)
-    assert tile_id == "WAC_EMP_643NM_E300S1350_304P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 135.0, -30.0, MOON_RADIUS_M)
+    assert tile_ids == ["WAC_EMP_643NM_E300S1350_304P"]
 
 
-def test_wac_emp_tile_id_for_bbox_honors_wavelength_and_ppd():
+def test_wac_emp_tile_ids_for_bbox_honors_wavelength_and_ppd():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 30.0, MOON_RADIUS_M, wavelength_nm=321, ppd=64)
-    assert tile_id == "WAC_EMP_321NM_E300N0450_064P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, 30.0, MOON_RADIUS_M, wavelength_nm=321, ppd=64)
+    assert tile_ids == ["WAC_EMP_321NM_E300N0450_064P"]
 
 
-def test_wac_emp_tile_id_for_bbox_rejects_unknown_wavelength():
+def test_wac_emp_tile_ids_for_bbox_rejects_unknown_wavelength():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
     with pytest.raises(ValueError, match="wavelength_nm"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, 30.0, MOON_RADIUS_M, wavelength_nm=500)
+        ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 135.0, 30.0, MOON_RADIUS_M, wavelength_nm=500)
 
 
-def test_wac_emp_tile_id_for_bbox_resolves_polar_north():
+def test_wac_emp_tile_ids_for_bbox_resolves_polar_north():
     # A footprint fully north of the equirect grid's own +-60 deg coverage resolves to the
     # polar-stereographic tile pair instead of raising (confirmed real, fetchable tile -- see
     # docs/data-sources/wac-emp-pds4.md's polar-tile bullet).
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M)
-    assert tile_id == "WAC_EMP_643NM_P900N0000_304P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M)
+    assert tile_ids == ["WAC_EMP_643NM_P900N0000_304P"]
 
 
-def test_wac_emp_tile_id_for_bbox_resolves_polar_south():
+def test_wac_emp_tile_ids_for_bbox_resolves_polar_south():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, -75.0, MOON_RADIUS_M)
-    assert tile_id == "WAC_EMP_643NM_P900S0000_304P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, -75.0, MOON_RADIUS_M)
+    assert tile_ids == ["WAC_EMP_643NM_P900S0000_304P"]
 
 
-def test_wac_emp_tile_id_for_bbox_rejects_non_default_band_for_polar():
+def test_wac_emp_tile_ids_for_bbox_rejects_non_default_band_for_polar():
     # The polar tile pair only exists at one wavelength/ppd combination (confirmed via the archive's
     # own listing) -- a footprint that needs polar coverage but requests a different one can't be
     # silently served a wrong tile.
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
     with pytest.raises(ValueError, match="archive only offers"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M, wavelength_nm=321, ppd=64)
+        ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, 75.0, MOON_RADIUS_M, wavelength_nm=321, ppd=64)
 
 
-def test_wac_emp_tile_id_for_bbox_raises_when_straddling_equirect_polar_boundary():
+def test_wac_emp_tile_ids_for_bbox_mosaics_across_equirect_polar_boundary():
     # A footprint whose padded AOI spans from well inside the equirect grid's own +-60 deg coverage to
-    # well beyond it -- no single tile (equirect or polar) covers it, and this project doesn't mosaic
-    # across that boundary either, matching its existing equator/lon-zone-boundary stance.
+    # well beyond it -- no single tile (equirect or polar) covers it alone, so both are returned for
+    # the caller to mosaic (docs/proposed-tasks/production-run-readiness.md: a real, common case for
+    # this project's own manifest -- roughly a third of `trn_dataset`'s rows sit close enough to 60 deg
+    # latitude that any AOI padding crosses this boundary).
     dst_bbox_m = (-50000.0, -200000.0, 50000.0, 200000.0)  # +-200km height, well past +-60 at center 60
-    with pytest.raises(ValueError, match="doesn't mosaic across it"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 45.0, 60.0, MOON_RADIUS_M)
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, 60.0, MOON_RADIUS_M)
+    assert set(tile_ids) == {"WAC_EMP_643NM_E300N0450_304P", "WAC_EMP_643NM_P900N0000_304P"}
 
 
-def test_wac_emp_tile_id_for_bbox_raises_when_straddling_equator():
+def test_wac_emp_tile_ids_for_bbox_mosaics_across_equator():
     # A footprint centered right at the equator, tall enough that its padded AOI spans both
-    # hemispheres -- no single equirect tile covers it.
+    # hemispheres -- no single equirect tile covers it alone.
     dst_bbox_m = (-50000.0, -300000.0, 50000.0, 300000.0)
-    with pytest.raises(ValueError, match="straddles the equator"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 135.0, 0.0, MOON_RADIUS_M)
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 135.0, 0.0, MOON_RADIUS_M)
+    assert set(tile_ids) == {"WAC_EMP_643NM_E300N1350_304P", "WAC_EMP_643NM_E300S1350_304P"}
 
 
-def test_wac_emp_tile_id_for_bbox_raises_when_straddling_lon_zone_boundary():
+def test_wac_emp_tile_ids_for_bbox_mosaics_across_lon_zone_boundary():
     # A footprint centered right at a 90-deg lon zone boundary, wide enough that its padded AOI spans
-    # two lon zones -- no single equirect tile covers it.
+    # two lon zones -- no single equirect tile covers it alone.
     dst_bbox_m = (-300000.0, -50000.0, 300000.0, 50000.0)
-    with pytest.raises(ValueError, match="straddles a WAC_EMP tile"):
-        ortho_wac_emp.wac_emp_tile_id_for_bbox(dst_bbox_m, 90.0, 30.0, MOON_RADIUS_M)
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 90.0, 30.0, MOON_RADIUS_M)
+    assert set(tile_ids) == {"WAC_EMP_643NM_E300N0450_304P", "WAC_EMP_643NM_E300N1350_304P"}
+
+
+def test_wac_emp_tile_ids_for_bbox_mosaics_across_the_0_360_seam():
+    # A footprint centered right at true longitude 0 -- minlon_norm > maxlon_norm after normalizing
+    # into [0, 360), the same underlying phenomenon as any other lon-zone straddle (zone 3 followed by
+    # zone 0), not a fundamentally different case.
+    dst_bbox_m = (-300000.0, -50000.0, 300000.0, 50000.0)
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 0.0, 30.0, MOON_RADIUS_M)
+    assert set(tile_ids) == {"WAC_EMP_643NM_E300N3150_304P", "WAC_EMP_643NM_E300N0450_304P"}
 
 
 def _write_wac_emp_style_tif(path, reflectance_value, bbox_m, width, height, moon_radius_m):
@@ -126,7 +137,7 @@ def test_reproject_wac_emp_reflectance_to_local_grid_preserves_constant_field(tm
     output_path = tmp_path / "reprojected.tif"
 
     result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
-        native_path, dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+        [native_path], dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
     )
 
     with rasterio.open(result_path) as src:
@@ -179,7 +190,7 @@ def test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimerid
     output_path = tmp_path / "reprojected.tif"
 
     result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
-        native_path, dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+        [native_path], dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
     )
 
     with rasterio.open(result_path) as src:
@@ -194,7 +205,7 @@ def _write_wac_emp_polar_style_tif(
 ):
     """Fixture matching the real WAC_EMP polar tile's own projection family -- Polar Stereographic,
     not Equirectangular (confirmed live via `gdalinfo` on the real `P900N0000` tile: EPSG method 9810,
-    `lat_0=90`/`lon_0=0`). Used to prove `reproject_wac_emp_reflectance_to_local_grid`'s
+    `lat_0=90`/`lon_0=0`). Used to prove `_reproject_one_wac_emp_tile_to_array`'s
     antimeridian-branch-cut fix stays correctly gated off (`is_equirect`) for this projection family --
     it has no such branch cut (longitude enters through smooth sin/cos terms, not a raw linear
     multiply), so "correcting" it the same way would corrupt otherwise-valid data instead of fixing
@@ -213,7 +224,7 @@ def _write_wac_emp_polar_style_tif(
 
 def test_reproject_wac_emp_reflectance_to_local_grid_handles_polar_stereographic_source(tmp_path):
     # A footprint near the pole resolves to the real polar-stereographic tile family (see
-    # test_wac_emp_tile_id_for_bbox_resolves_polar_north/south) -- this confirms
+    # test_wac_emp_tile_ids_for_bbox_resolves_polar_north/south) -- this confirms
     # reproject_wac_emp_reflectance_to_local_grid's generic warp still produces correct, non-NaN
     # output for that different projection family, and specifically that the antimeridian-branch-cut
     # fix (which only makes sense for the equirect tiles' `central_meridian=0` formula) doesn't fire
@@ -237,7 +248,7 @@ def test_reproject_wac_emp_reflectance_to_local_grid_handles_polar_stereographic
     output_path = tmp_path / "reprojected.tif"
 
     result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
-        native_path, dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+        [native_path], dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
     )
 
     with rasterio.open(result_path) as src:
@@ -245,3 +256,59 @@ def test_reproject_wac_emp_reflectance_to_local_grid_handles_polar_stereographic
     assert result.shape == (dst_height, dst_width)
     assert not np.isnan(result).any()
     assert result == pytest.approx(reflectance_value, abs=1e-4)
+
+
+def test_reproject_wac_emp_reflectance_to_local_grid_mosaics_two_tiles(tmp_path):
+    # The real point of `wac_emp_tile_ids_for_bbox` returning more than one tile: this proves the
+    # caller-facing mosaic actually stitches them into one gap-free result, not just that the tile
+    # *names* resolve correctly (test_wac_emp_tile_ids_for_bbox_mosaics_across_lon_zone_boundary
+    # above only checks that). Two adjacent equirect tiles, each only covering half of a destination
+    # AOI centered right on their shared lon-zone boundary, distinguished by a different reflectance
+    # value each -- a real per-tile boundary-artifact bug (e.g. the antimeridian branch-cut class of
+    # bug this same module already hit once) would show up as NaN gaps or a wrong value on the wrong
+    # side, not just a crash.
+    moon_radius_m = 1_737_400.0
+    west_value, east_value = 0.06, 0.10
+    # Native fixtures meet exactly at lon=90 (the same boundary the destination AOI below straddles),
+    # each spanning 2 deg -- narrower than a real 90-deg-wide equirect zone, but with the same native
+    # pixel size (~474 m/px) `test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimeridian`
+    # already uses successfully; a full 90-deg-wide fixture at a comparably fine resolution would need
+    # an impractically large synthetic file, and a coarser one leaves the destination AOI's own 10km
+    # height under 1 native pixel tall -- `window_from_bounds`/`src.read`'s own fractional-pixel
+    # rounding then collapses the read window to a genuinely zero-height array
+    # (`CPLE_AppDefinedError: Invalid dataset dimensions`), not a real bug in the code under test.
+    west_bbox_m = (
+        moon_radius_m * math.radians(88.0),
+        moon_radius_m * math.radians(-10.0),
+        moon_radius_m * math.radians(90.0),
+        moon_radius_m * math.radians(10.0),
+    )
+    east_bbox_m = (
+        moon_radius_m * math.radians(90.0),
+        moon_radius_m * math.radians(-10.0),
+        moon_radius_m * math.radians(92.0),
+        moon_radius_m * math.radians(10.0),
+    )
+    west_path = tmp_path / "wac_emp_west.tif"
+    east_path = tmp_path / "wac_emp_east.tif"
+    _write_wac_emp_antimeridian_style_tif(west_path, west_value, 88.0, 90.0, 128, moon_radius_m)
+    _write_wac_emp_antimeridian_style_tif(east_path, east_value, 90.0, 92.0, 128, moon_radius_m)
+    assert west_bbox_m[2] == pytest.approx(east_bbox_m[0])  # fixtures really do meet, not overlap/gap
+
+    center_lon, center_lat = 90.0, 0.0  # straddles the two fixtures' own shared boundary
+    dst_bbox_m = (-20_000.0, -5_000.0, 20_000.0, 5_000.0)  # west half over `west_path`, east over `east_path`
+    dst_width, dst_height = 32, 8
+    output_path = tmp_path / "reprojected.tif"
+
+    result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
+        [west_path, east_path], dst_bbox_m, dst_width, dst_height, center_lon, center_lat, moon_radius_m, output_path
+    )
+
+    with rasterio.open(result_path) as src:
+        result = src.read(1)
+    assert result.shape == (dst_height, dst_width)
+    assert not np.isnan(result).any(), "mosaic left a gap at the tile boundary instead of stitching cleanly"
+    # West half of the destination grid (columns < width/2) is west of center_lon -- must read from
+    # west_path, not leak the east tile's value across the boundary, and vice versa.
+    assert result[:, : dst_width // 2] == pytest.approx(west_value, abs=1e-4)
+    assert result[:, dst_width // 2 :] == pytest.approx(east_value, abs=1e-4)

@@ -250,9 +250,11 @@ def fetch_and_shade_ortho(
         display stretch -- see docs/data-sources/lunaserv-wms.md.
     :returns: A `DemOrthoResult` for the fetched, shaded ortho (paired with `dem`).
     :raises ValueError: If `ortho_source` isn't one of `ORTHO_SOURCES`, or (for `"wac_emp_pds"`) if the
-        camera's footprint needs latitude beyond WAC_EMP's own equirect-tile coverage or straddles a
-        tile boundary (`ortho_wac_emp.wac_emp_tile_id_for_bbox`) -- no silent fallback to
-        `"lunaserv_wms"` in that case; a caller that wants the fallback has to ask for it explicitly.
+        camera's footprint needs the polar tile pair at a wavelength/ppd the archive doesn't offer
+        there (`ortho_wac_emp.wac_emp_tile_ids_for_bbox`) -- no silent fallback to `"lunaserv_wms"` in
+        that case; a caller that wants the fallback has to ask for it explicitly. A footprint
+        straddling a tile boundary (the equator, a 90-deg lon zone, or the equirect/polar split) is
+        mosaicked, not an error.
     """
     # Taking `dem` (`fetch_dem`'s output) as an input and always reusing its `bbox`/`width`/`height`
     # exactly closes the entanglement `fetch_dem`'s docstring describes for the DEM/ortho pairing
@@ -304,14 +306,21 @@ def fetch_and_shade_ortho(
     if ortho_source == "wac_emp_pds":
         # Live default: WAC_EMP's own reflectance, fetched directly from its PDS4 archive rather than
         # through Lunaserv's WMS render -- the WMS layer's DN carries an uncorrected affine display
-        # stretch, not raw reflectance. `fetch_wac_emp_reflectance` raises if this footprint needs a
-        # tile beyond the archive's own equirect coverage (see its own docstring) -- no silent
-        # fallback to the deprecated Lunaserv path below.
-        wac_emp_path, wac_emp_product_id = fetch_wac_emp_reflectance(bbox, center_lon, center_lat, config)
-        print(f"WAC_EMP tile: {wac_emp_product_id}")
+        # stretch, not raw reflectance. `fetch_wac_emp_reflectance` returns one tile per AOI normally,
+        # more if this footprint straddles a tile boundary (see its own docstring) -- mosaicked below,
+        # not raising. No silent fallback to the deprecated Lunaserv path below.
+        wac_emp_tiles = fetch_wac_emp_reflectance(bbox, center_lon, center_lat, config)
+        print(f"WAC_EMP tile(s): {', '.join(product_id for _, product_id in wac_emp_tiles)}")
         ortho_path = config.output_dir / "ortho_wac_emp.tif"
         reproject_wac_emp_reflectance_to_local_grid(
-            wac_emp_path, bbox, width, height, center_lon, center_lat, MOON_RADIUS_M, ortho_path
+            [path for path, _ in wac_emp_tiles],
+            bbox,
+            width,
+            height,
+            center_lon,
+            center_lat,
+            MOON_RADIUS_M,
+            ortho_path,
         )
     else:
         ortho_path = cache.fetch_lunaserv_getmap(

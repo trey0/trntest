@@ -83,11 +83,11 @@ def test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black():
 
 
 @pytest.mark.heavy
-def test_wac_emp_tile_id_for_bbox_resolves_the_real_default_candidate():
+def test_wac_emp_tile_ids_for_bbox_resolves_the_real_default_candidate():
     # A narrower, faster-to-reason-about live check than the full fetch above: the real default
     # candidate's own footprint resolves to the exact tile this migration's own investigation
     # confirmed exists (docs/data-sources.md) -- catches a tile-grid regression without needing the
-    # full ~1.86GB fetch this test alone doesn't trigger (`wac_emp_tile_id_for_bbox` is pure math).
+    # full ~1.86GB fetch this test alone doesn't trigger (`wac_emp_tile_ids_for_bbox` is pure math).
     session = trntest.Session()
     images = trntest.read_manifest(_REPO_ROOT / "notebooks" / "dataset_manifest.csv")
     dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
@@ -101,5 +101,5 @@ def test_wac_emp_tile_id_for_bbox_resolves_the_real_default_candidate():
     bbox_unpadded = geo_utils.footprint_bbox_local_m(camera.footprint_lonlat_deg, center_lon, center_lat)
     bbox = geo_utils.pad_bbox(bbox_unpadded, config.dem_padding_fraction)
 
-    tile_id = ortho_wac_emp.wac_emp_tile_id_for_bbox(bbox, center_lon, center_lat, MOON_RADIUS_M)
-    assert tile_id == "WAC_EMP_643NM_E300N1350_304P"
+    tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(bbox, center_lon, center_lat, MOON_RADIUS_M)
+    assert tile_ids == ["WAC_EMP_643NM_E300N1350_304P"]

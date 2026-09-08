@@ -17,7 +17,7 @@ from trntest.product_io import atomic_publish
 
 # A small pad applied before checking/fetching a data source's own coverage, accounting for a
 # resampling kernel needing neighbor samples just past the destination edge -- shared by
-# `dem_gld100.astropedia_coverage_bbox_deg` and `ortho_wac_emp.wac_emp_tile_id_for_bbox`, both of
+# `dem_gld100.astropedia_coverage_bbox_deg` and `ortho_wac_emp.wac_emp_tile_ids_for_bbox`, both of
 # which derive a degree-space coverage bbox from the same padded local-Orthographic working grid.
 DEM_FETCH_SAFETY_MARGIN_FRACTION = 0.02
 
@@ -157,6 +157,84 @@ def pixel_dims_for_gsd(bbox, target_gsd_m):
     return width_px, height_px
 
 
+def reproject_raster_to_local_grid_array(
+    source_array: np.ndarray,
+    src_crs: str,
+    src_transform,
+    dst_bbox_m,
+    dst_width: int,
+    dst_height: int,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    moon_radius_m: float,
+    resampling: Resampling,
+    tolerance: float,
+    src_nodata: float | None = None,
+    dst_nodata: float | None = None,
+) -> np.ndarray:
+    """The same warp core `reproject_raster_to_local_grid` uses, returning the destination array
+    directly instead of writing a GeoTIFF -- the piece a multi-tile mosaic caller needs (reproject each
+    source tile separately, then combine the arrays with `merge_local_grid_arrays` before writing one
+    output file); `reproject_raster_to_local_grid` itself is just this plus the write step, for every
+    single-source caller that doesn't need to merge anything.
+
+    :param source_array: Single-band source raster.
+    :param src_crs: Source CRS.
+    :param src_transform: Source affine transform.
+    :param dst_bbox_m: Destination `(minx, miny, maxx, maxy)`, meters, local Orthographic CRS.
+    :param dst_width: Destination width, pixels.
+    :param dst_height: Destination height, pixels.
+    :param center_lon_deg: Destination CRS tangent point longitude, degrees.
+    :param center_lat_deg: Destination CRS tangent point latitude, degrees.
+    :param moon_radius_m: Sphere radius, meters.
+    :param resampling: `rasterio.warp` resampling method.
+    :param tolerance: `rasterio.warp.reproject` error tolerance.
+    :param src_nodata: Source nodata value, if any.
+    :param dst_nodata: Destination nodata value, if any.
+    :returns: The reprojected `(dst_height, dst_width)` `float32` array.
+    """
+    # Uses `rasterio.warp.reproject` so the resampling method is one this project controls explicitly,
+    # not any server's opaque resampling. The destination Orthographic definition matches
+    # `orthographic_xy_m`'s own forward projection math exactly (same center, same sphere radius, same
+    # projection family).
+    dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
+    dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)
+
+    reprojected = np.full((dst_height, dst_width), np.nan, dtype="float32")
+    reproject(
+        source=source_array,
+        destination=reprojected,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        src_nodata=src_nodata,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        dst_nodata=dst_nodata,
+        resampling=resampling,
+        tolerance=tolerance,
+    )
+    return reprojected
+
+
+def merge_local_grid_arrays(arrays: list[np.ndarray]) -> np.ndarray:
+    """Combine several same-shape `reproject_raster_to_local_grid_array` outputs into one, filling each
+    destination pixel from whichever array actually covers it there.
+
+    :param arrays: One or more same-shape arrays, each `np.nan` (per that function's `dst_nodata=nan`
+        convention) outside its own source tile's coverage.
+    :returns: The merged array -- `arrays[0]` where it's real, else the first later array that's real
+        there, else `nan` if none of them cover that pixel. Callers mosaicking genuinely adjacent,
+        non-overlapping tiles (this project's only real use case, see
+        `ortho_wac_emp.wac_emp_tile_ids_for_bbox`) never have more than one array real at a given pixel,
+        so this "first real one wins" rule never actually has to arbitrate a disagreement.
+    """
+    merged = arrays[0].copy()
+    for array in arrays[1:]:
+        nodata_mask = np.isnan(merged)
+        merged[nodata_mask] = array[nodata_mask]
+    return merged
+
+
 def reproject_raster_to_local_grid(
     source_array: np.ndarray,
     src_crs: str,
@@ -173,7 +251,8 @@ def reproject_raster_to_local_grid(
     src_nodata: float | None = None,
     dst_nodata: float | None = None,
 ) -> Path:
-    """Reproject a single-band source array onto the per-camera local Orthographic working grid.
+    """Reproject a single-band source array onto the per-camera local Orthographic working grid and
+    write it out as a GeoTIFF.
 
     :param source_array: Single-band source raster.
     :param src_crs: Source CRS.
@@ -193,25 +272,21 @@ def reproject_raster_to_local_grid(
     """
     # Shared warp core behind every data-source-specific reprojection function
     # (`lunaserv_wms.reproject_dem_to_local_grid`, `dem_gld100.reproject_astropedia_elevation_to_local_grid`,
-    # `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`). Uses `rasterio.warp.reproject` so the
-    # resampling method is one this project controls explicitly, not any server's opaque resampling. The
-    # destination Orthographic definition matches `orthographic_xy_m`'s own forward projection math
-    # exactly (same center, same sphere radius, same projection family).
-    dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
-    dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)
-
-    reprojected = np.full((dst_height, dst_width), np.nan, dtype="float32")
-    reproject(
-        source=source_array,
-        destination=reprojected,
-        src_transform=src_transform,
-        src_crs=src_crs,
+    # `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`).
+    reprojected = reproject_raster_to_local_grid_array(
+        source_array,
+        src_crs,
+        src_transform,
+        dst_bbox_m,
+        dst_width,
+        dst_height,
+        center_lon_deg,
+        center_lat_deg,
+        moon_radius_m,
+        resampling,
+        tolerance,
         src_nodata=src_nodata,
-        dst_transform=dst_transform,
-        dst_crs=dst_crs,
         dst_nodata=dst_nodata,
-        resampling=resampling,
-        tolerance=tolerance,
     )
 
     profile = {
@@ -220,8 +295,8 @@ def reproject_raster_to_local_grid(
         "width": dst_width,
         "count": 1,
         "dtype": "float32",
-        "crs": dst_crs,
-        "transform": dst_transform,
+        "crs": local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m),
+        "transform": transform_from_bounds(*dst_bbox_m, dst_width, dst_height),
         "nodata": None,
     }
     with atomic_publish(Path(output_path)) as tmp:

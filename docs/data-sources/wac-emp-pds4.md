@@ -25,7 +25,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   `.../WAC_EMP/`, not inferred from one example filename): each tile is
   `WAC_EMP_<wavelength_nm>NM_E300<N|S><lon_center_deg*10:04d>_<ppd:03d>P.IMG` (`.xml` label sidecar of
   the same base name also present, unused by this project — GDAL's PDS3 driver reads the `.IMG`
-  file's own attached label directly). `wac_emp_tile_id_for_bbox` builds this string.
+  file's own attached label directly). `wac_emp_tile_ids_for_bbox` builds this string.
   - **Wavelength**: one of 7 real bands, `321/360/415/566/604/643/689` (nm) — the identical band set
     ISIS's own Hapke calibration cube already offers (`hapke.HAPKE_CALIBRATION_WAVELENGTHS_NM`).
     This project defaults to 643nm (`DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM`), matching the
@@ -33,7 +33,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   - **Resolution (`ppd`)**: every band is offered at 64 ppd; 643nm *additionally* has a real 304 ppd
     product (confirmed live: both `WAC_EMP_643NM_E300N1350_064P.IMG` and
     `WAC_EMP_643NM_E300N1350_304P.IMG` exist) — this project's own default (`ppd=304` in
-    `wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`).
+    `wac_emp_tile_ids_for_bbox`/`fetch_wac_emp_reflectance`).
   - **Tile grid**: the equirect (non-polar) coverage is exactly one 60°-tall latitude band per
     hemisphere (0-60°N, 0-60°S — center magnitude 30.0°, hence the fixed literal `"E300"` segment
     every equirect tile ID shares) × 4 lon zones 90° wide each, centered at 45°/135°/225°/315°
@@ -43,10 +43,12 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
     `lon_center=135.0`/hemisphere `N` exactly.
   - **Polar coverage** (60-90° both hemispheres): a real, *separate* tile pair also exists in the same
     listing, 643nm/304ppd only — `WAC_EMP_643NM_P900N0000_304P.IMG`/`..._P900S0000_304P.IMG` — and
-    **is fetched by this project** (`wac_emp_tile_id_for_bbox` dispatches to it automatically for a
-    footprint entirely beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0` in one hemisphere; a footprint
-    that straddles that 60° boundary, or that needs polar coverage at a wavelength/ppd other than
-    643nm/304, still raises `ValueError` — no mosaic across the boundary, no silently-wrong tile).
+    **is fetched by this project** (`wac_emp_tile_ids_for_bbox` dispatches to it automatically for a
+    footprint touching latitude beyond `WAC_EMP_MAX_ABS_LATITUDE_DEG = 60.0` in one hemisphere; a
+    footprint straddling that 60° boundary gets both the equirect and polar tile, mosaicked, rather
+    than either alone — see the "multi-tile mosaic" bullet below. A footprint that needs polar
+    coverage at a wavelength/ppd other than 643nm/304 still raises `ValueError` — no silently-wrong
+    tile).
     Confirmed live via `gdalinfo`/`rasterio` on the real `P900N0000` tile (1,394,200,920 bytes,
     18669x18669 px at 304 ppd): a genuine Polar Stereographic (variant A, EPSG method 9810,
     `lat_0=90`/`lon_0=0`) projection GDAL's PDS3 driver reads natively, same as the equirect tiles —
@@ -64,7 +66,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
       coverage — confirmed via a systematic 10°-longitude sweep: fully solid from 60-75°, then a
       growing but still sparse (roughly 10-30% of sampled points) speckle of voids from 80° up to the
       pole itself, presumably real imaging/illumination-geometry gaps in the underlying mosaic, not a
-      processing bug. `reproject_raster_to_local_grid`'s existing `src_nodata`/`dst_nodata` handling
+      processing bug. `reproject_raster_to_local_grid_array`'s existing `src_nodata`/`dst_nodata` handling
       (already exercised by the DEM path) propagates these through as ordinary NaN holes in the
       output — confirmed on two real candidates (`M1314069739CE`, -72.6°: 2,381/1,731,856 NaN
       pixels ≈0.14%; `M1314073855CE`, 70.8°: 6,689/1,731,856 ≈0.39%), both otherwise well-formed.
@@ -74,9 +76,16 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
       yet done, in `docs/proposed-tasks/open-items.md`'s GLD100/VIRA bullet) — real 60-79° candidates
       from a live orbit-sequence dataset (`M1314069739CE`/`M1314073855CE` above) confirm this range
       works end to end today.
-  - No multi-tile mosaic in this pass either: an AOI straddling the equator, a 90°-lon zone boundary,
-    or the equirect/polar 60° boundary also raises `ValueError` (same "no silent fallback/mosaic"
-    stance).
+  - **Multi-tile mosaic**: an AOI straddling the equator, a 90°-lon zone boundary, or the
+    equirect/polar 60° boundary is mosaicked across the boundary rather than raising —
+    `wac_emp_tile_ids_for_bbox` returns every tile the padded AOI touches (usually one), each fetched
+    (`fetch_wac_emp_reflectance`) and reprojected onto the shared destination grid independently
+    (`reproject_wac_emp_reflectance_to_local_grid`), then combined pixel-by-pixel
+    (`geo_utils.merge_local_grid_arrays`) — correct regardless of which combination of tile projection
+    families (equirect, polar, or one of each) is involved, since the merge only ever looks at the
+    shared destination grid, never the source tiles' own differing CRSs. A real, non-rare case for
+    this project's own `trn_dataset` manifest: roughly a third of its rows sit close enough to the 60°
+    equirect/polar split that any nonzero AOI padding pushes them across it.
 - **File format, confirmed live via `gdalinfo`/`rasterio` on the real 304ppd tile**: IEEE754 float32,
   real physical reflectance (I/F), a genuine PDS3-attached-label GeoTIFF-equivalent GDAL's own `PDS3`
   driver reads natively (`Driver: PDS3/PDS3`) — real embedded map-projection keywords (Equidistant
@@ -98,7 +107,7 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   actually stores that location. This silently produced a degenerate, zero-width read `Window`
   (`CPLE_AppDefinedError: Invalid dataset dimensions`) and, once that was worked around, an
   all-nodata `rasterio.warp.reproject` output (the same branch cut, hit a second time by the
-  pixel-level warp) — see `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`'s own inline
+  pixel-level warp) — see `ortho_wac_emp._reproject_one_wac_emp_tile_to_array`'s own inline
   comments for the two-part fix (shifting the read window by one circumference when it lands outside
   the tile's own stored bounds; re-expressing the source CRS's `central_meridian` at the tile's own
   PROJ-normalized center before the warp, so no destination point needs to cross ±180° from it) and

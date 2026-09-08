@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pytest
 
 from trntest import geo_utils
@@ -104,3 +105,31 @@ def test_pixel_dims_for_gsd_isotropic_for_square_bbox():
     bbox = (-10_000.0, -10_000.0, 10_000.0, 10_000.0)
     width_px, height_px = geo_utils.pixel_dims_for_gsd(bbox, target_gsd_m=100.0)
     assert width_px == height_px == 200
+
+
+def test_merge_local_grid_arrays_fills_gaps_from_later_arrays():
+    # Adjacent, non-overlapping coverage (the real ortho_wac_emp.py use case: each tile's own
+    # reprojected array is nan outside its own coverage) -- the merge should be a clean fill, not an
+    # average or any other blend.
+    left = np.array([[1.0, 1.0, np.nan, np.nan]])
+    right = np.array([[np.nan, np.nan, 2.0, 2.0]])
+    merged = geo_utils.merge_local_grid_arrays([left, right])
+    assert merged == pytest.approx(np.array([[1.0, 1.0, 2.0, 2.0]]))
+
+
+def test_merge_local_grid_arrays_first_array_wins_on_overlap():
+    # Real adjacent tiles never actually overlap (see the module-level docstring's own caveat), but
+    # the "first real value wins" rule should still be well-defined rather than silently averaging or
+    # raising if it ever does.
+    first = np.array([[1.0, np.nan]])
+    second = np.array([[9.0, 2.0]])
+    merged = geo_utils.merge_local_grid_arrays([first, second])
+    assert merged == pytest.approx(np.array([[1.0, 2.0]]))
+
+
+def test_merge_local_grid_arrays_single_array_passthrough():
+    only = np.array([[1.0, np.nan, 3.0]])
+    merged = geo_utils.merge_local_grid_arrays([only])
+    assert merged[0, 0] == pytest.approx(1.0)
+    assert np.isnan(merged[0, 1])
+    assert merged[0, 2] == pytest.approx(3.0)

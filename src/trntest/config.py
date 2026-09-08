@@ -100,7 +100,7 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
 # Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
-# archive (`ortho_wac_emp.wac_emp_tile_id_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
+# archive (`ortho_wac_emp.wac_emp_tile_ids_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
 # Lunaserv's WMS render, which carries an uncorrected affine display stretch. One base URL covers
 # every tile: the tile's own product ID, resolved per footprint, is appended directly. See
 # docs/data-sources/wac-emp-pds4.md.

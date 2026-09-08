@@ -58,7 +58,7 @@ against a fresh entry.
 this assessment was written, WAC_EMP (the live default ortho source) only covered ±60°, so 24 of 81
 rows (`|center_lat_deg| > 60`) were guaranteed to fail outright.
 
-**Resolved in a later session**: `wac_emp_tile_id_for_bbox` now also fetches WAC_EMP's own
+**Resolved in a later session**: `wac_emp_tile_ids_for_bbox` now also fetches WAC_EMP's own
 polar-stereographic tile pair (`P900N`/`P900S`) for a footprint entirely beyond 60° in one
 hemisphere — see `docs/data-sources/wac-emp-pds4.md`'s polar-tile bullet for the confirmed
 format/coverage facts. Since GLD100 (the DEM source `fetch_dem_and_ortho` calls first) still caps
@@ -66,9 +66,16 @@ out at ±79° and this manifest's own range (-68.2°..+73.2°) fits entirely ins
 24 previously-failing rows should now succeed — confirmed end to end on two real high-latitude
 candidates from a *different* dataset (`orbit_sequence_dataset`'s `M1314069739CE`/`-72.6°` and
 `M1314073855CE`/`70.8°`), but **not yet re-verified against `trn_dataset`'s own manifest
-specifically** — a real remaining risk is any row whose padded AOI happens to straddle the exact 60°
-equirect/polar seam (still an unmosaiced hard `ValueError`, by design), which this pre-filtering pass
-would still need to catch.
+specifically**.
+
+**Resolved in a later session**: the 60° equirect/polar seam itself is no longer a hard failure.
+`wac_emp_tile_ids_for_bbox` now returns every tile a padded AOI touches (mosaicking across the
+equator, a 90°-lon zone boundary, or the equirect/polar split) instead of raising when it straddles
+one — see `docs/data-sources/wac-emp-pds4.md`'s "Multi-tile mosaic" bullet. This was a real, common
+case for this manifest specifically, not a theoretical edge case: 31 of its 81 rows have
+`|center_lat_deg| > 55°`, close enough to the 60° line that any nonzero AOI padding pushes at least
+one of them across it (`M1327218124CE` at 59.28° almost certainly does). No pre-filtering step is
+needed for this anymore -- a straddling row now just costs one extra tile fetch instead of failing.
 
 ## Resolved: the second, different failure mode from `orbit_sequence_dataset`
 
@@ -107,13 +114,11 @@ single candidate).
 1. Free disk space first: at minimum reclaim the ~7.9GB of orphaned worktree `output/` (with the
    user's go-ahead); reconsider whether the full 81-row manifest is the right scope at all given the
    remaining headroom, versus a deliberately-chosen low-latitude subset.
-2. Pre-filter `trn_dataset`'s manifest to exclude any row whose padded AOI would straddle the exact
-   60° equirect/polar seam (now the only remaining hard latitude cutoff within GLD100's own ±79°
-   DEM coverage — see "Latitude coverage" above) before a real run, rather than hitting it one entry
-   at a time.
-3. Run a small trial (10-20 entries from that filtered set) first — not the full run — to get a real
-   per-entry timing number for this dataset's own geometry before committing to a much larger batch.
-4. Follow `docs/batch-generation.md`'s existing guidance for the real run:
+2. Run a small trial (10-20 entries) first — not the full run — to get a real per-entry timing number
+   for this dataset's own geometry before committing to a much larger batch. No manifest pre-filtering
+   is needed for the 60° equirect/polar seam anymore (see "Latitude coverage" above) -- a straddling
+   row now mosaics instead of failing.
+3. Follow `docs/batch-generation.md`'s existing guidance for the real run:
    `populate_via_workers()`, not sequential `populate()`; `write_index=False` for every call in an
    incremental loop except the last, since `write_overview_map`'s default `True` rebuilds cameras
    for the *entire* already-populated portion on every call otherwise.
