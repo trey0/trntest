@@ -8,6 +8,8 @@ Low-level module: takes plain scalars (cache roots, base URLs), not a `TrntestCo
 pass them down explicitly.
 """
 
+import contextlib
+import fcntl
 import os
 import subprocess
 import tempfile
@@ -18,6 +20,7 @@ from pathlib import Path
 import requests
 
 from trntest import trace
+from trntest.config import DEFAULT_CACHE_ROOT
 
 # A from-cold `candidate_window.images_for_window()` sweep calls `cached_get` up to ~1600 times in a plain
 # sequential loop with no pacing between requests -- confirmed enough on its own, no concurrent
@@ -45,6 +48,51 @@ _MAX_RETRY_AFTER_SECONDS = 30.0
 _SESSION = requests.Session()
 
 _HTTP_TOO_MANY_REQUESTS = 429
+
+# `_REQUEST_PACING_SECONDS` above only serializes requests *within one process* -- `time.sleep` plus
+# a plain sequential loop naturally means one process never has two requests in flight, but
+# `TrnTestDataSet.populate_via_workers()` runs `workers` separate `-k process` worker processes,
+# each with its own independent copy of this module's state. Nothing coordinated their requests
+# against each other, so real aggregate request rate to a single external host scaled with `workers`
+# -- exactly the kind of burst that caused the 1hr ban documented above, just from this project's own
+# worker pool instead of `images_for_window()`'s single-process sweep.
+#
+# Fixed via a real cross-process mutual-exclusion lock (`fcntl.flock`, not a lockfile-exists
+# convention -- a real blocking wait, no polling, and the OS releases it automatically if a holding
+# process dies mid-fetch, so a killed worker can't leave every other process stuck waiting forever).
+# `_pacing_gate()` is held for a whole `cached_get` call -- every attempt's pacing sleep, the request
+# itself, full response streaming, and any retry/`Retry-After` backoff -- not just released after a
+# quick timestamp check, so at most one fetch is ever live VPS-wide and each new one still waits out
+# `_REQUEST_PACING_SECONDS` after the previous one finished, the same guarantee one process's own
+# sequential execution already gave for free. Holding it through backoff too is deliberate: if one
+# fetch gets rate-limited, every other process sharing this lock backs off with it, not just the
+# unlucky one.
+#
+# Locked at a fixed path under `DEFAULT_CACHE_ROOT`, not derived from `cached_get`'s own `cache_root`
+# parameter -- that parameter varies per call (most callers pass the real shared `config.cache_root`,
+# but `isis_wac.fetch_edr_img`'s `delete_full_raw_edr=True` branch deliberately routes to a
+# disposable, entry-scoped `_spike_dir` instead), while the thing being protected here (an external
+# host's own rate limit) has nothing to do with where the fetched file ends up locally. A fixed path
+# under the one cache root every worktree/container on this VPS mounts the same host directory at
+# (see `docs/environment.md` on shared `cache/`) coordinates every worktree and agent session too,
+# not just one `populate_via_workers()` call's own worker pool -- the same class of contention
+# `docs/environment.md`'s Phase 36 incident documents for multiple *agents*, not just workers.
+_PACING_LOCK_PATH = DEFAULT_CACHE_ROOT / ".fetch_pacing.lock"
+
+
+@contextlib.contextmanager
+def _pacing_gate():
+    """Cross-process mutual exclusion for `cached_get`'s real network fetch -- see the comment above
+    `_PACING_LOCK_PATH` for the full rationale. Blocks until any other process's fetch (in this
+    process, another `populate_via_workers()` worker, or an unrelated agent session sharing this
+    VPS's `cache/`) finishes, then holds the lock until this one does too."""
+    _PACING_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_PACING_LOCK_PATH, "a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 class FetchError(Exception):
@@ -110,41 +158,44 @@ def cached_get(
         print(f"fetching {url} -> {dest}")
 
     last_exc: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        time.sleep(_REQUEST_PACING_SECONDS)
-        fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".part")
-        os.close(fd)
-        tmp = Path(tmp_name)
-        try:
-            with _SESSION.get(url, stream=True, timeout=60, **requests_kwargs) as resp:
-                if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
-                    retry_after = _parse_retry_after_seconds(resp.headers.get("Retry-After"))
-                    if retry_after is None or retry_after > _MAX_RETRY_AFTER_SECONDS or attempt == max_attempts:
-                        raise FetchError(
-                            f"{url}: rate-limited (429) after {attempt} attempt(s); Retry-After="
-                            f"{retry_after if retry_after is not None else 'unset'}s "
-                            f"exceeds the {_MAX_RETRY_AFTER_SECONDS}s inline-retry cap, or attempts "
-                            "are exhausted -- not waiting it out"
-                        )
-                    tmp.unlink(missing_ok=True)
-                    time.sleep(retry_after)
-                    continue
-                resp.raise_for_status()
-                with open(tmp, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1 << 20):
-                        f.write(chunk)
-            tmp.rename(dest)
-            return dest
-        except FetchError:
-            tmp.unlink(missing_ok=True)
-            raise
-        except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "retry",
-            # not KeyboardInterrupt/SystemExit, which must propagate immediately, not be retried.
-            tmp.unlink(missing_ok=True)
-            last_exc = exc
-            if attempt == max_attempts:
-                raise FetchError(f"{url}: failed after {max_attempts} attempt(s): {exc}") from exc
-            time.sleep(min(2**attempt, 8))
+    # The whole retry loop runs under one `_pacing_gate()` acquisition, not one per attempt -- see
+    # that function's own comment for why (single live fetch VPS-wide, backoff included).
+    with _pacing_gate():
+        for attempt in range(1, max_attempts + 1):
+            time.sleep(_REQUEST_PACING_SECONDS)
+            fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".part")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                with _SESSION.get(url, stream=True, timeout=60, **requests_kwargs) as resp:
+                    if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
+                        retry_after = _parse_retry_after_seconds(resp.headers.get("Retry-After"))
+                        if retry_after is None or retry_after > _MAX_RETRY_AFTER_SECONDS or attempt == max_attempts:
+                            raise FetchError(
+                                f"{url}: rate-limited (429) after {attempt} attempt(s); Retry-After="
+                                f"{retry_after if retry_after is not None else 'unset'}s "
+                                f"exceeds the {_MAX_RETRY_AFTER_SECONDS}s inline-retry cap, or attempts "
+                                "are exhausted -- not waiting it out"
+                            )
+                        tmp.unlink(missing_ok=True)
+                        time.sleep(retry_after)
+                        continue
+                    resp.raise_for_status()
+                    with open(tmp, "wb") as f:
+                        for chunk in resp.iter_content(chunk_size=1 << 20):
+                            f.write(chunk)
+                tmp.rename(dest)
+                return dest
+            except FetchError:
+                tmp.unlink(missing_ok=True)
+                raise
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad: any of these means "retry",
+                # not KeyboardInterrupt/SystemExit, which must propagate immediately, not be retried.
+                tmp.unlink(missing_ok=True)
+                last_exc = exc
+                if attempt == max_attempts:
+                    raise FetchError(f"{url}: failed after {max_attempts} attempt(s): {exc}") from exc
+                time.sleep(min(2**attempt, 8))
     raise FetchError(f"{url}: failed after {max_attempts} attempt(s)") from last_exc
 
 

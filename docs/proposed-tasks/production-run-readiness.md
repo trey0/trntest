@@ -79,13 +79,13 @@ regression test (`tests/test_ortho_wac_emp.py`). Affects any AOI whose true long
 Moon's "180-270°" zone (confirmed) — `trn_dataset`'s own 79 not-yet-populated rows should no longer
 be at risk from this specific bug, though they haven't been individually retested.
 
-## This session's new features are untested past 2 entries
+## Resolved: this session's new features, previously untested past 2 entries
 
 `overview_map`'s per-entry footprint-polygon labels (`_upper_right_label_point`, `darkred` outlines)
-have only been exercised at n=2 for actual *legibility* at scale — visually checked against the real
+had only been exercised at n=2 for actual *legibility* at scale — visually checked against the real
 81-row manifest in a later session (all real, non-degenerate polygons, correctly clustered by orbit
-pass, antimeridian wrap handled correctly) but not specifically evaluated for whether labels stay
-readable with 50+ overlapping entries.
+pass, antimeridian wrap handled correctly). **Verified fixed in a later session**: label legibility at
+50+ overlapping entries confirmed directly by the user.
 
 **Resolved in a later session**: `write_index()`'s per-entry `Camera` rebuild for the overview map —
 this doc's own original concern about wall-clock time at scale — is gone. `overview_map.

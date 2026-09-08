@@ -1,3 +1,4 @@
+import threading
 from unittest import mock
 
 import pytest
@@ -11,6 +12,15 @@ def _no_real_sleeps(monkeypatch):
     everywhere in this file so the suite stays fast and deterministic regardless of the real
     `_REQUEST_PACING_SECONDS`/backoff values."""
     monkeypatch.setattr(cache.time, "sleep", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
+def _pacing_lock_in_tmp_path(monkeypatch, tmp_path):
+    """`cached_get`'s cross-process pacing lock lives at a fixed path under `DEFAULT_CACHE_ROOT` by
+    design (see `_PACING_LOCK_PATH`'s own comment -- it deliberately doesn't vary with `cache_root`),
+    which would otherwise mean every test in this file takes out a real lock against the real, shared
+    cache root. Redirected to a test-local path instead."""
+    monkeypatch.setattr(cache, "_PACING_LOCK_PATH", tmp_path / "fetch_pacing.lock")
 
 
 def _fake_response(body: bytes = b"data", status_code: int = 200, headers: dict | None = None):
@@ -278,3 +288,33 @@ def test_cached_get_paces_real_requests(tmp_path, monkeypatch):
         cache.cached_get("https://example.com/f", "sub/f.bin", cache_root=cache_root)
 
     assert cache._REQUEST_PACING_SECONDS in sleeps
+
+
+def test_pacing_gate_serializes_concurrent_callers(tmp_path):
+    # `fcntl.flock` locks by open file description, not by process -- two threads in this one test
+    # process, each opening `_PACING_LOCK_PATH` independently (as `_pacing_gate()` does), contend for
+    # the same lock exactly like two separate `populate_via_workers()` worker processes would. Uses
+    # `threading.Event.wait` for the artificial hold time, not `time.sleep` -- the latter is patched
+    # to a no-op by this file's own autouse `_no_real_sleeps` fixture, which would defeat the point
+    # here (this test needs a real, detectable window for a race to actually happen in).
+    concurrent_holders = 0
+    max_concurrent = 0
+    state_lock = threading.Lock()
+
+    def hold_gate_briefly():
+        nonlocal concurrent_holders, max_concurrent
+        with cache._pacing_gate():
+            with state_lock:
+                concurrent_holders += 1
+                max_concurrent = max(max_concurrent, concurrent_holders)
+            threading.Event().wait(0.05)
+            with state_lock:
+                concurrent_holders -= 1
+
+    threads = [threading.Thread(target=hold_gate_briefly) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert max_concurrent == 1
