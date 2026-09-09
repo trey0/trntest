@@ -77,6 +77,49 @@ tree and branch, e.g. `worktree-a1`, but sharing the same `.git` history/objects
 checkout). All of this — main checkout and every worktree — sits under the same `trntest_ws`
 (`<workspace>`), so `cache/`, `output/`, and `scratch/` are physically shared, not per-agent copies.
 
+### Agent-to-agent messaging
+
+Read this subsection first, before anything else below — the rest of this section assumes you
+already know whether a peer agent is active, and the only way to know that is to check. Don't gate
+checking behind "if another agent might be active": you can't resolve that condition without
+calling `ListAgents` first, so treat it as unconditional, every session, not something to skip
+because nothing else yet suggests concurrency.
+
+This repo is worked by a small number of Claude Code agents at a time (the user plus a couple of
+worktree agents), working closely enough that direct messages between agents — via the `ListAgents`
+and `SendMessage` tools — are part of the normal workflow here, not just a break-glass fallback:
+
+- **On startup, announce yourself.** Once you've verified your own worktree name (`git rev-parse
+  --show-toplevel`), call `ListAgents` to see who else is currently running, then `SendMessage`
+  each one a short note with your worktree/branch name and what you're about to work on. This is
+  how agents learn they're not alone and avoid duplicate or conflicting work (e.g. two agents both
+  editing `README.md`, or both about to trigger the same cold cache fetch — see the GLD100 race
+  below).
+- **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
+  shows: that you merged, a one-line summary of what changed, and that they should `git pull
+  origin main` next time they hit a good stopping point (not mid-edit).
+- **Before kicking off anything that will fire a lot of requests at an external host** (a
+  bulk cold-cache sweep across a wide date range, a full-year catalog query, anything else that'll
+  touch many distinct not-yet-cached files/pages), message the other running agents *first*, not
+  just after. `cache.py`'s request pacing (`_REQUEST_PACING_SECONDS`) is calibrated per-process —
+  it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
+  independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
+  API, Lunaserv) at the same time; the combined rate can still trip a server-side limiter (see
+  [`docs/caching.md`](caching.md)'s "Retry/backoff/pacing policy" section for the incident that
+  motivated this pacing in the first place). Messaging first gives everyone a chance to stagger or
+  postpone, which a message sent only after starting can't do.
+- **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
+  two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
+  about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),
+  you're about to touch shared narrative state (`README.md`/`docs/history.md`/
+  `docs/data-sources.md`, `notebooks/dataset_manifest.csv`) and want to flag it to avoid a
+  collision, or you're about to do something slow/disruptive to the shared `trntest_ws` (a long
+  cold fetch, anything touching `cache/`). When in doubt, send the message — it costs little;
+  staying silent risks another agent burning time on stale state or a known-bad code path.
+- This is deliberately informal: no ticket system, no required message format. Keep messages short,
+  and skip them for anything purely local to your own worktree that doesn't touch shared state or
+  another agent's branch.
+
 - **`cache/` and `scratch/` should stay shared.** Re-fetching SPICE kernels/WMS tiles per agent
   would be wasteful, and `scratch/`'s contents are already self-namespaced (e.g.
   `scratch/notebook_runs/<name>_<timestamp>.log`), so concurrent agents writing there don't
@@ -229,43 +272,6 @@ automatically.
 - **If you're told your worktree/agent name, verify it** with `git rev-parse --show-toplevel`
   (look for the `.claude/worktrees/<name>/` segment) rather than trusting it blindly — in a
   multi-agent conversation that name can be stale or simply wrong.
-
-### Agent-to-agent messaging
-
-This repo is worked by a small number of Claude Code agents at a time (the user plus a couple of
-worktree agents), working closely enough that direct messages between agents — via the `ListAgents`
-and `SendMessage` tools — are part of the normal workflow here, not just a break-glass fallback:
-
-- **On startup, announce yourself.** Once you've verified your own worktree name (`git rev-parse
-  --show-toplevel`), call `ListAgents` to see who else is currently running, then `SendMessage`
-  each one a short note with your worktree/branch name and what you're about to work on. This is
-  how agents learn they're not alone and avoid duplicate or conflicting work (e.g. two agents both
-  editing `README.md`, or both about to trigger the same cold cache fetch — see the GLD100 race
-  above).
-- **After merging into `origin/main`, tell the others.** Message every other agent `ListAgents`
-  shows: that you merged, a one-line summary of what changed, and that they should `git pull
-  origin main` next time they hit a good stopping point (not mid-edit).
-- **Before kicking off anything that will fire a lot of requests at an external host** (a
-  bulk cold-cache sweep across a wide date range, a full-year catalog query, anything else that'll
-  touch many distinct not-yet-cached files/pages), message the other running agents *first*, not
-  just after. `cache.py`'s request pacing (`_REQUEST_PACING_SECONDS`) is calibrated per-process —
-  it keeps *one* agent's own burst safe, but says nothing about what happens when two agents each
-  independently run a paced-but-sizable burst against the same external host (NAIF, the PDS ODE
-  API, Lunaserv) at the same time; the combined rate can still trip a server-side limiter (see
-  [`docs/caching.md`](caching.md)'s "Retry/backoff/pacing policy" section for the incident that
-  motivated this pacing in the first place). Messaging first gives everyone a chance to stagger or
-  postpone, which a message sent only after starting can't do.
-- **Message ad hoc whenever something you learn affects another agent's in-flight work** — those
-  two triggers aren't the only ones. Examples: you found a bug in code another agent is likely
-  about to run ("don't run `render.py` right now, it's producing corrupt output, fix incoming"),
-  you're about to touch shared narrative state (`README.md`/`docs/history.md`/
-  `docs/data-sources.md`, `notebooks/dataset_manifest.csv`) and want to flag it to avoid a
-  collision, or you're about to do something slow/disruptive to the shared `trntest_ws` (a long
-  cold fetch, anything touching `cache/`). When in doubt, send the message — it costs little;
-  staying silent risks another agent burning time on stale state or a known-bad code path.
-- This is deliberately informal: no ticket system, no required message format. Keep messages short,
-  and skip them for anything purely local to your own worktree that doesn't touch shared state or
-  another agent's branch.
 
 ## Why the separation matters
 
