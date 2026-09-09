@@ -68,6 +68,12 @@ file). Then, as needed:
 - Everything that needs GDAL/ASP/SPICE runs **inside the Docker container** (`docker/`) — the host
   itself has no geospatial tooling installed and should stay that way. `docker compose run --rm demo
   <cmd>` (see `README.md`) for one-off commands; `docker compose up` for the Jupyter Lab server.
+- **Call `ListAgents` once at the start of any session that touches this repo**, unconditionally —
+  don't gate it behind "if another agent might be active," since you can't resolve that without
+  checking first. If peers are running, announce your worktree/branch and plan, and message them
+  again after merging anything into `origin/main`. See `docs/environment.md`'s "Agent-to-agent
+  messaging" subsection (now the first thing under its "Multi-agent worktrees" section) for the
+  full protocol.
 - **If you're running in a Claude Code worktree** (this session's checkout is
   `.claude/worktrees/<name>/`, not the main checkout — check `git rev-parse --show-toplevel`), run
   `scripts/setup_worktree_docker_env.sh` once before your first `docker compose` call in this
