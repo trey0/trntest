@@ -1,4 +1,4 @@
-# Production run readiness: scaling `trn_dataset`
+# Production run readiness: scaling `trntest1` (originally written for `trn_dataset`)
 
 `docs/report-generation.md`'s four pages (nav bar, overview map, overview table, per-entry
 report) are all built now, but tested only against `trn_dataset`'s own 2 hand-picked entries. The
@@ -7,6 +7,18 @@ natural next step is a real "production run" — populating more of `trn_dataset
 readiness assessment done 2026-09-06, before attempting that, so a future session doesn't have to
 re-derive it. Nothing below has been acted on yet — it's a list of what to check/fix first, plus a
 recommended sequencing.
+
+**Primary target has since shifted, as of 2026-09-09: `notebooks/select_datasets.py`'s picks, not
+`trn_dataset`, are now the dataset of interest.** `dataset_manifest.csv`/`trn_dataset` (81 hand-
+picked rows, frozen) is historical at this point — the two hand-picked entries it has stayed
+useful for validating single-entry report generation, but going forward, the dataset to actually
+scale up is one of `select_datasets.py`'s `N_DATASETS=20` orbit-window picks, starting with pick 1
+(`selected_datasets.iloc[0]`, resolved into `TrnTestDataSet` folder `trntest1` — renamed from the
+generic `orbit_sequence_dataset` this doc used below, since a generic name collides once a second
+pick ever gets resolved). Everything below was written and verified against that older
+`orbit_sequence_dataset` name/dataset; the disk/latitude/seam math and the trial-run results are
+about the same underlying pipeline machinery and still apply, they just now target `trntest1`
+going forward, not `trn_dataset`.
 
 ## Disk space: resolved — no longer a blocker for a full run
 
@@ -96,17 +108,51 @@ fetches, a one-time cost), ~1s warm. See `docs/proposed-tasks/open-items.md` for
 caveat this introduces (the approximation's calibration constants are provisional, measured from a
 single candidate).
 
+## Trial run: completed, all-clear
+
+The 10-20 entry trial recommended below (step 1) has been run for real: 20 entries via
+`populate_via_workers()` (8 workers), exercised as part of landing the health-monitor thread
+(`9e721d9`). Output lived under a since-deleted worktree session's
+`output/health-monitor-data-population-19d4c7/orbit_sequence_dataset/` — captured here before that
+output disappears.
+
+**Result: 100% success, 0 failures**, across a real latitude spread from -73.6° to +70.0°
+(`health_monitor_log.txt` shows `pct_ok=100.0` sustained through the whole run). Notably this batch
+directly exercised, under real multi-worker load rather than a synthetic/two-candidate check:
+
+- **Real WAC_EMP polar-tile fetches**: 3 of the 20 entries (-73.58°, -72.46°, +70.00°) pulled a
+  `P900N`/`P900S` polar tile and succeeded.
+- **A real equirect/polar seam mosaic**: `M1314314993CE` (-60.62°) mosaicked
+  `WAC_EMP_643NM_P900S0000_304P` + `WAC_EMP_643NM_E300S1350_304P` and succeeded — the first time
+  this specific fix has been confirmed under production-scale parallelism rather than a targeted
+  regression test.
+- **Real per-entry throughput**: the 20-entry batch completed in ~5 minutes wall clock (`02:14:23`
+  to `02:19:20`) at 8 workers.
+- **Real disk cost, with an extra product type on top**: ~1.6GB total for 20 entries (~80MB/entry)
+  — even with `reproject` opted in alongside the default `crop`+`hillshade`+`report`+`gallery`, this
+  came in *under* the ~114MB/entry estimate above, not over it.
+- The new health-monitor thread itself (live progress/ETA/disk-budget logging in
+  `logs/health_monitor_log.txt`) worked as designed throughout.
+
+**Caveat, updated now that the primary target has shifted (see top of this doc)**: this trial *was*
+already the right dataset family — `select_datasets.py` pick 1, just under its pre-rename name
+`orbit_sequence_dataset` (207 rows total; only 20 of them were populated in this trial, the rest
+left `pending`). So the trial's results above directly apply to `trntest1`, not to some other
+dataset — what's still outstanding is just scale: the other 187 of `trntest1`'s 207 rows haven't
+been run yet. (`trn_dataset`'s own frozen 81-row manifest is no longer the target at all — see this
+doc's opening note — so "verify against `trn_dataset` specifically" is moot rather than pending.)
+
 ## Recommended sequencing
 
-1. Run a small trial (10-20 entries) first — not the full run — to get a real per-entry timing number
-   for this dataset's own geometry before committing to a much larger batch. No manifest pre-filtering
-   is needed for the 60° equirect/polar seam anymore (see "Latitude coverage" above) -- a straddling
-   row now mosaics instead of failing. Disk space is no longer a reason to narrow scope (see "Disk
-   space" above) -- the full 81-row manifest fits comfortably.
-2. Follow `docs/batch-generation.md`'s existing guidance for the real run:
-   `populate_via_workers()`, not sequential `populate()`; `write_index=False` for every call in an
-   incremental loop except the last, since `write_overview_map`'s default `True` rebuilds cameras
-   for the *entire* already-populated portion on every call otherwise.
+1. ~~Run a small trial (10-20 entries) first~~ — **done, see above** (20 of `trntest1`'s 207 rows,
+   100% success). No manifest pre-filtering is needed for the 60° equirect/polar seam (see
+   "Latitude coverage" above) -- a straddling row now mosaics instead of failing, as just confirmed
+   for real. Disk space is no longer a reason to narrow scope (see "Disk space" above).
+2. Run the real thing against the rest of `trntest1`'s 207 rows, following
+   `docs/batch-generation.md`'s existing guidance: `populate_via_workers()`, not sequential
+   `populate()`; `write_index=False` for every call in an incremental loop except the last, since
+   `write_overview_map`'s default `True` rebuilds cameras for the *entire* already-populated portion
+   on every call otherwise.
 
 Once this run happens (or the scope is deliberately narrowed and documented elsewhere), fold
 whatever's still true into `README.md`'s Status section and delete this file.
