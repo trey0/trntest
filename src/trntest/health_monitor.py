@@ -161,7 +161,10 @@ class HealthMonitor:
             current = {}
         for pid, proc in current.items():
             if pid not in self._tracked_procs:
-                proc.cpu_percent(interval=None)  # primes the delta counter -- first reading is meaningless
+                try:
+                    proc.cpu_percent(interval=None)  # primes the delta counter -- first reading is meaningless
+                except psutil.NoSuchProcess:
+                    continue  # exited between the children() snapshot above and this priming call
                 self._tracked_procs[pid] = proc
         for pid in list(self._tracked_procs):
             if pid not in current:

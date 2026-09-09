@@ -1,5 +1,6 @@
 import re
 
+import psutil
 import pytest
 from test_trn_dataset import (
     _fake_generate_impl,
@@ -117,6 +118,48 @@ def test_health_monitor_consumer_pid_none_reports_mem_cpu_as_na(tmp_path):
     assert fields["mem_mb"] == "n/a"
     assert fields["cpu_pct"] == "n/a"
     assert fields["active"] == "0/4"
+
+
+def test_health_monitor_survives_a_child_process_exiting_mid_poll(tmp_path, monkeypatch):
+    """A real race under load: an ASP/ISIS helper subprocess (`isd_generate`, a `mapproject` tile
+    worker, ...) can exit between `consumer.children()`'s snapshot and the priming
+    `cpu_percent()` call performed on each newly-seen child right after. That raised an uncaught
+    `psutil.NoSuchProcess` in production (a real 100-entry run against `trntest1`) that silently
+    killed the whole monitor thread -- Python doesn't propagate a thread's exception to the caller,
+    so `populate_via_workers()`'s own task-queue loop kept going, unaffected, while
+    `health_monitor_log.txt` just stopped updating for the rest of the run with no visible error."""
+
+    class _VanishedChild:
+        pid = 99999
+
+        def cpu_percent(self, interval=None):
+            raise psutil.NoSuchProcess(self.pid)
+
+    class _FakeMemInfo:
+        rss = 1024 * 1024
+
+    class _FakeConsumer:
+        pid = 1
+
+        def children(self, recursive=True):
+            return [_VanishedChild()]
+
+        def cpu_percent(self, interval=None):
+            return 0.0
+
+        def memory_info(self):
+            return _FakeMemInfo()
+
+    monkeypatch.setattr(health_monitor.psutil, "Process", lambda pid: _FakeConsumer())
+    monitor = health_monitor.HealthMonitor(
+        dataset_folder=tmp_path / "ds", huey_instance=tasks.huey_parallel, results=[], workers=1, consumer_pid=1
+    )
+
+    fields = _parse_logfmt_line(monitor._poll_line())
+
+    # The vanished child is skipped, not fatal -- the still-alive fake consumer is still tracked.
+    assert fields["mem_mb"] == "1.0"
+    assert fields["cpu_pct"] == "0.0"
 
 
 def test_health_monitor_creates_dataset_folder_logs_dir(tmp_path):
