@@ -72,6 +72,7 @@ from trntest import (
     candidate_window,
     dem_ortho,
     hapke,
+    health_monitor,
     isis_wac,
     orientation,
     spice_kernels,
@@ -572,7 +573,10 @@ class TrnTestDataSet:
         """`populate()`'s multi-worker equivalent: same `product_types`/`retry_failed`/`limit`/
         `write_index` semantics, but runs `workers` worker processes in parallel instead of
         sequentially. Blocks until the whole batch finishes; manages its own consumer subprocess
-        for the call's duration, so there's no separate terminal/process to set up first.
+        for the call's duration, so there's no separate terminal/process to set up first. Also
+        starts a `health_monitor.HealthMonitor` for the call's duration, logging progress/ETA/disk/
+        memory/CPU to `<folder>/logs/health_monitor_log.txt` every few seconds -- the path is
+        printed at startup; `tail -f` it to watch a long run live.
 
         :param workers: Number of parallel worker processes.
         """
@@ -602,10 +606,30 @@ class TrnTestDataSet:
         results = _enqueue_pending(self, product_types, limit, tasks.huey_parallel, tasks.generate_product_parallel)
         if results:
             consumer = tasks.start_consumer(workers)
+            # A daemon thread, not a separate process -- tied to this call's own lifetime so it
+            # can't be left running if the calling process is killed (unlike the consumer
+            # subprocess above -- see this module's own "A killed calling process..." doc note in
+            # docs/batch-generation.md). See docs/proposed-tasks/health-monitor.md for the design.
+            monitor = health_monitor.HealthMonitor(
+                dataset_folder=self.folder,
+                huey_instance=tasks.huey_parallel,
+                results=results,
+                workers=workers,
+                consumer_pid=consumer.pid if consumer is not None else None,
+            )
+            monitor.start()
+            # flush=True: stdout is block-buffered, not line-buffered, once it's a pipe rather than
+            # a real terminal (true for every `docker compose run` invocation) -- without this, the
+            # announcement can sit unflushed until the whole run exits, defeating the point of
+            # printing it at startup at all. Confirmed live: this was silently broken until caught.
+            print(f"Health monitor: tail -f {monitor.log_path}", flush=True)
             try:
                 for result in results:
                     _await_result(result)
             finally:
+                # Stop the monitor (writes one final line) before tearing down the consumer, so
+                # that last line's process-tree reads still see a live consumer to inspect.
+                monitor.stop()
                 tasks.stop_consumer(consumer)
         if write_index:
             self.write_index(product_types)

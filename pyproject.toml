@@ -13,6 +13,7 @@ dependencies = [
     "requests",
     "spiceypy",
     "huey",
+    "psutil",  # trntest.health_monitor's memory/CPU fields
     "numpy",
     "scipy",
     "rasterio",
@@ -44,6 +45,7 @@ dependencies = [
 dev = [
     "ruff",
     "mypy",
+    "types-psutil",  # mypy stubs for trntest.health_monitor's psutil use
     "pytest",
     "jupytext",
     "jupyterlab",

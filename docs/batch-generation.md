@@ -83,6 +83,45 @@ times — each call starts a fresh consumer subprocess (real process-startup ove
 `populate()`, where `limit` is cheap to call repeatedly. `limit` is still useful for a first,
 deliberately small, cache-warming pass (see below), just not as the default way to chunk a whole run.
 
+## Watching a run live: the health monitor
+
+`populate_via_workers()` starts a background thread for the call's own duration (torn down
+alongside its consumer subprocess, so a killed calling process takes it with it rather than
+leaving it orphaned) that logs one line every 5s to `<dataset_folder>/logs/health_monitor_log.txt`
+and prints that path (with a ready-to-run `tail -f` command) at startup. Each line is
+self-describing `key=value` pairs, not a CSV — readable via `tail -f` with no header to scroll back
+for, and just as easy to parse back into a `DataFrame` for post-run plots
+(`re.findall(r"(\w+)=(\S+)", line)` per line):
+
+```
+ts=2026-09-09T02:18:38+00:00 done=16 failed=0 pending=4 pct_ok=100.0 pct_done=80.0 eta_min=1.0 disk_free_gb=23.8 disk_eta_gb=23.3 mem_mb=4876.2 cpu_pct=422.2 active=4/8
+```
+
+`done`/`failed`/`pending`/`active` count this run's own enqueued tasks (entry-granularity, one
+huey task per entry regardless of how many product types it covers), not `status()`'s
+per-product-type cells — a live progress view, not a replacement for `status()`/`status.csv` as the
+per-product-type record of truth after the run. `eta_min`/`disk_eta_gb` are estimates derived from
+this run's own observed throughput/bytes-per-entry so far, not guaranteed — `n/a` until there's
+enough signal (no completed entries yet). `mem_mb`/`cpu_pct` sum over the consumer subprocess and
+its worker children; `active` (`active_count/workers`) is a sanity check that workers are actually
+busy — if it drops toward 0 while entries are still pending, a worker has likely crashed or
+stalled (cross-check `.huey/consumer.log`).
+
+Live-validated against a real 20-entry, 8-worker run against `orbit_sequence_dataset` (the
+`select_datasets.py`-produced dataset, 207 entries total, this run's own `limit=20` scoping it down):
+`active` correctly tracked 8/8 → 4/8 → 3/8 → 2/8 → 0/8 as the 20 entries drained across 8 workers,
+`eta_min` converged to 0 as the run finished, `disk_free_gb` dropped from 25.3 to 23.7 over the run
+(~75MB/entry actually written — the same order of magnitude as `docs/proposed-tasks/
+production-run-readiness.md`'s own ~114MB/entry estimate from a single different entry), and
+`disk_eta_gb` converged to match `disk_free_gb` exactly once `pending` hit 0. No failures.
+
+The startup announcement (`Health monitor: tail -f ...`) needs its `print(..., flush=True)` --
+`docker compose run`'s stdout is a pipe, not a tty, so a bare `print()` there is block-buffered by
+default and can sit unflushed until the whole run exits, silently defeating the point of
+announcing the path *at startup*. Caught live: the first validation run above only showed the line
+after the process had already finished; a follow-up 2-entry run with `flush=True` confirmed the
+line now streams immediately, well before that run's own completion.
+
 ## Issues to watch out for
 
 **Two independent queues.** `populate_via_workers()`'s failures live in `tasks.huey_parallel`, not
