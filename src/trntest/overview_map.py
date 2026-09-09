@@ -3,6 +3,7 @@ global lunar backdrop. Wired into `TrnTestDataSet.write_index()` (pass `write_ov
 there to skip it) and linked from the nav bar's "Map" link (`report.write_index_html`).
 """
 
+import dataclasses
 from datetime import datetime
 from pathlib import Path
 
@@ -147,7 +148,13 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     cheap, ISIS-free SPICE approximation (see that function's own docstring for what it trades away
     and why), not `entry.camera` -- deliberately, so this map never needs a full ISIS pipeline run
     for a not-yet-populated entry, and never needs branching logic on population state at all: every
-    entry gets the same treatment regardless of whether it's `done` or `pending`.
+    entry gets the same treatment regardless of whether it's `done` or `pending`. Forces
+    `wac_ck_source="naif_metakernel"` per entry for the same reason `candidate_window.
+    evaluate_candidate_image` does (see its own comment): the live default (`"isis_resolved"`) would
+    make `lightweight_footprint_lonlat_deg`'s `fetch_and_furnish` call fall through to a real,
+    uncached ISIS `lrowac2isis`/`spiceinit` run for every not-yet-seen `edr_product` -- an
+    O(entries) ISIS blowup here, one per entry in the whole dataset, with no accuracy cost avoided
+    (both sources give numerically identical WAC pointing).
 
     :returns: The `Figure`.
     """
@@ -170,7 +177,7 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     ax.plot(track_lons, track_lats, color="darkblue", linewidth=0.5, alpha=0.6, zorder=1)
     for entry in dataset:
         assert isinstance(entry, TrnTestEntryEdr), "plot_overview_map is EDR-only for now"
-        per_image_config = entry.per_image_config
+        per_image_config = dataclasses.replace(entry.per_image_config, wac_ck_source="naif_metakernel")
         corners = camera_module.lightweight_footprint_lonlat_deg(
             entry.frame_timing, per_image_config.target_frame_index, per_image_config
         )
