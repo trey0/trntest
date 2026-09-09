@@ -123,16 +123,24 @@ dataset.populate_via_workers(product_types=("hillshade",), workers=4)
 This still parallelizes fully across *entries* (today's real manifest has one `edr_product` per
 row, so cross-entry write collisions aren't expected in practice) either way.
 
-**Cold-cache concurrent fetch races.** The same class of race `docs/environment.md` documents for
-multiple *agents* hitting the same external host/cache path applies here too, self-inflicted by one
-batch job's own worker pool: the one-time ~10GB Astropedia GLD100 download
-(`cache.fetch_astropedia_gld100`) isn't concurrency-safe, and `cache.py`'s request pacing
-(`_REQUEST_PACING_SECONDS`) is calibrated per-*process* — several worker processes each fetching
-cold, uncached resources (SPICE kernels, WMS tiles) at once can combine into a burst large enough to
-trip a real server-side rate limiter (Lunaserv, NAIF, the PDS ODE API), the same way two independent
-agents' bursts can (`docs/environment.md`'s Phase 36 incident). Start a batch's first run small and
-at `workers=1` (or check `cache/astropedia/*.tif` already exists) to warm the cache before scaling
-up `workers`, rather than pointing a large worker count at an entirely cold cache from the start.
+**Cold-cache concurrent fetch races -- mostly resolved.** `cache.py`'s request pacing
+(`_REQUEST_PACING_SECONDS`) used to be calibrated per-*process* only: several worker processes each
+fetching cold, uncached resources (SPICE kernels, WMS tiles) at once could combine into a burst
+large enough to trip a real server-side rate limiter (Lunaserv, NAIF, the PDS ODE API), the same way
+two independent agents' bursts can (`docs/environment.md`'s Phase 36 incident). **Fixed**: every
+`cached_get` call -- pacing sleep, request, response streaming, and any retry/backoff -- now runs
+under a single `fcntl.flock` mutex at a fixed path under `DEFAULT_CACHE_ROOT`, so at most one fetch
+is ever live VPS-wide regardless of worker count, and regardless of which worktree/agent issued it.
+A large `workers` count no longer scales aggregate request rate the way it used to; there's no need
+to hold a batch's first run to `workers=1` just to avoid that specific failure mode.
+
+One real gap this fix does *not* cover: the one-time ~10GB Astropedia GLD100 download
+(`cache.fetch_astropedia_gld100`) is deliberately not built on `cached_get` (it needs a stable,
+resumable `.part` path across retries -- see that function's own comment), so it isn't
+serialized by the same lock and remains genuinely not concurrency-safe. Check
+`cache/astropedia/*.tif` already exists before pointing a fresh worker pool (or a fresh agent) at a
+dataset whose footprints might trigger this fetch, rather than relying on request-pacing to protect
+it the way it now does for everything else.
 
 **A killed calling process can orphan the consumer subprocess.** `populate_via_workers()`'s own
 `finally` block calls `stop_consumer()` on a normal exception or Ctrl-C, but a hard kill of the
