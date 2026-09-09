@@ -32,8 +32,12 @@ def dataset_midpoint_datetime(dataset: TrnTestDataSet) -> datetime:
     """The dataset's temporal midpoint -- halfway between its earliest `start_time` and latest
     `stop_time` -- for the overview map's single global illumination snapshot (see module
     docstring: one shared snapshot, not per-entry lighting)."""
-    start = pd.to_datetime(dataset.images["start_time"]).min()
-    stop = pd.to_datetime(dataset.images["stop_time"]).max()
+    # format="ISO8601": real manifest rows aren't all the same sub-second precision (some carry
+    # fractional seconds, some don't) -- pandas' own single-inferred-format guess from the first
+    # rows raises on any later row that doesn't match it exactly. Confirmed live against a real
+    # 207-row dataset (`trntest1`) big/diverse enough to actually contain both.
+    start = pd.to_datetime(dataset.images["start_time"], format="ISO8601").min()
+    stop = pd.to_datetime(dataset.images["stop_time"], format="ISO8601").max()
     midpoint = start + (stop - start) / 2
     return midpoint.to_pydatetime()
 
@@ -129,8 +133,14 @@ def _ground_track_lonlat(dataset: TrnTestDataSet) -> list[tuple[float, float]]:
     `GROUND_TRACK_STEP_S` across `dataset`'s own real time span (earliest `start_time` to latest
     `stop_time`) -- pure position-vector geometry, no shape model, no per-entry camera cost.
     """
-    start_et = illumination.utc_to_et(pd.to_datetime(dataset.images["start_time"]).min().to_pydatetime())
-    stop_et = illumination.utc_to_et(pd.to_datetime(dataset.images["stop_time"]).max().to_pydatetime())
+    # format="ISO8601": see dataset_midpoint_datetime's own comment -- real rows mix sub-second
+    # precision, and pandas' single-inferred-format guess raises on whichever rows don't match it.
+    start_et = illumination.utc_to_et(
+        pd.to_datetime(dataset.images["start_time"], format="ISO8601").min().to_pydatetime()
+    )
+    stop_et = illumination.utc_to_et(
+        pd.to_datetime(dataset.images["stop_time"], format="ISO8601").max().to_pydatetime()
+    )
     n_samples = max(2, round((stop_et - start_et) / GROUND_TRACK_STEP_S) + 1)
     return [illumination.spacecraft_lonlat_deg(et) for et in np.linspace(start_et, stop_et, n_samples)]
 
