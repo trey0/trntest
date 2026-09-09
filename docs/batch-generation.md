@@ -1,6 +1,6 @@
 # Batch generation: running a large `TrnTestDataSet` population job
 
-How to actually populate a `TrnTestDataSet` at scale — real network/SPICE/ISIS/ASP work across many
+How to actually populate a `TrnTestDataSet` at scale — network/SPICE/ISIS/ASP work across many
 manifest entries — using `TrnTestDataSet.populate_via_workers()`, and the concrete things to watch
 out for when you do. See `src/trntest/tasks.py`'s module docstring for the underlying `huey` design
 this builds on; this doc is the practical workflow layer on top, not a design doc.
@@ -9,24 +9,29 @@ this builds on; this doc is the practical workflow layer on top, not a design do
 
 | | `populate()` | `populate_via_workers()` |
 |---|---|---|
-| Execution | Sequential, one process (`immediate=True`) | Real parallel, `workers` separate OS processes (a managed `huey_consumer -k process` subprocess) |
+| Execution | Sequential, one process (`immediate=True`) | Parallel, `workers` separate OS processes (a managed `huey_consumer -k process` subprocess) |
 | Good for | The flagship demo notebook, small datasets, debugging (failures surface synchronously, no extra process to reason about) | A large batch across many manifest entries |
 | Queue | `trntest.tasks.huey` | `trntest.tasks.huey_parallel` (**independent** — see "Two independent queues" below) |
 | `product_types`/`retry_failed`/`limit` | Same semantics | Same semantics |
 
 Both take the identical `product_types`/`retry_failed`/`limit` signature — `populate_via_workers()`
-is a drop-in replacement for `populate()` from the caller's side, just backed by real parallelism.
+is a drop-in replacement for `populate()` from the caller's side, just backed by worker-process
+parallelism instead of a sequential loop.
 
 ## Configuring which generators run (`product_types`)
 
-There's no per-dataset setting for this — `product_types` is a plain parameter on every call
-(`populate()`, `populate_via_workers()`, `status()`, `truncate()`), defaulting to
-`trn_dataset.PRODUCT_TYPES = ("crop", "hillshade", "report")`. `report` (the per-entry HTML report)
-is on by default; `reproject` is implemented but opt-in
-(see `trn_dataset.py`'s module docstring) -- pass it explicitly:
+`product_types` is a plain parameter on every call (`populate()`, `populate_via_workers()`,
+`status()`, `write_index()`, `truncate()`), but it no longer has one fixed default — leaving it
+unset (`None`) resolves to `TrnTestDataSet.default_product_types`, which depends on the dataset's
+own `entry_kind`: `trn_dataset.PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")` for a
+normal `entry_kind="edr"` dataset, or `SPICE_PRODUCT_TYPES = ("hillshade",)` for `entry_kind="spice"`
+(a `TrnTestEntrySpice` dataset has no EDR, so `crop`/`reproject`/`report`/`gallery` — all of which
+need one — aren't applicable). `report`/`gallery` (the per-entry HTML report and the dataset-wide
+blink-comparator gallery) are both on by default for an `edr` dataset; `reproject` is implemented
+but opt-in (see `trn_dataset.py`'s module docstring) -- pass it explicitly:
 
 ```python
-PRODUCT_TYPES = ("crop", "hillshade", "report", "reproject")
+PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery", "reproject")
 
 dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4)
 dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
@@ -34,18 +39,19 @@ dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
 
 **Pass the same `product_types` to every call in a given workflow.** It isn't remembered between
 calls — `status()`/`truncate()` after a `populate_via_workers(product_types=(..., "reproject"))` run
-will silently only look at `crop`/`hillshade`/`report` unless you pass `product_types=PRODUCT_TYPES`
-there too, making `reproject`'s real state invisible rather than raising anything.
+will silently fall back to `default_product_types` (`crop`/`hillshade`/`report`/`gallery`, no
+`reproject`) unless you pass the same explicit `product_types` there too, making `reproject`'s
+state invisible rather than raising anything.
 
 `populate()`/`populate_via_workers()` also take `write_index: bool = True`: after their task-queue
 loop, they write `<dataset_folder>/status.csv` and `<dataset_folder>/reports/index.html` (a nav bar
 across every entry's own report) via `TrnTestDataSet.write_index()`. `status.csv`/`index.html`
 themselves are cheap/pure-Python, but `write_index()` also (re)generates
 `<dataset_folder>/reports/overview_map.png` (`overview_map.write_overview_map`) by default, which
-is **not** cheap -- it builds a real `Camera` (a SPICE pose rebuild) for *every* entry in the whole
+is **not** cheap -- it builds a `Camera` (a SPICE pose rebuild) for *every* entry in the whole
 dataset, not just ones the triggering call actually populated. In a `populate(limit=N)` loop over a
 large dataset, leaving this on means every single call re-rebuilds cameras for the entire
-already-populated portion just to redraw the map -- real, avoidable, roughly-quadratic-in-total-calls
+already-populated portion just to redraw the map -- avoidable, roughly-quadratic-in-total-calls
 cost. Pass `write_index=False` for every call in the loop except (optionally) the last, or
 `dataset.write_index(write_overview_map=False)` calls in between with one plain `write_index()` (map
 included) once at the end.
@@ -60,10 +66,14 @@ config = trntest.load_config()
 images = trntest.read_manifest("notebooks/dataset_manifest.csv")
 dataset = trn_dataset.TrnTestDataSet.create(config.output_dir / "trn_dataset", images, config)
 
-PRODUCT_TYPES = ("crop", "hillshade", "report")  # add "reproject" once you actually want it too
+PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")  # add "reproject" once you want it too
 
-# 1. Warm the cache with a small, conservative run first -- see "Cold-cache concurrent fetch
-#    races" below for why. workers=1 here is deliberate.
+# 1. Run a small first pass before scaling up workers -- not to protect against a general
+#    cold-cache race (that's handled automatically now regardless of worker count, see "Cold-cache
+#    concurrent fetch races" below), but to let the one-time ~10GB Astropedia GLD100 download (if
+#    this dataset's footprints need it) happen serially, and to catch an early config/environment
+#    problem cheaply before committing to a big batch. workers=1 here is still deliberate for the
+#    GLD100 case specifically -- see that section's own note.
 dataset.populate_via_workers(product_types=PRODUCT_TYPES, limit=2, workers=1)
 
 # 2. Scale up once the cache is warm.
@@ -74,14 +84,20 @@ status = dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_pa
 failed = status[(status[list(PRODUCT_TYPES)] == "failed").any(axis=1)]
 print(failed)
 
-# 4. Retry, if anything genuinely transient failed (a network blip, not a real bug).
+# 4. Retry, if the failure looks transient (a network blip) rather than a reproducible bug.
 dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4, retry_failed=True)
 ```
 
 Prefer a large or omitted `limit` for `populate_via_workers()` calls, not a small one repeated many
-times — each call starts a fresh consumer subprocess (real process-startup overhead), unlike
-`populate()`, where `limit` is cheap to call repeatedly. `limit` is still useful for a first,
-deliberately small, cache-warming pass (see below), just not as the default way to chunk a whole run.
+times — each call starts a fresh consumer subprocess (process-startup overhead), unlike `populate()`,
+where `limit` is cheap to call repeatedly. `limit` is still useful for a first, deliberately small,
+cache-warming pass (see below), just not as the default way to chunk a whole run.
+
+`populate_via_workers()` also takes `result_timeout: float | None = 1800.0` (30 min): how long to
+wait for one entry's stored result before giving up on it and moving to the next, rather than
+blocking forever. The default is generous against a slow/cold entry; lower it for a tighter feedback
+loop on a smaller exploratory run, or pass `None` to wait forever like before this parameter existed.
+See "Don't run the test suite..." below for the gap this is a safety net for.
 
 ## Watching a run live: the health monitor
 
@@ -107,13 +123,15 @@ its worker children; `active` (`active_count/workers`) is a sanity check that wo
 busy — if it drops toward 0 while entries are still pending, a worker has likely crashed or
 stalled (cross-check `.huey/consumer.log`).
 
-Live-validated against a real 20-entry, 8-worker run against `orbit_sequence_dataset` (the
-`select_datasets.py`-produced dataset, 207 entries total, this run's own `limit=20` scoping it down):
-`active` correctly tracked 8/8 → 4/8 → 3/8 → 2/8 → 0/8 as the 20 entries drained across 8 workers,
-`eta_min` converged to 0 as the run finished, `disk_free_gb` dropped from 25.3 to 23.7 over the run
-(~75MB/entry actually written — the same order of magnitude as `docs/proposed-tasks/
-production-run-readiness.md`'s own ~114MB/entry estimate from a single different entry), and
-`disk_eta_gb` converged to match `disk_free_gb` exactly once `pending` hit 0. No failures.
+Live-validated against a real 20-entry, 8-worker run against `trntest1` (the
+`select_datasets.py`-produced dataset, 207 entries total, this run's own `limit=20` scoping it down;
+named `orbit_sequence_dataset` at the time of this specific run, see `docs/proposed-tasks/
+production-run-readiness.md` for the later rename): `active` correctly tracked 8/8 → 4/8 → 3/8 →
+2/8 → 0/8 as the 20 entries drained across 8 workers, `eta_min` converged to 0 as the run finished,
+`disk_free_gb` dropped from 25.3 to 23.7 over the run (~75MB/entry actually written — the same order
+of magnitude as `docs/proposed-tasks/production-run-readiness.md`'s own ~114MB/entry estimate from a
+single different entry), and `disk_eta_gb` converged to match `disk_free_gb` exactly once `pending`
+hit 0. No failures.
 
 The startup announcement (`Health monitor: tail -f ...`) needs its `print(..., flush=True)` --
 `docker compose run`'s stdout is a pipe, not a tty, so a bare `print()` there is block-buffered by
@@ -135,8 +153,25 @@ call should run against a given dataset folder at a time (running one of each si
 fine — separate queues — but two `populate_via_workers()` calls, or two `populate()` calls, against
 the *same* folder at once are not). The old filesystem lock files that made concurrent
 `docker compose run` workers safe are gone as of the `huey` migration —
-`populate_via_workers()`'s own worker pool is the supported way to get real parallelism now, not
-multiple top-level calls.
+`populate_via_workers()`'s own worker pool is the supported way to get parallelism now, not multiple
+top-level calls.
+
+**Don't run the test suite against the same worktree while a batch is active.** `tasks.huey`/
+`tasks.huey_parallel` are process-wide singletons keyed on `config.output_dir` alone (see `tasks.py`'s
+own module docstring: "One instance of each per worktree's `output_dir`, not per-dataset-folder") —
+every `docker compose run` container in a given worktree shares the same bind-mounted `output_dir`,
+so they all resolve to the same `<output_dir>/.huey/*.db` files regardless of which dataset each
+container is working on. Several test files' autouse `_flush_huey_before_test` fixture calls
+`tasks.huey.flush()`/`tasks.huey_parallel.flush()` to keep each test isolated. Run `pytest` in a
+second `docker compose run` container while `populate_via_workers()` is active in a first one against
+the same worktree, and that flush wipes the live batch's queue and result store out from under it:
+`huey.storage.flush_all()` clears `flush_queue()` (any task not yet dequeued — the batch processes
+fewer entries than requested) and `flush_results()` (every stored result, including ones
+`_await_result()` hasn't collected yet). The calling process's `_await_result()` then blocks forever
+on a result that will never arrive, even though the worker pool's own remaining tasks keep completing
+in the background. `result_timeout` (30 min default) bounds the damage from this or any other cause
+of a missing result, but avoiding the collision is simpler: don't run tests against a worktree with a
+batch in flight.
 
 **Task granularity is per-entry, not per-`(entry, product_type)`.** One `huey` task covers every
 requested, still-pending product type for a given entry, run sequentially within that single
@@ -144,11 +179,11 @@ task/process; `populate_via_workers(workers=N)` parallelizes across *entries* on
 same-entry cross-worker race on shared state (`entry.camera`/`entry.dem_ortho_result`, both
 `functools.cached_property`, backed by `isis_wac.run_pipeline`'s shared ISIS working directory)
 structurally impossible, not just handled — and as a side benefit, that shared state is computed
-once per entry and reused across its product types instead of rebuilt per worker. Real writers
+once per entry and reused across its product types instead of rebuilt per worker. Writers
 (`isis_wac.crop_for_camera`/`run_framestitch`, `dem_ortho.fetch_dem`/`fetch_and_shade_ortho`) also
-publish atomically (`product_io.atomic_publish_path`/`atomic_publish`) — this remains valuable
-for genuine cross-entry write collisions and crash/partial-write safety, independent of the
-now-eliminated same-entry race.
+publish atomically (`product_io.atomic_publish_path`/`atomic_publish`) — this remains valuable for
+cross-entry write collisions and crash/partial-write safety, independent of the now-eliminated
+same-entry race.
 
 Sequencing by product type is therefore a pure throughput choice now, not a safety requirement — it
 protects against many *different* entries' tasks all cold-fetching the same not-yet-cached external
@@ -159,13 +194,13 @@ dataset.populate_via_workers(product_types=("crop",), workers=4)
 dataset.populate_via_workers(product_types=("hillshade",), workers=4)
 ```
 
-This still parallelizes fully across *entries* (today's real manifest has one `edr_product` per
-row, so cross-entry write collisions aren't expected in practice) either way.
+This still parallelizes fully across *entries* (today's manifest has one `edr_product` per row, so
+cross-entry write collisions aren't expected in practice) either way.
 
 **Cold-cache concurrent fetch races -- mostly resolved.** `cache.py`'s request pacing
 (`_REQUEST_PACING_SECONDS`) used to be calibrated per-*process* only: several worker processes each
 fetching cold, uncached resources (SPICE kernels, WMS tiles) at once could combine into a burst
-large enough to trip a real server-side rate limiter (Lunaserv, NAIF, the PDS ODE API), the same way
+large enough to trip a server-side rate limiter (Lunaserv, NAIF, the PDS ODE API), the same way
 two independent agents' bursts can (`docs/environment.md`'s Phase 36 incident). **Fixed**: every
 `cached_get` call -- pacing sleep, request, response streaming, and any retry/backoff -- now runs
 under a single `fcntl.flock` mutex at a fixed path under `DEFAULT_CACHE_ROOT`, so at most one fetch
@@ -173,10 +208,10 @@ is ever live VPS-wide regardless of worker count, and regardless of which worktr
 A large `workers` count no longer scales aggregate request rate the way it used to; there's no need
 to hold a batch's first run to `workers=1` just to avoid that specific failure mode.
 
-One real gap this fix does *not* cover: the one-time ~10GB Astropedia GLD100 download
+One gap this fix does *not* cover: the one-time ~10GB Astropedia GLD100 download
 (`cache.fetch_astropedia_gld100`) is deliberately not built on `cached_get` (it needs a stable,
 resumable `.part` path across retries -- see that function's own comment), so it isn't
-serialized by the same lock and remains genuinely not concurrency-safe. Check
+serialized by the same lock and remains not concurrency-safe. Check
 `cache/astropedia/*.tif` already exists before pointing a fresh worker pool (or a fresh agent) at a
 dataset whose footprints might trigger this fetch, rather than relying on request-pacing to protect
 it the way it now does for everything else.
@@ -191,8 +226,7 @@ consumer log file open.
 **Where to look when something fails.** Two different logs, at two different scopes:
 
 - **Per-entry, per-generator logs**: `<dataset_folder>/logs/<edr_product>/<product_type>_log.txt` —
-  the
-  console output (this codebase's own `print()` diagnostics, plus a full traceback on failure) of
+  the console output (this codebase's own `print()` diagnostics, plus a full traceback on failure) of
   that one `generate()` call, captured by `tasks._capture_generator_log` regardless of which process
   ran it (a `populate()` notebook cell, or one of `populate_via_workers()`'s worker processes). This
   is almost always the right first stop for "why did entry X's product type Y fail" — both
@@ -204,12 +238,12 @@ consumer log file open.
   Only written when that product type is actually (re)generated — an already-`done` type's prior log
   is left alone, never silently cleared by a later no-op `generate()` call.
 
-  **This folder link only works when browsing via a real static file server** — either the
-  `jupyter-server-proxy`-backed `/output/...` route on the same JupyterLab server, or the standalone
-  `scripts/serve_reports.sh` (see `docs/report-generation.md`'s "Viewing reports" section for both).
-  Confirmed live that Jupyter's own `/files/...` route 403s on a bare directory URL (no autoindex
-  support at all); it can serve one already-known `<product_type>_log.txt` file directly, just not list
-  a folder of them.
+  **This folder link only works when browsing via a static file server that can list a directory**
+  — either the `jupyter-server-proxy`-backed `/output/...` route on the same JupyterLab server, or the
+  standalone `scripts/serve_reports.sh` (see `docs/report-generation.md`'s "Viewing reports" section
+  for both). Jupyter's own `/files/...` route 403s on a bare directory URL (no autoindex support);
+  it can serve one already-known `<product_type>_log.txt` file directly, just not list a folder of
+  them.
 - **The consumer subprocess's own stdout/stderr** (not per-task output, which lives in the
   per-generator logs above) go to `<output_dir>/.huey/consumer.log` — check there for
   consumer-level problems (a worker crashing, `-k process` health-check restarts) that wouldn't show
@@ -223,3 +257,10 @@ This was live-validated against real manifest entries (not just fakes) — two n
 rows from `notebooks/dataset_manifest.csv`, `populate_via_workers(limit=2, workers=2)`, both crop
 cubes and hillshade renders completed correctly via real SPICE/ISIS/ASP calls across two separate
 worker processes in 53.4s total.
+
+A later, much larger run (100+ entries against `trntest1`) surfaced two bugs this small-scale
+validation didn't exercise, both fixed and regression-tested: the health-monitor race described
+above, and `write_index()`'s `overview_map.write_overview_map()` crashing on `pd.to_datetime` when
+`start_time`/`stop_time` values mix sub-second precision across rows (fixed with an explicit
+`format="ISO8601"`). Worth re-validating this doc's advice at a large, diverse scale before trusting
+an example that was only ever run small.
