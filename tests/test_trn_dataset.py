@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
-from huey.exceptions import TaskException
+from huey.exceptions import ResultTimeout, TaskException
 
 from trntest import isis_wac, overview_map, report, tasks, trn_dataset, trn_products
 from trntest.config import TrntestConfig
@@ -147,6 +147,24 @@ def test_task_state_pending_failed_done(tmp_path, monkeypatch):
     monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
     ds.populate(product_types=("crop",), retry_failed=True)
     assert trn_dataset.task_state(entry, "crop") == "done"
+
+
+def test_await_result_swallows_timeout_without_hanging(capsys):
+    """A `ResultTimeout` -- `populate_via_workers()`'s safety net for a task whose stored result
+    never shows up (found live in a real 100-entry, 8-worker run against `trntest1`: the underlying
+    work genuinely finished but the result was never stored, so an unbounded `.get()` hung forever
+    -- see `docs/proposed-tasks/open-items.md`'s `populate_via_workers` hang item) -- must not
+    propagate and abort the batch, the same way a `TaskException` already doesn't."""
+
+    class _FakeResult:
+        id = "fake-task-id"
+
+        def get(self, blocking=True, timeout=None, preserve=True):
+            raise ResultTimeout("timed out waiting for result")
+
+    trn_dataset._await_result(_FakeResult(), timeout=5.0)  # must not raise/hang
+
+    assert "fake-task-id" in capsys.readouterr().out
 
 
 def test_task_state_done_wins_over_leftover_failed_result(tmp_path, monkeypatch):

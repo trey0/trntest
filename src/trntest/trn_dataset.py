@@ -65,7 +65,7 @@ import pandas as pd
 import spiceypy as spice
 from huey import Huey
 from huey.api import Result, TaskWrapper
-from huey.exceptions import TaskException
+from huey.exceptions import ResultTimeout, TaskException
 
 from trntest import camera as camera_module
 from trntest import (
@@ -569,6 +569,7 @@ class TrnTestDataSet:
         limit: int | None = None,
         workers: int = 4,
         write_index: bool = True,
+        result_timeout: float | None = 1800.0,
     ) -> None:
         """`populate()`'s multi-worker equivalent: same `product_types`/`retry_failed`/`limit`/
         `write_index` semantics, but runs `workers` worker processes in parallel instead of
@@ -579,6 +580,14 @@ class TrnTestDataSet:
         printed at startup; `tail -f` it to watch a long run live.
 
         :param workers: Number of parallel worker processes.
+        :param result_timeout: Seconds to wait for one entry's stored result before giving up on it
+            and moving to the next -- `None` waits forever. Real-world default (30 min) is generous
+            against a slow/cold entry but finite: a task whose result never gets stored (a real,
+            not-yet-root-caused failure mode seen under sustained 8-worker load -- see
+            `docs/proposed-tasks/open-items.md`'s `populate_via_workers` hang item) would otherwise
+            block this call forever even though every other entry's own work keeps completing fine
+            in the background. A timeout here is a safety net for that specific gap, not a fix for
+            its root cause.
         """
         # Routes through trntest.tasks.huey_parallel (tasks.start_consumer/stop_consumer) so
         # image.generate() calls run in `-k process` worker processes.
@@ -625,7 +634,7 @@ class TrnTestDataSet:
             print(f"Health monitor: tail -f {monitor.log_path}", flush=True)
             try:
                 for result in results:
-                    _await_result(result)
+                    _await_result(result, timeout=result_timeout)
             finally:
                 # Stop the monitor (writes one final line) before tearing down the consumer, so
                 # that last line's process-tree reads still see a live consumer to inspect.
@@ -846,13 +855,26 @@ def _enqueue_pending(
     return results
 
 
-def _await_result(result: Result) -> None:
-    """Blocks on `result`, discarding a `TaskException` so one bad task doesn't abort the batch."""
+def _await_result(result: Result, timeout: float | None = None) -> None:
+    """Blocks on `result` (up to `timeout` seconds if given), discarding a `TaskException` so one
+    bad task doesn't abort the batch."""
     # `preserve=True`: a plain `.get()` pops the stored result on read, which would erase a
     # failure's record before `task_state()` ever gets a chance to report it -- confirmed
     # empirically. Successes stay preserved too (harmless; `task_state()` never queries huey for
     # the `done` case, disk existence wins first).
     try:
-        result.get(blocking=True, preserve=True)
+        result.get(blocking=True, timeout=timeout, preserve=True)
     except TaskException:
         pass
+    except ResultTimeout:
+        # Not force-marked `failed` here: task_state() still reports whatever it already would
+        # (usually `pending`, since no result was ever stored) -- honest, since a slow-but-alive
+        # worker could still finish this entry later, unlike a real TaskException which is a
+        # definitive outcome. See docs/proposed-tasks/open-items.md's `populate_via_workers` hang
+        # item for why a result can go missing at all; this is a safety net, not that fix.
+        print(
+            f"WARNING: timed out after {timeout}s waiting for task {result.id}'s stored result -- "
+            "moving on to the next entry. Its own work may still complete in the background; "
+            "re-run status() later to check.",
+            flush=True,
+        )
