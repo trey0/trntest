@@ -14,7 +14,7 @@ from trntest import illumination
 from trntest.config import load_config
 from trntest.session import Session
 from trntest.subprocess_utils import run_quiet
-from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry, TrnTestEntryEdr
+from trntest.trn_dataset import TrnTestDataSet, TrnTestEntry
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -78,7 +78,7 @@ def _logs_link_html(entry: TrnTestEntry, logs_prefix: str) -> str:
 
     :param logs_prefix: Relative path from the linking page to `<dataset_folder>/logs/`, e.g.
         `"../logs"` from `reports/overview_table.html`, `"../../logs"` from
-        `reports/<edr_product>/report.html`.
+        `reports/<identifier>/report.html`.
     """
     # One link to the folder, not one per generator: the folder already groups every
     # <product_type>_log.txt that exists, so a directory listing (autoindexed by a plain
@@ -91,26 +91,32 @@ def _logs_link_html(entry: TrnTestEntry, logs_prefix: str) -> str:
 
 
 def summary(entry: TrnTestEntry) -> None:
-    """Display a one-line Markdown summary of `entry` (product ID, orbit, center, sun geometry,
-    links to this entry's own captured generator logs).
+    """Display a one-line Markdown summary of `entry` (product ID, orbit if known, center, sun
+    geometry, links to this entry's own captured generator logs).
 
     Sun azimuth/elevation are computed fresh via `illumination.sun_azimuth_elevation_deg` at
     `entry.camera`'s own footprint center/epoch -- the same call `hapke_shade_ortho` itself uses for
     the real render's lighting -- rather than read from the manifest's own `sun_elevation_deg`
     column, which uses a different (ellipsoid-normal) method and has no azimuth counterpart; mixing
-    the two would show numerically inconsistent elevations side by side.
+    the two would show numerically inconsistent elevations side by side. The displayed center
+    lon/lat comes from that same `entry.camera.footprint_lonlat_deg` call rather than the manifest's
+    own `center_lat_deg`/`center_lon_deg` columns -- generic across entry kinds, unlike those
+    columns, which a SPICE manifest (`TrnTestEntrySpice`) doesn't have.
     """
     row = entry.row
     center = entry.camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(*center, entry.camera.et)
-    # "../../logs": report.html lives at reports/<edr_product>/report.html, two levels below the
+    # "../../logs": report.html lives at reports/<identifier>/report.html, two levels below the
     # dataset folder that logs/ is a sibling of.
     logs_link = _logs_link_html(entry, "../../logs")
+    orbit = row.get("orbit_number")  # EDR-only manifest column -- absent for entry_kind="spice",
+    # same "skip if the column isn't there" convention as problem_flags below.
+    orbit_part = f"orbit {orbit}, " if orbit is not None else ""
     display(
         Markdown(
-            f"**{entry.product_id}** -- orbit {row['orbit_number']}, "
-            f"center ({row['center_lat_deg']:.3f}, {row['center_lon_deg']:.3f}), "
+            f"**{entry.product_id}** -- {orbit_part}"
+            f"center ({center[1]:.3f}, {center[0]:.3f}), "
             f"sun elevation {elevation_deg:.1f} deg, azimuth {azimuth_deg:.1f} deg "
             f"-- logs: {logs_link}"
         )
@@ -236,7 +242,7 @@ def problem_flags(entry: TrnTestEntry) -> list[str]:
 
 def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
     """Writes `<dataset.folder>/reports/overview_table.html`: one row per entry, linking to its own
-    `reports/<edr_product>/report.html` where it already exists, alongside `status_df`'s other
+    `reports/<identifier>/report.html` where it already exists, alongside `status_df`'s other
     columns. The product-id column doubles as the entry-index column (`{entry.index}:
     {product_id}`, both part of the same link) -- the nav bar's own jump-to-entry box takes an
     index, not a product id, so this is the table's own way of exposing that lookup key. Loaded
@@ -254,10 +260,9 @@ def write_overview_table_html(dataset: TrnTestDataSet, status_df) -> None:
     rows_html = []
     for _, row in status_df.iterrows():
         entry = dataset[row["product_id"]]
-        assert isinstance(entry, TrnTestEntryEdr), "write_overview_table_html is EDR-only for now"
         label = f"{entry.index}: {row['product_id']}"
         if entry.report.exists():
-            product_cell = f'<a href="{entry.edr_product}/report.html">{label}</a>'
+            product_cell = f'<a href="{entry.identifier}/report.html">{label}</a>'
         else:
             product_cell = f"{label} (no report yet)"
         other_cells = "".join(f"<td>{row[col]}</td>" for col in status_df.columns[1:])
@@ -288,7 +293,7 @@ def write_gallery_html(dataset: TrnTestDataSet) -> None:
     this can be (re)built at any time regardless of how much of the dataset has been populated so
     far; an entry whose pair isn't there yet (including a half-written one, e.g. from an interrupted
     `generate()`) shows a plain "(no data yet)" placeholder instead of a broken image. Each
-    thumbnail links to that entry's own `reports/<edr_product>/report.html` where it already exists
+    thumbnail links to that entry's own `reports/<identifier>/report.html` where it already exists
     (same "no report yet" fallback as `write_overview_table_html`'s own product-id column), and
     carries its `entry.index` as a small overlay label drawn in this page's own HTML/CSS rather than
     baked into the PNGs themselves -- so the index is legible over light or dark thumbnail content
@@ -301,7 +306,6 @@ def write_gallery_html(dataset: TrnTestDataSet) -> None:
     """
     cells_html = []
     for entry in dataset:
-        assert isinstance(entry, TrnTestEntryEdr), "write_gallery_html is EDR-only for now"
         thumb = entry.gallery_thumb
         if thumb.exists():
             content_html = (
@@ -312,7 +316,7 @@ def write_gallery_html(dataset: TrnTestDataSet) -> None:
             content_html = '<div class="missing">(no data yet)</div>'
         thumb_html = f'<div class="thumb"><span class="idx">{entry.index}</span>{content_html}</div>'
         if entry.report.exists():
-            thumb_html = f'<a href="{entry.edr_product}/report.html">{thumb_html}</a>'
+            thumb_html = f'<a href="{entry.identifier}/report.html">{thumb_html}</a>'
         cells_html.append(f'<div class="cell">{thumb_html}</div>')
     name = dataset.name
     html = f"""<!DOCTYPE html>

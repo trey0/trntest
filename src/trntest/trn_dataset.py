@@ -10,8 +10,8 @@ instance). See `trn_products.py`'s own docstring for the product-type class hier
 - `TrnTestEntryEdr` (`entry_kind="edr"`, the default): built from a real WAC EDR, today's original
   full-featured behavior -- `crop`/`hillshade`/`reproject`/`report`/`gallery` all supported.
 - `TrnTestEntrySpice` (`entry_kind="spice"`): posed purely from SPICE trajectory data at an
-  arbitrary time, no EDR at all -- a proof of concept supporting only `hillshade`. See that class's
-  own docstring.
+  arbitrary time, no EDR at all -- a proof of concept supporting `hillshade`/`report`/`gallery`, not
+  `crop`/`reproject` (those need a real EDR's own pixel data). See that class's own docstring.
 
 Each entry has a `primary_generator` (a key into its own `images_by_type`) and a derived
 `primary_image` property -- the "representative" product other code (`report.py`'s
@@ -22,9 +22,9 @@ hardcoding a specific generator name, so the same code works for either entry ki
 multi-worker parallel population, use `populate_via_workers()` instead.
 
 `PRODUCT_TYPES` (`("crop", "hillshade", "report", "gallery")`) and `SPICE_PRODUCT_TYPES`
-(`("hillshade",)`) are `TrnTestDataSet.default_product_types`'s two possible values, per
-`entry_kind` -- `populate()`/`status()`/etc. fall back to it when not given `product_types`
-explicitly. `reproject` is implemented but opt-in for `entry_kind="edr"` (pass
+(`("hillshade", "report", "gallery")`) are `TrnTestDataSet.default_product_types`'s two possible
+values, per `entry_kind` -- `populate()`/`status()`/etc. fall back to it when not given
+`product_types` explicitly. `reproject` is implemented but opt-in for `entry_kind="edr"` (pass
 `product_types=(..., "reproject")` explicitly); it doesn't exist at all for `entry_kind="spice"`.
 """
 # An incrementally/resumably populated alternative to candidate_window.generate_dataset()'s flat,
@@ -89,9 +89,9 @@ PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")  # "reproject" is imp
 # (TrnTestReprojectImage) but opt-in only -- pass product_types=(..., "reproject") explicitly; see
 # module docstring. `TrnTestDataSet`'s own default for `entry_kind="edr"` (see `default_product_types`).
 
-SPICE_PRODUCT_TYPES = ("hillshade",)  # `TrnTestDataSet`'s own default for `entry_kind="spice"` --
-# crop/reproject/report/gallery all need a real EDR that a SPICE-only dataset doesn't have (see
-# `TrnTestEntrySpice`'s own docstring).
+SPICE_PRODUCT_TYPES = ("hillshade", "report", "gallery")  # `TrnTestDataSet`'s own default for
+# `entry_kind="spice"` -- crop/reproject need a real EDR that a SPICE-only dataset doesn't have (see
+# `TrnTestEntrySpice`'s own docstring); report/gallery work for any entry kind.
 
 SPICE_DATASET_COLUMNS = ["product_id", "utc_time"]  # minimal manifest schema for entry_kind="spice"
 # -- `utc_time` is parsed back to a real `datetime`/`Timestamp` by `candidate_window.read_manifest`'s
@@ -159,6 +159,16 @@ class TrnTestEntry(abc.ABC):
         synthetic and crop halves), `TrnTestEntrySpice` via `compute_synthetic_display_rotation`
         alone (placeholder `k_crop`/`dev_crop_deg` -- no crop exists to compute a real one for)."""
 
+    @functools.cached_property
+    @abc.abstractmethod
+    def lightweight_footprint_lonlat_deg(self) -> dict[str, tuple[float, float] | None]:
+        """A cheap approximation of this entry's own FOV footprint, for `overview_map.
+        plot_overview_map` -- never forces a full ISIS pipeline run for a not-yet-populated
+        `TrnTestEntryEdr` entry (see that class's own implementation and `camera.
+        lightweight_footprint_lonlat_deg`'s docstring for why); for `TrnTestEntrySpice`, `self.camera`
+        is already this cheap (no ISIS involved at all), so that kind just returns
+        `self.camera.footprint_lonlat_deg` directly."""
+
     @property
     def _dem_extra_footprint(self) -> dict | None:
         """Extra footprint corners to union into `dem_ortho_result`'s own fetch AOI, if any.
@@ -196,6 +206,14 @@ class TrnTestEntry(abc.ABC):
     @functools.cached_property
     def hillshade(self) -> trn_products.TrnTestHillshadeImage:
         return trn_products.TrnTestHillshadeImage(self)
+
+    @functools.cached_property
+    def report(self) -> trn_products.TrnTestReport:
+        return trn_products.TrnTestReport(self)
+
+    @functools.cached_property
+    def gallery_thumb(self) -> trn_products.TrnTestGalleryThumb:
+        return trn_products.TrnTestGalleryThumb(self)
 
     @property
     def primary_image(self) -> trn_products.TrnTestImage:
@@ -320,12 +338,11 @@ class TrnTestEntryEdr(TrnTestEntry):
         return trn_products.TrnTestReprojectImage(self)
 
     @functools.cached_property
-    def report(self) -> trn_products.TrnTestReport:
-        return trn_products.TrnTestReport(self)
-
-    @functools.cached_property
-    def gallery_thumb(self) -> trn_products.TrnTestGalleryThumb:
-        return trn_products.TrnTestGalleryThumb(self)
+    def lightweight_footprint_lonlat_deg(self) -> dict[str, tuple[float, float] | None]:
+        per_image_config = dataclasses.replace(self.per_image_config, wac_ck_source="naif_metakernel")
+        return camera_module.lightweight_footprint_lonlat_deg(
+            self.frame_timing, per_image_config.target_frame_index, per_image_config
+        )
 
     @property
     def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]:
@@ -341,10 +358,12 @@ class TrnTestEntryEdr(TrnTestEntry):
 class TrnTestEntrySpice(TrnTestEntry):
     """A `TrnTestEntry` posed purely from SPICE trajectory data at an arbitrary, SPICE-resolvable
     ephemeris time -- no WAC EDR, no ISIS pipeline, no real acquired image anywhere in its own
-    construction. A proof of concept, deliberately narrow: only `hillshade` is supported
-    (`images_by_type` has no `crop`/`reproject`/`report`/`gallery` -- those all fundamentally need a
-    real EDR's own pixel data). See `camera.build_spice_camera`'s own docstring for the pose-accuracy
-    tradeoff this makes by having no real crop to refine the boresight re-aim against.
+    construction. A proof of concept, deliberately narrow: only `hillshade` is supported among the
+    raster product types (`images_by_type` has no `crop`/`reproject` -- those fundamentally need a
+    real EDR's own pixel data); `report`/`gallery` are supported like any other entry kind, since
+    both go through `entry.primary_image` generically. See `camera.build_spice_camera`'s own
+    docstring for the pose-accuracy tradeoff this makes by having no real crop to refine the
+    boresight re-aim against.
 
     Constructed with a shared `template_tsai_path` (this dataset's `camera_template.tsai`, see
     `TrnTestDataSet.create(entry_kind="spice", ...)`) -- only its intrinsics (`fu`/`fv`/`cu`/`cv`)
@@ -387,9 +406,15 @@ class TrnTestEntrySpice(TrnTestEntry):
         # constructed for this entry kind (see images_by_type below), so nothing ever reads them.
         return DisplayRotations(k_synthetic=k_synthetic, dev_synthetic_deg=dev_synthetic, k_crop=0, dev_crop_deg=0.0)
 
+    @functools.cached_property
+    def lightweight_footprint_lonlat_deg(self) -> dict[str, tuple[float, float] | None]:
+        # self.camera is already SPICE-only/cheap for this kind -- no ISIS involved at all, unlike
+        # TrnTestEntryEdr, so there's no forced-pipeline-run cost to avoid by approximating further.
+        return self.camera.footprint_lonlat_deg
+
     @property
     def images_by_type(self) -> dict[str, trn_products.TrnTestProduct]:
-        return {"hillshade": self.hillshade}
+        return {"hillshade": self.hillshade, "report": self.report, "gallery": self.gallery_thumb}
 
 
 class TrnTestDataSet:
@@ -427,11 +452,20 @@ class TrnTestDataSet:
         return self.folder.name
 
     @property
+    def time_span_columns(self) -> tuple[str, str]:
+        """Manifest column names spanning this dataset's real time range -- `("start_time",
+        "stop_time")` for `entry_kind="edr"`, the same single `"utc_time"` column used as both ends
+        for `"spice"` (each row is a single instant, not a span). Used by `overview_map`'s
+        midpoint/ground-track calculations so those stay entry-kind-generic rather than hardcoding
+        EDR-only column names."""
+        return ("start_time", "stop_time") if self.entry_kind == "edr" else ("utc_time", "utc_time")
+
+    @property
     def default_product_types(self) -> tuple[str, ...]:
         """`populate`/`populate_via_workers`/`status`/`write_index`/`truncate`'s own default
         `product_types` when the caller doesn't pass one explicitly -- `PRODUCT_TYPES` for
-        `entry_kind="edr"`, `SPICE_PRODUCT_TYPES` for `"spice"` (crop/reproject/report/gallery all
-        need a real EDR that kind doesn't have)."""
+        `entry_kind="edr"`, `SPICE_PRODUCT_TYPES` for `"spice"` (crop/reproject need a real EDR that
+        kind doesn't have)."""
         return PRODUCT_TYPES if self.entry_kind == "edr" else SPICE_PRODUCT_TYPES
 
     @classmethod
@@ -651,13 +685,16 @@ class TrnTestDataSet:
     def write_index(self, product_types: tuple[str, ...] | None = None, write_overview_map: bool = True) -> None:
         """Writes `<folder>/status.csv` (`status()` plus a `problems` column, see
         `report.problem_flags`), `<folder>/reports/overview_table.html` (one row per entry, linking
-        to its own `reports/<edr_product>/report.html`, alongside the same status/problem info),
+        to its own `reports/<identifier>/report.html`, alongside the same status/problem info),
         `<folder>/reports/index.html` (a persistent nav bar over a content iframe defaulting to the
         overview table -- see `report.write_index_html`'s own docstring for its design),
         `<folder>/reports/gallery.html` (`report.write_gallery_html` -- a blink-thumbnail table, one
         entry per cell, synchronized across the whole page), and `<folder>/reports/overview_map.png`
         (`overview_map.write_overview_map`) -- covers every entry in the dataset, not just ones
-        touched by whatever call (if any) triggered this.
+        touched by whatever call (if any) triggered this. Works the same way for either `entry_kind`
+        -- both report/gallery generation and the overview map are entry-kind-generic (see
+        `TrnTestEntry.lightweight_footprint_lonlat_deg`/`report`/`gallery_thumb`, and
+        `time_span_columns` above).
 
         `status.csv`/`reports/index.html` are cheap/pure-Python (no subprocess); the overview map is
         not -- it builds a real `Camera` (a SPICE pose rebuild) for every entry to get its FOV
@@ -667,16 +704,11 @@ class TrnTestDataSet:
         call `overview_map.write_overview_map(self)` directly whenever an up-to-date map is actually
         needed.
 
-        For `entry_kind="spice"`, only `status.csv` is written -- `report.write_index_html`/
-        `overview_map.write_overview_map` both assume an EDR-shaped manifest and `entry.reproject`-
-        based report content that a SPICE-only dataset doesn't have; full report/gallery HTML
-        generation for that kind is out of scope for now (see `TrnTestEntrySpice`'s own docstring).
-
         Like `populate()`/`populate_via_workers()`, not safe to run concurrently with itself against
         the same dataset folder (writes shared files).
 
         Finishes by printing a link to the freshly-written `reports/index.html`
-        (`report.print_viewing_url`) -- for `entry_kind="edr"` only, see above.
+        (`report.print_viewing_url`).
         """
         from trntest import overview_map, report  # noqa: PLC0415 -- circular otherwise (both
         # import TrnTestDataSet/TrnTestEntry from this module)
@@ -688,13 +720,6 @@ class TrnTestDataSet:
         status_df = self.status(product_types)
         status_df["problems"] = ["; ".join(report.problem_flags(entry)) for entry in self]
         status_df.to_csv(self.folder / "status.csv", index=False)
-        if self.entry_kind != "edr":
-            print(
-                f"{self.folder}: wrote status.csv for {len(self.images)} entries "
-                f"(entry_kind={self.entry_kind!r} -- report/gallery HTML generation isn't supported "
-                "for this kind yet)"
-            )
-            return
         report.write_index_html(self, status_df)  # also (re)writes overview_table.html/gallery.html
         # -- see that function's own docstring.
         if write_overview_map:

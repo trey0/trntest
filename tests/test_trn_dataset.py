@@ -33,6 +33,17 @@ def _minimal_manifest(product_ids: list[str]) -> pd.DataFrame:
     return pd.DataFrame({"product_id": product_ids, "edr_product": product_ids})
 
 
+def _minimal_spice_manifest(product_ids: list[str]) -> pd.DataFrame:
+    """The `entry_kind="spice"` equivalent of `_minimal_manifest` -- `trn_dataset.
+    SPICE_DATASET_COLUMNS`' own minimal shape (`product_id`/`utc_time`), plain `datetime` objects
+    (not `pd.Timestamp`) since `TrnTestEntrySpice.identifier` only needs `.strftime`, which both
+    support -- no real SPICE/ISIS touched by any test using this, same as `_minimal_manifest`.
+    Each row a distinct second so `identifier` (`"%Y%m%dT%H%M%S"`, no finer resolution) stays unique
+    per entry."""
+    utc_times = [datetime(2020, 1, 1, 0, 0, i, tzinfo=UTC) for i in range(len(product_ids))]
+    return pd.DataFrame({"product_id": product_ids, "utc_time": utc_times})
+
+
 def _fake_generate_impl(image) -> None:
     """Monkeypatch target for `TrnTestCropImage`/`TrnTestHillshadeImage._generate_impl` -- just
     touches the real (SPICE/ISIS-free) `raster_path`/`sidecar_json_path` those classes already
@@ -690,6 +701,87 @@ def test_write_index_writes_status_csv_and_index_html(tmp_path, monkeypatch):
     assert "overview_table.html" in index_html  # the nav bar's content iframe default
     assert "gallery.html" in index_html  # the nav bar's own Gallery link
     assert '"P1"' in index_html and '"P2"' in index_html  # the jump-to-entry productIds array
+
+
+def test_spice_entry_images_by_type_includes_report_and_gallery(tmp_path):
+    """`TrnTestEntrySpice` supports `report`/`gallery` like any other entry kind -- only `crop`/
+    `reproject` (which need a real EDR's own pixel data) are unavailable for this kind."""
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1"]), TrntestConfig(), entry_kind="spice"
+    )
+    entry = ds[0]
+
+    assert isinstance(entry, trn_dataset.TrnTestEntrySpice)
+    assert set(entry.images_by_type) == {"hillshade", "report", "gallery"}
+
+
+def test_spice_entry_report_and_gallery_plug_into_task_queue_generically(tmp_path, monkeypatch):
+    """Same generic task-queue treatment `test_report_plugs_into_task_queue_generically`/
+    `test_gallery_plugs_into_task_queue_generically` confirm for `entry_kind="edr"` -- `TrnTestReport`/
+    `TrnTestGalleryThumb` only ever touch `entry.primary_image`/`entry.index`, so nothing here needs
+    to be different for a SPICE-only entry."""
+    monkeypatch.setattr(trn_products.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1"]), TrntestConfig(), entry_kind="spice"
+    )
+    entry = ds[0]
+
+    assert trn_dataset.task_state(entry, "report") == "pending"
+    assert trn_dataset.task_state(entry, "gallery") == "pending"
+
+    ds.populate(product_types=("report", "gallery"))
+
+    assert trn_dataset.task_state(entry, "report") == "done"
+    assert trn_dataset.task_state(entry, "gallery") == "done"
+    assert entry.report.exists()
+    assert entry.gallery_thumb.exists()
+
+
+def test_write_index_generates_full_html_for_spice_entry_kind(tmp_path, monkeypatch):
+    """`write_index()` no longer stops at `status.csv` for `entry_kind="spice"` -- overview table/
+    gallery/nav-bar HTML all generate the same as for `entry_kind="edr"` (see
+    `test_write_index_writes_status_csv_and_index_html`), keyed by `entry.identifier` (a UTC
+    timestamp string here, not an `edr_product`) rather than any EDR-only manifest column."""
+    monkeypatch.setattr(trn_products.TrnTestHillshadeImage, "_generate_impl", _fake_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestReport, "_generate_impl", _fake_report_generate_impl)
+    monkeypatch.setattr(trn_products.TrnTestGalleryThumb, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1", "P2"]), TrntestConfig(), entry_kind="spice"
+    )
+    identifiers = [ds[i].identifier for i in range(2)]
+
+    ds.populate()  # default_product_types for "spice" now includes report/gallery
+
+    status_csv = (ds.folder / "status.csv").read_text()
+    assert "P1" in status_csv
+    assert "P2" in status_csv
+
+    overview_table_html = (ds.folder / "reports" / "overview_table.html").read_text()
+    for identifier in identifiers:
+        assert f"{identifier}/report.html" in overview_table_html
+
+    gallery_html = (ds.folder / "reports" / "gallery.html").read_text()
+    assert "gallery/0_base.jpg" in gallery_html and "gallery/0_overlay.jpg" in gallery_html
+    assert "gallery/1_base.jpg" in gallery_html and "gallery/1_overlay.jpg" in gallery_html
+    for identifier in identifiers:
+        assert f'href="{identifier}/report.html"' in gallery_html
+    assert "(no data yet)" not in gallery_html
+
+    index_html = (ds.folder / "reports" / "index.html").read_text()
+    assert "overview_table.html" in index_html
+    assert "gallery.html" in index_html
+    assert '"P1"' in index_html and '"P2"' in index_html
+
+
+def test_time_span_columns_per_entry_kind(tmp_path):
+    edr_ds = trn_dataset.TrnTestDataSet(tmp_path / "edr", _minimal_manifest([]), TrntestConfig())
+    spice_ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "spice", _minimal_spice_manifest([]), TrntestConfig(), entry_kind="spice"
+    )
+
+    assert edr_ds.time_span_columns == ("start_time", "stop_time")
+    assert spice_ds.time_span_columns == ("utc_time", "utc_time")
 
 
 def test_print_viewing_url_prints_link_when_folder_is_under_output_dir(tmp_path, monkeypatch, capsys):

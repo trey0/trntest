@@ -24,10 +24,12 @@
 # `src/trntest/trn_dataset.py`) is that smaller abstraction: no EDR, no ISIS pipeline, no real
 # acquired image anywhere in its own construction.
 #
-# This is a proof of concept, deliberately narrow: only `hillshade` is supported (there's no EDR
-# pixel data for `crop`/`reproject` to work from). Each entry's `primary_generator` is `"hillshade"`,
-# so `entry.primary_image` -- what other code displays as "the" representative image -- is the
-# `hillshade` render wherever a `crop` panel would normally go.
+# This is a proof of concept, deliberately narrow: only `hillshade` is supported among the raster
+# generators (there's no EDR pixel data for `crop`/`reproject` to work from) -- but `report`/
+# `gallery` and the dataset-wide overview map all work the same as for any other entry kind, since
+# none of them actually depend on EDR pixel data either. Each entry's `primary_generator` is
+# `"hillshade"`, so `entry.primary_image` -- what other code displays as "the" representative image
+# -- is the `hillshade` render wherever a `crop` panel would normally go.
 #
 # Five entries: the first and last EDR timestamps of one real orbit, plus three
 # `np.linspace`-interpolated points between them -- a short, evenly-spaced pose sequence along a real
@@ -141,13 +143,15 @@ template_camera = camera.build_camera(config, output_tsai_path=template_tsai_pat
 print(f"Template .tsai: {template_camera.tsai_path} (fu=fv={template_camera.focal_length_u_px:.3f} px)")
 
 # %% [markdown]
-# ## Step 5: build the dataset and render `hillshade` for each entry
+# ## Step 5: build the dataset and render `hillshade`/`report`/`gallery` for each entry
 #
 # `TrnTestDataSet.create(entry_kind="spice", ...)` copies `template_tsai_path` in as this dataset's
 # own shared `camera_template.tsai` and writes `spice_images` as `manifest.csv` --
 # `TrnTestDataSet.open()` can reload this dataset later the same way any EDR dataset reloads from its
-# own `manifest.csv`. `populate()` defaults to `("hillshade",)` for this entry kind (see
-# `TrnTestDataSet.default_product_types`) -- there's nothing else to generate.
+# own `manifest.csv`. `populate()` defaults to `("hillshade", "report", "gallery")` for this entry
+# kind (see `TrnTestDataSet.default_product_types`) -- everything except `crop`/`reproject`, which
+# need a real EDR this kind never fetches. The printed link at the end (`write_index()`'s own
+# `report.print_viewing_url`) is a full report/gallery/map nav site, the same as for an EDR dataset.
 
 # %%
 spice_dataset = trntest.TrnTestDataSet.create(
