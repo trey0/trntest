@@ -179,13 +179,16 @@ images
 # `dataset.populate()` later (see `README.md`). Stops here -- no rendering in this
 # notebook.
 #
-# Uses its own `orbit_sequence_dataset` folder, separate from `image_generation.py`'s
-# `trn_dataset` -- a different dataset, at a different scale. Also writes `orbit_sequence.csv`
-# alongside `manifest.csv`: the one selected-orbit-window row this dataset's images were resolved
-# from, kept for debugging/provenance per the design in `README.md`.
+# Uses its own `trntest1` folder, separate from `image_generation.py`'s `trn_dataset` -- a
+# different dataset, at a different scale. Named for the pick's index (`selected_datasets.iloc[0]`
+# is pick 1 of `N_DATASETS`), not `orbit_sequence_dataset` as it once was -- with 20 candidate
+# picks available and only one resolved so far, a generic name invites a second resolved pick to
+# collide with this one. Also writes `orbit_sequence.csv` alongside `manifest.csv`: the one
+# selected-orbit-window row this dataset's images were resolved from, kept for debugging/provenance
+# per the design in `README.md`.
 
 # %%
-dataset_folder = config.output_dir / "orbit_sequence_dataset"
+dataset_folder = config.output_dir / "trntest1"
 trn_dataset = TrnTestDataSet.create(dataset_folder, images, config)
 orbit_sequence.to_frame().T.to_csv(dataset_folder / "orbit_sequence.csv", index=False)
 print(f"Dataset folder ready at {dataset_folder} ({len(trn_dataset)} images)")
