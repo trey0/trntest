@@ -73,28 +73,19 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   outlier check (needs `entry.camera`, not persisted anywhere cheap to re-read — the overview map's
   own FOV polygons no longer pay this cost, see the item just below, but a footprint-outlier check
   specifically would still need real per-entry accuracy, not the approximation now used for the map).
-- **`TrnTestEntrySpice` datasets (`trn_dataset.py`) have no report/gallery HTML.**
-  `TrnTestDataSet.write_index()` writes `status.csv` only for `entry_kind="spice"` and returns early
-  — `report.write_index_html`/`overview_map.write_overview_map` both assume EDR-only manifest columns
-  a SPICE manifest (`product_id`/`utc_time` only) doesn't have (`report.summary` reads
-  `row["orbit_number"]`/`center_lat_deg`/`center_lon_deg`; `overview_map._ground_track_lonlat` reads
-  `start_time`/`stop_time`), and both now assert `isinstance(entry, TrnTestEntryEdr)` rather than
-  silently mishandling a `TrnTestEntrySpice` entry. `TrnTestReport`/`TrnTestGalleryThumb` themselves
-  already go through `entry.primary_image` generically, so the remaining work is specifically these
-  two EDR-column assumptions, not the product classes.
 - **`hapke.fetch_real_hapke_params`'s sampled Hapke parameters aren't validated before reaching
-  ISIS's `photomet`, and real footprints exist with an out-of-range value.** Found live during a
-  real `trntest1` production run (2026-09-09): 2 of the first ~60 entries attempted
-  (`M1314356826CE`, `M1314368522CE`) have `hillshade`/`report`/`gallery` all fail identically and
-  deterministically (confirmed on two separate runs, same params both times) with `photomet`'s own
-  `**USER ERROR** Invalid value of Hapke Henyey Greenstein hg2 [<value>]` — ISIS's `hapkehen` phase
-  function rejects each entry's real, calibration-sampled `hg2` outright. Both failing values are
-  just above 1.0 (`1.0665965080261`, `1.1993844509125`), suggesting `photomet` requires `hg2 <= 1.0`
-  (physically the sharp-forward-scattering limit of a Henyey-Greenstein asymmetry parameter) and
-  this codebase's sampling isn't enforcing that bound. This is the concrete failure mode the
-  existing item just above (spatial variation in sampled Hapke params, "somewhat more for
-  `hg2`/`hh`") only speculated about in the abstract — here it's large enough to hard-fail ~3% of a
-  real 207-row dataset's entries, not just drift from the full-Moon average. Not investigated
-  further: unclear whether the practical fix is clamping `hg2` to `photomet`'s valid range at the
-  sample site, whether the sampling itself has a bug for these footprints, or whether this genuinely
-  reflects unusual real surface photometric behavior there that deserves a different resolution.
+  ISIS's `photomet`, and footprints exist with an out-of-range value.** 2 of the first ~60 entries
+  attempted from a `trntest1` production run (`M1314356826CE`, `M1314368522CE`) have
+  `hillshade`/`report`/`gallery` all fail identically and deterministically (confirmed on two
+  separate runs, same params both times) with `photomet`'s own `**USER ERROR** Invalid value of
+  Hapke Henyey Greenstein hg2 [<value>]` — ISIS's `hapkehen` phase function rejects each entry's
+  calibration-sampled `hg2` outright. Both failing values are just above 1.0 (`1.0665965080261`,
+  `1.1993844509125`), suggesting `photomet` requires `hg2 <= 1.0` (physically the
+  sharp-forward-scattering limit of a Henyey-Greenstein asymmetry parameter) and this codebase's
+  sampling isn't enforcing that bound. This is the concrete failure mode the existing item just
+  above (spatial variation in sampled Hapke params, "somewhat more for `hg2`/`hh`") only speculated
+  about in the abstract — here it's large enough to hard-fail ~3% of a 207-row dataset's entries,
+  not just drift from the full-Moon average. Not investigated further: unclear whether the
+  practical fix is clamping `hg2` to `photomet`'s valid range at the sample site, whether the
+  sampling itself has a bug for these footprints, or whether this reflects unusual real surface
+  photometric behavior there that deserves a different resolution.

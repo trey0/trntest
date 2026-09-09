@@ -3,7 +3,6 @@ global lunar backdrop. Wired into `TrnTestDataSet.write_index()` (pass `write_ov
 there to skip it) and linked from the nav bar's "Map" link (`report.write_index_html`).
 """
 
-import dataclasses
 from datetime import datetime
 from pathlib import Path
 
@@ -13,9 +12,8 @@ import pandas as pd
 import rasterio
 
 from trntest import cache, illumination, spice_kernels, tie_points
-from trntest import camera as camera_module
 from trntest.config import TrntestConfig, load_config
-from trntest.trn_dataset import TrnTestDataSet, TrnTestEntryEdr
+from trntest.trn_dataset import TrnTestDataSet
 
 GLOBAL_BACKDROP_LAYER = "luna_wac_global"  # see docs/data-sources/lunaserv-wms.md's "Layers of
 # interest" -- real, if slightly noisy, whole-Moon coverage; acceptable at this map's opacity as a
@@ -29,15 +27,16 @@ SHADOW_GRAY_LEVEL = 0.8  # "~80% white" (light grey) where in shadow -- a graysc
 
 
 def dataset_midpoint_datetime(dataset: TrnTestDataSet) -> datetime:
-    """The dataset's temporal midpoint -- halfway between its earliest `start_time` and latest
-    `stop_time` -- for the overview map's single global illumination snapshot (see module
-    docstring: one shared snapshot, not per-entry lighting)."""
-    # format="ISO8601": real manifest rows aren't all the same sub-second precision (some carry
+    """The dataset's temporal midpoint -- halfway between its earliest and latest time (see
+    `TrnTestDataSet.time_span_columns` for which manifest columns those are, per `entry_kind`) --
+    for the overview map's single global illumination snapshot (see module docstring: one shared
+    snapshot, not per-entry lighting)."""
+    # format="ISO8601": manifest rows aren't all the same sub-second precision (some carry
     # fractional seconds, some don't) -- pandas' own single-inferred-format guess from the first
-    # rows raises on any later row that doesn't match it exactly. Confirmed live against a real
-    # 207-row dataset (`trntest1`) big/diverse enough to actually contain both.
-    start = pd.to_datetime(dataset.images["start_time"], format="ISO8601").min()
-    stop = pd.to_datetime(dataset.images["stop_time"], format="ISO8601").max()
+    # rows raises on any later row that doesn't match it exactly.
+    start_col, stop_col = dataset.time_span_columns
+    start = pd.to_datetime(dataset.images[start_col], format="ISO8601").min()
+    stop = pd.to_datetime(dataset.images[stop_col], format="ISO8601").max()
     midpoint = start + (stop - start) / 2
     return midpoint.to_pydatetime()
 
@@ -130,17 +129,15 @@ GROUND_TRACK_STEP_S = 60.0  # LRO covers ~1.6 km/s -- ~96km/sample, plenty smoot
 
 def _ground_track_lonlat(dataset: TrnTestDataSet) -> list[tuple[float, float]]:
     """Sub-spacecraft ground track (`illumination.spacecraft_lonlat_deg`) sampled every
-    `GROUND_TRACK_STEP_S` across `dataset`'s own real time span (earliest `start_time` to latest
-    `stop_time`) -- pure position-vector geometry, no shape model, no per-entry camera cost.
+    `GROUND_TRACK_STEP_S` across `dataset`'s own real time span (earliest to latest -- see
+    `TrnTestDataSet.time_span_columns` for which manifest columns those are, per `entry_kind`) --
+    pure position-vector geometry, no shape model, no per-entry camera cost.
     """
-    # format="ISO8601": see dataset_midpoint_datetime's own comment -- real rows mix sub-second
+    # format="ISO8601": see dataset_midpoint_datetime's own comment -- rows mix sub-second
     # precision, and pandas' single-inferred-format guess raises on whichever rows don't match it.
-    start_et = illumination.utc_to_et(
-        pd.to_datetime(dataset.images["start_time"], format="ISO8601").min().to_pydatetime()
-    )
-    stop_et = illumination.utc_to_et(
-        pd.to_datetime(dataset.images["stop_time"], format="ISO8601").max().to_pydatetime()
-    )
+    start_col, stop_col = dataset.time_span_columns
+    start_et = illumination.utc_to_et(pd.to_datetime(dataset.images[start_col], format="ISO8601").min().to_pydatetime())
+    stop_et = illumination.utc_to_et(pd.to_datetime(dataset.images[stop_col], format="ISO8601").max().to_pydatetime())
     n_samples = max(2, round((stop_et - start_et) / GROUND_TRACK_STEP_S) + 1)
     return [illumination.spacecraft_lonlat_deg(et) for et in np.linspace(start_et, stop_et, n_samples)]
 
@@ -154,17 +151,17 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     densely for one to stay readable; `status.csv`/the overview table are the place to look up a
     specific entry.
 
-    Uses `camera.lightweight_footprint_lonlat_deg` per entry to get its footprint corners -- a
-    cheap, ISIS-free SPICE approximation (see that function's own docstring for what it trades away
-    and why), not `entry.camera` -- deliberately, so this map never needs a full ISIS pipeline run
-    for a not-yet-populated entry, and never needs branching logic on population state at all: every
-    entry gets the same treatment regardless of whether it's `done` or `pending`. Forces
-    `wac_ck_source="naif_metakernel"` per entry for the same reason `candidate_window.
-    evaluate_candidate_image` does (see its own comment): the live default (`"isis_resolved"`) would
-    make `lightweight_footprint_lonlat_deg`'s `fetch_and_furnish` call fall through to a real,
-    uncached ISIS `lrowac2isis`/`spiceinit` run for every not-yet-seen `edr_product` -- an
-    O(entries) ISIS blowup here, one per entry in the whole dataset, with no accuracy cost avoided
-    (both sources give numerically identical WAC pointing).
+    Uses `entry.lightweight_footprint_lonlat_deg` for each entry's footprint corners, not
+    `entry.camera` directly -- for a `TrnTestEntryEdr`, that's a cheap, ISIS-free SPICE
+    approximation (`camera.lightweight_footprint_lonlat_deg`; see that function's own docstring for
+    what it trades away and why, including forcing `wac_ck_source="naif_metakernel"` for the same
+    reason `candidate_window.evaluate_candidate_image` does), deliberately avoiding a full ISIS
+    pipeline run for a not-yet-populated entry -- an O(entries) ISIS blowup the live default
+    (`"isis_resolved"`) would otherwise force, one per entry in the whole dataset, with no accuracy
+    cost avoided (both sources give numerically identical WAC pointing). For a `TrnTestEntrySpice`
+    entry, `entry.camera` is already this cheap (no ISIS involved at all), so that kind's own
+    `lightweight_footprint_lonlat_deg` just returns it directly. Either way, this map never needs
+    branching logic on population state or entry kind: every entry gets the same treatment.
 
     :returns: The `Figure`.
     """
@@ -186,11 +183,7 @@ def plot_overview_map(dataset: TrnTestDataSet, config: TrntestConfig | None = No
     track_lons, track_lats = _antimeridian_split_xy(_ground_track_lonlat(dataset))
     ax.plot(track_lons, track_lats, color="darkblue", linewidth=0.5, alpha=0.6, zorder=1)
     for entry in dataset:
-        assert isinstance(entry, TrnTestEntryEdr), "plot_overview_map is EDR-only for now"
-        per_image_config = dataclasses.replace(entry.per_image_config, wac_ck_source="naif_metakernel")
-        corners = camera_module.lightweight_footprint_lonlat_deg(
-            entry.frame_timing, per_image_config.target_frame_index, per_image_config
-        )
+        corners = entry.lightweight_footprint_lonlat_deg
         ring = [_require_point(corners[name]) for name in (*tie_points.CORNER_NAMES, tie_points.CORNER_NAMES[0])]
         lons, lats = _antimeridian_split_xy(ring)
         ax.plot(lons, lats, color="darkred", linewidth=0.8, zorder=2)

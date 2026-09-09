@@ -24,8 +24,10 @@ The three generators above are all properties of one `TrnTestEntry`, built from 
 (`TrnTestEntryEdr`). `src/trntest/trn_dataset.py` also has a second, EDR-free entry kind,
 `TrnTestEntrySpice`: posed purely from SPICE trajectory data at an arbitrary, SPICE-resolvable time,
 with intrinsics reused from an existing `.tsai` (typically one `build_camera`'s own default
-`fixed_sensor=True` path already produced). Only `hillshade` is supported for this kind — `crop`/
-`reproject` fundamentally need a real EDR's own pixel data, which this kind never fetches. Each
+`fixed_sensor=True` path already produced). Only `hillshade` is supported among the raster
+generators for this kind — `crop`/`reproject` fundamentally need a real EDR's own pixel data, which
+this kind never fetches — but `report`/`gallery` and the dataset-wide overview map are all supported
+just like any other entry kind, since none of them actually depend on EDR pixel data either. Each
 entry's `primary_generator` (`"hillshade"` here, `"reproject"` for a normal `TrnTestEntryEdr`)
 names which product `entry.primary_image` resolves to — the accessor other code (`report.py`'s
 `primary_overlay`/`primary_zoom_blink`) uses instead of hardcoding a generator name, so it works for
