@@ -6265,3 +6265,67 @@ tested against synthetic in/out-of-range values (`capsys`-checked log content) w
 
 **Verification**: new unit tests for `_clamp_hg2` (in-range passthrough, both bounds' clamping
 directions, log content) pass; full suite otherwise unaffected.
+
+## Phase 120 (2026-09-10) — Closed the `dem_filled` filename-collision gap by baking the footprint into the name
+
+A production-run readiness survey (this session, prompted by the user asking what else would help
+make production runs more productive or have fewer broken entries) flagged
+`docs/proposed-tasks/open-items.md`'s long-standing `dem_ortho.fetch_dem` item: its DEM output
+filename carried no suffix tied to `extra_footprint_lonlat_deg`, so two calls against the same
+`_work/<entry>/` directory with different footprints could silently disagree about which DEM was
+"the" one. The user asked specifically whether a fix could avoid inadvertently invalidating existing
+cache folders.
+
+**First attempt, reconsidered**: reasoning from `docs/intermediate-product-discipline.md`'s
+principle 1 (which splits intermediate artifacts into *intentional-variant* families like
+`ortho_shaded`'s `hapke`/`along_track_correction`/etc. combinations, vs. *single-answer* artifacts
+with exactly one correct value per scope), this session first classified `dem_filled` as the latter
+and built a verification-only fix: a sidecar recording the footprint actually used, checked (not
+just trusted) by `TrnTestEntry.dem_ortho_result`'s resumption check, refetching on a mismatch and
+trusting anything with no sidecar (i.e. everything already on disk) unconditionally. The user
+pushed back, not fully following the mechanism and suspecting it was over-complicated, and asked
+whether a plain rename/migration would be simpler given there's really only one dataset with live
+production data (`trntest1`) to worry about.
+
+**Reconsidered and simplified**: the sidecar approach was strictly worse on both counts. It added a
+new, unfamiliar concept (a verification sidecar, a "trust if missing" special case) the codebase had
+no precedent for, *and* it only protected the one call path that used it (`dem_ortho_result`) --
+`candidate_window.generate_dataset()`'s own direct `fetch_dem_and_ortho()` call (and the exact
+historical Phase 78 DEM-clobbering incident `tests/test_wac_emp_ortho_source.py`'s own comment on
+`test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` documents) would still
+silently clobber the shared file, since `fetch_dem` itself never checked anything before writing.
+Baking the footprint into the filename instead -- exactly `ortho_shaded_filename`'s own established
+pattern, just with a short hash (`dem_filled_filename`) instead of named flags, since
+`extra_footprint_lonlat_deg` is a continuous geometric value with no natural short name -- closes the
+gap structurally for *every* caller, not just one, with less new code than the sidecar it replaced
+(no new file, no comparison function, `dem_ortho_result`'s resumption check goes back to the exact
+two-line shape it already had for the ortho half). The hash is baked in *before* the literal
+`"-tile-0.tif"` ending (`f"dem_filled_{digest}-tile-0.tif"`), preserving `hole_fill_dem`'s own
+`dem_mosaic`-convention requirement that the final path end in exactly that string.
+
+**On the migration question specifically**: turned out not to be needed, for a reason worth stating
+plainly. `populate()`/`populate_via_workers()` never re-examine `_work/<entry>/` for an entry once
+its *final* product files (`crop`/`hillshade`/etc.) exist -- `task_state()` reports `done` from
+those alone. So a renamed/reshaped `dem_filled` naming convention has **zero effect on any entry
+that's already fully done**, migrated or not; the only entries that would pay any cost are ones with
+a DEM already fetched but final products not yet complete (mid-retry, or caught between task
+attempts) -- and for those, the "cost" is a local re-reprojection from already-cache_root-cached
+GLD100/WAC_EMP tiles (not a network refetch), a few seconds to at most low minutes per affected
+entry, self-healing on the very next `populate_via_workers()` call. Given the peer session's
+`trntest1` retry run was reporting no failures at the time, this set was expected to be small to
+empty -- not worth a dedicated migration script for. `docs/proposed-tasks/open-items.md`'s resolved
+bullet was deleted per this repo's usual convention.
+
+Also fixed in passing (same production-run-readiness survey): `trn_dataset.py`'s `result_timeout`
+docstring and `_await_result`'s comment (plus a test docstring) still cited `open-items.md`'s
+`populate_via_workers` hang item as "not-yet-root-caused" — that item was actually root-caused
+(a concurrent `pytest` run flushing the same live queue) and deleted from `open-items.md` back in
+the commit that added `docs/batch-generation.md`'s "Don't run the test suite..." section. Repointed
+all three references there instead of leaving a dangling citation to a deleted item.
+
+**Verification**: new pure-function tests for `dem_filled_filename` (legacy bare name preserved for
+`None`, `-tile-0.tif` ending preserved, deterministic for an identical value, different for different
+footprints); full 431-test suite (after merging in the concurrent Hapke `hg2` clamp fix from Phase
+119) and `trntest-lint` both clean. Not exercised end-to-end against a real `fetch_dem` call
+(network/ASP, the same class of heavy test `test_wac_emp_ortho_source.py` already is) -- the
+pure-function tests cover the actual naming logic that matters.

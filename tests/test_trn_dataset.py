@@ -164,8 +164,9 @@ def test_await_result_swallows_timeout_without_hanging(capsys):
     """A `ResultTimeout` -- `populate_via_workers()`'s safety net for a task whose stored result
     never shows up (found live in a real 100-entry, 8-worker run against `trntest1`: the underlying
     work genuinely finished but the result was never stored, so an unbounded `.get()` hung forever
-    -- see `docs/proposed-tasks/open-items.md`'s `populate_via_workers` hang item) -- must not
-    propagate and abort the batch, the same way a `TaskException` already doesn't."""
+    -- root-caused as a concurrent `pytest` run flushing the same live queue, see
+    `docs/batch-generation.md`'s "Don't run the test suite..." section) -- must not propagate and
+    abort the batch, the same way a `TaskException` already doesn't."""
 
     class _FakeResult:
         id = "fake-task-id"

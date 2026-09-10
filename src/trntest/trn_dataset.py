@@ -186,17 +186,18 @@ class TrnTestEntry(abc.ABC):
         # since a fresh fetch is by far the most expensive part of generating either product type.
         # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
         # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
-        # (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
-        # *other*-mode ortho left over from before any default changed (or from a one-off
-        # non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho`
-        # below picks up the same defaults itself.
+        # (`ortho_shaded_filename`), and this entry's own `_dem_extra_footprint`'s specific
+        # `dem_filled_filename` -- rather than either's hardcoded/bare name, so this can never
+        # resume a stale *other*-mode ortho, or a DEM fetched for a *different* footprint, left over
+        # from before a default changed or from a one-off non-default call elsewhere.
+        # `fetch_dem_and_ortho` below picks up the exact same defaults/footprint itself.
         ortho_path = self.per_image_config.output_dir / dem_ortho.ortho_shaded_filename(
             hapke.DEFAULT_HAPKE_SHADING,
             hapke.DEFAULT_ALONG_TRACK_CORRECTION,
             hapke.DEFAULT_REAL_HAPKE_PARAMS,
             dem_ortho.DEFAULT_ORTHO_SOURCE,
         )
-        dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
+        dem_path = self.per_image_config.output_dir / dem_ortho.dem_filled_filename(self._dem_extra_footprint)
         if ortho_path.exists() and dem_path.exists():
             return dem_ortho.result_from_files(ortho_path, dem_path)
         return dem_ortho.fetch_dem_and_ortho(
@@ -617,12 +618,13 @@ class TrnTestDataSet:
         :param workers: Number of parallel worker processes.
         :param result_timeout: Seconds to wait for one entry's stored result before giving up on it
             and moving to the next -- `None` waits forever. Real-world default (30 min) is generous
-            against a slow/cold entry but finite: a task whose result never gets stored (a real,
-            not-yet-root-caused failure mode seen under sustained 8-worker load -- see
-            `docs/proposed-tasks/open-items.md`'s `populate_via_workers` hang item) would otherwise
-            block this call forever even though every other entry's own work keeps completing fine
-            in the background. A timeout here is a safety net for that specific gap, not a fix for
-            its root cause.
+            against a slow/cold entry but finite: a task whose result never gets stored (seen live
+            under sustained 8-worker load, root-caused as a `pytest` run flushing this same live
+            queue out from under the batch -- see `docs/batch-generation.md`'s "Don't run the test
+            suite..." section for the actual mechanism) would otherwise block this call forever
+            even though every other entry's own work keeps completing fine in the background. A
+            timeout here is a safety net for that collision (or any other cause of a missing
+            result), not a substitute for avoiding it.
         """
         # Routes through trntest.tasks.huey_parallel (tasks.start_consumer/stop_consumer) so
         # image.generate() calls run in `-k process` worker processes.
@@ -1003,8 +1005,9 @@ def _await_result(result: Result, timeout: float | None = None) -> None:
         # Not force-marked `failed` here: task_state() still reports whatever it already would
         # (usually `pending`, since no result was ever stored) -- honest, since a slow-but-alive
         # worker could still finish this entry later, unlike a real TaskException which is a
-        # definitive outcome. See docs/proposed-tasks/open-items.md's `populate_via_workers` hang
-        # item for why a result can go missing at all; this is a safety net, not that fix.
+        # definitive outcome. See docs/batch-generation.md's "Don't run the test suite..." section
+        # for the confirmed way a result can go missing at all; this is a safety net, not a fix for
+        # avoiding that collision in the first place.
         print(
             f"WARNING: timed out after {timeout}s waiting for task {result.id}'s stored result -- "
             "moving on to the next entry. Its own work may still complete in the background; "

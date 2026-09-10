@@ -11,6 +11,8 @@ docs/data-sources/lunaserv-wms.md, and docs/caching.md.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +43,34 @@ if TYPE_CHECKING:
 # reflectance -- see docs/data-sources/lunaserv-wms.md.
 DEFAULT_ORTHO_SOURCE = "wac_emp_pds"
 ORTHO_SOURCES = ("wac_emp_pds", "lunaserv_wms")
+
+
+DEM_FILLED_FILENAME = "dem_filled-tile-0.tif"  # extra_footprint_lonlat_deg=None's name -- unchanged
+# from before dem_filled_filename existed (real for TrnTestEntrySpice, which has no crop footprint
+# to union in -- see TrnTestEntry._dem_extra_footprint).
+
+
+def dem_filled_filename(extra_footprint_lonlat_deg: dict | None) -> str:
+    """The `output_dir`-relative filename `fetch_dem` writes its hole-filled DEM to.
+
+    :param extra_footprint_lonlat_deg: The same parameter `fetch_dem`/`fetch_dem_and_ortho` take.
+    :returns: `DEM_FILLED_FILENAME` when `None`; otherwise a short hash of the value baked into
+        the name (`f"dem_filled_{digest}-tile-0.tif"`, keeping the literal `"-tile-0.tif"` ending
+        `hole_fill_dem`'s own `dem_mosaic` convention relies on).
+    """
+    # Same purpose as `ortho_shaded_filename` below (letting `TrnTestEntry.dem_ortho_result`'s
+    # resumption check ask for exactly the file a matching `fetch_dem` call would produce, so two
+    # different footprints can no longer silently collide on one shared name -- the real bug
+    # `test_wac_emp_ortho_source.py`'s own comment on
+    # `test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` documents), but a
+    # hash instead of a named flag: unlike `ortho_shaded_filename`'s parameters (a handful of
+    # discrete, intentionally side-by-side-comparable modes), `extra_footprint_lonlat_deg` is a
+    # continuous geometric value with no natural short name -- two equal dicts still hash equally,
+    # which is all the resumption check actually needs.
+    if extra_footprint_lonlat_deg is None:
+        return DEM_FILLED_FILENAME
+    digest = hashlib.sha1(json.dumps(extra_footprint_lonlat_deg, sort_keys=True).encode()).hexdigest()[:8]
+    return f"dem_filled_{digest}-tile-0.tif"
 
 
 def hole_fill_dem(dem_path, filled_path):
@@ -170,15 +200,10 @@ def fetch_dem(
     # ortho-shading concern (`fetch_and_shade_ortho`, an intentional variant family -- multiple valid
     # shaded orthos by design, principle 1) that used to be fused into the same function.
     #
-    # Still takes `extra_footprint_lonlat_deg` as a caller-suppliable parameter -- principle 1's "no
-    # caller-supplied parameter should be able to change identity" isn't fully closed by this split.
-    # `dem_filled_path`'s own filename still doesn't encode this parameter (unlike
-    # `ortho_shaded_filename`'s suffix discipline for its own parameters), so two calls against the
-    # same output directory with different footprints can still silently disagree about "the" DEM --
-    # see `docs/proposed-tasks/open-items.md` for what a full fix would need. Not solved here: this phase only
-    # makes the current single writer legible/auditable (`writes_product`) and its file write atomic
-    # (`atomic_publish`, in `dem_gld100.reproject_astropedia_elevation_to_local_grid`), not the
-    # filename-collision gap itself -- flagged rather than silently assumed fixed.
+    # `dem_filled_path`'s own filename bakes in `extra_footprint_lonlat_deg` (`dem_filled_filename`),
+    # the same fix `ortho_shaded_filename` already applies to its own parameters -- two calls with
+    # different footprints now write to two different files instead of silently disagreeing about
+    # "the" DEM under one shared name.
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -217,7 +242,7 @@ def fetch_dem(
         dem_elevation_path,
     )
 
-    dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
+    dem_filled_path = config.output_dir / dem_filled_filename(extra_footprint_lonlat_deg)
     hole_fill_dem(dem_elevation_path, dem_filled_path)
     return DemFetchResult(dem=dem_filled_path, bbox=bbox, width=width, height=height)
 
@@ -258,8 +283,7 @@ def fetch_and_shade_ortho(
     """
     # Taking `dem` (`fetch_dem`'s output) as an input and always reusing its `bbox`/`width`/`height`
     # exactly closes the entanglement `fetch_dem`'s docstring describes for the DEM/ortho pairing
-    # specifically: the two can no longer fetch against two different bboxes. The DEM's own
-    # filename-collision gap against a different `fetch_dem` call is still open, as noted there.
+    # specifically: the two can no longer fetch against two different bboxes.
     #
     # `ortho_source="lunaserv_wms"` is only numerically coherent with `hapke=False`:
     # `hapke.hapke_shade_ortho` assumes its `ortho` input is already reflectance (see its own
@@ -281,7 +305,7 @@ def fetch_and_shade_ortho(
     # given -- e.g. `tie_points.crop_footprint_corners_for_camera`'s WAC crop footprint, which isn't
     # always the same size/shape as the synthetic camera's own FOV) all come from `dem`, not
     # recomputed here -- see `fetch_dem`'s own docstring for that computation and its remaining
-    # caveats (the ray-traced-estimate-vs-crop margin, the still-open filename-collision gap).
+    # caveats (the ray-traced-estimate-vs-crop margin).
     if ortho_source not in ORTHO_SOURCES:
         raise ValueError(f"ortho_source={ortho_source!r} is not one of {ORTHO_SOURCES!r}")
     config = config or load_config()
@@ -379,8 +403,7 @@ def fetch_dem_and_ortho(
     :returns: A `DemOrthoResult` for the fetched DEM/ortho pair.
     """
     # See `fetch_dem`/`fetch_and_shade_ortho`'s own docstrings for what's now individually
-    # `product_io`-decorated, and for the DEM filename-collision gap that split doesn't itself
-    # close.
+    # `product_io`-decorated.
     dem = fetch_dem(camera, config, extra_footprint_lonlat_deg)
     return fetch_and_shade_ortho(
         camera,

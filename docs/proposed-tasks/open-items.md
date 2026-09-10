@@ -81,11 +81,6 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   `wh`/`b0`/`hg1`'s own full-Moon range, somewhat more for `hg2`/`hh`) but is secondary to the
   placeholder-vs-real gap this already fixed. Per-pixel sampling (reprojecting the calibration cube
   onto the same working grid the DEM/ortho use) would be a real further refinement.
-- `dem_ortho.fetch_dem`'s DEM output filename carries no suffix tied to `extra_footprint_lonlat_deg`
-  (unlike the ortho's own suffix discipline) — two calls against the same output directory with
-  different footprints could silently disagree about which DEM is "the" one. All current real call
-  sites pass the same footprint derivation, so no live divergence is known, but a future caller that
-  forgets to could reintroduce it.
 - Whether `stretch_reflectance_to_uint8`'s fixed `[0, 0.30]` display stretch saturates is an
   unresolved question. Two distinct sources, neither confirmed absent: (1) `hapke_shade_ortho`'s
   relit reflectance can exceed the max for geometries near opposition (`ratio > 1`); (2)
