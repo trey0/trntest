@@ -584,8 +584,9 @@ class TrnTestDataSet:
         # -- see this module's own docstring.
         product_types = product_types or self.default_product_types
         if retry_failed:
+            skipped_ids = frozenset(self._load_skip_list())
             for entry in self:
-                if any(task_state(entry, pt) == "failed" for pt in product_types):
+                if any(task_state(entry, pt, skipped_ids=skipped_ids) == "failed" for pt in product_types):
                     _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)
 
         # huey's immediate=True (trntest.tasks's docstring) means each task already ran, synchronously,
@@ -642,8 +643,12 @@ class TrnTestDataSet:
         # cross-process claim safety.
         product_types = product_types or self.default_product_types
         if retry_failed:
+            skipped_ids = frozenset(self._load_skip_list())
             for entry in self:
-                if any(task_state(entry, pt, huey_instance=tasks.huey_parallel) == "failed" for pt in product_types):
+                if any(
+                    task_state(entry, pt, huey_instance=tasks.huey_parallel, skipped_ids=skipped_ids) == "failed"
+                    for pt in product_types
+                ):
                     _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 
         results = _enqueue_pending(self, product_types, limit, tasks.huey_parallel, tasks.generate_product_parallel)
@@ -678,15 +683,20 @@ class TrnTestDataSet:
             self.write_index(product_types)
 
     def status(self, product_types: tuple[str, ...] | None = None, huey_instance: Huey = tasks.huey) -> pd.DataFrame:
-        """Per-entry, per-product-type status: `done`/`failed`/`pending` (see `task_state`).
+        """Per-entry, per-product-type status: `done`/`skipped`/`failed`/`pending` (see
+        `task_state`).
 
         :param huey_instance: Which queue's stored results to check for `failed` -- `tasks.huey`
             (`populate()`'s queue, the default) or `tasks.huey_parallel`
             (`populate_via_workers()`'s). `done` is unaffected either way (always disk-based).
         """
         product_types = product_types or self.default_product_types
+        skipped_ids = frozenset(self._load_skip_list())
         rows = [
-            {"product_id": entry.product_id, **{pt: task_state(entry, pt, huey_instance) for pt in product_types}}
+            {
+                "product_id": entry.product_id,
+                **{pt: task_state(entry, pt, huey_instance, skipped_ids) for pt in product_types},
+            }
             for entry in self
         ]
         return pd.DataFrame(rows, columns=["product_id", *product_types])
@@ -797,6 +807,55 @@ class TrnTestDataSet:
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey)
             _clear_stored_result(self.folder, entry.product_id, huey_instance=tasks.huey_parallel)
 
+    def skip(self, entries: "TrnTestEntry | list[TrnTestEntry]", reason: str) -> None:
+        """Adds `entries` (a single `TrnTestEntry` or a list) to this dataset's persisted skip
+        list (`<folder>/skip_list.csv`, `product_id, reason`). `task_state()` then reports
+        `"skipped"` for any of their non-`done` product types instead of `"failed"`/`"pending"`,
+        so `populate()`/`populate_via_workers()` never enqueue new work for them and
+        `retry_failed=True` never clears their stored result either.
+
+        For a failure already confirmed *reproducible* -- a real bug, not a transient
+        network/server blip -- so a dataset-wide `retry_failed=True` sweep stops re-attempting it,
+        and wasting a worker slot on it, every single pass until the bug is actually fixed. See
+        `docs/batch-generation.md`'s "Retrying failures" section. Overwrites the reason if the
+        entry is already on the list.
+        """
+        target_entries = entries if isinstance(entries, list) else [entries]
+        current = self._load_skip_list()
+        for entry in target_entries:
+            current[entry.product_id] = reason
+        self._write_skip_list(current)
+
+    def unskip(self, entries: "TrnTestEntry | list[TrnTestEntry]") -> None:
+        """Removes `entries` from this dataset's persisted skip list (see `skip()`) -- e.g. once
+        the underlying bug is fixed and it's safe to let `populate()`/`populate_via_workers()`
+        attempt them again. No-op for an entry not currently on the list.
+        """
+        target_entries = entries if isinstance(entries, list) else [entries]
+        current = self._load_skip_list()
+        for entry in target_entries:
+            current.pop(entry.product_id, None)
+        self._write_skip_list(current)
+
+    def _load_skip_list(self) -> dict[str, str]:
+        """`{product_id: reason}` from `<folder>/skip_list.csv`, or `{}` if it doesn't exist yet
+        (the common case -- most datasets never need one)."""
+        return _load_skip_list(self.folder)
+
+    def _write_skip_list(self, mapping: dict[str, str]) -> None:
+        """Overwrites `<folder>/skip_list.csv` with `mapping`, sorted by `product_id` for a stable
+        diff -- or removes the file entirely once `mapping` is empty, so an unused dataset folder
+        doesn't grow a permanent empty skip list."""
+        # mkdir here rather than relying on create() having already run -- same reasoning as
+        # write_index()'s own mkdir, since a caller can construct a TrnTestDataSet directly (e.g.
+        # this project's own tests).
+        self.folder.mkdir(parents=True, exist_ok=True)
+        path = self.folder / "skip_list.csv"
+        if not mapping:
+            path.unlink(missing_ok=True)
+            return
+        pd.DataFrame(sorted(mapping.items()), columns=["product_id", "reason"]).to_csv(path, index=False)
+
 
 # -- Task queue: backed by trntest.tasks's huey instances, no filesystem lock/error files of our
 # own anymore -- task list is one task per manifest row (entry), each covering every requested
@@ -808,15 +867,41 @@ class TrnTestDataSet:
 # behind to clean up -- the next populate*() call re-enqueues based on disk state alone).
 
 
-def task_state(entry: TrnTestEntry, product_type: str, huey_instance: Huey = tasks.huey) -> str:
-    """This entry/product_type's state: `done`/`failed`/`pending`.
+def _load_skip_list(folder: Path) -> dict[str, str]:
+    """`{product_id: reason}` from `<folder>/skip_list.csv`, or `{}` if it doesn't exist yet (the
+    common case -- most datasets never need one). Shared by `TrnTestDataSet._load_skip_list` and
+    `task_state`'s own auto-load default below."""
+    path = folder / "skip_list.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return dict(zip(df["product_id"], df["reason"], strict=True))
+
+
+def task_state(
+    entry: TrnTestEntry,
+    product_type: str,
+    huey_instance: Huey = tasks.huey,
+    skipped_ids: frozenset[str] | None = None,
+) -> str:
+    """This entry/product_type's state: `done`/`skipped`/`failed`/`pending`.
 
     :param huey_instance: Which queue's stored results to check for `failed` -- `tasks.huey`
         (`populate()`'s queue, the default) or `tasks.huey_parallel` (`populate_via_workers()`'s);
         the two are independent, so a `failed` state under one is invisible under the other.
+    :param skipped_ids: Product ids on this dataset's persisted skip list (see
+        `TrnTestDataSet.skip()`) -- checked before the stored huey result, so a skip-listed entry
+        reports `"skipped"` instead of whatever `"failed"`/`"pending"` it would otherwise show.
+        Nothing is lost by this -- `unskip()` makes the underlying state visible again. Defaults
+        to `None`, which loads `<entry.dataset_folder>/skip_list.csv` fresh on every call (cheap --
+        a small file, same "always hit disk, no caching" pattern as the huey result lookup below)
+        so a direct caller can't silently get a stale/wrong answer by forgetting to pass this;
+        `status()`/`_enqueue_pending`/the `retry_failed` loops pass an already-loaded set instead,
+        purely to avoid re-reading the same tiny file once per entry in a large dataset.
     :returns: `done` if `entry.images_by_type[product_type].exists()` (checked first, so a
-        manually-fixed-up product file always wins regardless of any stored huey result), else
-        `failed` or `pending` per the stored huey result.
+        manually-fixed-up product file always wins regardless of any stored huey result or skip
+        listing), else `skipped` if `entry.product_id in skipped_ids`, else `failed` or `pending`
+        per the stored huey result.
     """
     # The stored huey result this falls back to is keyed per *entry*, not per
     # `(entry, product_type)` (see `tasks._generate_entry`'s own comment for why task granularity
@@ -825,9 +910,14 @@ def task_state(entry: TrnTestEntry, product_type: str, huey_instance: Huey = tas
     # succeeded one's `exists()` check above already returns `done` before this fallback is ever
     # reached, and the failed one correctly falls through to it -- imprecise only in attributing a
     # shared `failed` signal to a specific product type when more than one in the same task didn't
-    # complete.
+    # complete. Skip-list membership is entry-level for the same reason -- `skip()` has no finer
+    # resolution to key off of than the task granularity everything else here already uses.
     if entry.images_by_type[product_type].exists():
         return "done"
+    if skipped_ids is None:
+        skipped_ids = frozenset(_load_skip_list(entry.dataset_folder))
+    if entry.product_id in skipped_ids:
+        return "skipped"
     tid = tasks.task_id(str(entry.dataset_folder), entry.product_id)
     try:
         huey_instance.result(tid, preserve=True)
@@ -865,18 +955,36 @@ def _enqueue_pending(
     # populate() and populate_via_workers() want to wait differently (the former inherently
     # already has, by the time this returns -- see its own comment; the latter only after its
     # consumer subprocess is up).
+    #
+    # A skip-listed entry (see TrnTestDataSet.skip()) reports "skipped" rather than "pending" for
+    # each of its own non-done product types (task_state()'s own skipped_ids check), so it's
+    # never enqueued here -- printed below instead, so a skip list silently thinning out a batch
+    # doesn't get mistaken for e.g. a stalled queue or an already-fully-populated dataset.
+    skipped_ids = frozenset(dataset_obj._load_skip_list())
     results = []
     entries_done = 0
+    newly_skipped_ids = []
     for entry in dataset_obj:
         if limit is not None and entries_done >= limit:
             break
-        pending_types = tuple(pt for pt in product_types if task_state(entry, pt, huey_instance) == "pending")
+        types_state = {pt: task_state(entry, pt, huey_instance, skipped_ids) for pt in product_types}
+        pending_types = tuple(pt for pt, state in types_state.items() if state == "pending")
         if not pending_types:
+            if "skipped" in types_state.values():
+                newly_skipped_ids.append(entry.product_id)
             continue
         task = task_fn.s(entry, pending_types)
         task.id = tasks.task_id(str(dataset_obj.folder), entry.product_id)
         results.append(huey_instance.enqueue(task))
         entries_done += 1
+    if newly_skipped_ids:
+        # flush=True: stdout is block-buffered (not line-buffered) once it's a pipe rather than a
+        # real terminal, true for every `docker compose run` invocation -- see this project's other
+        # startup-announcement prints for the same reasoning.
+        print(
+            f"Skipping {len(newly_skipped_ids)} entries due to skip list: {', '.join(newly_skipped_ids)}",
+            flush=True,
+        )
     return results
 
 
