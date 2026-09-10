@@ -62,9 +62,9 @@ def test_wac_emp_tile_ids_for_bbox_rejects_non_default_band_for_polar():
 def test_wac_emp_tile_ids_for_bbox_mosaics_across_equirect_polar_boundary():
     # A footprint whose padded AOI spans from well inside the equirect grid's own +-60 deg coverage to
     # well beyond it -- no single tile (equirect or polar) covers it alone, so both are returned for
-    # the caller to mosaic (docs/proposed-tasks/production-run-readiness.md: a real, common case for
-    # this project's own manifest -- roughly a third of `trn_dataset`'s rows sit close enough to 60 deg
-    # latitude that any AOI padding crosses this boundary).
+    # the caller to mosaic -- a real, common case for this project's own manifest, not a theoretical
+    # edge case: roughly a third of `trn_dataset`'s rows sit close enough to 60 deg latitude that any
+    # AOI padding crosses this boundary.
     dst_bbox_m = (-50000.0, -200000.0, 50000.0, 200000.0)  # +-200km height, well past +-60 at center 60
     tile_ids = ortho_wac_emp.wac_emp_tile_ids_for_bbox(dst_bbox_m, 45.0, 60.0, MOON_RADIUS_M)
     assert set(tile_ids) == {"WAC_EMP_643NM_E300N0450_304P", "WAC_EMP_643NM_P900N0000_304P"}

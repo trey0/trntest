@@ -158,13 +158,12 @@ stalled (cross-check `.huey/consumer.log`).
 
 Live-validated against a real 20-entry, 8-worker run against `trntest1` (the
 `select_datasets.py`-produced dataset, 207 entries total, this run's own `limit=20` scoping it down;
-named `orbit_sequence_dataset` at the time of this specific run, see `docs/proposed-tasks/
-production-run-readiness.md` for the later rename): `active` correctly tracked 8/8 → 4/8 → 3/8 →
-2/8 → 0/8 as the 20 entries drained across 8 workers, `eta_min` converged to 0 as the run finished,
-`disk_free_gb` dropped from 25.3 to 23.7 over the run (~75MB/entry actually written — the same order
-of magnitude as `docs/proposed-tasks/production-run-readiness.md`'s own ~114MB/entry estimate from a
-single different entry), and `disk_eta_gb` converged to match `disk_free_gb` exactly once `pending`
-hit 0. No failures.
+named `orbit_sequence_dataset` at the time of this specific run, later renamed to `trntest1`):
+`active` correctly tracked 8/8 → 4/8 → 3/8 → 2/8 → 0/8 as the 20 entries drained across 8 workers,
+`eta_min` converged to 0 as the run finished, `disk_free_gb` dropped from 25.3 to 23.7 over the run
+(~75MB/entry actually written — the same order of magnitude as a separate, real single-entry
+measurement of ~114MB/entry for a different entry), and `disk_eta_gb` converged to match
+`disk_free_gb` exactly once `pending` hit 0. No failures.
 
 The startup announcement (`Health monitor: tail -f ...`) needs its `print(..., flush=True)` --
 `docker compose run`'s stdout is a pipe, not a tty, so a bare `print()` there is block-buffered by

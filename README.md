@@ -21,15 +21,16 @@ natively in GitHub's file browser (see "Notebooks" below for the convention).
 
 ## Status
 
-**Untested at dataset scale.** Per-entry report generation (`src/trntest/report.py`/
-`notebooks/report_template.py`, via `TrnTestReport`) is wired into `populate()`/
-`populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by default)
-writes the rest of a five-page report site — an overview map, an overview table, a blink-comparator
-gallery, and a persistent nav bar tying them together with the per-entry reports. See
-`docs/report-generation.md` for the full design, including how to browse it. A real population run
-across a full selected dataset hasn't happened yet — see
-`docs/proposed-tasks/production-run-readiness.md` for a disk-space/known-risks assessment done ahead
-of attempting one.
+**Validated at dataset scale.** `trntest1` (`select_datasets.py`'s first orbit-window pick, 207
+entries) has been fully populated via `TrnTestDataSet.populate_via_workers()` — every entry's
+`crop`/`hillshade`/`report`/`gallery`/`reproject` all `done`, 0 failures, including real
+high-latitude/polar-tile and equirect/polar-seam-mosaic footprints. Per-entry report generation
+(`src/trntest/report.py`/`notebooks/report_template.py`, via `TrnTestReport`) is wired into
+`populate()`/`populate_via_workers()`, and `TrnTestDataSet.write_index()` (also called by those by
+default) writes the rest of a five-page report site — an overview map, an overview table, a
+blink-comparator gallery, and a persistent nav bar tying them together with the per-entry reports.
+See `docs/report-generation.md` for the full design, including how to browse it, and
+`docs/batch-generation.md` for the recommended workflow to populate a dataset like this one at scale.
 
 See the "Primary notebooks" table below for what's demonstrated and validated today, at the
 single-entry level.
