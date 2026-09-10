@@ -6266,7 +6266,7 @@ tested against synthetic in/out-of-range values (`capsys`-checked log content) w
 **Verification**: new unit tests for `_clamp_hg2` (in-range passthrough, both bounds' clamping
 directions, log content) pass; full suite otherwise unaffected.
 
-## Phase 120 (2026-09-10) — Closed the `dem_filled` filename-collision gap with verification, not a suffix
+## Phase 120 (2026-09-10) — Closed the `dem_filled` filename-collision gap by baking the footprint into the name
 
 A production-run readiness survey (this session, prompted by the user asking what else would help
 make production runs more productive or have fewer broken entries) flagged
@@ -6276,31 +6276,45 @@ filename carried no suffix tied to `extra_footprint_lonlat_deg`, so two calls ag
 "the" one. The user asked specifically whether a fix could avoid inadvertently invalidating existing
 cache folders.
 
-**Why a suffix (the `ortho_shaded_filename` pattern) was the wrong tool here**: `docs/
-intermediate-product-discipline.md`'s principle 1 draws a real distinction between two artifact
-categories. `ortho_shaded`'s `hapke`/`along_track_correction`/`real_hapke_params`/`ortho_source`
-combinations are *intentional variants* — multiple valid renders meant to coexist for comparison
-(`notebooks/hapke_hillshade.ipynb` etc.), so baking each combination into its own filename is
-correct. `dem_filled` is the other category — a *single-answer* artifact with exactly one correct
-value per entry — so a suffix would misrepresent `extra_footprint_lonlat_deg` as a legitimate
-variant, and concretely would have force-invalidated every already-fetched DEM across every dataset
-(`trn_dataset`, `trntest1`, including the 8-worker retry run active against `output/trntest1` in a
-peer session at the time), since every real `TrnTestEntryEdr` call already passes a non-`None` crop
-footprint that differs entry to entry.
+**First attempt, reconsidered**: reasoning from `docs/intermediate-product-discipline.md`'s
+principle 1 (which splits intermediate artifacts into *intentional-variant* families like
+`ortho_shaded`'s `hapke`/`along_track_correction`/etc. combinations, vs. *single-answer* artifacts
+with exactly one correct value per scope), this session first classified `dem_filled` as the latter
+and built a verification-only fix: a sidecar recording the footprint actually used, checked (not
+just trusted) by `TrnTestEntry.dem_ortho_result`'s resumption check, refetching on a mismatch and
+trusting anything with no sidecar (i.e. everything already on disk) unconditionally. The user
+pushed back, not fully following the mechanism and suspecting it was over-complicated, and asked
+whether a plain rename/migration would be simpler given there's really only one dataset with live
+production data (`trntest1`) to worry about.
 
-**Fix**: `fetch_dem` now writes a small sidecar (`dem_footprint_meta_path`, `<dem_filled
-stem>.footprint.json`) recording the `extra_footprint_lonlat_deg` it was actually given, via
-`atomic_publish` alongside the existing atomic `hole_fill_dem` write. `TrnTestEntry.
-dem_ortho_result`'s resumption check gained `dem_ortho.dem_footprint_matches`: if a sidecar exists
-and disagrees with what this call would ask for, the cached DEM/ortho pair is discarded (a `print()`
-names which entry and why) and refetched fresh instead of silently resumed. Critically, **no sidecar
-at all** (every already-on-disk `dem_filled` today, from before this check existed) is trusted as-is
-— this is exactly the "invalidate nothing existing" property the user asked for, since no live
-divergence has ever actually been observed; the check only bites a *future* caller that requests a
-genuinely different footprint under the same identity. `tests/test_wac_emp_ortho_source.py`'s own
-`test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` comment documents the
-real historical incident this closes (Phase 78's DEM-clobbering bug, caught there by a heavy-suite
-ordering regression, not by any resume-time check).
+**Reconsidered and simplified**: the sidecar approach was strictly worse on both counts. It added a
+new, unfamiliar concept (a verification sidecar, a "trust if missing" special case) the codebase had
+no precedent for, *and* it only protected the one call path that used it (`dem_ortho_result`) --
+`candidate_window.generate_dataset()`'s own direct `fetch_dem_and_ortho()` call (and the exact
+historical Phase 78 DEM-clobbering incident `tests/test_wac_emp_ortho_source.py`'s own comment on
+`test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` documents) would still
+silently clobber the shared file, since `fetch_dem` itself never checked anything before writing.
+Baking the footprint into the filename instead -- exactly `ortho_shaded_filename`'s own established
+pattern, just with a short hash (`dem_filled_filename`) instead of named flags, since
+`extra_footprint_lonlat_deg` is a continuous geometric value with no natural short name -- closes the
+gap structurally for *every* caller, not just one, with less new code than the sidecar it replaced
+(no new file, no comparison function, `dem_ortho_result`'s resumption check goes back to the exact
+two-line shape it already had for the ortho half). The hash is baked in *before* the literal
+`"-tile-0.tif"` ending (`f"dem_filled_{digest}-tile-0.tif"`), preserving `hole_fill_dem`'s own
+`dem_mosaic`-convention requirement that the final path end in exactly that string.
+
+**On the migration question specifically**: turned out not to be needed, for a reason worth stating
+plainly. `populate()`/`populate_via_workers()` never re-examine `_work/<entry>/` for an entry once
+its *final* product files (`crop`/`hillshade`/etc.) exist -- `task_state()` reports `done` from
+those alone. So a renamed/reshaped `dem_filled` naming convention has **zero effect on any entry
+that's already fully done**, migrated or not; the only entries that would pay any cost are ones with
+a DEM already fetched but final products not yet complete (mid-retry, or caught between task
+attempts) -- and for those, the "cost" is a local re-reprojection from already-cache_root-cached
+GLD100/WAC_EMP tiles (not a network refetch), a few seconds to at most low minutes per affected
+entry, self-healing on the very next `populate_via_workers()` call. Given the peer session's
+`trntest1` retry run was reporting no failures at the time, this set was expected to be small to
+empty -- not worth a dedicated migration script for. `docs/proposed-tasks/open-items.md`'s resolved
+bullet was deleted per this repo's usual convention.
 
 Also fixed in passing (same production-run-readiness survey): `trn_dataset.py`'s `result_timeout`
 docstring and `_await_result`'s comment (plus a test docstring) still cited `open-items.md`'s
@@ -6309,9 +6323,9 @@ docstring and `_await_result`'s comment (plus a test docstring) still cited `ope
 the commit that added `docs/batch-generation.md`'s "Don't run the test suite..." section. Repointed
 all three references there instead of leaving a dangling citation to a deleted item.
 
-**Verification**: new pure-function tests for `dem_footprint_meta_path`/`dem_footprint_matches`
-(no sidecar trusted, matching value trusted, `None`-vs-`None` trusted, real mismatch rejected);
-full 431-test suite (after merging in the concurrent Hapke `hg2` clamp fix from Phase 119) and
-`trntest-lint` both clean. Not exercised end-to-end against a real `fetch_dem` call (network/ASP,
-the same class of heavy test `test_wac_emp_ortho_source.py` already is) -- the pure-function tests
-cover the actual comparison logic that matters.
+**Verification**: new pure-function tests for `dem_filled_filename` (legacy bare name preserved for
+`None`, `-tile-0.tif` ending preserved, deterministic for an identical value, different for different
+footprints); full 431-test suite (after merging in the concurrent Hapke `hg2` clamp fix from Phase
+119) and `trntest-lint` both clean. Not exercised end-to-end against a real `fetch_dem` call
+(network/ASP, the same class of heavy test `test_wac_emp_ortho_source.py` already is) -- the
+pure-function tests cover the actual naming logic that matters.

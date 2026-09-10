@@ -186,28 +186,20 @@ class TrnTestEntry(abc.ABC):
         # since a fresh fetch is by far the most expensive part of generating either product type.
         # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
         # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
-        # (`ortho_shaded_filename`) rather than a hardcoded name, so this can never resume a stale
-        # *other*-mode ortho left over from before any default changed (or from a one-off
-        # non-default call elsewhere) under the current defaults' name -- `fetch_dem_and_ortho`
-        # below picks up the same defaults itself.
+        # (`ortho_shaded_filename`), and this entry's own `_dem_extra_footprint`'s specific
+        # `dem_filled_filename` -- rather than either's hardcoded/bare name, so this can never
+        # resume a stale *other*-mode ortho, or a DEM fetched for a *different* footprint, left over
+        # from before a default changed or from a one-off non-default call elsewhere.
+        # `fetch_dem_and_ortho` below picks up the exact same defaults/footprint itself.
         ortho_path = self.per_image_config.output_dir / dem_ortho.ortho_shaded_filename(
             hapke.DEFAULT_HAPKE_SHADING,
             hapke.DEFAULT_ALONG_TRACK_CORRECTION,
             hapke.DEFAULT_REAL_HAPKE_PARAMS,
             dem_ortho.DEFAULT_ORTHO_SOURCE,
         )
-        dem_path = self.per_image_config.output_dir / dem_ortho.DEM_FILLED_FILENAME
+        dem_path = self.per_image_config.output_dir / dem_ortho.dem_filled_filename(self._dem_extra_footprint)
         if ortho_path.exists() and dem_path.exists():
-            # dem_footprint_matches guards against resuming a DEM fetched for a *different*
-            # extra_footprint_lonlat_deg than this call would ask for -- see that function's own
-            # docstring. Trusts an already-on-disk DEM with no sidecar (predating this check) as-is
-            # rather than forcing a refetch -- no live divergence has ever actually been observed.
-            if dem_ortho.dem_footprint_matches(dem_path, self._dem_extra_footprint):
-                return dem_ortho.result_from_files(ortho_path, dem_path)
-            print(
-                f"{self.product_id}: cached DEM at {dem_path} doesn't match this entry's current "
-                "footprint -- refetching instead of resuming it."
-            )
+            return dem_ortho.result_from_files(ortho_path, dem_path)
         return dem_ortho.fetch_dem_and_ortho(
             self.camera, self.per_image_config, extra_footprint_lonlat_deg=self._dem_extra_footprint
         )

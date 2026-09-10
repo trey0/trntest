@@ -11,6 +11,7 @@ docs/data-sources/lunaserv-wms.md, and docs/caching.md.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,7 +29,7 @@ from trntest.hapke import (
     despeckle_and_shade_ortho,
 )
 from trntest.ortho_wac_emp import fetch_wac_emp_reflectance, reproject_wac_emp_reflectance_to_local_grid
-from trntest.product_io import atomic_publish, atomic_publish_prefix, writes_product
+from trntest.product_io import atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:
@@ -44,35 +45,32 @@ DEFAULT_ORTHO_SOURCE = "wac_emp_pds"
 ORTHO_SOURCES = ("wac_emp_pds", "lunaserv_wms")
 
 
-DEM_FILLED_FILENAME = "dem_filled-tile-0.tif"
+DEM_FILLED_FILENAME = "dem_filled-tile-0.tif"  # extra_footprint_lonlat_deg=None's name -- unchanged
+# from before dem_filled_filename existed (real for TrnTestEntrySpice, which has no crop footprint
+# to union in -- see TrnTestEntry._dem_extra_footprint).
 
 
-def dem_footprint_meta_path(dem_filled_path: Path) -> Path:
-    """The sidecar recording which `extra_footprint_lonlat_deg` produced `dem_filled_path` -- see
-    `fetch_dem`'s own docstring for the identity gap this closes."""
-    return dem_filled_path.with_suffix(".footprint.json")
+def dem_filled_filename(extra_footprint_lonlat_deg: dict | None) -> str:
+    """The `output_dir`-relative filename `fetch_dem` writes its hole-filled DEM to.
 
-
-def dem_footprint_matches(dem_filled_path: Path, extra_footprint_lonlat_deg: dict | None) -> bool:
-    """Whether an already-on-disk `dem_filled_path` was fetched for the same
-    `extra_footprint_lonlat_deg` a caller is about to request -- lets `TrnTestEntry.dem_ortho_result`'s
-    resumption check verify agreement instead of just trusting `dem_filled_path.exists()`.
-
-    :returns: `True` if `dem_footprint_meta_path(dem_filled_path)` doesn't exist -- an
-        already-on-disk `dem_filled` from before this check existed (or any dataset's `_work/`
-        folder populated by an earlier version of this code) is trusted as-is rather than forced to
-        refetch; no live divergence has ever actually been observed (see `fetch_dem`'s own
-        docstring). `True` also when the recorded value matches; `False` only on a confirmed
-        mismatch.
+    :param extra_footprint_lonlat_deg: The same parameter `fetch_dem`/`fetch_dem_and_ortho` take.
+    :returns: `DEM_FILLED_FILENAME` when `None`; otherwise a short hash of the value baked into
+        the name (`f"dem_filled_{digest}-tile-0.tif"`, keeping the literal `"-tile-0.tif"` ending
+        `hole_fill_dem`'s own `dem_mosaic` convention relies on).
     """
-    meta_path = dem_footprint_meta_path(dem_filled_path)
-    if not meta_path.exists():
-        return True
-    recorded = json.loads(meta_path.read_text())["extra_footprint_lonlat_deg"]
-    # Round-tripping the caller's value through the same json encode/decode before comparing
-    # normalizes tuple-vs-list (json has no tuple type) so this can't spuriously report a mismatch
-    # for an otherwise-identical value.
-    return recorded == json.loads(json.dumps(extra_footprint_lonlat_deg))
+    # Same purpose as `ortho_shaded_filename` below (letting `TrnTestEntry.dem_ortho_result`'s
+    # resumption check ask for exactly the file a matching `fetch_dem` call would produce, so two
+    # different footprints can no longer silently collide on one shared name -- the real bug
+    # `test_wac_emp_ortho_source.py`'s own comment on
+    # `test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` documents), but a
+    # hash instead of a named flag: unlike `ortho_shaded_filename`'s parameters (a handful of
+    # discrete, intentionally side-by-side-comparable modes), `extra_footprint_lonlat_deg` is a
+    # continuous geometric value with no natural short name -- two equal dicts still hash equally,
+    # which is all the resumption check actually needs.
+    if extra_footprint_lonlat_deg is None:
+        return DEM_FILLED_FILENAME
+    digest = hashlib.sha1(json.dumps(extra_footprint_lonlat_deg, sort_keys=True).encode()).hexdigest()[:8]
+    return f"dem_filled_{digest}-tile-0.tif"
 
 
 def hole_fill_dem(dem_path, filled_path):
@@ -202,18 +200,10 @@ def fetch_dem(
     # ortho-shading concern (`fetch_and_shade_ortho`, an intentional variant family -- multiple valid
     # shaded orthos by design, principle 1) that used to be fused into the same function.
     #
-    # Still takes `extra_footprint_lonlat_deg` as a caller-suppliable parameter, unlike
-    # `ortho_shaded_filename`'s own parameters (which get baked into the filename since those really
-    # are intentional, side-by-side-comparable variants -- principle 1's other category).
-    # `dem_filled` has exactly one correct value per scope instead (principle 1's *single-answer*
-    # category), so the fix here is verification, not a variant suffix: `dem_footprint_meta_path`'s
-    # sidecar records the `extra_footprint_lonlat_deg` actually used, and `dem_footprint_matches`
-    # lets a resumption check (`TrnTestEntry.dem_ortho_result`) catch a caller silently requesting a
-    # different one under the same identity, rather than trusting `dem_filled_path.exists()` alone.
-    # No live divergence has ever been observed -- `TrnTestEntryEdr._dem_extra_footprint` and
-    # `candidate_window.generate_dataset`'s own inline call both derive this deterministically from
-    # the same `tie_points.crop_footprint_corners_for_camera` inputs -- this guards against a future
-    # caller that doesn't.
+    # `dem_filled_path`'s own filename bakes in `extra_footprint_lonlat_deg` (`dem_filled_filename`),
+    # the same fix `ortho_shaded_filename` already applies to its own parameters -- two calls with
+    # different footprints now write to two different files instead of silently disagreeing about
+    # "the" DEM under one shared name.
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,10 +242,8 @@ def fetch_dem(
         dem_elevation_path,
     )
 
-    dem_filled_path = config.output_dir / DEM_FILLED_FILENAME
+    dem_filled_path = config.output_dir / dem_filled_filename(extra_footprint_lonlat_deg)
     hole_fill_dem(dem_elevation_path, dem_filled_path)
-    with atomic_publish(dem_footprint_meta_path(dem_filled_path)) as tmp:
-        tmp.write_text(json.dumps({"extra_footprint_lonlat_deg": extra_footprint_lonlat_deg}))
     return DemFetchResult(dem=dem_filled_path, bbox=bbox, width=width, height=height)
 
 
