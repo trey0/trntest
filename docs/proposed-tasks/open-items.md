@@ -7,6 +7,21 @@ Genuinely open questions/gaps in `trntest`, pointed to from
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
+- **`trntest1` entries 201 and 3 (`M1314469291CE` at -60.738°N/145.2327°E, `M1314314993CE` at
+  -60.6194°N/168.6734°E) both have a horizontal line artifact in their basemap**
+  (`entry.dem_ortho_result.ortho`, the WAC_EMP-derived texture `hillshade` relights — both reported
+  by the user browsing `output/trntest1/reports/`; not yet independently confirmed against the
+  actual ortho file itself, only the gallery's own separate WMS-backdrop thumbnail, which didn't show
+  it at that resolution/data source). Both entries sit right at the ±60° equirect/polar boundary
+  `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid` mosaics WAC_EMP tiles across (see
+  `docs/data-sources/wac-emp-pds4.md`'s "Multi-tile mosaic" section) — and `M1314314993CE`
+  specifically is already independently documented (an earlier trial run) as having mosaicked two
+  real WAC_EMP tiles there (`WAC_EMP_643NM_P900S0000_304P` + `WAC_EMP_643NM_E300S1350_304P`) and
+  "succeeded" only in the sense of not raising — no one looked at the resulting pixels at the time.
+  Two independent entries at the same boundary showing the same artifact is stronger than
+  coincidence; a stitching seam along a constant-latitude line at that exact boundary is now the
+  leading (still unconfirmed) hypothesis for the *horizontal* line specifically.
+
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
