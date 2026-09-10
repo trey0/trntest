@@ -500,6 +500,115 @@ def test_truncate_invalidate_crop_cache_is_noop_outside_crop_product_type(tmp_pa
     assert cached_crop.exists()
 
 
+# -- skip list ------------------------------------------------------------------------------------
+
+
+def test_skip_reports_skipped_instead_of_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    assert trn_dataset.task_state(entry, "crop") == "failed"
+
+    ds.skip(entry, reason="reproducible hg2-out-of-range bug")
+
+    assert trn_dataset.task_state(entry, "crop") == "skipped"
+    assert ds.status().set_index("product_id").loc["P1", "crop"] == "skipped"
+
+
+def test_skip_persists_across_a_fresh_dataset_object(tmp_path):
+    folder = tmp_path / "ds"
+    ds = trn_dataset.TrnTestDataSet(folder, _minimal_manifest(["P1", "P2"]), TrntestConfig())
+    ds.skip(ds["P1"], reason="known bad")
+
+    reopened = trn_dataset.TrnTestDataSet(folder, _minimal_manifest(["P1", "P2"]), TrntestConfig())
+
+    assert trn_dataset.task_state(reopened["P1"], "crop") == "skipped"
+    assert trn_dataset.task_state(reopened["P2"], "crop") == "pending"
+
+
+def test_unskip_reverts_to_the_underlying_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    ds.skip(entry, reason="known bad")
+    assert trn_dataset.task_state(entry, "crop") == "skipped"
+
+    ds.unskip(entry)
+
+    assert trn_dataset.task_state(entry, "crop") == "failed"
+
+
+def test_skip_then_unskip_leaves_no_skip_list_file(tmp_path):
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    ds.skip(ds[0], reason="known bad")
+    assert (ds.folder / "skip_list.csv").exists()
+
+    ds.unskip(ds[0])
+
+    assert not (ds.folder / "skip_list.csv").exists()
+
+
+def test_done_wins_over_skip_listed(tmp_path, monkeypatch):
+    """A skip-listed entry that's actually already generated (e.g. fixed up by hand, or skipped
+    before the bug was fixed and since regenerated) still reports `done`, not `skipped`."""
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.skip(entry, reason="known bad")
+
+    ds.populate(product_types=("crop",))  # skip-listed but still pending -- not enqueued
+
+    assert trn_dataset.task_state(entry, "crop") == "skipped"
+
+    # Now pretend it got fixed up out-of-band (e.g. a manual regeneration) without unskip()ing it.
+    entry.crop.raster_path.parent.mkdir(parents=True, exist_ok=True)
+    entry.crop.raster_path.write_text("x")
+    entry.crop.sidecar_json_path.write_text("{}")
+
+    assert trn_dataset.task_state(entry, "crop") == "done"
+
+
+def test_populate_does_not_enqueue_skipped_entries_and_reports_them(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1", "P2"]), TrntestConfig())
+    ds.skip(ds["P1"], reason="known bad")
+
+    ds.populate(product_types=("crop",))
+
+    status = ds.status().set_index("product_id")
+    assert status.loc["P1", "crop"] == "skipped"
+    assert status.loc["P2", "crop"] == "done"
+    assert "Skipping 1 entries due to skip list: P1" in capsys.readouterr().out
+
+
+def test_populate_prints_nothing_when_skip_list_is_empty(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+
+    ds.populate(product_types=("crop",))
+
+    assert "skip list" not in capsys.readouterr().out.lower()
+
+
+def test_populate_retry_failed_does_not_retry_a_skipped_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl_failing_crop_for("P1"))
+    ds = trn_dataset.TrnTestDataSet(tmp_path / "ds", _minimal_manifest(["P1"]), TrntestConfig())
+    entry = ds[0]
+    ds.populate(product_types=("crop",))
+    assert trn_dataset.task_state(entry, "crop") == "failed"
+    ds.skip(entry, reason="reproducible bug, don't burn a worker on it every retry pass")
+
+    # Even though the underlying generator would now succeed, retry_failed=True must leave the
+    # skip-listed entry's stored failure alone rather than clearing/re-attempting it.
+    monkeypatch.setattr(trn_products.TrnTestCropImage, "_generate_impl", _fake_generate_impl)
+    ds.populate(product_types=("crop",), retry_failed=True)
+
+    assert trn_dataset.task_state(entry, "crop") == "skipped"
+    assert not entry.crop.raster_path.exists()
+
+
 # -- populate_via_workers() (huey_parallel-backed) -----------------------------------------------
 
 

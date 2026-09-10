@@ -99,6 +99,39 @@ blocking forever. The default is generous against a slow/cold entry; lower it fo
 loop on a smaller exploratory run, or pass `None` to wait forever like before this parameter existed.
 See "Don't run the test suite..." below for the gap this is a safety net for.
 
+## Retrying failures
+
+`retry_failed=True` (step 4 above) is **dataset-wide**: it clears every currently-`failed`
+entry's stored result and lets the normal pending-scan pick all of them back up. That's the right
+tool once you've looked at an entry's own log (see "Where to look when something fails" below) and
+concluded the failure was transient -- a network blip, a rate limit, a one-off ISIS/ASP hiccup.
+
+**It's the wrong tool for a failure you've confirmed is reproducible** -- a real bug that will
+fail the same entry the same way every time, not chance. Blindly calling `retry_failed=True`
+against the whole dataset then just re-attempts it, and burns a worker slot on it, on every future
+pass until the bug is actually fixed. This isn't hypothetical: a real `trntest1` run hit exactly
+this (`docs/proposed-tasks/open-items.md`'s Hapke `hg2`-out-of-range item, confirmed identical on
+two separate runs before the underlying sampling bug was fixed).
+
+Two more targeted primitives for exactly this case:
+
+- **`dataset.skip(entries, reason)`** marks one or more entries (a single `TrnTestEntry` or a
+  list) as permanently excluded, persisted to `<dataset_folder>/skip_list.csv`. From then on,
+  `task_state()`/`status()` report `"skipped"` for their non-`done` product types instead of
+  `"failed"`/`"pending"`, so a plain `populate_via_workers()` call never re-enqueues them and a
+  dataset-wide `retry_failed=True` sweep never clears/retries them either -- both apply to
+  *everything else* in the dataset as normal. `dataset.unskip(entries)` reverses it once the bug
+  is actually fixed. Whenever a call to `populate()`/`populate_via_workers()` finds skip-listed
+  entries with otherwise-pending work, it prints `Skipping N entries due to skip list: <ids>` so a
+  thinner-than-expected batch doesn't get mistaken for a stalled queue or a fully-populated
+  dataset -- if you see that line and didn't expect it, check `skip_list.csv`.
+- **`dataset.truncate(entries=[...], product_types=...)` then a normal `populate()`/
+  `populate_via_workers()` call** retries one or a few *specific* entries in isolation -- e.g.
+  after patching something and wanting to verify just that one, rather than sweeping the whole
+  dataset's failures. `truncate()` deletes the entry's product file(s)/log/stored result and
+  reverts it to `pending`; pair it with a small `limit` (or scope `product_types` down) if the
+  dataset has other unrelated pending work you don't want swept up in the same call.
+
 ## Watching a run live: the health monitor
 
 `populate_via_workers()` starts a background thread for the call's own duration (torn down
