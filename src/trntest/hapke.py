@@ -62,6 +62,13 @@ _HAPKE_CALIBRATION_CUBE_GLOB = "WAC_global_7bands_1x1_wbhs70NS_const_each_pole.*
 # shaded.
 DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
 
+# ISIS `photomet`'s own documented valid range for HAPKEHEN's `hg2` (the two-term Henyey-Greenstein
+# mixing weight between the +hg1/-hg1 lobes) -- a small number of real footprints sample a
+# calibration-cube `hg2` just above 1.0, which `photomet` rejects outright
+# (`**USER ERROR** Invalid value of Hapke Henyey Greenstein hg2 [<value>]`). See
+# `fetch_real_hapke_params`'s clamp below and `docs/proposed-tasks/open-items.md`.
+HG2_VALID_RANGE = (0.0, 1.0)
+
 # `dem_ortho.fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction`/
 # `real_hapke_params` parameter defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s
 # resumption check (via `dem_ortho.ortho_shaded_filename`) so the two can't disagree about which
@@ -417,7 +424,31 @@ def fetch_real_hapke_params(
     # DEM/ortho on) would be a further refinement, not implemented here -- see
     # `docs/proposed-tasks/open-items.md`.
     path = _hapke_calibration_cube_path(config)
-    return _sample_hapke_calibration(path, center_lon_deg, center_lat_deg, wavelength_nm)
+    params = _sample_hapke_calibration(path, center_lon_deg, center_lat_deg, wavelength_nm)
+    return _clamp_hg2(params, center_lon_deg, center_lat_deg)
+
+
+def _clamp_hg2(params: dict[str, float], center_lon_deg: float, center_lat_deg: float) -> dict[str, float]:
+    """Clamp `params["hg2"]` into `HG2_VALID_RANGE` if it falls outside it, logging the raw value first.
+
+    :param params: A `fetch_real_hapke_params`-shaped dict; mutated in place (and returned) if `hg2` is
+        out of range.
+    :param center_lon_deg: The sample point this `params` came from, degrees -- for the log line only.
+    :param center_lat_deg: Same, latitude.
+    :returns: `params`, with `hg2` clamped if necessary.
+    """
+    # A handful of real footprints land on a calibration-cube cell whose fitted `hg2` sits just past
+    # 1.0 -- `photomet` hard-rejects any value outside `HG2_VALID_RANGE`. Clamping trades an exact
+    # reproduction of that cell's (already out-of-model-range) fitted value for a working render;
+    # logged so a run's full extent of the issue is visible after the fact, not just its first hit.
+    lo, hi = HG2_VALID_RANGE
+    if not lo <= params["hg2"] <= hi:
+        print(
+            f"fetch_real_hapke_params: hg2={params['hg2']!r} at ({center_lon_deg}, {center_lat_deg}) "
+            f"is outside HAPKEHEN's valid range {HG2_VALID_RANGE} -- clamping."
+        )
+        params["hg2"] = min(max(params["hg2"], lo), hi)
+    return params
 
 
 def _hapke_reflectance(

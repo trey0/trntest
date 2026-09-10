@@ -383,3 +383,24 @@ def test_sample_hapke_calibration_rejects_a_wavelength_not_in_the_cube(tmp_path)
 
     with pytest.raises(ValueError, match="wavelength_nm"):
         hapke._sample_hapke_calibration(path, center_lon_deg=10.0, center_lat_deg=5.0, wavelength_nm=999)
+
+
+def test_clamp_hg2_leaves_an_in_range_value_untouched(capsys):
+    params = {"wh": 0.5, "hg2": 0.5}
+
+    result = hapke._clamp_hg2(params, center_lon_deg=10.0, center_lat_deg=5.0)
+
+    assert result["hg2"] == 0.5
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("hg2, expected", [(1.1993844509125, 1.0), (-0.2, 0.0)])
+def test_clamp_hg2_clamps_and_logs_an_out_of_range_value(capsys, hg2, expected):
+    params = {"wh": 0.5, "hg2": hg2}
+
+    result = hapke._clamp_hg2(params, center_lon_deg=145.0931, center_lat_deg=69.4629)
+
+    assert result["hg2"] == expected
+    logged = capsys.readouterr().out
+    assert str(hg2) in logged
+    assert "145.0931" in logged and "69.4629" in logged
