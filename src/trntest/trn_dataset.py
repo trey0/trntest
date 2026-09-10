@@ -143,6 +143,22 @@ class TrnTestEntry(abc.ABC):
         existing on-disk filename byte-identical), a timestamp for `TrnTestEntrySpice` (which has no
         EDR product id to use)."""
 
+    @property
+    @abc.abstractmethod
+    def tsai_path(self) -> Path:
+        """Deterministic path to this entry's `.tsai` Pinhole camera file (see
+        `camera.write_tsai`) -- computable without building `camera` itself, so
+        `TrnTestDataSet.write_entry_poses()` can check for/read an already-written file without
+        forcing new work (real ISIS work, for `TrnTestEntryEdr`) for an as-yet-unpopulated entry."""
+
+    @property
+    @abc.abstractmethod
+    def camera_et(self) -> float:
+        """This entry's camera pose epoch -- SPICE ET (TDB seconds past the J2000 epoch) -- computed
+        cheaply and ISIS-free, unlike the full `camera` cached_property (which for
+        `TrnTestEntryEdr` can trigger a real ISIS boresight-refine pass). Matches `camera.et`
+        exactly. Used by `TrnTestDataSet.write_entry_poses()` for its ROS-`header` `stamp`."""
+
     @functools.cached_property
     @abc.abstractmethod
     def per_image_config(self) -> TrntestConfig: ...
@@ -283,9 +299,25 @@ class TrnTestEntryEdr(TrnTestEntry):
     def frame_timing(self) -> FrameTiming:
         return camera_module.fetch_frame_timing(self.per_image_config)
 
+    @property
+    def tsai_path(self) -> Path:
+        return self.per_image_config.output_dir / camera_module.edr_tsai_filename(
+            self.per_image_config.target_frame_index
+        )
+
+    @property
+    def camera_et(self) -> float:
+        crop_info = camera_module.compute_n_frames_for_square_crop(
+            self.frame_timing, self.per_image_config.target_frame_index, self.per_image_config
+        )
+        center_frame_index = camera_module.center_frame_index_for_square_crop(
+            self.per_image_config.target_frame_index, crop_info
+        )
+        return camera_module.frame_et(self.frame_timing, center_frame_index)
+
     @functools.cached_property
     def camera(self) -> Camera:
-        return camera_module.build_camera(self.per_image_config)
+        return camera_module.build_camera(self.per_image_config, output_tsai_path=self.tsai_path)
 
     @functools.cached_property
     def stitched(self) -> isis_wac.FramestitchResult:
@@ -392,13 +424,21 @@ class TrnTestEntrySpice(TrnTestEntry):
         # hillshade rendering) ever reads them, unlike TrnTestEntryEdr's per_image_config.
         return dataclasses.replace(self.config, output_dir=self.dataset_folder / "_work" / self.identifier)
 
-    @functools.cached_property
-    def camera(self) -> Camera:
+    @property
+    def tsai_path(self) -> Path:
+        return self.per_image_config.output_dir / f"camera_{self.identifier}.tsai"
+
+    @property
+    def camera_et(self) -> float:
         utc_dt = self.row["utc_time"].to_pydatetime()
         spice_kernels.fetch_and_furnish(utc_dt, self.per_image_config)
-        et = spice.utc2et(utc_dt.strftime("%Y-%m-%dT%H:%M:%S"))
-        output_tsai_path = self.per_image_config.output_dir / f"camera_{self.identifier}.tsai"
-        return camera_module.build_spice_camera(et, self.template_tsai_path, self.per_image_config, output_tsai_path)
+        return spice.utc2et(utc_dt.strftime("%Y-%m-%dT%H:%M:%S"))
+
+    @functools.cached_property
+    def camera(self) -> Camera:
+        return camera_module.build_spice_camera(
+            self.camera_et, self.template_tsai_path, self.per_image_config, self.tsai_path
+        )
 
     @functools.cached_property
     def rotations(self) -> DisplayRotations:
@@ -746,6 +786,39 @@ class TrnTestDataSet:
         if write_overview_map:
             overview_map.write_overview_map(self, self.config)
         report.print_viewing_url(self)
+
+    def write_entry_poses(self, entries: "TrnTestEntry | list[TrnTestEntry] | None" = None) -> None:
+        """Writes `<folder>/entry_poses.jsonl` -- one JSON Lines record per entry (or just
+        `entries`, if given), each describing that entry's 6-DOF camera-frame pose (position +
+        quaternion attitude, `MOON_ME`) exactly as recorded in its already-written `.tsai` file,
+        loosely modeled on a ROS `geometry_msgs/PoseStamped` message (see
+        `entry_poses.ENTRY_POSE_JSON_SCHEMA` for the exact shape/field descriptions). Also writes
+        the companion `<folder>/entry_poses.schema.json`.
+
+        Deliberately **not** called automatically by `populate()`/`populate_via_workers()`/
+        `write_index()` -- call it explicitly whenever an up-to-date pose file is actually wanted
+        (e.g. once after a run finishes), the same way `overview_map.write_overview_map(self)` is
+        callable directly instead of only via `write_index()`.
+
+        Reads each entry's pose straight from its `.tsai` file (`camera.read_tsai_pose`) rather
+        than rebuilding `entry.camera` -- deliberately, so this stays cheap and ISIS-free
+        regardless of dataset size, safe to call any time after a normal population run without
+        re-triggering real ISIS work. A naive `for entry in dataset: entry.camera` loop would not
+        have this property: for `entry_kind="edr"`, `camera` can force a real ISIS boresight-refine
+        pass (see `TrnTestEntryEdr.camera`'s docstring) -- the exact trap `overview_map`'s
+        `lightweight_footprint_lonlat_deg` was built to avoid for the FOV footprint, applying here
+        too. `entry.camera_et` gives the pose's timestamp the same ISIS-free way (pure SPICE, no
+        ISIS call).
+
+        :param entries: A single entry, a list, or `None` (default) for every entry in the dataset
+            -- an entry with no `.tsai` yet (never populated) is silently skipped in the output,
+            not an error, since this harvests already-computed poses rather than triggering new
+            ones.
+        """
+        from trntest import entry_poses  # noqa: PLC0415 -- circular otherwise (imports TrnTestDataSet
+        # /TrnTestEntry from this module, for type hints only)
+
+        entry_poses.write_entry_poses(self, entries)
 
     def truncate(
         self,
