@@ -11,6 +11,7 @@ docs/data-sources/lunaserv-wms.md, and docs/caching.md.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,7 +28,7 @@ from trntest.hapke import (
     despeckle_and_shade_ortho,
 )
 from trntest.ortho_wac_emp import fetch_wac_emp_reflectance, reproject_wac_emp_reflectance_to_local_grid
-from trntest.product_io import atomic_publish_prefix, writes_product
+from trntest.product_io import atomic_publish, atomic_publish_prefix, writes_product
 from trntest.subprocess_utils import run_quiet
 
 if TYPE_CHECKING:
@@ -41,6 +42,37 @@ if TYPE_CHECKING:
 # reflectance -- see docs/data-sources/lunaserv-wms.md.
 DEFAULT_ORTHO_SOURCE = "wac_emp_pds"
 ORTHO_SOURCES = ("wac_emp_pds", "lunaserv_wms")
+
+
+DEM_FILLED_FILENAME = "dem_filled-tile-0.tif"
+
+
+def dem_footprint_meta_path(dem_filled_path: Path) -> Path:
+    """The sidecar recording which `extra_footprint_lonlat_deg` produced `dem_filled_path` -- see
+    `fetch_dem`'s own docstring for the identity gap this closes."""
+    return dem_filled_path.with_suffix(".footprint.json")
+
+
+def dem_footprint_matches(dem_filled_path: Path, extra_footprint_lonlat_deg: dict | None) -> bool:
+    """Whether an already-on-disk `dem_filled_path` was fetched for the same
+    `extra_footprint_lonlat_deg` a caller is about to request -- lets `TrnTestEntry.dem_ortho_result`'s
+    resumption check verify agreement instead of just trusting `dem_filled_path.exists()`.
+
+    :returns: `True` if `dem_footprint_meta_path(dem_filled_path)` doesn't exist -- an
+        already-on-disk `dem_filled` from before this check existed (or any dataset's `_work/`
+        folder populated by an earlier version of this code) is trusted as-is rather than forced to
+        refetch; no live divergence has ever actually been observed (see `fetch_dem`'s own
+        docstring). `True` also when the recorded value matches; `False` only on a confirmed
+        mismatch.
+    """
+    meta_path = dem_footprint_meta_path(dem_filled_path)
+    if not meta_path.exists():
+        return True
+    recorded = json.loads(meta_path.read_text())["extra_footprint_lonlat_deg"]
+    # Round-tripping the caller's value through the same json encode/decode before comparing
+    # normalizes tuple-vs-list (json has no tuple type) so this can't spuriously report a mismatch
+    # for an otherwise-identical value.
+    return recorded == json.loads(json.dumps(extra_footprint_lonlat_deg))
 
 
 def hole_fill_dem(dem_path, filled_path):
@@ -170,15 +202,18 @@ def fetch_dem(
     # ortho-shading concern (`fetch_and_shade_ortho`, an intentional variant family -- multiple valid
     # shaded orthos by design, principle 1) that used to be fused into the same function.
     #
-    # Still takes `extra_footprint_lonlat_deg` as a caller-suppliable parameter -- principle 1's "no
-    # caller-supplied parameter should be able to change identity" isn't fully closed by this split.
-    # `dem_filled_path`'s own filename still doesn't encode this parameter (unlike
-    # `ortho_shaded_filename`'s suffix discipline for its own parameters), so two calls against the
-    # same output directory with different footprints can still silently disagree about "the" DEM --
-    # see `docs/proposed-tasks/open-items.md` for what a full fix would need. Not solved here: this phase only
-    # makes the current single writer legible/auditable (`writes_product`) and its file write atomic
-    # (`atomic_publish`, in `dem_gld100.reproject_astropedia_elevation_to_local_grid`), not the
-    # filename-collision gap itself -- flagged rather than silently assumed fixed.
+    # Still takes `extra_footprint_lonlat_deg` as a caller-suppliable parameter, unlike
+    # `ortho_shaded_filename`'s own parameters (which get baked into the filename since those really
+    # are intentional, side-by-side-comparable variants -- principle 1's other category).
+    # `dem_filled` has exactly one correct value per scope instead (principle 1's *single-answer*
+    # category), so the fix here is verification, not a variant suffix: `dem_footprint_meta_path`'s
+    # sidecar records the `extra_footprint_lonlat_deg` actually used, and `dem_footprint_matches`
+    # lets a resumption check (`TrnTestEntry.dem_ortho_result`) catch a caller silently requesting a
+    # different one under the same identity, rather than trusting `dem_filled_path.exists()` alone.
+    # No live divergence has ever been observed -- `TrnTestEntryEdr._dem_extra_footprint` and
+    # `candidate_window.generate_dataset`'s own inline call both derive this deterministically from
+    # the same `tie_points.crop_footprint_corners_for_camera` inputs -- this guards against a future
+    # caller that doesn't.
     config = config or load_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -217,8 +252,10 @@ def fetch_dem(
         dem_elevation_path,
     )
 
-    dem_filled_path = config.output_dir / "dem_filled-tile-0.tif"
+    dem_filled_path = config.output_dir / DEM_FILLED_FILENAME
     hole_fill_dem(dem_elevation_path, dem_filled_path)
+    with atomic_publish(dem_footprint_meta_path(dem_filled_path)) as tmp:
+        tmp.write_text(json.dumps({"extra_footprint_lonlat_deg": extra_footprint_lonlat_deg}))
     return DemFetchResult(dem=dem_filled_path, bbox=bbox, width=width, height=height)
 
 
@@ -258,8 +295,7 @@ def fetch_and_shade_ortho(
     """
     # Taking `dem` (`fetch_dem`'s output) as an input and always reusing its `bbox`/`width`/`height`
     # exactly closes the entanglement `fetch_dem`'s docstring describes for the DEM/ortho pairing
-    # specifically: the two can no longer fetch against two different bboxes. The DEM's own
-    # filename-collision gap against a different `fetch_dem` call is still open, as noted there.
+    # specifically: the two can no longer fetch against two different bboxes.
     #
     # `ortho_source="lunaserv_wms"` is only numerically coherent with `hapke=False`:
     # `hapke.hapke_shade_ortho` assumes its `ortho` input is already reflectance (see its own
@@ -281,7 +317,7 @@ def fetch_and_shade_ortho(
     # given -- e.g. `tie_points.crop_footprint_corners_for_camera`'s WAC crop footprint, which isn't
     # always the same size/shape as the synthetic camera's own FOV) all come from `dem`, not
     # recomputed here -- see `fetch_dem`'s own docstring for that computation and its remaining
-    # caveats (the ray-traced-estimate-vs-crop margin, the still-open filename-collision gap).
+    # caveats (the ray-traced-estimate-vs-crop margin).
     if ortho_source not in ORTHO_SOURCES:
         raise ValueError(f"ortho_source={ortho_source!r} is not one of {ORTHO_SOURCES!r}")
     config = config or load_config()
@@ -379,8 +415,7 @@ def fetch_dem_and_ortho(
     :returns: A `DemOrthoResult` for the fetched DEM/ortho pair.
     """
     # See `fetch_dem`/`fetch_and_shade_ortho`'s own docstrings for what's now individually
-    # `product_io`-decorated, and for the DEM filename-collision gap that split doesn't itself
-    # close.
+    # `product_io`-decorated.
     dem = fetch_dem(camera, config, extra_footprint_lonlat_deg)
     return fetch_and_shade_ortho(
         camera,

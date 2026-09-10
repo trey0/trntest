@@ -196,9 +196,18 @@ class TrnTestEntry(abc.ABC):
             hapke.DEFAULT_REAL_HAPKE_PARAMS,
             dem_ortho.DEFAULT_ORTHO_SOURCE,
         )
-        dem_path = self.per_image_config.output_dir / "dem_filled-tile-0.tif"
+        dem_path = self.per_image_config.output_dir / dem_ortho.DEM_FILLED_FILENAME
         if ortho_path.exists() and dem_path.exists():
-            return dem_ortho.result_from_files(ortho_path, dem_path)
+            # dem_footprint_matches guards against resuming a DEM fetched for a *different*
+            # extra_footprint_lonlat_deg than this call would ask for -- see that function's own
+            # docstring. Trusts an already-on-disk DEM with no sidecar (predating this check) as-is
+            # rather than forcing a refetch -- no live divergence has ever actually been observed.
+            if dem_ortho.dem_footprint_matches(dem_path, self._dem_extra_footprint):
+                return dem_ortho.result_from_files(ortho_path, dem_path)
+            print(
+                f"{self.product_id}: cached DEM at {dem_path} doesn't match this entry's current "
+                "footprint -- refetching instead of resuming it."
+            )
         return dem_ortho.fetch_dem_and_ortho(
             self.camera, self.per_image_config, extra_footprint_lonlat_deg=self._dem_extra_footprint
         )
