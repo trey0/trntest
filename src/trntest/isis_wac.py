@@ -37,7 +37,7 @@ import rasterio.warp
 import rasterio.windows
 
 from trntest import cache, geo_utils, trace
-from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.config import DEFAULT_CACHE_ROOT, MOON_RADIUS_M, TrntestConfig, load_config
 from trntest.dem_ortho import DemOrthoResult
 from trntest.product_io import atomic_publish, atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
@@ -224,6 +224,42 @@ def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) ->
     )
 
 
+# `spiceinit web=yes` is ISIS's own subprocess making its own HTTP request internally, to NAIF/USGS's
+# SPICE pointing-correction web service -- a different host than `cache.cached_get`'s callers
+# (Lunaserv, the PDS ODE API, USGS's S3 kernel bucket), so it needs its own dedicated pacing lock, not
+# `cache._PACING_LOCK_PATH` -- sharing one lock would over-serialize unrelated traffic for no benefit
+# (a WMS tile fetch blocking on an in-flight `spiceinit` call, or vice versa, protects neither's real,
+# independent rate limit).
+#
+# A real production run (`trntest2`, 69 entries, `populate_via_workers(workers=8)`) hit this exact gap:
+# up to 16 concurrent, completely uncoordinated `spiceinit web=yes` calls (2 per entry -- see
+# `run_pipeline`'s two calls below -- times up to 8 workers) tripped server-side throttling hard
+# enough to fail 56 of 67 remaining entries, all with the same "server is unable to handle the
+# request" error. A same-scale run the night before, without the extra worker contention, hit the same
+# error on only ~1.5% of entries -- see docs/proposed-tasks/spiceinit-web-pacing.md for the full
+# incident writeup (delete that file once its content's been folded into docs/caching.md).
+#
+# Fixed at a fixed path under `DEFAULT_CACHE_ROOT`, not `config.cache_root`, for the same reason
+# `cache._PACING_LOCK_PATH` is: it coordinates every worktree/agent session sharing this VPS's cache
+# mount, not just one `populate_via_workers()` call's own worker pool. Full serialization (not a small
+# concurrency limit) to start, matching `cache.pacing_gate`'s own precedent -- the remote service's
+# real capacity isn't known, so the safest default comes first; loosen later if this is measured to be
+# overly conservative.
+_SPICEINIT_PACING_LOCK_PATH = DEFAULT_CACHE_ROOT / ".spiceinit_pacing.lock"
+
+
+def _run_spiceinit_web(cub_path: Path, shape_model_path: Path) -> None:
+    """Run ISIS's `spiceinit web=yes shape=user`, paced against every other process/agent's own
+    calls -- the one real subprocess both `run_spiceinit` and `attach_dem_shape_model` need, shared so
+    the pacing gate only has to be applied in one place.
+
+    :param cub_path: Cube to spiceinit, in place.
+    :param shape_model_path: Shape model cube (`ensure_lunar_shape_model`'s output).
+    """
+    with cache.pacing_gate(lock_path=_SPICEINIT_PACING_LOCK_PATH):
+        run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=user", f"model={shape_model_path}"])
+
+
 @dataclasses.dataclass(frozen=True)
 class SpiceinitResult:
     """The spiceinit'd cube, as returned by `run_spiceinit` -- `spiceinit` edits the label in place,
@@ -249,7 +285,7 @@ def run_spiceinit(cub_path: Path, config: TrntestConfig | None = None) -> Spicei
     # this call.
     config = config or load_config()
     shape_model_path = ensure_lunar_shape_model(config)
-    run_quiet(["spiceinit", f"from={cub_path}", "web=yes", "shape=user", f"model={shape_model_path}"])
+    _run_spiceinit_web(cub_path, shape_model_path)
     return SpiceinitResult(cub_path=cub_path)
 
 
@@ -905,7 +941,7 @@ def attach_dem_shape_model(crop: CropResult, config: TrntestConfig | None = None
     out_path = crop.cub_path.with_name(crop.cub_path.stem + ".dem.cub")
     if not out_path.exists():
         shutil.copy(crop.cub_path, out_path)
-        run_quiet(["spiceinit", f"from={out_path}", "web=yes", "shape=user", f"model={shape_model_path}"])
+        _run_spiceinit_web(out_path, shape_model_path)
     return CropResult(cub_path=out_path)
 
 

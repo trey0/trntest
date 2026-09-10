@@ -60,7 +60,7 @@ _HTTP_TOO_MANY_REQUESTS = 429
 # Fixed via a real cross-process mutual-exclusion lock (`fcntl.flock`, not a lockfile-exists
 # convention -- a real blocking wait, no polling, and the OS releases it automatically if a holding
 # process dies mid-fetch, so a killed worker can't leave every other process stuck waiting forever).
-# `_pacing_gate()` is held for a whole `cached_get` call -- every attempt's pacing sleep, the request
+# `pacing_gate()` is held for a whole `cached_get` call -- every attempt's pacing sleep, the request
 # itself, full response streaming, and any retry/`Retry-After` backoff -- not just released after a
 # quick timestamp check, so at most one fetch is ever live VPS-wide and each new one still waits out
 # `_REQUEST_PACING_SECONDS` after the previous one finished, the same guarantee one process's own
@@ -81,13 +81,19 @@ _PACING_LOCK_PATH = DEFAULT_CACHE_ROOT / ".fetch_pacing.lock"
 
 
 @contextlib.contextmanager
-def _pacing_gate():
-    """Cross-process mutual exclusion for `cached_get`'s real network fetch -- see the comment above
-    `_PACING_LOCK_PATH` for the full rationale. Blocks until any other process's fetch (in this
-    process, another `populate_via_workers()` worker, or an unrelated agent session sharing this
-    VPS's `cache/`) finishes, then holds the lock until this one does too."""
-    _PACING_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_PACING_LOCK_PATH, "a") as lock_file:
+def pacing_gate(lock_path: Path = _PACING_LOCK_PATH):
+    """Cross-process mutual exclusion, held for a whole guarded operation -- see the comment above
+    `_PACING_LOCK_PATH` for the full rationale. Blocks until any other process holding the same
+    `lock_path` (in this process, another `populate_via_workers()` worker, or an unrelated agent
+    session sharing this VPS's `cache/`) finishes, then holds the lock until this one does too.
+
+    :param lock_path: Defaults to `cached_get`'s own fetch-pacing lock; pass a different fixed path
+        to guard an unrelated resource (e.g. `isis_wac.py`'s `spiceinit web=yes` pacing) without
+        over-serializing against this one -- see that caller's own comment for why one shared lock
+        would be wrong here.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
             yield
@@ -158,9 +164,9 @@ def cached_get(
         print(f"fetching {url} -> {dest}")
 
     last_exc: Exception | None = None
-    # The whole retry loop runs under one `_pacing_gate()` acquisition, not one per attempt -- see
+    # The whole retry loop runs under one `pacing_gate()` acquisition, not one per attempt -- see
     # that function's own comment for why (single live fetch VPS-wide, backoff included).
-    with _pacing_gate():
+    with pacing_gate():
         for attempt in range(1, max_attempts + 1):
             time.sleep(_REQUEST_PACING_SECONDS)
             fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".part")

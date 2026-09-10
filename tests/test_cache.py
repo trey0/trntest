@@ -292,7 +292,7 @@ def test_cached_get_paces_real_requests(tmp_path, monkeypatch):
 
 def test_pacing_gate_serializes_concurrent_callers(tmp_path):
     # `fcntl.flock` locks by open file description, not by process -- two threads in this one test
-    # process, each opening `_PACING_LOCK_PATH` independently (as `_pacing_gate()` does), contend for
+    # process, each opening `_PACING_LOCK_PATH` independently (as `pacing_gate()` does), contend for
     # the same lock exactly like two separate `populate_via_workers()` worker processes would. Uses
     # `threading.Event.wait` for the artificial hold time, not `time.sleep` -- the latter is patched
     # to a no-op by this file's own autouse `_no_real_sleeps` fixture, which would defeat the point
@@ -303,7 +303,7 @@ def test_pacing_gate_serializes_concurrent_callers(tmp_path):
 
     def hold_gate_briefly():
         nonlocal concurrent_holders, max_concurrent
-        with cache._pacing_gate():
+        with cache.pacing_gate():
             with state_lock:
                 concurrent_holders += 1
                 max_concurrent = max(max_concurrent, concurrent_holders)

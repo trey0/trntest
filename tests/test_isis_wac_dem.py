@@ -1,6 +1,7 @@
 import csv
 import dataclasses
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +17,17 @@ from trntest.config import MOON_RADIUS_M, TrntestConfig
 from trntest.dem_ortho import DemOrthoResult
 from trntest.geo_utils import local_orthographic_crs
 from trntest.pose_alignment import wac_camera_model
+
+
+@pytest.fixture(autouse=True)
+def _spiceinit_pacing_lock_in_tmp_path(monkeypatch, tmp_path):
+    """`_run_spiceinit_web`'s pacing lock lives at a fixed path under `DEFAULT_CACHE_ROOT` by design
+    (see its own comment -- coordinates every worktree/agent sharing this VPS's cache mount), which
+    would otherwise mean every test in this file takes out a real lock against that shared path.
+    Redirected to a test-local path instead, matching test_cache.py's own
+    `_pacing_lock_in_tmp_path` fixture for `cache._PACING_LOCK_PATH`."""
+    monkeypatch.setattr(isis_wac, "_SPICEINIT_PACING_LOCK_PATH", tmp_path / "spiceinit_pacing.lock")
+
 
 # Same fixture as test_isis_wac_parsing.py's _TABLES_LABEL_TEXT (a trimmed real InstrumentPointing
 # Table label, captured live against product M1327210646CE's cropped cube) -- what
@@ -277,6 +289,40 @@ def test_attach_dem_shape_model_copies_the_crop_and_runs_spiceinit_shape_user(tm
     assert "web=yes" in cmd
     assert "shape=user" in cmd
     assert f"model={shape_model_path}" in cmd
+
+
+def test_run_spiceinit_web_serializes_concurrent_callers(tmp_path):
+    # Regression test for the trntest2 incident (docs/proposed-tasks/spiceinit-web-pacing.md): up to
+    # 16 concurrent, uncoordinated `spiceinit web=yes` calls (2 per entry, 8 workers) overloaded the
+    # remote SPICE service. Same technique as test_cache.py's own
+    # test_pacing_gate_serializes_concurrent_callers -- several threads in one process each call
+    # `_run_spiceinit_web` via a stubbed-out `run_quiet` (no real ISIS/network access), tracking max
+    # concurrent holders of the pacing gate.
+    concurrent_holders = 0
+    max_concurrent = 0
+    state_lock = threading.Lock()
+
+    def fake_run_quiet(cmd):
+        nonlocal concurrent_holders, max_concurrent
+        with state_lock:
+            concurrent_holders += 1
+            max_concurrent = max(max_concurrent, concurrent_holders)
+        threading.Event().wait(0.05)
+        with state_lock:
+            concurrent_holders -= 1
+
+    with patch.object(isis_wac, "run_quiet", side_effect=fake_run_quiet):
+        args = (tmp_path / "ldem.cub",)
+        threads = [
+            threading.Thread(target=isis_wac._run_spiceinit_web, args=(tmp_path / f"cube{i}.cub", *args))
+            for i in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert max_concurrent == 1
 
 
 def test_attach_dem_shape_model_is_idempotent(tmp_path):
