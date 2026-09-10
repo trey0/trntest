@@ -71,8 +71,17 @@ attempt's captured console output under `logs/<edr_product>/<product_type>_log.t
 (`tasks._capture_generator_log`, see `docs/report-generation.md`'s on-disk layout and
 `docs/batch-generation.md`'s "Where to look when something fails" section) — a single-answer
 artifact per entry+generator per this doc's own principle 1, written once per real (non-no-op)
-`generate()` attempt. Task-queue state
-lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
+`generate()` attempt.
+
+**Also directly under the dataset folder**, not covered by the paragraph above: `status.csv` and
+`reports/` (`write_index()`, see `docs/report-generation.md`'s own on-disk layout for `reports/`'s
+contents), `skip_list.csv` (`TrnTestDataSet.skip()`/`unskip()`, see `docs/batch-generation.md`'s
+"Retrying failures" section), `dataset_meta.json` (`{"entry_kind", "primary_generator"}`, written
+by `create()`), `camera_template.tsai` (`entry_kind="spice"` only — the shared intrinsics template
+`create()` copies in), and `entry_poses.jsonl`/`entry_poses.schema.json` (`TrnTestDataSet.
+write_entry_poses()`, see `entry_poses.py`'s module docstring).
+
+Task-queue state lives outside this folder entirely now, in `<output_dir>/.huey/` — two separate `huey` sqlite
 databases (`tasks.db` for `populate()`, `tasks_parallel.db` for `populate_via_workers()`'s real
 worker pool), each shared by every dataset under that `output_dir` — see `src/trntest/tasks.py`'s
 module docstring. Filenames key on `edr_product` (`M1327210646CE` →

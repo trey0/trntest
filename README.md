@@ -231,6 +231,7 @@ lint's notebook checks).
 | [`dataset_selection_plots.py`][dataset_selection_plots.py] | `notebooks/select_datasets.py`'s own scatter plots (`plot_sun_elevation_vs_edr_count`, `plot_illuminated_node_scatter`) — split out of `plotting.py` since `dataset_selection.py`'s orbit-level candidate geometry is the only reason this depends on `illumination.py`. |
 | [`dem_gld100.py`][dem_gld100.py] | Live default DEM source: fetches/caches USGS Astropedia's flat-file GLD100 DEM and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md). |
 | [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
+| [`entry_poses.py`][entry_poses.py] | `TrnTestDataSet.write_entry_poses()`'s implementation: a ROS-inspired JSON Lines record per entry (position + quaternion attitude, `MOON_ME`, read from its `.tsai`) plus a companion JSON Schema (`ENTRY_POSE_JSON_SCHEMA`) — see the module docstring. |
 | [`geo_utils.py`][geo_utils.py] | Generic CRS/bbox/reprojection math (`geographic_crs`, `local_orthographic_crs`, `pad_bbox`, `reproject_raster_to_local_grid`, ...) shared by every DEM/ortho data-source module — dependency-free by design. |
 | [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need. |
 | [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`dataset_selection_plots.py` use. |
@@ -255,7 +256,7 @@ lint's notebook checks).
 | [`subprocess_utils.py`][subprocess_utils.py] | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
-| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` (abstract, two concrete kinds — `TrnTestEntryEdr`/`TrnTestEntrySpice`, see the module's own docstring) — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
+| [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` (abstract, two concrete kinds — `TrnTestEntryEdr`/`TrnTestEntrySpice`, see the module's own docstring) — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call; `skip()`/`unskip()` maintain a persisted retry-exclusion list (`skip_list.csv`); `write_entry_poses()` writes the `entry_poses.jsonl` pose export (see `entry_poses.py`). |
 | [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `primary_image` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `primary_image` dependency — both default-on in `PRODUCT_TYPES`, `TrnTestEntryEdr`-only). Split out of `trn_dataset.py`. |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
@@ -271,6 +272,7 @@ lint's notebook checks).
 [dataset_selection_plots.py]: src/trntest/dataset_selection_plots.py
 [dem_gld100.py]: src/trntest/dem_gld100.py
 [dem_ortho.py]: src/trntest/dem_ortho.py
+[entry_poses.py]: src/trntest/entry_poses.py
 [geo_utils.py]: src/trntest/geo_utils.py
 [hapke.py]: src/trntest/hapke.py
 [illumination.py]: src/trntest/illumination.py
