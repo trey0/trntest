@@ -617,12 +617,13 @@ class TrnTestDataSet:
         :param workers: Number of parallel worker processes.
         :param result_timeout: Seconds to wait for one entry's stored result before giving up on it
             and moving to the next -- `None` waits forever. Real-world default (30 min) is generous
-            against a slow/cold entry but finite: a task whose result never gets stored (a real,
-            not-yet-root-caused failure mode seen under sustained 8-worker load -- see
-            `docs/proposed-tasks/open-items.md`'s `populate_via_workers` hang item) would otherwise
-            block this call forever even though every other entry's own work keeps completing fine
-            in the background. A timeout here is a safety net for that specific gap, not a fix for
-            its root cause.
+            against a slow/cold entry but finite: a task whose result never gets stored (seen live
+            under sustained 8-worker load, root-caused as a `pytest` run flushing this same live
+            queue out from under the batch -- see `docs/batch-generation.md`'s "Don't run the test
+            suite..." section for the actual mechanism) would otherwise block this call forever
+            even though every other entry's own work keeps completing fine in the background. A
+            timeout here is a safety net for that collision (or any other cause of a missing
+            result), not a substitute for avoiding it.
         """
         # Routes through trntest.tasks.huey_parallel (tasks.start_consumer/stop_consumer) so
         # image.generate() calls run in `-k process` worker processes.
@@ -1003,8 +1004,9 @@ def _await_result(result: Result, timeout: float | None = None) -> None:
         # Not force-marked `failed` here: task_state() still reports whatever it already would
         # (usually `pending`, since no result was ever stored) -- honest, since a slow-but-alive
         # worker could still finish this entry later, unlike a real TaskException which is a
-        # definitive outcome. See docs/proposed-tasks/open-items.md's `populate_via_workers` hang
-        # item for why a result can go missing at all; this is a safety net, not that fix.
+        # definitive outcome. See docs/batch-generation.md's "Don't run the test suite..." section
+        # for the confirmed way a result can go missing at all; this is a safety net, not a fix for
+        # avoiding that collision in the first place.
         print(
             f"WARNING: timed out after {timeout}s waiting for task {result.id}'s stored result -- "
             "moving on to the next entry. Its own work may still complete in the background; "
