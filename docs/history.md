@@ -6226,3 +6226,42 @@ is byte-identical to before (only its `.ipynb` outputs refreshed, `.py` source u
 diff). `spice_entry_poc.ipynb` itself run clean top-to-bottom after both bugs above were fixed: 4 of
 5 entries rendered, the 5th's DEM-coverage failure surfaced in its own captured log and in the
 notebook's own status print, not hidden.
+
+## Phase 119 (2026-09-10) — Investigated a Hapke-parameter-mapping hypothesis for the `hg2` failures; clamped `hg2`
+
+A `trntest1` production run left partial output (`output/trntest1/`, outside this worktree) with 3
+confirmed `hg2`-out-of-range failures (`M1314356826CE`, `M1314368522CE`, and a newly-found third,
+`M1314410602CE` — see `docs/proposed-tasks/open-items.md`'s now-deleted item for the first two).
+Before treating a clamp as the obvious fix, the user raised a real alternative hypothesis: that
+`hapke.fetch_real_hapke_params`'s calibration-cube sampling might be misconverting Sato et al.
+(2014)'s own parameter names/definitions into ISIS's `HAPKEHEN` parameterization — and, in the best
+case, that the same mistake might also explain the long-open `reproject`-brighter-than-`hillshade`
+phase-angle-dependent brightness regression (see the "real-WAC-crop/hillshade brightness match" open
+item).
+
+**Evidence gathered, not a settled conclusion** (recorded in the open item above too): a companion
+file already present in this project's own cache, `cache/isisdata/lro/calibration/WAC_hapke_full.0001.pvl`,
+confirms the 7×9 band layout `_HAPKE_CALIBRATION_PARAM_ORDER` assumes. Two external sources were then
+checked against that same assumption: LROC's own SDR product documentation states the archived band
+order as `(w, b, c, Bc0, hc, Bs0, hs, θ, φ)` with bands 4/5/8/9 constant — position-for-position the
+same as this codebase's `(wh, hg1, hg2, bc0, hc, b0, hh, theta, phi)`, and consistent with this
+codebase's own independent observation that `bc0`/`hc`/`phi` sample as `0`/`1`/`0` for every real
+entry. ISIS's own `photomet` docs define `hg2` exactly as the two-term Henyey-Greenstein mixing
+weight the sampling assumes, documented valid range 0.0–1.0. Separately: two of the three known
+failures (`M1314368522CE` at 69.4629°N/145.0931°E and `M1314410602CE` at 68.9507°N/138.8540°E, ~6°
+of longitude apart) sample the *exact same* `hg2` value (`1.1993844509125`) to the last digit,
+consistent with landing on the same or an adjacent calibration-cube cell. None of this was reconciled
+against the phase-angle-dependent brightness regression, which remains exactly as open as before —
+`reproject`'s own pipeline runs no relighting step at all (`docs/generators/reproject.md`), so
+whatever explains that regression has to live elsewhere in `hillshade`'s own pipeline.
+
+**Fix implemented**: `hapke.py` gained `HG2_VALID_RANGE = (0.0, 1.0)` and `_clamp_hg2`, called from
+`fetch_real_hapke_params` on every real-calibration sample. An out-of-range `hg2` is clamped to the
+nearer bound and the raw value plus sample coordinates are `print()`ed (this codebase's existing
+per-entry-log convention, `tasks.py`'s `_capture_generator_log`) so a run's full extent of the issue
+stays visible after the fact. `_clamp_hg2` is split out as pure logic specifically so it's unit
+tested against synthetic in/out-of-range values (`capsys`-checked log content) without needing real
+`$ISISDATA` — the same split `_sample_hapke_calibration` already uses.
+
+**Verification**: new unit tests for `_clamp_hg2` (in-range passthrough, both bounds' clamping
+directions, log content) pass; full suite otherwise unaffected.
