@@ -1,15 +1,18 @@
 import dataclasses
+import json
 import os
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from _fake_worker_task import FailingWorkerEntry, FakeWorkerEntry
 from huey.exceptions import ResultTimeout, TaskException
 
+from trntest import camera as camera_module
 from trntest import isis_wac, overview_map, report, tasks, trn_dataset, trn_products
 from trntest.config import TrntestConfig
 
@@ -992,6 +995,79 @@ def test_problem_flags_low_sun_elevation(tmp_path):
 def test_problem_flags_tolerates_a_missing_column(tmp_path):
     entry = trn_dataset.TrnTestEntryEdr(pd.Series({"product_id": "P1", "edr_product": "P1"}), tmp_path, TrntestConfig())
     assert report.problem_flags(entry) == []
+
+
+# -- tsai_path / camera_et / write_entry_poses() --------------------------------------------------
+
+
+def _full_edr_row(product_id: str = "P1", target_frame_index: int = 437) -> pd.Series:
+    """A manifest row with the extra `edr_volume`/`edr_subdir`/`edr_doy`/`start_frame` columns
+    `candidate_window._per_image_config` reads -- `_minimal_manifest`'s own row doesn't have them,
+    since no other test in this file needs `per_image_config` itself (just `entry.camera`/`generate()`,
+    both monkeypatched around it). Placeholder values -- never fetched by these tests."""
+    return pd.Series(
+        {
+            "product_id": product_id,
+            "edr_product": product_id,
+            "edr_volume": "LROLRC_0002",
+            "edr_subdir": "DATA/SCI/2010040/NAC",
+            "edr_doy": 40,
+            "start_frame": target_frame_index,
+        }
+    )
+
+
+def test_edr_entry_tsai_path_matches_the_camera_frame_naming_convention(tmp_path):
+    entry = trn_dataset.TrnTestEntryEdr(_full_edr_row(target_frame_index=437), tmp_path, TrntestConfig())
+    assert entry.tsai_path == entry.per_image_config.output_dir / "camera_frame437.tsai"
+    assert entry.tsai_path.name == "camera_frame437.tsai"
+
+
+def test_spice_entry_tsai_path_matches_the_camera_identifier_naming_convention(tmp_path):
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1"]), TrntestConfig(), entry_kind="spice"
+    )
+    entry = ds[0]
+    assert entry.tsai_path == entry.per_image_config.output_dir / f"camera_{entry.identifier}.tsai"
+
+
+def _write_fake_tsai(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    camera_module.write_tsai(path, np.array([1.0, 2.0, 3.0]), np.eye(3), fu=1.0, fv=1.0, cu=1.0, cv=1.0)
+
+
+def test_write_entry_poses_writes_jsonl_and_skips_an_unpopulated_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_dataset.TrnTestEntrySpice, "camera_et", property(lambda self: 300000000.5))
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1", "P2"]), TrntestConfig(), entry_kind="spice"
+    )
+    entry0 = ds[0]
+    _write_fake_tsai(entry0.tsai_path)  # entry1 (P2) never gets one -- must be skipped, not an error
+
+    ds.write_entry_poses()
+
+    lines = (ds.folder / "entry_poses.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["dataset"] == ds.name
+    assert record["entry_identifier"] == entry0.identifier
+    assert record["entry_index"] == 0
+    assert record["header"]["stamp"] == {"sec": 300000000, "nanosec": 500000000}
+    assert (ds.folder / "entry_poses.schema.json").exists()
+
+
+def test_write_entry_poses_accepts_a_single_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(trn_dataset.TrnTestEntrySpice, "camera_et", property(lambda self: 1.0))
+    ds = trn_dataset.TrnTestDataSet(
+        tmp_path / "ds", _minimal_spice_manifest(["P1"]), TrntestConfig(), entry_kind="spice"
+    )
+    entry = ds[0]
+    _write_fake_tsai(entry.tsai_path)
+
+    ds.write_entry_poses(entry)
+
+    lines = (ds.folder / "entry_poses.jsonl").read_text().splitlines()
+    assert len(lines) == 1
 
 
 # -- Real `huey_consumer -k process` subprocess (trntest.tasks.start_consumer/stop_consumer) ------

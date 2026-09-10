@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import spiceypy as spice
+from scipy.spatial.transform import Rotation
 
 from trntest import cache, isis_campt, isis_wac, spice_kernels
 from trntest.config import MOON_RADIUS_KM, TrntestConfig, load_config
@@ -647,6 +648,68 @@ def read_tsai(path: str | Path) -> dict[str, float]:
     return values
 
 
+_TSAI_POSITION_LEN = 3  # x, y, z
+_TSAI_ROTATION_LEN = 9  # a flattened row-major 3x3 rotation matrix
+
+
+def read_tsai_pose(path: str | Path) -> tuple[list[float], list[float]]:
+    """Parse the camera center (`C`) and cam-to-`MOON_ME` rotation (`R`) back out of a VERSION_4
+    Pinhole `.tsai` file written by `write_tsai` -- the pose half `read_tsai` deliberately doesn't
+    parse (that function is intrinsics-only, see its docstring). Reading straight from an
+    already-written `.tsai` is ISIS/SPICE-free and safe to call for any already-populated entry,
+    unlike rebuilding a fresh `Camera` (`build_camera` can trigger a real ISIS boresight-refine
+    pass) -- see `TrnTestDataSet.write_entry_poses`'s docstring for why that matters.
+
+    :returns: `(c_meters, r_cam_to_me_flat)` -- `c_meters` a 3-element list (meters, `MOON_ME`);
+        `r_cam_to_me_flat` a 9-element list, row-major, the same flattening `write_tsai` writes.
+    :raises AssertionError: if either field is missing, or doesn't have the expected element count.
+    """
+    c_meters: list[float] | None = None
+    r_flat: list[float] | None = None
+    with open(path) as f:
+        for line in f:
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            if key == "C":
+                c_meters = [float(v) for v in value.split()]
+            elif key == "R":
+                r_flat = [float(v) for v in value.split()]
+    assert c_meters is not None, f"{path}: .tsai file missing expected field 'C'"
+    assert r_flat is not None, f"{path}: .tsai file missing expected field 'R'"
+    assert len(c_meters) == _TSAI_POSITION_LEN, f"{path}: 'C' field has {len(c_meters)} values, expected 3"
+    assert len(r_flat) == _TSAI_ROTATION_LEN, f"{path}: 'R' field has {len(r_flat)} values, expected 9"
+    return c_meters, r_flat
+
+
+def r_cam_to_me_quaternion_xyzw(r_cam_to_me_flat: list[float]) -> tuple[float, float, float, float]:
+    """`r_cam_to_me_flat` (a flattened 3x3 rotation matrix, row-major -- the same shape
+    `write_tsai` writes and `read_tsai_pose` reads) as a unit quaternion, scalar-last (`x, y, z,
+    w`) -- ROS's `geometry_msgs/Quaternion` field order/convention."""
+    r = Rotation.from_matrix(np.array(r_cam_to_me_flat).reshape(3, 3))
+    x, y, z, w = r.as_quat()
+    return float(x), float(y), float(z), float(w)
+
+
+def edr_tsai_filename(target_frame_index: int) -> str:
+    """The `output_dir`-relative filename `build_camera` writes its `.tsai` to when not given an
+    explicit `output_tsai_path` -- factored out so `TrnTestEntryEdr.tsai_path` can ask for exactly
+    the file a matching `build_camera` call would produce, without duplicating this naming logic
+    (the same reasoning `ortho_shaded_filename`/`dem_ortho.dem_filled_filename` already apply)."""
+    return f"camera_frame{target_frame_index}.tsai"
+
+
+def center_frame_index_for_square_crop(target_frame_index: int, crop_info: dict) -> float:
+    """The square-crop's temporal midpoint frame index -- `build_camera`'s pose epoch, given
+    `target_frame_index` and `compute_n_frames_for_square_crop`'s result for it. Factored out
+    of `build_camera` (which already has `crop_info` computed for its other fields) so
+    `TrnTestEntryEdr.camera_et` can recompute the exact same value independently and ISIS-free
+    (`compute_n_frames_for_square_crop` furnishes SPICE kernels and does pure orbital-geometry math
+    -- no ISIS call anywhere in it), rather than the two formulas silently drifting apart."""
+    return target_frame_index + crop_info["n_frames_for_square_crop"] / 2.0
+
+
 def build_camera(
     config: TrntestConfig | None = None,
     output_tsai_path: str | Path | None = None,
@@ -707,7 +770,7 @@ def build_camera(
     # The n_frames estimate itself barely changes over this short span, so using the start frame's
     # geometry for that estimate (not yet knowing the midpoint) isn't a meaningful circularity.
     crop_info = compute_n_frames_for_square_crop(frame_timing, config.target_frame_index, config)
-    center_frame_index = config.target_frame_index + crop_info["n_frames_for_square_crop"] / 2.0
+    center_frame_index = center_frame_index_for_square_crop(config.target_frame_index, crop_info)
     et = frame_et(frame_timing, center_frame_index)
 
     c_meters, r_cam_to_me_raw, _, _ = camera_pose_moon_me(et)
@@ -762,7 +825,7 @@ def build_camera(
     r_cam_to_me = r_cam_to_me_pretwist @ rotation_about_boresight(k)
 
     if output_tsai_path is None:
-        output_tsai_path = config.output_dir / f"camera_frame{config.target_frame_index}.tsai"
+        output_tsai_path = config.output_dir / edr_tsai_filename(config.target_frame_index)
     output_tsai_path = Path(output_tsai_path)
     output_tsai_path.parent.mkdir(parents=True, exist_ok=True)
 
