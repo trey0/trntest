@@ -65,6 +65,7 @@ COMPOSE_PROJECT_NAME=trntest-$name
 TRNTEST_IMAGE_TAG=trntest-lunar-demo-$name
 TRNTEST_HOST_CACHE_DIR=$workspace_root/cache
 TRNTEST_HOST_OUTPUT_DIR=$workspace_root/output/$name
+TRNTEST_HOST_OUTPUT_GLOBAL_DIR=$workspace_root/output
 TRNTEST_HOST_SCRATCH_DIR=$workspace_root/scratch
 TRNTEST_MAIN_GIT_DIR=$literal_common_dir
 $port_line
