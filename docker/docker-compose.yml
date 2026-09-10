@@ -31,6 +31,14 @@ services:
       # trntest.toml to bypass these mounts entirely -- see README's Configuration section.
       - ${TRNTEST_HOST_CACHE_DIR:-../../../cache}:/workspace/cache
       - ${TRNTEST_HOST_OUTPUT_DIR:-../../../output}:/workspace/output
+      # Read-only, separate from the per-worktree mount above on purpose: lets a worktree's own
+      # Jupyter Lab file browser reach stably-named datasets published directly under the shared
+      # `output/` root (e.g. `output/trntest1`, `output/trn_dataset`) via a symlink
+      # (`ln -s /workspace/output_global/<name> <this worktree's output>/<name>`), without
+      # widening the per-worktree mount itself or risking an accidental write from inside this
+      # container to another worktree's output. For the main checkout, this is the same directory
+      # as the mount above (harmless double-mount, not meaningfully used there).
+      - ${TRNTEST_HOST_OUTPUT_GLOBAL_DIR:-../../../output}:/workspace/output_global:ro
       # Large, disposable intermediate files (e.g. the ISIS/CSM WAC reprojection spike's
       # intermediate cubes) go here, not output/ -- see docs/environment.md.
       - ${TRNTEST_HOST_SCRATCH_DIR:-../../../scratch}:/workspace/scratch
