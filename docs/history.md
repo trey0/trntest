@@ -6265,3 +6265,53 @@ tested against synthetic in/out-of-range values (`capsys`-checked log content) w
 
 **Verification**: new unit tests for `_clamp_hg2` (in-range passthrough, both bounds' clamping
 directions, log content) pass; full suite otherwise unaffected.
+
+## Phase 120 (2026-09-10) — Closed the `dem_filled` filename-collision gap with verification, not a suffix
+
+A production-run readiness survey (this session, prompted by the user asking what else would help
+make production runs more productive or have fewer broken entries) flagged
+`docs/proposed-tasks/open-items.md`'s long-standing `dem_ortho.fetch_dem` item: its DEM output
+filename carried no suffix tied to `extra_footprint_lonlat_deg`, so two calls against the same
+`_work/<entry>/` directory with different footprints could silently disagree about which DEM was
+"the" one. The user asked specifically whether a fix could avoid inadvertently invalidating existing
+cache folders.
+
+**Why a suffix (the `ortho_shaded_filename` pattern) was the wrong tool here**: `docs/
+intermediate-product-discipline.md`'s principle 1 draws a real distinction between two artifact
+categories. `ortho_shaded`'s `hapke`/`along_track_correction`/`real_hapke_params`/`ortho_source`
+combinations are *intentional variants* — multiple valid renders meant to coexist for comparison
+(`notebooks/hapke_hillshade.ipynb` etc.), so baking each combination into its own filename is
+correct. `dem_filled` is the other category — a *single-answer* artifact with exactly one correct
+value per entry — so a suffix would misrepresent `extra_footprint_lonlat_deg` as a legitimate
+variant, and concretely would have force-invalidated every already-fetched DEM across every dataset
+(`trn_dataset`, `trntest1`, including the 8-worker retry run active against `output/trntest1` in a
+peer session at the time), since every real `TrnTestEntryEdr` call already passes a non-`None` crop
+footprint that differs entry to entry.
+
+**Fix**: `fetch_dem` now writes a small sidecar (`dem_footprint_meta_path`, `<dem_filled
+stem>.footprint.json`) recording the `extra_footprint_lonlat_deg` it was actually given, via
+`atomic_publish` alongside the existing atomic `hole_fill_dem` write. `TrnTestEntry.
+dem_ortho_result`'s resumption check gained `dem_ortho.dem_footprint_matches`: if a sidecar exists
+and disagrees with what this call would ask for, the cached DEM/ortho pair is discarded (a `print()`
+names which entry and why) and refetched fresh instead of silently resumed. Critically, **no sidecar
+at all** (every already-on-disk `dem_filled` today, from before this check existed) is trusted as-is
+— this is exactly the "invalidate nothing existing" property the user asked for, since no live
+divergence has ever actually been observed; the check only bites a *future* caller that requests a
+genuinely different footprint under the same identity. `tests/test_wac_emp_ortho_source.py`'s own
+`test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black` comment documents the
+real historical incident this closes (Phase 78's DEM-clobbering bug, caught there by a heavy-suite
+ordering regression, not by any resume-time check).
+
+Also fixed in passing (same production-run-readiness survey): `trn_dataset.py`'s `result_timeout`
+docstring and `_await_result`'s comment (plus a test docstring) still cited `open-items.md`'s
+`populate_via_workers` hang item as "not-yet-root-caused" — that item was actually root-caused
+(a concurrent `pytest` run flushing the same live queue) and deleted from `open-items.md` back in
+the commit that added `docs/batch-generation.md`'s "Don't run the test suite..." section. Repointed
+all three references there instead of leaving a dangling citation to a deleted item.
+
+**Verification**: new pure-function tests for `dem_footprint_meta_path`/`dem_footprint_matches`
+(no sidecar trusted, matching value trusted, `None`-vs-`None` trusted, real mismatch rejected);
+full 431-test suite (after merging in the concurrent Hapke `hg2` clamp fix from Phase 119) and
+`trntest-lint` both clean. Not exercised end-to-end against a real `fetch_dem` call (network/ASP,
+the same class of heavy test `test_wac_emp_ortho_source.py` already is) -- the pure-function tests
+cover the actual comparison logic that matters.
