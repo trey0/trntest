@@ -236,8 +236,8 @@ def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) ->
 # `run_pipeline`'s two calls below -- times up to 8 workers) tripped server-side throttling hard
 # enough to fail 56 of 67 remaining entries, all with the same "server is unable to handle the
 # request" error. A same-scale run the night before, without the extra worker contention, hit the same
-# error on only ~1.5% of entries -- see docs/proposed-tasks/spiceinit-web-pacing.md for the full
-# incident writeup (delete that file once its content's been folded into docs/caching.md).
+# error on only ~1.5% of entries -- see docs/batch-generation.md's "Issues to watch out for" section
+# for the full incident writeup.
 #
 # Fixed at a fixed path under `DEFAULT_CACHE_ROOT`, not `config.cache_root`, for the same reason
 # `cache._PACING_LOCK_PATH` is: it coordinates every worktree/agent session sharing this VPS's cache

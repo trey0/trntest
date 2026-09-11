@@ -248,6 +248,21 @@ serialized by the same lock and remains not concurrency-safe. Check
 dataset whose footprints might trigger this fetch, rather than relying on request-pacing to protect
 it the way it now does for everything else.
 
+**`spiceinit web=yes` overload -- fixed.** A different external host than any of the above, hit
+through a different mechanism: ISIS's `spiceinit` subprocess (`isis_wac.run_spiceinit`,
+`attach_dem_shape_model`, both called once per entry per pipeline stage) makes its own HTTP request
+to NAIF/USGS's SPICE pointing-correction web service, entirely outside `cache.py`, so none of the
+`cached_get` pacing above ever applied to it. A real `trntest2` run (69 entries,
+`populate_via_workers(workers=8)`, right after a clean 2-entry warm-up) hit this: up to 16
+concurrent, uncoordinated `spiceinit` calls tripped server-side throttling hard enough to fail 56 of
+67 remaining entries, all with the same "server is unable to handle the request" error -- a same-scale
+run the night before, without the extra worker contention, hit it on only ~1.5% of entries. Fixed the
+same way as above -- `isis_wac._run_spiceinit_web` now runs under `cache.pacing_gate()`, given its own
+dedicated lock path (`DEFAULT_CACHE_ROOT / ".spiceinit_pacing.lock"`, not `cached_get`'s) since it's a
+different host and sharing one lock would over-serialize both for no benefit. Live-validated by
+retrying all 56 originally-failed entries: 0 `spiceinit`-related failures at `workers=8`, the exact
+concurrency that caused the incident.
+
 **A killed calling process can orphan the consumer subprocess.** `populate_via_workers()`'s own
 `finally` block calls `stop_consumer()` on a normal exception or Ctrl-C, but a hard kill of the
 *calling* process (not the consumer) skips that cleanup. Check for a stray `huey_consumer` process

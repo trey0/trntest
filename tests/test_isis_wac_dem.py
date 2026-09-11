@@ -292,9 +292,9 @@ def test_attach_dem_shape_model_copies_the_crop_and_runs_spiceinit_shape_user(tm
 
 
 def test_run_spiceinit_web_serializes_concurrent_callers(tmp_path):
-    # Regression test for the trntest2 incident (docs/proposed-tasks/spiceinit-web-pacing.md): up to
-    # 16 concurrent, uncoordinated `spiceinit web=yes` calls (2 per entry, 8 workers) overloaded the
-    # remote SPICE service. Same technique as test_cache.py's own
+    # Regression test for the trntest2 incident (docs/batch-generation.md's "Issues to watch out
+    # for" section): up to 16 concurrent, uncoordinated `spiceinit web=yes` calls (2 per entry, 8
+    # workers) overloaded the remote SPICE service. Same technique as test_cache.py's own
     # test_pacing_gate_serializes_concurrent_callers -- several threads in one process each call
     # `_run_spiceinit_web` via a stubbed-out `run_quiet` (no real ISIS/network access), tracking max
     # concurrent holders of the pacing gate.
