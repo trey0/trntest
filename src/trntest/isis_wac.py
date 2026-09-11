@@ -224,7 +224,7 @@ def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) ->
     )
 
 
-# `spiceinit web=yes` is ISIS's own subprocess making its own HTTP request internally, to NAIF/USGS's
+# `spiceinit web=yes` is ISIS's own subprocess, making an HTTP request internally to NAIF/USGS's
 # SPICE pointing-correction web service -- a different host than `cache.cached_get`'s callers
 # (Lunaserv, the PDS ODE API, USGS's S3 kernel bucket), so it needs its own dedicated pacing lock, not
 # `cache._PACING_LOCK_PATH` -- sharing one lock would over-serialize unrelated traffic for no benefit
@@ -242,16 +242,16 @@ def run_lrowac2isis(edr: EdrFetchResult, config: TrntestConfig | None = None) ->
 # Fixed at a fixed path under `DEFAULT_CACHE_ROOT`, not `config.cache_root`, for the same reason
 # `cache._PACING_LOCK_PATH` is: it coordinates every worktree/agent session sharing this VPS's cache
 # mount, not just one `populate_via_workers()` call's own worker pool. Full serialization (not a small
-# concurrency limit) to start, matching `cache.pacing_gate`'s own precedent -- the remote service's
+# concurrency limit) to start, matching `cache.pacing_gate`'s precedent -- the remote service's
 # real capacity isn't known, so the safest default comes first; loosen later if this is measured to be
 # overly conservative.
 _SPICEINIT_PACING_LOCK_PATH = DEFAULT_CACHE_ROOT / ".spiceinit_pacing.lock"
 
 
 def _run_spiceinit_web(cub_path: Path, shape_model_path: Path) -> None:
-    """Run ISIS's `spiceinit web=yes shape=user`, paced against every other process/agent's own
-    calls -- the one real subprocess both `run_spiceinit` and `attach_dem_shape_model` need, shared so
-    the pacing gate only has to be applied in one place.
+    """Run ISIS's `spiceinit web=yes shape=user`, paced against every other process/agent's calls --
+    the one real subprocess both `run_spiceinit` and `attach_dem_shape_model` need, shared so the
+    pacing gate only has to be applied in one place.
 
     :param cub_path: Cube to spiceinit, in place.
     :param shape_model_path: Shape model cube (`ensure_lunar_shape_model`'s output).

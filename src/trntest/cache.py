@@ -87,7 +87,7 @@ def pacing_gate(lock_path: Path = _PACING_LOCK_PATH):
     `lock_path` (in this process, another `populate_via_workers()` worker, or an unrelated agent
     session sharing this VPS's `cache/`) finishes, then holds the lock until this one does too.
 
-    :param lock_path: Defaults to `cached_get`'s own fetch-pacing lock; pass a different fixed path
+    :param lock_path: Defaults to `cached_get`'s fetch-pacing lock; pass a different fixed path
         to guard an unrelated resource (e.g. `isis_wac.py`'s `spiceinit web=yes` pacing) without
         over-serializing against this one -- see that caller's own comment for why one shared lock
         would be wrong here.
