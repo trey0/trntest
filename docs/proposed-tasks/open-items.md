@@ -8,19 +8,67 @@ When one of these resolves, delete it — state any fact still needed directly w
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
 - **`trntest1` entries 201 and 3 (`M1314469291CE` at -60.738°N/145.2327°E, `M1314314993CE` at
-  -60.6194°N/168.6734°E) both have a horizontal line artifact in their basemap**
-  (`entry.dem_ortho_result.ortho`, the WAC_EMP-derived texture `hillshade` relights — both reported
-  by the user browsing `output/trntest1/reports/`; not yet independently confirmed against the
-  actual ortho file itself, only the gallery's own separate WMS-backdrop thumbnail, which didn't show
-  it at that resolution/data source). Both entries sit right at the ±60° equirect/polar boundary
-  `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid` mosaics WAC_EMP tiles across (see
-  `docs/data-sources/wac-emp-pds4.md`'s "Multi-tile mosaic" section) — and `M1314314993CE`
-  specifically is already independently documented (an earlier trial run) as having mosaicked two
-  real WAC_EMP tiles there (`WAC_EMP_643NM_P900S0000_304P` + `WAC_EMP_643NM_E300S1350_304P`) and
-  "succeeded" only in the sense of not raising — no one looked at the resulting pixels at the time.
-  Two independent entries at the same boundary showing the same artifact is stronger than
-  coincidence; a stitching seam along a constant-latitude line at that exact boundary is now the
-  leading (still unconfirmed) hypothesis for the *horizontal* line specifically.
+  -60.6194°N/168.6734°E) both have a horizontal line artifact in their basemap, confirmed to be two
+  distinct real artifacts in the archived WAC_EMP source tiles, not nodata or a DEM/elevation
+  issue.** `notebooks/wac_emp_seam_investigation.py` inspects `ortho_wac_emp.tif` (the raw mosaic
+  `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid` writes, before
+  `hapke.despeckle_and_shade_ortho`'s relighting) for both entries directly: both show a row-mean
+  reflectance jump several times larger than any other row-to-row jump in the same image, at a row
+  whose latitude matches `ortho_wac_emp.WAC_EMP_MAX_ABS_LATITUDE_DEG` (-60°) to within 0.01° — both
+  mosaic `WAC_EMP_643NM_P900S0000_304P` (polar) against `WAC_EMP_643NM_E300S1350_304P` (equirect).
+  Essentially no pixels are `NaN` in either raster, ruling out a coverage/nodata gap; the DEM comes
+  from a separate, continuous GLD100 source unaffected by this boundary, ruling out elevation.
+  The dominant cause, confirmed by reading the equirect tile's own archived `.IMG` file directly (no
+  reprojection or mosaicking involved): its **own last valid native row, right at the ±60° cutoff, is
+  anomalously bright relative to its own interior** (+21%/+12% over the 10 rows just above it, for the
+  two entries) — a real edge-brightening artifact baked into that one archived product.
+  `reproject_wac_emp_reflectance_to_local_grid`'s bilinear resampling smears that single bright native
+  row into the 1-2 destination rows that show up as the visible bright band. (An earlier version of
+  this analysis averaged reflectance over a wide boundary window and reported only a diffuse ~1-4%
+  offset between the two tile families as a whole — that average was real but diluted a much larger,
+  edge-localized spike into what looked like a broad calibration mismatch; it wasn't.)
+  **The polar tile has the same kind of artifact, smaller but real** (+5.3% right at its own edge vs.
+  10-35 native pixels back from it) — a per-longitude probe first missed this (checking only two
+  points on the polar tile's own boundary *circle*, not the equirect tile's simple fixed-row edge);
+  binning every valid pixel in the whole tile by radius from the pole (using the entire circle,
+  thousands of samples per radius) found it. Both archived products share this edge-brightening
+  defect, not just the equirect one.
+  `notebooks/wac_emp_seam_dem_mosaic.py` cross-checks the mosaicking itself with an independent tool
+  (ASP `dem_mosaic --first`, mosaicking each tile's own already-reprojected array in place of
+  `merge_local_grid_arrays`): it draws the identical step at the identical row regardless of
+  precedence order. `dem_mosaic --count` finds a third, smaller, genuinely real effect: the two tiles'
+  coverage does overlap by a small amount (821/1,490 pixels of ~2.1M for the two entries) in a jagged
+  band straddling the seam row, because the polar tile's own coverage boundary is a locally-diagonal
+  line in this destination grid rather than a clean cut — a single row crosses it in 20-30 separate
+  short runs of columns, not one contiguous block. Flipping precedence swaps in polar's own value at
+  those scattered columns, which reads as a periodic pattern breaking up the (still anomalously
+  bright) equirect gradient; equirect precedence never shows it, since equirect has real data at every
+  column of the seam row.
+  **Mitigation tested, on the equirect side only, using the most aggressive 3-row masking:** masking
+  the equirect tile's own last 3 native rows before mosaicking shrinks the step to its smallest value
+  of any configuration tried, but opens a real gap of ~3,600/2,800 pixels right at the seam on its own
+  (the two tiles' margin is too tight for masking alone) — `dem_mosaic --hole-fill-length` (run as its
+  own single-input pass, since `dem_mosaic` refuses to combine hole-filling with multiple inputs)
+  barely helps at this level of masking, leaving 99%+ of the gap unfilled regardless of length. Sizing
+  that length properly (rather than guessing) still matters for understanding why: `--hole-fill-length`
+  caps a hole's own bounding-box dimensions, not a reach-from-the-edge radius — the gap isn't one
+  uniform thin band but a handful of disconnected blobs of very different sizes (`scipy.ndimage.label`)
+  — but even a length sized off the largest blob's own real bounding box (1,530px here) leaves nearly
+  everything unfilled, because almost the entire gap touches the image's own left *and* right border,
+  and a region open to the image edge isn't a bounded interior hole the way a sinkhole is. No length
+  fixes that.
+  **`dem_mosaic`'s other fill mechanism, `--fill-search-radius`/`--fill-num-passes`, closes the gap
+  completely for both entries, including the border-touching pixels `--hole-fill-length` couldn't
+  reach** — a distance-weighted average of valid neighbors within a radius, rather than
+  `--hole-fill-length`'s apparent enclosed-hole detection, so it has no enclosure requirement to run
+  into. Sized off the same kind of real measurement (each disconnected gap blob's own height, since
+  that's the direction the nearest valid data actually is — not its width, which is what
+  `--hole-fill-length` needed instead), at the smallest step size of any configuration tried. For this
+  specific
+  masking-induced-gap shape (thin, seam-following, touching the image border), it's the better tool of
+  the two. The polar side's own (smaller) edge effect isn't addressed by any of this. Not yet
+  explained: *why* both archived products have this edge artifact (examining USGS/ASU's own
+  tile-production pipeline is out of scope here).
 
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real

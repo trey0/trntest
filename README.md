@@ -200,6 +200,8 @@ lint's notebook checks).
 | [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
 | [`spice_entry_poc.ipynb`][spice_entry_poc.ipynb] | Proof of concept for `TrnTestEntrySpice` — five `hillshade`-only entries posed purely from SPICE trajectory data along one real orbit, no EDR involved. |
+| [`wac_emp_seam_dem_mosaic.ipynb`][wac_emp_seam_dem_mosaic.ipynb] | Cross-checks `wac_emp_seam_investigation.ipynb` with ASP `dem_mosaic` in place of this project's own merge code — same seam, same row regardless of precedence; tests masking the equirect tile's bad edge row(s), then compares `--hole-fill-length` against `--fill-search-radius` to patch the resulting gap. |
+| [`wac_emp_seam_investigation.ipynb`][wac_emp_seam_investigation.ipynb] | Traces the ±60° WAC_EMP horizontal-line artifact (`docs/proposed-tasks/open-items.md`) to real edge-brightening artifacts in both tiles' own last valid native pixels, not nodata, a DEM issue, or a broad two-tile calibration mismatch. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
 [image_generation.ipynb]: notebooks/image_generation.ipynb
@@ -213,6 +215,8 @@ lint's notebook checks).
 [sensor_calibration_scoping.ipynb]: notebooks/sensor_calibration_scoping.ipynb
 [sfs_validation.ipynb]: notebooks/sfs_validation.ipynb
 [spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
+[wac_emp_seam_dem_mosaic.ipynb]: notebooks/wac_emp_seam_dem_mosaic.ipynb
+[wac_emp_seam_investigation.ipynb]: notebooks/wac_emp_seam_investigation.ipynb
 [wac_isis.ipynb]: notebooks/wac_isis.ipynb
 
 ## Source files (`src/trntest/`)
