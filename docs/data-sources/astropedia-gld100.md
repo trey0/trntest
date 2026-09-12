@@ -56,3 +56,26 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   pure measurement here, not applied) — all four came out ~0.444-0.447%, no meaningful difference,
   unlike the original tolerance sweep this default came from (order-of-magnitude swings in both
   directions). No change needed to `DEM_HEIGHT_ERROR_TOL_M`.
+- **Known minor artifact: faint row-level banding, real and upstream of this project.** Rendering a
+  candidate's DEM as a hillshade under very low (single-digit-to-teens-degrees) sun elevation reveals
+  faint, roughly-horizontal bands recurring at an irregular but statistically real ~40-50-row
+  (~4-5 km) interval — found via `docs/proposed-tasks/isis-shadow-masking.md`'s cast-shadow spike,
+  which flags every such band as a spurious lit/shadowed transition (see that doc for the full
+  investigation, including two wrong hypotheses ruled out along the way: it's neither a
+  `hole_fill_dem`/`dem_mosaic` artifact nor confined to real terrain like crater walls, both directly
+  checked and eliminated). **Confirmed to originate in GLD100's own upstream production, not this
+  project's fetch or reprojection**: the same banding (55 peaks across 2965 rows, median 45.5-row
+  spacing) is present in the original NASA PDS-archived source tile
+  (`WAC_GLD100_P900N0000_100M.IMG`, fetched fresh and independently from
+  `https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/WAC_GLD100/`, 693.6 MB,
+  18622x18622px Polar Stereographic, confirmed via its own embedded PDS3 label) — a file this project
+  never fetches or touches, ruling out both Astropedia's own mosaicking of that tile (and 9 others)
+  into this file's single flat GeoTIFF, and `reproject_astropedia_elevation_to_local_grid`'s own warp,
+  as the source. Most likely mechanism: a residual seam between adjacent individually-adjusted WAC
+  stereo models in GLD100's photogrammetric block-adjustment (`WAC_GLD100_README.TXT`: ~69,000 stereo
+  models combined) — a physically plausible scale for a WAC stereo-swath boundary, though not
+  independently confirmed as the exact mechanism. Amplitude is small (~0.1-1% relative brightness in a
+  plain hillshade) and invisible at ordinary sun angles; only became visible/relevant because
+  `shadow`'s hard lit/shadowed threshold amplifies it right at low sun elevation, exactly where the
+  cast-shadow spike's own candidates live. Not currently worked around anywhere in this codebase —
+  worth a look before trusting this DEM for anything sub-few-meter-precision at low sun angles.

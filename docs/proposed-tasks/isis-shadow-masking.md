@@ -135,51 +135,139 @@ grid it needs them on:
 
 ## Open questions (to verify before implementing)
 
-- **`demprep` on a local-AOI Orthographic cube**: confirm it runs cleanly (even if it skips pole
-  padding) rather than hard-failing outside Simple Cylindrical, as its docs' wording is ambiguous
-  on this point.
-- **Elevation → radius conversion**: Astropedia GLD100 (this project's live default DEM) stores
-  elevation in meters directly, not planetocentric radius (`docs/data-sources/astropedia-gld100.md`).
-  `shadow`/`demprep` need radius-as-DN. Converting is a plain `elevation_m + config.MOON_RADIUS_M`
-  add — already the same constant this codebase uses elsewhere (`dem_gld100.py`,
-  `crater_depth.py`) — but needs to happen before the DEM reaches ISIS.
-  `demprep`'s docs also say it "will now cause this program to fail" on negative radius values,
-  which shouldn't occur here but is worth a direct check.
-- **Getting the DEM GeoTIFF into an ISIS cube at all**: needs some `gdal`/ISIS conversion step —
-  `docs/external-tools.md` confirms GDAL's ISIS3 driver reads `.cub` natively but doesn't establish
-  whether writing one from a GeoTIFF (rather than starting from an ISIS-native product) is
-  supported cleanly the same way; may need `gdal_translate -of ISIS3` or an ISIS `demprep`-adjacent
-  import app instead. Not yet checked directly.
-- **Kernel reuse for `SUNPOSITIONSOURCE=TIME`**: `shadow`'s `TIME` mode needs local PCK/SPK for the
-  target body — a real new requirement, since this project's existing ISIS integration
-  (`isis_wac.py`'s `spiceinit web=yes`) deliberately avoids bulk local kernel downloads (see
-  `docs/external-tools.md`'s "`$ISISDATA` size" section). But `spice_kernels.py`'s
-  `ALWAYS_KERNELS` already fetches and caches `pck00010.tpc`, `moon_pa_de421_1900_2050.bpc`, and
-  `de421.bsp` for this project's own Python-side (`spiceypy`) sun-geometry computation — the same
-  NAIF binary kernel formats ISIS itself reads. Likely reusable directly via `shadow`'s `PCK=`/`SPK=`
-  parameters with no new fetch, but not yet confirmed against a real ISIS run.
-- **`PRESET`/`PRECISION` choice**: start with `BALANCED` (the app's own default) rather than
-  `ACCURATE`, matching this repo's general practice of starting conservative and tightening only if
-  measured to matter — the ~1-2px cache-based shadow-boundary inaccuracy the docs note is likely
-  fine for shading applied at this project's ortho resolution (~100 m/px), but not yet measured here.
-- **Validation signal**: worth checking whether a real WAC crop with visible, unambiguous cast
-  shadows (a deep crater near low sun elevation) is available among existing candidates to use as
-  ground truth for "does the shadowing land where a real shadow actually is," rather than only
-  checking that geometry runs without error.
+Step 1 of the sequencing below has now been spiked end-to-end against a real candidate
+(`M1327218454CE`, 13.6° sun elevation — the lowest, and thus best cast-shadow-risk validation case,
+in the current `notebooks/dataset_manifest.csv`) via `src/scratch/isis_shadow_spike.py` (disposable,
+not committed). Findings below are updated in place; unresolved items stay flagged.
+
+- **`demprep` on a local-AOI Orthographic cube**: **confirmed working.** Runs cleanly on a small
+  2424x2437px local-Orthographic DEM cube with no error — silently skips pole padding (as its docs
+  imply for non-Simple-Cylindrical input) and attaches the `ShapeModelStatistics` table blob
+  (`MinimumRadius`/`MaximumRadius` fields) `shadow` needs. No special handling required.
+- **Elevation → radius conversion**: **confirmed working**, plain `elevation_m + MOON_RADIUS_M`, no
+  negative-radius failures on this candidate's real elevation range (DEM radius ~1,732,274 to
+  ~1,740,602 m, comfortably positive).
+- **Getting the DEM GeoTIFF into an ISIS cube at all**: **confirmed working, with one gap.**
+  `gdal_translate -of ISIS3` produces a genuinely valid ISIS `Mapping` group directly from this
+  project's local-Orthographic PROJ4 string — `TargetName=MOON`, `ProjectionName=Orthographic`,
+  correct `CenterLongitude`/`CenterLatitude`/`EquatorialRadius`/`PolarRadius`, no manual label
+  construction needed for those fields. But it omits `PixelResolution`/`UpperLeftCornerX`/
+  `UpperLeftCornerY` — `demprep` fails outright without them (`**ERROR** PVL Keyword
+  [PixelResolution] does not exist in [Group = Mapping]`). Fix: three `editlab options=addkey
+  grpname=Mapping` calls, computed from the same `bbox`/resolution `dem_ortho.fetch_dem` already
+  returns (no re-derivation) — `PixelResolution = (maxx-minx)/width`, `UpperLeftCornerX = minx`,
+  `UpperLeftCornerY = maxy` (row 0 = north, matching this codebase's usual convention). Confirmed
+  sufficient: `demprep` and `shadow` both then ran cleanly.
+- **Kernel reuse for `SUNPOSITIONSOURCE=TIME`**: **confirmed working, with one gotcha.**
+  `de421.bsp` (SPK) and `pck00010.tpc` (the plain **text** PCK) — both already in
+  `spice_kernels.ALWAYS_KERNELS`, no new fetch — are sufficient; `time=` takes
+  `spice.et2utc(camera.et, "ISOC", 3)` directly. The gotcha: passing `moon_pa_de421_1900_2050.bpc`
+  (the **binary** PCK, also already cached) as `PCK=` instead crashes `shadow` outright
+  (`SIGABRT`, `SPICE(FRAMEDATANOTFOUND) ... required to compute the orientation of the body-fixed
+  frame IAU_MOON`) — that binary PCK only furnishes the `MOON_PA` frame, which needs the
+  `moon_assoc_me.tf`/`moon_080317.tf` frame-kernel association this project's own Python/`spiceypy`
+  side furnishes alongside it, but `shadow`'s single `PCK=` parameter has no slot for a second file.
+  `shadow` wants plain `IAU_MOON`, which the text PCK provides directly — use that one, not the
+  binary one, despite the binary one being the "more precise" kernel elsewhere in this codebase.
+- **`PRESET`/`PRECISION` choice**: left at `shadow`'s own defaults (`PRESET=BALANCED` implicitly,
+  `PRECISION=1.0`) for this spike — worked without tuning. No measured need yet to move off the
+  default.
+- **Validation signal**: `M1327218454CE` (13.6° sun elevation, the lowest in the current manifest)
+  used as the spike candidate. A first visual check — the `shadow` LRS mask overlaid on a plain
+  Lambertian hillshade of the *same* DEM (no WAC-ortho fetch needed for this quick check) — already
+  shows shadow concentrated on the down-sun (away from the 224° sun azimuth) side of crater rims and
+  walls, not scattered noise: geometrically sensible at a glance. `stats` reports 17.9% of valid
+  pixels flagged LRS for this candidate, a plausible fraction at 13.3° sun elevation. **Still open**:
+  the doc's own recommended step 2 (comparing against a real WAC crop with visible cast shadows, the
+  closest thing to ground truth available) hasn't been done yet — this was only checked against this
+  project's own synthetic Lambertian shading, which has no cast-shadow occlusion of its own to
+  cross-check against.
+- **New observation, not previously flagged**: the shadow mask shows a faint horizontal streaking
+  pattern (thin, roughly one-line-wide bands at irregular, roughly-tens-of-rows intervals), described
+  by the user as visually looking like "exactly horizontal lines at a constant spacing" in the
+  original 3-panel figure. Investigated at length, through several wrong hypotheses corrected in turn
+  (kept below since the elimination is itself informative, and because the final explanation is the
+  one the user directly disputed the visual premise of — see "Still unresolved" below):
+  1. Confirmed real, not a display artifact — the same lines survive a strict 1:1-pixel-scale render
+     (`interpolation="none"`, no resampling), ruling out matplotlib `imshow` downsampling/moire.
+  2. Confirmed not from `hole_fill_dem` — pre- and post-hole-fill elevation rasters are byte-identical
+     for this candidate (zero actual holes in this AOI).
+  3. First guessed as a GLD100 mosaic seam (adjacent-WAC-orbit-strip stitching artifact), since the
+     same row-level anomaly is present in the raw Astropedia file's own native grid, before any
+     reprojection. **Wrong** — the large row-to-row gradient at each checked anomalous row turned out
+     confined to a narrow column band (1-3.3% of the row's ~11,580px width, checked at 4 rows), each
+     with a smooth, large, real-looking elevation rise over a handful of pixels.
+  4. Revised to "real crater wall/rim profiles, each anomalous row being one specific rim crossing."
+     **User pushed back on this being terrain** based on the shadow-mask visual alone (a fair
+     objection — the elimination above was against the *raw GLD100 render*, which hadn't actually been
+     shown yet). Rendering the raw GLD100 as a hillshade at the candidate's own real grazing sun
+     geometry (224.44/13.32 deg az/el, matching what `shadow` itself used) and inspecting a tall 1:1
+     ticked strip does show a faint band around native row ~1045 distinct from the row~1131 crater
+     wall — but a direct numerical scan of every column's row-to-row elevation diff across rows
+     1040-1055 found **no discrete jump at any single row** (median diff ~7m, statistically
+     indistinguishable from an arbitrary control range checked for comparison, rows 700-715, median
+     ~16m — if anything the "line" row's diffs are smaller, not larger). So this specific band is not
+     a discrete per-row data anomaly either.
+  5. Step 4's "no discrete jump" finding was a real measurement but of the wrong row: it checked
+     native-GLD100-grid row numbers against a line actually observed in the *reprojected*-grid strip,
+     wrongly treating the two grids' row indices as interchangeable (they aren't in general — the
+     earlier crater-wall example's rows only happened to be close). Redone correctly, on the
+     reprojected grid (the same grid the shadow-mask figures actually show), with a direct same-grid
+     side-by-side crop (plain Lambertian hillshade of the same DEM, same low-sun geometry, vs.
+     `shadow`'s own LRS mask): a thin bright line **spanning the crop's full column width** is clearly
+     visible in the independently-computed hillshade (`matplotlib`'s `LightSource`, no ISIS involved
+     at all) at reprojected row ~962, with a corresponding line in the LRS mask nearby — unlike the
+     earlier crater-wall rows, this is not confined to a narrow column band. A full-image-height scan
+     for this same signature (row-mean hillshade residual against a broad rolling-median baseline)
+     finds **49 such peaks across the image's 2437 rows** (prominence >= 1.5 std of the residual),
+     spacing varying but centered around a median of ~41 rows (range 17-111, std ~25 -- consistent
+     with the earlier finding of no single exact FFT period, but now clearly *not* random/scattered
+     either: 49 peaks in 2437 rows is far more regular than craters-by-chance would produce). **This
+     is a real, recurring, full-width, small-amplitude (~0.1-1% relative brightness) row-level
+     phenomenon in the elevation data itself** — confirmed independent of `shadow`/ISIS entirely,
+     since the same peaks show up in a bare `matplotlib` hillshade of the raw elevation array. At
+     ~41-row median spacing and 100 m/px, that's roughly a 4.1 km recurrence scale — plausible for a
+     photogrammetric block-adjustment artifact in GLD100's own production (stitching many individual
+     stereo blocks/orbit segments), though this still hasn't been confirmed as the specific mechanism,
+     nor cross-checked against a second real candidate.
+  6. **Root cause pinned down**: independently downloaded NASA's original PDS-archived source tile
+     directly (`WAC_GLD100_P900N0000_100M.IMG`, the north polar Polar Stereographic 100 m/px tile
+     covering this candidate's 73.5 deg N AOI, from
+     `https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/WAC_GLD100/`, 693.6
+     MB, 18622x18622px, confirmed via its own embedded PDS3 label — not the flat file this project
+     actually fetches, which is Astropedia's separate full-Moon mosaic GeoTIFF built from all 10 such
+     original PDS tiles). Running the identical full-height row-peak search on this
+     independently-sourced file's own AOI window: **55 peaks across 2965 rows, median spacing 45.5
+     rows** — closely matching Astropedia's reprojected mosaic (49 peaks across 2437 rows, median 41
+     rows). Since this PDS tile was fetched straight from NASA's archive and never touched by
+     Astropedia's mosaicking/repackaging or this project's own reprojection, this rules out both as
+     the source: the banding is inherited directly from the original DLR/Scholten photogrammetric DTM
+     production (GLD100, "69,000 WAC stereo models" block-adjusted together per
+     `WAC_GLD100_README.TXT`), not introduced anywhere downstream. Most likely mechanism: a residual
+     seam/bias between adjacent individually-adjusted stereo models or orbit passes in that original
+     production pipeline — a plausible, physically-scaled match (~4.1-4.5 km recurrence at 100 m/px)
+     for a WAC stereo-model/swath boundary. **Status: root cause pinned to GLD100's own upstream
+     production, confirmed by independent re-fetch from a second, unrelated NASA source** — worth
+     flagging to whoever maintains `docs/data-sources/astropedia-gld100.md` if this DEM source is used
+     for anything precision-sensitive; not blocking for this task's own step 1 (`shadow` correctly
+     reflects whatever the real input DEM says, artifact or not).
 - **Penumbra-relevant geometries**: compute the occluder-to-receiver distance `D` (see above) for
   this project's real low-sun-elevation candidates before deciding whether the disk-sampling
-  extension is worth building at all.
+  extension is worth building at all. Not yet done.
 
 ## Recommended sequencing
 
-1. Spike, outside the main pipeline (a scratch script or notebook cell, not `hapke.py` yet): convert
-   one real candidate's hole-filled DEM (elevation → radius, GeoTIFF → ISIS cube), run `demprep`,
-   then `shadow` with `SUNPOSITIONSOURCE=TIME` against the entry's own real acquisition ET, reusing
-   this project's already-cached PCK/SPK. Confirms the open questions above against real data before
-   any pipeline code is written.
+1. ~~Spike, outside the main pipeline...~~ **Done** — `src/scratch/isis_shadow_spike.py` (disposable,
+   not committed), against `M1327218454CE`. All steps ran successfully end-to-end; see "Open
+   questions" above for what each step needed in practice (the `editlab` Mapping-group patch, the
+   text-vs-binary PCK gotcha). A first geometric sanity check (shadow mask overlaid on a plain
+   hillshade of the same DEM) already looks right — shadow concentrated on crater rims' down-sun
+   side, not noise.
 2. Visually compare the resulting shadow layer against the same candidate's real WAC
    `crop`/`reproject` imagery, ideally one with visible real cast shadows — the closest thing to
-   ground truth this project has, given `sat_sim` supplies no shadow reference of its own.
+   ground truth this project has, given `sat_sim` supplies no shadow reference of its own. **Not yet
+   done** — step 1's check above only compared against this project's own synthetic Lambertian
+   shading, which has no cast-shadow occlusion of its own to cross-check against.
 3. If it looks right, wire it into `despeckle_and_shade_ortho` as a new opt-in flag (mirroring the
    existing `hapke`/`along_track_correction` pattern) rather than an unconditional default, so
    `hillshade` output before/after is easy to A/B — the same posture `along_track_correction`/
