@@ -1,7 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: src/scratch//ipynb,src/scratch//py:percent
+#     formats: notebooks//ipynb,notebooks//py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
@@ -21,9 +21,9 @@
 # then ISIS `shadow` with `SUNPOSITIONSOURCE=TIME` against the candidate's own real acquisition
 # ephemeris time, reusing this project's already-cached PCK/SPK kernels -- no new kernel fetch.
 #
-# Disposable -- lives in `src/scratch/`, not `notebooks/`, and not imported by anything. See that
-# doc's "Open questions" section for what each step below needed in practice (an `editlab` patch for
-# a missing Mapping group field, and a text-vs-binary PCK gotcha).
+# Disposable, kept for reference rather than deleted -- not imported by anything. See that doc's
+# "Open questions" section for what each step below needed in practice (an `editlab` patch for a
+# missing Mapping group field, and a text-vs-binary PCK gotcha).
 
 # %%
 import subprocess
@@ -65,8 +65,7 @@ def catlab(cub_path: Path) -> str:
 session = trntest.Session()
 config = session.config
 
-images = trntest.read_manifest("../../notebooks/dataset_manifest.csv")  # relative to this notebook's
-# own directory (src/scratch/), matching a live JupyterLab kernel's default cwd there
+images = trntest.read_manifest("dataset_manifest.csv")
 dataset = trntest.TrnTestDataSet.create(config.output_dir / "trn_dataset", images, config)
 entry = dataset[CANDIDATE_PRODUCT_ID]
 camera = entry.camera
