@@ -65,9 +65,15 @@ capability but not yet validated, consider a dedicated branch rather than mergin
 ## Show findings, don't just describe them
 
 When investigating something visual (a plot, an overlay, a diagnostic image), put the actual
-image/plot where it can be opened and viewed — a live notebook cell, a throwaway scratch notebook is
-fine — rather than only generating it for inspection via a file-read tool and describing it in
-prose.
+image/plot where it can be opened and viewed — a live notebook cell, a throwaway scratch notebook,
+or sent directly in the conversation — rather than only generating it for inspection via a
+file-read tool and describing it in prose.
+
+Prioritize getting a reviewable image in front of the user quickly over continuing with more
+self-directed investigation first (reading the image yourself via a file-read tool, writing an FFT/
+signal-analysis script, computing more diagnostics before showing anything) — this has been a
+recurring lapse across sessions. Don't stop doing that other analysis, just don't let it gate
+sharing: send the image as soon as it exists, and keep investigating in parallel or after.
 
 ## Show the derivation for algorithm proposals
 

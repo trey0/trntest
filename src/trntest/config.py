@@ -149,6 +149,14 @@ DEFAULT_DELETE_FULL_RAW_EDR = True
 # Set `False` to preserve evidence for debugging a pipeline problem. See docs/caching.md.
 DEFAULT_DELETE_ISIS_INTERMEDIATES = True
 
+# Whether `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid` applies
+# `wac_emp_edge_correction`'s fix for the archived WAC_EMP tiles' own real edge-brightening defect at
+# their shared ±60 deg boundary, both hemispheres independently fit (see
+# docs/proposed-tasks/open-items.md and notebooks/wac_emp_seam_edge_model.py). Set `False` to get the
+# raw, uncorrected archive data back -- e.g. if USGS/ASU fix the underlying tiles themselves, or to
+# reproduce the original artifact for comparison.
+DEFAULT_WAC_EMP_EDGE_CORRECTION_ENABLED = True
+
 
 @dataclasses.dataclass(frozen=True)
 class TrntestConfig:
@@ -194,6 +202,7 @@ class TrntestConfig:
 
     delete_full_raw_edr: bool = DEFAULT_DELETE_FULL_RAW_EDR
     delete_isis_intermediates: bool = DEFAULT_DELETE_ISIS_INTERMEDIATES
+    wac_emp_edge_correction_enabled: bool = DEFAULT_WAC_EMP_EDGE_CORRECTION_ENABLED
 
 
 _PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")

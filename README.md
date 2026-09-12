@@ -200,7 +200,9 @@ lint's notebook checks).
 | [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
 | [`spice_entry_poc.ipynb`][spice_entry_poc.ipynb] | Proof of concept for `TrnTestEntrySpice` — five `hillshade`-only entries posed purely from SPICE trajectory data along one real orbit, no EDR involved. |
+| [`wac_emp_seam_correction_validation.ipynb`][wac_emp_seam_correction_validation.ipynb] | Validates `wac_emp_edge_correction.py`'s `mask_equirect_edge_row`/`mask_and_correct_polar_edge` fix with the same ASP `dem_mosaic --first`/`--count` cross-check `wac_emp_seam_dem_mosaic.ipynb` used, plus a direct check of `merge_local_grid_arrays`/`fill_nearby_gaps` — the seam's peak jump shrinks 62-65% for the two south entries tested, and the coverage gap the masking opens (up to ~0.14% of pixels) is fully closed by the bounded gap fill. |
 | [`wac_emp_seam_dem_mosaic.ipynb`][wac_emp_seam_dem_mosaic.ipynb] | Cross-checks `wac_emp_seam_investigation.ipynb` with ASP `dem_mosaic` in place of this project's own merge code — same seam, same row regardless of precedence; tests masking the equirect tile's bad edge row(s), then compares `--hole-fill-length` against `--fill-search-radius` to patch the resulting gap. |
+| [`wac_emp_seam_edge_model.ipynb`][wac_emp_seam_edge_model.ipynb] | Profiles and fits the ±60° WAC_EMP edge-brightening artifact's own shape (mean ± SEM vs. signed distance from the boundary): a single-row equirect spike, and a damped-oscillation overshoot/undershoot on the polar side, fit to a 4-parameter damped cosine. Also calls `wac_emp_edge_correction`'s own functions directly to overlay the corrected profile against the original, and checks a matched-longitude north tile pair — same kind of defect, ~4x smaller polar amplitude on the one zone sampled. |
 | [`wac_emp_seam_investigation.ipynb`][wac_emp_seam_investigation.ipynb] | Traces the ±60° WAC_EMP horizontal-line artifact (`docs/proposed-tasks/open-items.md`) to real edge-brightening artifacts in both tiles' own last valid native pixels, not nodata, a DEM issue, or a broad two-tile calibration mismatch. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
@@ -215,7 +217,9 @@ lint's notebook checks).
 [sensor_calibration_scoping.ipynb]: notebooks/sensor_calibration_scoping.ipynb
 [sfs_validation.ipynb]: notebooks/sfs_validation.ipynb
 [spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
+[wac_emp_seam_correction_validation.ipynb]: notebooks/wac_emp_seam_correction_validation.ipynb
 [wac_emp_seam_dem_mosaic.ipynb]: notebooks/wac_emp_seam_dem_mosaic.ipynb
+[wac_emp_seam_edge_model.ipynb]: notebooks/wac_emp_seam_edge_model.ipynb
 [wac_emp_seam_investigation.ipynb]: notebooks/wac_emp_seam_investigation.ipynb
 [wac_isis.ipynb]: notebooks/wac_isis.ipynb
 
@@ -262,6 +266,7 @@ lint's notebook checks).
 | [`tie_points.py`][tie_points.py] | Projects the same 5 ground points (4 corners + center) into both the synthetic render and the WAC crop, for the comparison figure's explicit tie points (`select_tie_points`/`resolve_crop_pixels`). |
 | [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` (abstract, two concrete kinds — `TrnTestEntryEdr`/`TrnTestEntrySpice`, see the module's own docstring) — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
 | [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `primary_image` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `primary_image` dependency — both default-on in `PRODUCT_TYPES`, `TrnTestEntryEdr`-only). Split out of `trn_dataset.py`. |
+| [`wac_emp_edge_correction.py`][wac_emp_edge_correction.py] | Masks/corrects the archived WAC_EMP tiles' own real edge-brightening defect at their shared ±60° boundary, both hemispheres independently fit (`mask_equirect_edge_row`/`mask_and_correct_polar_edge`), plus `fill_nearby_gaps` for the small coverage gap the masking opens — kept separate from `ortho_wac_emp.py` since it's a fix for one specific archive defect, not reprojection machinery. Called from `ortho_wac_emp.py` only when `TrntestConfig.wac_emp_edge_correction_enabled` is true (the default). |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
 [cache.py]: src/trntest/cache.py
@@ -303,6 +308,7 @@ lint's notebook checks).
 [tie_points.py]: src/trntest/tie_points.py
 [trn_dataset.py]: src/trntest/trn_dataset.py
 [trn_products.py]: src/trntest/trn_products.py
+[wac_emp_edge_correction.py]: src/trntest/wac_emp_edge_correction.py
 [wac_format.py]: src/trntest/wac_format.py
 
 ## Development history
