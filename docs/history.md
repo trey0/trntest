@@ -6680,9 +6680,9 @@ second-tool-integration problem and directly ray-trace one specific marginal pix
 against the DEM in Python instead -- `gld100-banding-artifact.md`'s own already-proposed next step,
 which answers the real underlying question without needing any external tool to cooperate at all.
 
-Incidental finding along the way, tracked separately (not fixed here): `hapke.py`'s final
-shaded-ortho normalize-and-cast step (`np.clip(...).astype(np.uint8)`) casts NaN straight to an
-undefined uint8 value with only a `RuntimeWarning`, not a real error or a defined fallback --
-triggered by this same candidate's own very low (13.3 deg) sun elevation regardless of
+Incidental finding along the way, flagged as a separate task and fixed the same session (see Phase
+124): `hapke.py`'s final shaded-ortho normalize-and-cast step (`np.clip(...).astype(np.uint8)`) cast
+NaN straight to an undefined uint8 value with only a `RuntimeWarning`, not a real error or a defined
+fallback -- triggered by this same candidate's own very low (13.3 deg) sun elevation regardless of
 `hapke=True`/`False`. `isis_shadow_spike.py` had sidestepped this by never fetching an ortho for this
 candidate at all; this notebook needed one (for `sat_sim`'s texture input) and hit it directly.

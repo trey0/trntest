@@ -16,7 +16,7 @@
 # %% [markdown]
 # # GLD100 row-banding artifact -- elevation-domain investigation
 #
-# `docs/history.md` Phase 121 root-caused a faint horizontal streaking pattern seen in
+# `docs/history.md` Phase 125 root-caused a faint horizontal streaking pattern seen in
 # `notebooks/isis_shadow_spike.py`'s shadow-mask renders to GLD100's own upstream DEM production
 # (confirmed via an independently-fetched NASA PDS source tile, not introduced by this project's
 # reprojection or by ISIS `shadow`) -- see `docs/data-sources/astropedia-gld100.md`. This notebook
@@ -59,7 +59,7 @@ print(f"DEM: {width}x{height} px, ~{pixel_resolution_m:.1f} m/px")
 # %% [markdown]
 # ## Reconstructing the detector
 #
-# Phase 121's row-peak scan (row-mean hillshade residual against a broad rolling-median baseline)
+# Phase 125's row-peak scan (row-mean hillshade residual against a broad rolling-median baseline)
 # was done in scratch cells and never committed as code. Reconstructed here, against the same
 # candidate's real acquisition sun geometry.
 
@@ -78,7 +78,7 @@ hs_residual = row_mean_hillshade - hs_baseline
 hs_peaks, _ = find_peaks(np.abs(hs_residual), prominence=np.nanstd(hs_residual) * 1.5, distance=10)
 print(
     f"hillshade-domain peaks found: {len(hs_peaks)} "
-    f"(median spacing {np.median(np.diff(hs_peaks)):.1f} rows) -- Phase 121 found 49 at ~41-row "
+    f"(median spacing {np.median(np.diff(hs_peaks)):.1f} rows) -- Phase 125 found 49 at ~41-row "
     f"median spacing on the same candidate; this reconstruction is in the same ballpark, not an "
     f"exact replica of whatever threshold was used interactively that night."
 )
@@ -87,7 +87,7 @@ print(
 # ## Seeing it directly, at 1:1 pixel zoom
 #
 # Everything after this point is numbers and aggregate statistics -- worth first just looking at
-# the actual rendered artifact, the way Phase 121 originally did (a strict 1:1-pixel-scale render,
+# the actual rendered artifact, the way Phase 125 originally did (a strict 1:1-pixel-scale render,
 # `interpolation="none"`, specifically to rule out `matplotlib` display-resampling/moire as the
 # cause). Two views: a wide strip covering several streaks at once (rows 950-1250, full width --
 # this range alone contains 13 of the detector's flagged rows), and a tight close-up on row 1045,
@@ -134,7 +134,7 @@ plt.show()
 
 # %% [markdown]
 # Neither plain-hillshade view above shows an obvious line at the flagged rows, even at 1:1 zoom.
-# That's expected, not a display problem: Phase 121 measured the effect at ~0.1-1% relative
+# That's expected, not a display problem: Phase 125 measured the effect at ~0.1-1% relative
 # brightness -- roughly 0-2 gray levels out of 256 in an ordinary grayscale render, well under what
 # the eye can pick out against real terrain's own much larger brightness range.
 #
@@ -249,7 +249,7 @@ print(
 #
 # First pass (single row, mean +/- SEM) showed a smooth arc rather than a step -- but mean and
 # median diverged sharply at the window edges (opposite sign at x=+10), the same "narrow column
-# band, large amplitude" signature Phase 121 already pinned on real terrain (crater walls), not the
+# band, large amplitude" signature Phase 125 already pinned on real terrain (crater walls), not the
 # artifact. A handful of outlier columns were dominating the mean. Switching to median with
 # p10/p90 error bars (a directly outlier-resistant summary, rather than trying to identify and
 # exclude the offending columns individually) should give a cleaner read -- shown here across five

@@ -34,8 +34,6 @@
 # elimination is itself the useful finding for anyone picking this up later.
 
 # %%
-import warnings
-
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
@@ -76,15 +74,8 @@ print(f"candidate: {entry.edr_product}, footprint center (lon,lat): {camera.foot
 
 # %%
 # This notebook only needs *some* valid ortho texture to drive sat_sim's render (a throwaway input
-# for feeding sfs a camera+image pair, not a photometric product itself). This candidate's own
-# shading hits a pre-existing NaN-cast bug at this low a sun elevation regardless of hapke=True/
-# False (`hapke.py:624`'s final normalize-and-cast step, shared by both reflectance models) --
-# `isis_shadow_spike.py` sidestepped this by never fetching an ortho for this candidate at all
-# ("no ortho texture fetch needed for this check"). Out of scope here (flagged separately, not this
-# notebook's concern) -- suppressed rather than left to print a raw warning this notebook can't fix.
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", RuntimeWarning)
-    dem_ortho_result = dem_ortho.fetch_dem_and_ortho(camera, entry.config)
+# for feeding sfs a camera+image pair, not a photometric product itself).
+dem_ortho_result = dem_ortho.fetch_dem_and_ortho(camera, entry.config)
 dem_result = dem_ortho.fetch_dem(camera, entry.config)
 print(f"DEM: {dem_result.dem}, bbox={dem_result.bbox}, {dem_result.width}x{dem_result.height}")
 assert dem_ortho_result.dem == dem_result.dem, "expected dem_ortho_result to reuse the same fetch_dem output"
@@ -254,6 +245,11 @@ print(f"wrote {png_path}")
 # - Consider filing an upstream issue against `NeoGeographyToolkit/StereoPipeline` with this
 #   notebook's exact repro (DEM + `sat_sim` render + CSM JSON, `--model-shadows
 #   --save-sim-intensity-only`, "no data for this DEM" despite `mapproject` finding real overlap).
+# - `docs/proposed-tasks/standalone-shadow-mask-tool.md`: a narrower alternative that sidesteps this
+#   blocker entirely -- port just `sfs`'s own shadow ray-tracer (`isInShadow`/`areInShadow`, ~60 lines,
+#   Apache-2.0) into a small standalone tool, rather than running the full `sfs` binary. Superseded in
+#   practice by `docs/proposed-tasks/sun-aligned-shadow-sweep.md`, a pure-Python reformulation of the
+#   same physical test needing no new tool or repo.
 # - Simpler alternative that doesn't depend on any external tool cooperating at all, already
 #   proposed in `docs/proposed-tasks/gld100-banding-artifact.md`'s "Next steps": ray-trace a specific
 #   marginal pixel (e.g. row 1016, col 1500 in `isis_shadow_spike.py`'s DEM grid) directly in Python

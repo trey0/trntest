@@ -1,6 +1,6 @@
 # GLD100 row-banding artifact: root-cause investigation and next steps
 
-Continuation of the tangent first found in `docs/history.md`'s Phase 121 (2026-09-12), during
+Continuation of the tangent first found in `docs/history.md`'s Phase 125 (2026-09-12), during
 `docs/proposed-tasks/isis-shadow-masking.md`'s step-1 spike. That session established the banding
 is real and traces to GLD100's own upstream production (confirmed via an independently-fetched
 NASA PDS source tile). This document picks up the follow-on question -- is it detectable and
@@ -9,7 +9,7 @@ meaningfully update, and partly overturn, that earlier framing.
 
 ## What this session found (2026-09-12 evening into 2026-09-13)
 
-- Reconstructed Phase 121's hillshade-domain row-peak detector as real code (it only ever existed
+- Reconstructed Phase 125's hillshade-domain row-peak detector as real code (it only ever existed
   in disposable scratch cells) -- see `notebooks/gld100_banding_investigation.py`.
 - Every elevation-magnitude-based detector tried against that detector's flagged rows -- raw
   Hampel z-score, mean-based fold-and-stack, median-based fold-and-stack (with a non-flagged
@@ -46,12 +46,17 @@ Two distinct phenomena, not one:
    fixable: switch `shadow` calls to `PRESET=ACCURATE` (or `CACHEINTERPOLATEDVALUES=true` under
    `BALANCED`) as the default, accepting the CPU cost the application's own docs note ("very heavy
    CPU usage but low memory usage").
-2. **A genuine, tiny grazing-occlusion effect** (row-1016-type). Elevation-magnitude statistics
-   can't isolate it -- the true perturbation appears smaller than this candidate's own terrain
-   roughness noise floor (~4-5 m median row-to-row diff at this location) -- but it survives, and
-   strengthens, under the least-approximated ray tracing available. That's consistent with real
-   physics, not noise or a processing bug: something in the real terrain is genuinely, if very
-   marginally, occluding these specific pixels' view of the sun.
+2. **Row-1016-type: real physics was this session's best guess, now contradicted by real data.**
+   At the time, "survives and strengthens under `ACCURATE`" argued against a processing artifact.
+   A later session (`docs/proposed-tasks/sun-aligned-shadow-sweep.md`) checked row 1016 two more
+   ways: an independent from-scratch Python reimplementation of the same physical test (no code
+   shared with ISIS `shadow`), and — more decisively — the real WAC image itself, reprojected onto
+   the same grid. Neither shows anything at row 1016: real WAC brightness there is 0.0153, identical
+   to its immediate neighbors (also 0.0153), visually confirmed as ordinary terrain. This doesn't
+   explain why `ACCURATE` *strengthens* the effect (still unresolved), but two independent checks
+   against one ISIS-only finding shifts the likely explanation toward something specific to ISIS
+   `shadow`'s own ray-marching at this location, not genuine terrain occlusion. Treat the "real
+   physics" framing above as superseded, not settled.
 
 ## Next steps
 
@@ -59,30 +64,30 @@ Two distinct phenomena, not one:
    reused) to `PRESET=ACCURATE`. Low-risk, already validated to eliminate at least one confirmed
    artifact class. Worth re-checking whether the remaining row-1016-type streaks are rare/small
    enough to just ignore once this alone is in place.
-2. **Ray-trace a specific row-1016 pixel directly** -- the one diagnostic this session didn't get
-   to. Sample the DEM's real surface height along the true 3D line-of-sight toward the sun
-   (azimuth 224.44 deg, elevation 13.32 deg for this candidate) from a specific marginal pixel
-   (e.g. row 1016, col 1500) to find whatever real terrain feature is grazing-occluding it. Either
-   finds and explains the real occluder, or further rules out a physical cause if nothing is there
-   even along the exact ray. A cross-check via a second, independently-implemented shadow tool (ASP's
-   `sfs --model-shadows`) was tried instead of this and is **blocked**, not a substitute: see
-   `notebooks/asp_sfs_shadow_spike.py` and `docs/history.md`'s Phase 122 for the full trail (every
-   camera representation this project can produce either gets rejected outright or produces a
-   silently-degenerate all-zero result that `mapproject` on the identical inputs proves isn't a real
-   geometry problem). This direct ray-trace remains the most tractable path to actually answering
-   this step's question.
+2. **Explain why ISIS `shadow` shows a streak at row 1016 when nothing else does.** Real WAC imagery
+   and an independent Python reimplementation both show no anomaly there (see item 2 above and
+   `docs/proposed-tasks/sun-aligned-shadow-sweep.md`'s "Ground truth check") -- the original plan to
+   ray-trace this pixel directly to find "the real occluder" no longer fits the evidence (there
+   likely isn't one); the open question now is what in ISIS `shadow`'s own ray-marching produces a
+   streak that *strengthens* under `PRESET=ACCURATE` (less approximation, not more) if it isn't real
+   terrain. A cross-check via ASP's own `sfs --model-shadows` was tried and is **blocked**: see
+   `notebooks/asp_sfs_shadow_spike.py` (every camera representation this project can produce either
+   gets rejected outright or produces a silently-degenerate all-zero result that `mapproject` on the
+   identical inputs proves isn't a real geometry problem) and
+   `docs/proposed-tasks/standalone-shadow-mask-tool.md` (porting `sfs`'s own shadow ray-tracer into a
+   small C++ tool, skipping the machinery that blocked it) for a still-open alternative.
 3. **Re-validate against a second candidate.** Everything above was checked against a single
    candidate (`M1327218454CE`, 13.6 deg sun elevation) -- confirm row-1016-type streaks recur (and
    that the `ACCURATE`-preset fix holds) on a different low-sun-elevation candidate before treating
    any of this as general.
 4. **Revisit the original binary-mask streak-suppression idea** (this investigation's starting
    point) now that the picture is clearer: not needed for caching-induced streaks (just fix the
-   preset); for row-1016-type streaks, suppression may not even be the right move if they're
-   genuine shadow -- decide only after step 2 clarifies whether they're real occlusion or
-   something else entirely.
+   preset); row-1016-type streaks now lean toward an ISIS-`shadow`-specific artifact rather than
+   genuine shadow (item 2 above), which would make suppression the right move after all -- still
+   worth confirming the actual mechanism first (item 2) rather than suppressing blind.
 5. **Fold into permanent docs once resolved**, per this repo's usual proposed-tasks convention:
-   the caching-fix finding belongs in `docs/external-tools.md`'s `shadow` notes; whatever the
-   ray-trace finds belongs in `docs/proposed-tasks/isis-shadow-masking.md` or
+   the caching-fix finding belongs in `docs/external-tools.md`'s `shadow` notes; whatever item 2
+   above finds belongs in `docs/proposed-tasks/isis-shadow-masking.md` or
    `docs/data-sources/astropedia-gld100.md` depending on the answer. Delete this file once both
    are folded in.
 
