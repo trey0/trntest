@@ -6532,3 +6532,35 @@ had any column where both tiles were simultaneously valid for one entry, a real 
 registration shift, guarded rather than assumed) re-executed clean; `wac_emp_seam_edge_model.py`
 unaffected (it constructs its own integer windows directly, never through the fixed function) and
 re-executed clean for consistency. `trntest-lint` clean throughout.
+
+## Phase 124 (2026-09-13) -- Root-caused and fixed `hapke.py`'s NaN-to-uint8 cast bug
+
+Found while exercising `dem_ortho.fetch_dem_and_ortho` (`hapke=True`, the default) against a very
+low sun-elevation candidate (`M1327218454CE`, 13.3 deg) in unrelated work: `hapke.py`'s final
+shaded-ortho normalize-and-cast step (`stretch_reflectance_to_uint8`, `np.clip(...).astype(np.uint8)`)
+cast NaN straight to an undefined uint8 value with only a `RuntimeWarning`, not a real error or a
+defined fallback.
+
+**Root cause, traced with `np.seterr(invalid="raise")` plus direct array inspection at each pipeline
+stage** (not just plausible-sounding, confirmed): the raw WAC_EMP ortho GeoTIFF
+(`ortho_wac_emp.tif`) itself carries real `NaN` at 1.75% of this candidate's pixels (103,237 of
+5,907,288) -- genuine no-source-coverage gaps within the single polar tile this AOI resolves to, per
+`ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`'s own `dst_nodata=nan` convention and its
+own documented stance that not every such gap gets hole-filled (`fill_nearby_gaps` only closes the
+edge-correction-induced ones, deliberately, to avoid "papering over a genuine no-coverage region").
+That NaN survives `despeckle`, `hapke_shade_ortho`'s relighting multiply, and `np.clip` (which passes
+NaN through unchanged) all the way to the final `.astype(np.uint8)`, where it becomes undefined.
+Ruled out along the way: `_terrain_photometric_angles`'s incidence/emission/phase angles (all
+`np.clip`-guarded before `arccos`, confirmed no NaN); a separate, real but different fragility also
+found in `_hapke_reflectance` (ISIS `photomet`'s self-shadowed/facing-away pixels round-trip as the
+literal float32 LRS sentinel `-3.4028e+38`, not NaN, since that read isn't masked) -- left alone since
+it isn't this bug's cause and, by coincidence of scale, already clips to the physically-correct 0
+downstream rather than producing wrong output.
+
+**Fix**: `stretch_reflectance_to_uint8` now explicitly maps NaN to 0 (black) via `np.nan_to_num`
+after the existing `np.clip`, with a comment explaining why NaN is an expected input here, not a bug
+to chase upstream. Verified with `np.seterr(invalid="raise")`/`warnings.simplefilter("error", ...)`:
+no warning, and every previously-NaN pixel now reads `0` in the final `uint8` output (checked
+directly, not just "no warning fired"). New test:
+`test_hapke.py::test_stretch_reflectance_to_uint8_maps_nan_to_zero`. Full non-heavy suite (456
+tests) and `trntest-lint` both clean.
