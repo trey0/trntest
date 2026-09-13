@@ -246,10 +246,12 @@ not committed). Findings below are updated in place; unresolved items stay flagg
      `WAC_GLD100_README.TXT`), not introduced anywhere downstream. Most likely mechanism: a residual
      seam/bias between adjacent individually-adjusted stereo models or orbit passes in that original
      production pipeline — a plausible, physically-scaled match (~4.1-4.5 km recurrence at 100 m/px)
-     for a WAC stereo-model/swath boundary. **Status: root cause pinned to GLD100's own upstream
-     production, confirmed by independent re-fetch from a second, unrelated NASA source** — worth
-     flagging to whoever maintains `docs/data-sources/astropedia-gld100.md` if this DEM source is used
-     for anything precision-sensitive; not blocking for this task's own step 1 (`shadow` correctly
+     for a WAC stereo-model/swath boundary. **Status (updated)**: a follow-up session found this
+     picture was incomplete — most individual streak rows turn out to split into two different
+     phenomena, one a confirmed `shadow` caching artifact and one a genuine but still-unexplained
+     grazing-occlusion effect, neither of which is a simple GLD100 mosaic-seam bias as first
+     guessed. See `docs/proposed-tasks/gld100-banding-artifact.md` for the full follow-on
+     investigation and open next steps; not blocking for this task's own step 1 (`shadow` correctly
      reflects whatever the real input DEM says, artifact or not).
 - **Penumbra-relevant geometries**: compute the occluder-to-receiver distance `D` (see above) for
   this project's real low-sun-elevation candidates before deciding whether the disk-sampling
