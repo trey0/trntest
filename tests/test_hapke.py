@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -293,6 +294,18 @@ def test_stretch_reflectance_to_uint8_clips_outside_range():
     result = hapke.stretch_reflectance_to_uint8(reflectance)
     assert result[0, 0] == 0
     assert result[0, 1] == 255
+
+
+def test_stretch_reflectance_to_uint8_maps_nan_to_zero():
+    # Real, expected input for this function: WAC_EMP's own genuine no-coverage gaps
+    # (`ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`'s `dst_nodata=nan` convention) reach
+    # here un-hole-filled. `np.clip` leaves NaN unchanged, so without an explicit `nan_to_num`, this used
+    # to reach `.astype(np.uint8)` and cast to an undefined value (a `RuntimeWarning`, not a real error).
+    reflectance = np.array([[hapke.DISPLAY_STRETCH_REFLECTANCE_MIN, np.nan]])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = hapke.stretch_reflectance_to_uint8(reflectance)
+    assert result[0, 1] == 0
 
 
 def test_despeckle_replaces_isolated_spike():

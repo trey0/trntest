@@ -621,7 +621,15 @@ def stretch_reflectance_to_uint8(
     # downstream effects that has -- e.g. biasing `sfs_validation.true_albedo_map`'s recovered albedo
     # at those pixels) is an open question, not a validated non-issue -- see `docs/proposed-tasks/open-items.md`.
     normalized = (reflectance.astype(np.float64) - lo) / (hi - lo)
-    return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+    stretched = np.clip(normalized * 255.0, 0, 255)
+    # `reflectance` can carry real NaN at this point -- not a bug upstream, but WAC_EMP's own genuine
+    # no-coverage gaps (`ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid`'s `dst_nodata=nan`
+    # convention, deliberately not hole-filled everywhere -- see that function's own docstring/comments
+    # on why an unrelated coverage gap must never be silently papered over). `np.clip` leaves NaN
+    # unchanged, so without this, `.astype(np.uint8)` below would cast it to an undefined value (only a
+    # `RuntimeWarning`, not a real error). Map it to 0 (black) explicitly instead, since this function's
+    # whole job is producing a well-defined display image regardless of upstream gaps.
+    return np.nan_to_num(stretched, nan=0.0).astype(np.uint8)
 
 
 def real_geometry_photometric_angles(

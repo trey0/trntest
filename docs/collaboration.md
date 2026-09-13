@@ -53,6 +53,12 @@ user has confirmed from that list — a worktree merged but not marked, or marke
 still be someone's live or
 resumable work.
 
+## Log non-urgent findings, don't spawn a task
+
+A non-urgent incidental finding (a latent bug, a design gap, an open question) belongs as a bullet
+in `docs/proposed-tasks/open-items.md`, not a `spawn_task` call. Reserve `spawn_task` for something
+time-sensitive or substantial enough to warrant its own concurrent session.
+
 ## Preserve valuable spikes
 
 Ad hoc exploration (one-off `docker compose run` commands, scratch scripts under `src/scratch/`,
