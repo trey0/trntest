@@ -6404,3 +6404,51 @@ accept "real terrain" without seeing the raw source data directly -- is what act
 stall; worth remembering that a confident-sounding physical explanation (grazing-light amplification
 of ordinary terrain noise) can still be dead wrong, and that the fix for "here's a story that fits
 the data" is checking a row you haven't checked yet, not a better story.
+
+## Phase 122 (2026-09-13) -- ASP `sfs --model-shadows` as an alternate shadow mask: blocked, not just untried
+
+Tried to cross-check Phase 121/`docs/proposed-tasks/gld100-banding-artifact.md`'s row-level
+streaking finding against a second, independently-implemented shadow ray-tracer -- ASP's `sfs`, run
+with `--model-shadows --save-sim-intensity-only` (a single forward simulation pass, no actual
+shape-from-shading DEM refinement) -- on the theory that if a totally different tool reproduced the
+same streaks on the same DEM, that would be strong evidence for a real terrain artifact rather than
+something specific to ISIS `shadow`'s own implementation. Result, in `notebooks/asp_sfs_shadow_spike.py`/
+`.ipynb`: **blocked**, across every camera representation this project can produce, not merely "not
+yet gotten working":
+
+1. The real ISIS WAC crop cube (`entry.crop_result`): `sfs` rejected it outright -- `"Seems to have
+   Isis camera type 1 ... Maybe it will work with CSM"` -- ASP's ISIS session code doesn't support
+   this project's WAC VIS Pushframe camera type.
+2. The error's own suggested fallback, a CSM ISD for that same real camera
+   (`isis_campt.run_isd_generate_for_crop`): not attempted, since that path is already documented
+   (`isis_wac.py`'s module docstring) as depending on a confirmed `usgscsm` Pushframe `groundToImage`
+   bug (~0.2-0.4 correlation against ISIS's own correct reprojection) -- building on it would make any
+   result uninformative.
+3. This project's own *synthetic* camera instead (the plain TSAI/pinhole model `render.run_sat_sim`
+   already uses for `sat_sim`/`mapproject`, paired with its own rendered image): ran without error, but
+   logged `"Skipped image 0: ... with no data for this DEM"` and produced an all-zero
+   simulated-intensity raster (`min=max=mean=0.0`, confirmed by direct inspection, not just a
+   suspicious-looking mask).
+4. The same synthetic camera as a CSM Frame model instead of raw TSAI (`sfs_usage.rst`'s own
+   preferred representation): identical "no data" message, identical all-zero output.
+5. Ruled out a bad automatic exposure estimate specifically: forcing a non-zero exposure directly
+   via `--image-exposures-prefix` (bypassing whatever `--num-samples-for-estim` sampling produced the
+   `0`) still gave an all-zero result. But running ASP's own `mapproject` -- a separate, independently-
+   tested code path -- on the *identical* DEM + rendered image + CSM JSON triplet succeeded, with 66%
+   valid coverage and real terrain-shaded values over a ~155km-wide region well inside the DEM's own
+   bounds. That rules out a real geometry/registration problem on this project's side: whatever `sfs`
+   means by "no data for this DEM" here, it isn't a real absence of overlap.
+
+No ASP source access to debug the C++ side further within this session. Left as a documented dead
+end in the notebook itself (including a "if picking this back up later" section: re-check after an
+ASP upgrade, consider filing an upstream issue with this exact repro, or skip the whole
+second-tool-integration problem and directly ray-trace one specific marginal pixel's line-of-sight
+against the DEM in Python instead -- `gld100-banding-artifact.md`'s own already-proposed next step,
+which answers the real underlying question without needing any external tool to cooperate at all.
+
+Incidental finding along the way, tracked separately (not fixed here): `hapke.py`'s final
+shaded-ortho normalize-and-cast step (`np.clip(...).astype(np.uint8)`) casts NaN straight to an
+undefined uint8 value with only a `RuntimeWarning`, not a real error or a defined fallback --
+triggered by this same candidate's own very low (13.3 deg) sun elevation regardless of
+`hapke=True`/`False`. `isis_shadow_spike.py` had sidestepped this by never fetching an ortho for this
+candidate at all; this notebook needed one (for `sat_sim`'s texture input) and hit it directly.

@@ -64,7 +64,13 @@ Two distinct phenomena, not one:
    (azimuth 224.44 deg, elevation 13.32 deg for this candidate) from a specific marginal pixel
    (e.g. row 1016, col 1500) to find whatever real terrain feature is grazing-occluding it. Either
    finds and explains the real occluder, or further rules out a physical cause if nothing is there
-   even along the exact ray.
+   even along the exact ray. A cross-check via a second, independently-implemented shadow tool (ASP's
+   `sfs --model-shadows`) was tried instead of this and is **blocked**, not a substitute: see
+   `notebooks/asp_sfs_shadow_spike.py` and `docs/history.md`'s Phase 122 for the full trail (every
+   camera representation this project can produce either gets rejected outright or produces a
+   silently-degenerate all-zero result that `mapproject` on the identical inputs proves isn't a real
+   geometry problem). This direct ray-trace remains the most tractable path to actually answering
+   this step's question.
 3. **Re-validate against a second candidate.** Everything above was checked against a single
    candidate (`M1327218454CE`, 13.6 deg sun elevation) -- confirm row-1016-type streaks recur (and
    that the `ACCURATE`-preset fix holds) on a different low-sun-elevation candidate before treating
