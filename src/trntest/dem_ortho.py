@@ -345,6 +345,7 @@ def fetch_and_shade_ortho(
             center_lat,
             MOON_RADIUS_M,
             ortho_path,
+            apply_edge_correction=config.wac_emp_edge_correction_enabled,
         )
     else:
         ortho_path = cache.fetch_lunaserv_getmap(

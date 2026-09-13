@@ -5,14 +5,16 @@ Lunaserv's WMS render. See docs/data-sources/wac-emp-pds4.md and `dem_ortho.fetc
 import math
 from pathlib import Path
 
+import numpy as np
 import rasterio
 from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import Resampling, transform_bounds
 from rasterio.warp import transform as warp_transform
+from rasterio.windows import Window
 from rasterio.windows import from_bounds as window_from_bounds
 from rasterio.windows import transform as window_transform
 
-from trntest import cache
+from trntest import cache, wac_emp_edge_correction
 from trntest.config import MOON_RADIUS_M, TrntestConfig
 from trntest.geo_utils import (
     DEM_FETCH_SAFETY_MARGIN_FRACTION,
@@ -43,6 +45,10 @@ _WAC_EMP_POLAR_PPD = 304
 _WAC_EMP_LON_ZONE_WIDTH_DEG = 90.0
 _WAC_EMP_N_LON_ZONES = 4
 _WAC_EMP_LAT_BAND_CENTER_CODE = 300  # fixed: (0+60)/2 * 10 -- the tile ID's literal "E300" segment
+# Midpoint between the only two values `Resampling.nearest` can actually produce when reprojecting a
+# 0.0/1.0 float array (`_reproject_one_wac_emp_tile_to_array`'s own `masked_dst`) -- not a tuned
+# cutoff, just a safe way to convert back from float32 to bool.
+_MASKED_DST_THRESHOLD = 0.5
 # The 3 latitude breakpoints where one WAC_EMP tile's coverage ends and the next begins: the equator
 # (equirect grid's own N/S tile split) and +-WAC_EMP_MAX_ABS_LATITUDE_DEG (equirect/polar split).
 # `_lat_bands_touched` walks the 4 resulting bands (south-polar, south-equirect, north-equirect,
@@ -230,6 +236,7 @@ def _reproject_one_wac_emp_tile_to_array(
     moon_radius_m: float,
     resampling: Resampling,
     tolerance: float,
+    apply_edge_correction: bool = True,
 ):
     """Read just the AOI from one local cached WAC_EMP tile and reproject it onto the per-camera local
     Orthographic working grid the DEM fetch uses -- the single-tile core
@@ -244,11 +251,22 @@ def _reproject_one_wac_emp_tile_to_array(
     :param moon_radius_m: Sphere radius, meters.
     :param resampling: `rasterio.warp` resampling method.
     :param tolerance: `rasterio.warp.reproject` error tolerance.
-    :returns: The reprojected `(dst_height, dst_width)` array -- `np.nan` (per
-        `reproject_raster_to_local_grid_array`'s `dst_nodata=nan` convention) wherever this tile alone
-        doesn't cover the destination grid (always true for at least part of it when the AOI straddles
-        a tile boundary and this is only one of several tiles covering it). Values are physical
-        reflectance (IEEE754 float32, no embedded display stretch), not Lunaserv WMS-served DN.
+    :param apply_edge_correction: Whether to apply `wac_emp_edge_correction`'s masking/model-fit
+        correction for the archive's ±60 deg edge-brightening defect (both hemispheres) -- normally
+        sourced from `TrntestConfig.wac_emp_edge_correction_enabled`, exposed as a parameter here so
+        this single-tile core stays a pure function of its arguments. Set false for this tile's raw,
+        uncorrected archive data.
+    :returns: `(array, masked_dst)` -- `array` is the reprojected `(dst_height, dst_width)` reflectance,
+        `np.nan` (per `reproject_raster_to_local_grid_array`'s `dst_nodata=nan` convention) wherever
+        this tile alone doesn't cover the destination grid (always true for at least part of it when
+        the AOI straddles a tile boundary and this is only one of several tiles covering it). Values
+        are physical reflectance (IEEE754 float32, no embedded display stretch), not Lunaserv WMS-served
+        DN. `masked_dst` is a same-shape boolean array, `True` wherever a destination pixel's
+        nearest-in-native-space source pixel was one `wac_emp_edge_correction` masked out -- all
+        `False` when `apply_edge_correction` is false, or for a tile this window never gets near either
+        ±60° boundary (the common case). Lets `reproject_wac_emp_reflectance_to_local_grid` scope its
+        gap-fill to just the coverage gap this correction opens, not any other gap nearby (see
+        `wac_emp_edge_correction.fill_nearby_gaps`'s docstring).
     """
     # Mirrors `dem_gld100.reproject_astropedia_elevation_to_local_grid`'s window-read-then-warp shape,
     # except the AOI window comes directly from `dst_bbox_m` transformed into the file's own embedded
@@ -291,20 +309,56 @@ def _reproject_one_wac_emp_tile_to_array(
             elif left > src.bounds.right:
                 left, right = left - circumference_m, right - circumference_m
         window = window_from_bounds(left, bottom, right, top, transform=src.transform)
+        # `window`'s offsets/lengths are generally fractional -- this AOI's bounds essentially never
+        # align exactly to this tile's native pixel grid -- but reading a fractional-sized window
+        # still has to produce an integer-shaped array, and rasterio/GDAL's implicit resampling to
+        # reconcile the two can duplicate a native row or column into two adjacent output pixels when
+        # the fractional remainder is large enough. That silently defeated
+        # `wac_emp_edge_correction.mask_equirect_edge_row`'s single-row masking in one confirmed case:
+        # a byte-for-byte copy of the already-masked defect row was never itself examined, since that
+        # function assumes exactly one candidate row can hold real data. Rounding to an explicit
+        # integer window before reading -- floor the near edge, ceil the far edge, rather than a plain
+        # `round()` on each -- removes the fractional remainder and always contains the original
+        # requested extent rather than clipping a partial pixel off either edge.
+        row_off, col_off = math.floor(window.row_off), math.floor(window.col_off)
+        row_stop = math.ceil(window.row_off + window.height)
+        col_stop = math.ceil(window.col_off + window.width)
+        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
         src_transform = window_transform(window, src.transform)
         # `boundless=True` (not this project's usual plain windowed read): unlike the old single-tile
         # lookup this replaced, a tile returned by `wac_emp_tile_ids_for_bbox` when the AOI straddles a
         # boundary only covers *part* of `dst_bbox_m` by construction -- the window computed above
-        # legitimately extends past this tile's own raster on the side the other tile(s) cover instead.
-        # A plain (non-boundless) read would silently clip to the tile's real extent, returning an
-        # array smaller than `window` while `src_transform` above still describes the *unclipped*
-        # window's own origin -- misregistering every pixel by the clipped amount. `boundless=True`
-        # always returns exactly `window`'s own shape, filled with `fill_value` beyond the tile's real
-        # data, which `reproject`'s `src_nodata` below (and `merge_local_grid_arrays` after it) then
-        # correctly treats as "not covered by this tile" rather than misplaced real data.
+        # legitimately extends past this tile's raster on the side the other tile(s) cover instead. A
+        # plain (non-boundless) read would silently clip to the tile's real extent, returning an array
+        # smaller than `window` while `src_transform` above still describes the unclipped window's
+        # origin -- misregistering every pixel by the clipped amount. `boundless=True` always returns
+        # exactly `window`'s shape (now an exact integer one, per above), filled with `fill_value`
+        # beyond the tile's real data, which `reproject`'s `src_nodata` below (and
+        # `merge_local_grid_arrays` after it) then correctly treats as "not covered by this tile"
+        # rather than misplaced real data.
         if src_nodata is None:
             src_nodata = float("nan")
         reflectance = src.read(1, window=window, boundless=True, fill_value=src_nodata)
+        masked_out = np.zeros(reflectance.shape, dtype=bool)
+
+        # Correct the archive's ±60 deg edge-brightening defect (`wac_emp_edge_correction` -- kept in
+        # its own module, toggleable, since it's a fix for a specific data defect, not a structural
+        # part of this reprojection) before any reprojection/resampling touches this window -- native
+        # pixel space is where it was measured and where "N pixels from the boundary" is unambiguous,
+        # unlike the destination local-Orthographic grid `reproject` produces below. Each function
+        # checks both hemispheres' boundary internally and no-ops for whichever (usually both) this
+        # window doesn't reach, regardless of the flag. `masked_out` records exactly which native
+        # pixels either function actually masked, reprojected alongside `reflectance` below so the
+        # caller can scope its gap-fill to just this correction's coverage gap.
+        if apply_edge_correction:
+            if is_equirect:
+                wac_emp_edge_correction.mask_equirect_edge_row(
+                    reflectance, src_transform, src.crs, moon_radius_m, src_nodata, masked_out
+                )
+            else:
+                wac_emp_edge_correction.mask_and_correct_polar_edge(
+                    reflectance, src_transform, src.crs, moon_radius_m, src_nodata, masked_out
+                )
 
         if not is_equirect:
             warp_src_crs, warp_src_transform = src.crs, src_transform
@@ -340,7 +394,7 @@ def _reproject_one_wac_emp_tile_to_array(
                 src_transform.f,
             )
 
-    return reproject_raster_to_local_grid_array(
+    dst_array = reproject_raster_to_local_grid_array(
         reflectance,
         warp_src_crs,
         warp_src_transform,
@@ -355,6 +409,27 @@ def _reproject_one_wac_emp_tile_to_array(
         src_nodata=src_nodata,
         dst_nodata=float("nan"),
     )
+    # Nearest, not `resampling` (usually bilinear) -- a fractional "40% masked" value from blending
+    # would be meaningless; every destination pixel should trace to exactly one native pixel's
+    # True/False masked state, same as any other nearest-neighbor lookup. Threshold at the midpoint
+    # between the only two values `Resampling.nearest` can actually produce here (0.0/1.0) -- not a
+    # tuned cutoff, just a safe way to convert back from float32 to bool.
+    masked_dst_float = reproject_raster_to_local_grid_array(
+        masked_out.astype(np.float32),
+        warp_src_crs,
+        warp_src_transform,
+        dst_bbox_m,
+        dst_width,
+        dst_height,
+        center_lon_deg,
+        center_lat_deg,
+        moon_radius_m,
+        Resampling.nearest,
+        tolerance,
+        dst_nodata=0.0,
+    )
+    masked_dst = masked_dst_float > _MASKED_DST_THRESHOLD
+    return dst_array, masked_dst
 
 
 def reproject_wac_emp_reflectance_to_local_grid(
@@ -368,6 +443,7 @@ def reproject_wac_emp_reflectance_to_local_grid(
     output_path,
     resampling: Resampling = Resampling.bilinear,
     tolerance: float = 0.125,
+    apply_edge_correction: bool = True,
 ):
     """Reproject one or more local cached WAC_EMP tiles onto the per-camera local Orthographic working
     grid the DEM fetch uses, mosaicking them if there's more than one (a straddling AOI, per
@@ -384,15 +460,21 @@ def reproject_wac_emp_reflectance_to_local_grid(
     :param output_path: Where to write the reprojected reflectance GeoTIFF.
     :param resampling: `rasterio.warp` resampling method.
     :param tolerance: `rasterio.warp.reproject` error tolerance.
+    :param apply_edge_correction: Whether to apply `wac_emp_edge_correction`'s fix for the archive's
+        ±60 deg edge-brightening defect, both hemispheres (masking each source tile's worst-affected
+        native pixels, subtracting a fitted model from the rest, then closing the small coverage gap
+        the masking opens) -- normally sourced from `TrntestConfig.wac_emp_edge_correction_enabled`.
+        Set false for the raw, uncorrected archive data mosaicked with no gap-filling either (nothing
+        to fill without the masking).
     :returns: `output_path`, as a `Path`. Values are physical reflectance (IEEE754 float32, no
         embedded display stretch), not Lunaserv WMS-served DN.
     """
     # Each tile is read/warped independently (`_reproject_one_wac_emp_tile_to_array`, which already
-    # applies the equirect antimeridian-branch-cut fix per its own source CRS), then merged with
+    # applies the equirect antimeridian-branch-cut fix per its source CRS), then merged with
     # `merge_local_grid_arrays` -- correct regardless of which combination of tile projection families
     # (equirect, polar, or one of each) is involved, since the merge step only ever sees the shared
-    # destination grid, never the source tiles' own differing CRSs.
-    arrays = [
+    # destination grid, never the source tiles' differing CRSs.
+    results = [
         _reproject_one_wac_emp_tile_to_array(
             wac_emp_path,
             dst_bbox_m,
@@ -403,10 +485,25 @@ def reproject_wac_emp_reflectance_to_local_grid(
             moon_radius_m,
             resampling,
             tolerance,
+            apply_edge_correction,
         )
         for wac_emp_path in wac_emp_paths
     ]
-    merged = merge_local_grid_arrays(arrays)
+    merged = merge_local_grid_arrays([array for array, _ in results])
+    if apply_edge_correction:
+        # Closes the small, artifact-scale coverage gap the edge correction above can leave (see
+        # `wac_emp_edge_correction.GAP_FILL_MAX_RADIUS_PX`'s comment) -- a no-op whenever `merged` has
+        # no `NaN` at all, the common case for any footprint that doesn't touch either ±60 deg
+        # boundary. Scoped to `eligible` (built from each tile's `masked_dst`, not just any nearby
+        # `NaN`) so this can't paper over an unrelated coverage gap that happens to sit near this
+        # correction's masking -- see `fill_nearby_gaps`'s docstring for a case this matters for.
+        # Skipped entirely when the correction itself is off: there's no masking-induced gap to close,
+        # and unconditionally filling could paper over a genuine no-coverage region instead.
+        masked_any = np.logical_or.reduce([masked for _, masked in results])
+        eligible = wac_emp_edge_correction.eligible_gap_fill_mask(masked_any)
+        merged = wac_emp_edge_correction.fill_nearby_gaps(
+            merged, wac_emp_edge_correction.GAP_FILL_MAX_RADIUS_PX, eligible
+        )
 
     dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
     dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)

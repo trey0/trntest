@@ -6329,3 +6329,206 @@ footprints); full 431-test suite (after merging in the concurrent Hapke `hg2` cl
 119) and `trntest-lint` both clean. Not exercised end-to-end against a real `fetch_dem` call
 (network/ASP, the same class of heavy test `test_wac_emp_ortho_source.py` already is) -- the
 pure-function tests cover the actual naming logic that matters.
+
+## Phase 121 (2026-09-12) — WAC_EMP edge correction: per-window model fit, seam-scoped gap fill, and a
+real coverage-gap bug found along the way
+
+Follow-up to the ±60° edge-brightening fix (Phase 120's neighbor, the "generalized to both
+hemispheres" work landed the same week): the user reviewed `wac_emp_seam_correction_validation.py`
+and pushed on two specific mechanics rather than accepting them as-is. First, on the polar model:
+`wac_emp_edge_correction.py` fit one damped-cosine model per hemisphere from a single hand-picked
+tile pair each, applied uniformly to every window regardless of its own longitude -- the user's own
+hypothesis was that the polar tile's real edge-brightening amplitude likely varies with longitude,
+and asked for a per-image refit rather than a fixed number. Second, on the gap fill: the user found
+blanket-radius filling (`fill_nearby_gaps` closing anything within reach of real data, anywhere in
+the frame) architecturally uncomfortable and asked for it to be scoped to "near the seam" instead,
+while separately wanting the actual worst-case gap size measured empirically rather than guessed.
+
+**Per-window model fit**: `_fit_local_polar_edge_model` (new) reuses
+`notebooks/wac_emp_seam_edge_model.py`'s own offline methodology -- bin real pixels by distance from
+the boundary (0.1px bins, `x >= 0` only), gate on a minimum bin count, `scipy.optimize.curve_fit` the
+damped cosine -- but runs it live, per window, from that window's own pixels rather than a
+pre-computed constant. This was feasible with no new I/O at all: a probe found each already-read
+destination window carries thousands of real samples per distance bin (native windows are wide
+relative to the visible destination footprint, since local-orthographic-to-polar-stereographic
+projection distortion near the boundary makes the native read span much more than the footprint
+itself), comfortably clearing the same `MIN_FIT_BIN_COUNT=100`/`_MIN_FIT_BINS=50` gates the offline
+notebook used with room to spare. The result confirmed the user's hypothesis, more strongly than
+expected: south's own two known-bad entries fit to amplitude 0.0157 and 0.0092 *individually* --
+over 2x apart from each other, both far from the old combined fit's single 0.0071 -- and
+`M1309348984CE` (225°E) fit to 0.0009, under half the 135°E zone's original 0.0018. `_SOUTH`/`_NORTH`
+now serve only as `curve_fit`'s initial guess and the fallback for a window too narrow to fit
+reliably on its own (none of the three checked needed it). One notable non-result: none of this
+moved the three entries' own "largest row-to-row jump" percentages from what the old fixed model
+already reported (62.5%/63.4%/40.9%, bit-for-bit the same rounded values) -- traced to that specific
+summary metric being dominated by the equirect side's masked-row transition and the tile-precedence-
+flicker effect (open item, untouched by any radiometric correction), not by the polar amplitude the
+model change actually improved. Recorded in the validation notebook as a real limit of that metric,
+not evidence the fit change did nothing.
+
+**Seam-scoped gap fill**: `mask_equirect_edge_row`/`mask_and_correct_polar_edge` now take a
+`masked_out` boolean array, set `True` wherever they actually mask a native pixel;
+`_reproject_one_wac_emp_tile_to_array` reprojects it alongside the reflectance array (nearest
+resampling, to stay crisp) and returns `(array, masked_dst)` instead of a bare array (three
+notebook call sites needed a one-line tuple-unpack fix, no logic change).
+`reproject_wac_emp_reflectance_to_local_grid` ORs every tile's own `masked_dst` together and builds
+`eligible_gap_fill_mask` (`scipy.ndimage.distance_transform_edt` from the nearest masked pixel,
+thresholded) as a new required parameter to `fill_nearby_gaps`, which now only fills a `NaN` pixel
+when it's both within `max_radius_px` of real data *and* within reach of this correction's own
+masking -- not just any nearby `NaN`.
+
+**Sizing the radius surfaced two separate, real, pre-existing issues this correction had been
+silently interacting with.** A first attempt at "how big can this gap get" measured distance-to-
+nearest-valid over the *whole* merged array and concluded north's own gap reached 7.81px, needing a
+bigger radius than south's ~2px -- prompting a `6px -> 10px` bump on that basis alone. Re-measuring
+properly (scanning all 46 real boundary-straddling entries across `trntest1`/`trntest2`, separating
+"near a masked pixel" from "anywhere else") found that 7.81px number was contaminated: two other real
+gap phenomena were mixed into it, and once isolated, `M1309348984CE`'s *actual* masking-induced gap
+is only 2.0px, the same order as south's own. The two real phenomena, both now correctly left `NaN`
+by the `eligible` scoping (previously silently closed by the unscoped fill):
+
+1. A separate small-gap defect already present in many of the same archived tiles, unrelated to the
+   ±60° edge-brightening artifact -- confirmed on 29 of 43 boundary-straddling entries checked, up to
+   ~2265px/10.8px in one blob.
+2. Five `trntest2` entries whose footprints cross *both* the ±60° boundary and the antimeridian at
+   once (`M1309405187CE`/`M1309412188CE`/`M1309419252CE`/`M1309426256CE`/`M1309433256CE`, needing
+   three WAC_EMP tiles instead of two) have a much larger, structurally different gap -- up to
+   119,501px (~2.07% of the frame) for the worst, `M1309433256CE`, where the three tiles' own real
+   per-tile coverage (13.9%/51.5%/32.6%, checked independently with the edge correction disabled)
+   sums to ~98.0%, matching the gap almost exactly. Reproduces identically with the correction off, so
+   it's unrelated to it -- not root-caused further here (a genuine WAC_EMP archive gap at this
+   tile-zone corner, vs. a `wac_emp_tile_ids_for_bbox` selection gap missing a 4th tile, are both live
+   possibilities), flagged as a new `docs/proposed-tasks/open-items.md` item and a separate background
+   task for whoever picks it up next.
+
+With both isolated, the real worst-case masking-induced gap across 41 clean two-tile entries (23
+south, 18 north) is 5.66px. `GAP_FILL_MAX_RADIUS_PX=10` keeps real margin above that; the `eligible`
+scoping, not the radius itself, is what actually prevents this correction from ever touching either
+issue above, regardless of how the radius is sized.
+
+**Verification**: `wac_emp_seam_correction_validation.py` re-executed against the new code (all three
+entries: gap fill now correctly leaves 0/4/977 pixels `NaN` where the old unscoped version reported
+0/0/0, the 4 and 977 being the separate small-gap defect above, not a regression). Two other live
+notebooks touched only by the `masked_out`/tuple-return signature change (`wac_emp_seam_edge_model.py`,
+`wac_emp_seam_dem_mosaic.py`) re-executed clean; the latter needed one substantive fix beyond the
+signature change -- both its own reprojection calls had been silently picking up
+`apply_edge_correction`'s new-since-Phase-120 `True` default, corrupting its own raw-artifact
+investigation, now pinned to `apply_edge_correction=False` explicitly with a comment explaining why.
+`trntest-lint` (ruff/mypy/notebook sync/notebook warnings) clean throughout.
+
+## Phase 122 (2026-09-13) — Notebook restyling requests uncovered a real `masked_any` bug, corrected
+
+Two follow-up requests on Phase 121's work, both from the user reviewing the actual notebooks rather
+than just reading a summary. First: `wac_emp_seam_edge_model.py`'s north section still ended in a
+combined south-vs-north overlay plot (original vs. corrected wasn't shown for north at all) -- the
+user asked for a north-only plot mirroring south's own original-vs-corrected style above it, since
+seeing both states side by side is what actually shows the masking's effect. Straightforward: added
+the missing "corrected" computation for both north tiles (calling the real production functions, not
+a reimplementation, same as south already did), replaced the combined plot with the north-equivalent
+two-panel layout, and rewrote the stale "left as a follow-on" observations text (written before the
+correction existed) to describe what's actually implemented now.
+
+Second, and the one that led somewhere real: the user found `wac_emp_seam_correction_validation.py`'s
+north crop "very disappointing" -- the correction looked like it changed nothing -- and asked directly
+whether the notebook might be stale, or whether the white streak was unfilled nodata. Both were
+reasonable hypotheses and both turned out to be no, but chasing them properly required more than
+reassurance: a difference panel (`corrected - original`, its own auto-scaled diverging colorbar) was
+added first, which did show a real, small, nonzero effect (max |diff| 0.0358) -- ruling out staleness
+but not explaining the visual disappointment. Direct inspection of the crop's own pixel values (row by
+row) found the real answer: a genuinely bright real terrain feature sits immediately adjacent to the
+masked band at this specific window's own geometry, dominating the crop's visual impression while the
+correction's own effect (amplitude 0.0009 at this longitude, an order of magnitude below south's) stays
+essentially invisible next to it. A fourth panel -- the original crop with `masked_any` outlined in red
+-- was added to make this distinction directly visible rather than asserted.
+
+**Building that outline surfaced a real, previously-invisible bug.** `mask_and_correct_polar_edge`'s
+own `mask_zone = distance_px < polar_edge_mask_max_px` had no lower bound -- also satisfied by every
+pixel *anywhere* equatorward of the boundary, not just the intended ~2px band -- so `masked_any`
+(introduced in Phase 121 to scope `fill_nearby_gaps`) was flagging up to 65% of an entire real
+destination frame as "masked" for `M1309348984CE` specifically. Checked directly rather than assumed:
+of 7.4M over-flagged native pixels on that real window, zero were real data (a polar tile genuinely has
+no coverage that far equatorward), so this never corrupted actual pixel values -- but it did make the
+`eligible` scoping Phase 121 built far more permissive than intended, silently defeating its own point
+for large parts of a frame. Fixed by bounding the equatorward reach to
+`_POLAR_EDGE_EQUATORWARD_SLOP_PX` (1 native pixel, matching `wac_emp_seam_investigation.py`'s own
+already-documented coverage-slop figure). Since the bug never touched real pixel values, the fix changed
+nothing about the actual corrected imagery -- but it substantially changed what Phase 121 had concluded
+about the *gap*: re-running the same 43-entry scan with `masked_any` now trustworthy found the true
+masking-induced gap tops out at exactly 2.0px (`polar_edge_mask_max_px` itself) across 42 clean
+two-tile entries, not the 5.66px Phase 121 reported -- that number, and the earlier "north's gap
+reaches 7.81px" figure it was built on, were themselves artifacts of the same bug, not real
+geometry-dependence. `GAP_FILL_MAX_RADIUS_PX` stays at 10 (still comfortably generous, just no longer
+being asked to do double duty covering a measurement error), and all three touched docs (module
+docstring, `open-items.md`, `wac_emp_seam_correction_validation.py`'s own Conclusion) were corrected to
+state the true numbers rather than leave the bug-inflated ones standing.
+
+**Verification**: both notebooks re-executed clean after each change (several passes, since the bug
+was found mid-session and required a second full re-run once fixed); `trntest-lint` clean throughout.
+The gap-fill counts printed in the validation notebook are a real, visible signature of the fix having
+mattered: 0/4/977 pixels left unfilled before this phase's bug fix vs. 9/9/993 after -- *more* pixels
+now correctly left `NaN`, because the fix makes `eligible_gap_fill_mask` reject some already-known
+unrelated small-gap-defect pixels (Phase 121's own open item) that the bug's over-broad `masked_any`
+had been incorrectly letting through.
+
+## Phase 123 (2026-09-13) — A second real bug: the native window read can duplicate a row
+
+Immediate follow-up to Phase 122's masked-footprint panel. The user looked at that panel next to the
+green "corrected" markers in `wac_emp_seam_edge_model.py`'s own north plot and asked a sharp question:
+if masking plus model subtraction removes the archived defect from the source imagery, gap-filling
+can't make bright pixels reappear out of nothing, so why did `M1309348984CE`'s own masked band still
+look bright after correction? The user explicitly suspected the masking shown in the profile plot might
+not be applied consistently in the mosaic path -- not just "the model's amplitude is too small," which
+is what the session had been treating as sufficient explanation.
+
+**Tracing it down found a real, previously-unknown bug, not per-longitude variation and not real
+terrain.** `_reproject_one_wac_emp_tile_to_array`'s own read window
+(`window_from_bounds`+`boundless=True`) is generally fractional -- this AOI's bounds essentially never
+align to the source tile's own native pixel grid -- but `src.read(window=...)` still has to return an
+integer-shaped array. For this specific entry, the window's own height came out to 2622.2324 native
+rows, reconciled into exactly 2622 output rows; rasterio/GDAL's own implicit resampling to close that
+gap duplicated one native row into two adjacent output rows. Verified directly rather than inferred:
+instrumenting the real `mask_equirect_edge_row` call found the masked defect row and the very next
+(left completely uncorrected) row were byte-for-byte identical (`np.array_equal` true, max abs diff
+`0.0`) before the fix. `mask_equirect_edge_row`'s own logic assumes exactly one of its two candidate
+rows can hold real data and returns after masking the first match -- a duplicate silently breaks that
+assumption, letting an exact copy of the defect's own peak brightness survive one row away from the
+pixel that got correctly masked and corrected.
+
+**Fixed at the root, per the user's own explicit request** (offered a choice between a surgical fix
+scoped to `mask_equirect_edge_row` alone, or fixing the window read itself; the user chose the latter):
+the window is now rounded to an exact integer pixel window before reading -- floor the near edge, ceil
+the far edge, so the integer window still fully *contains* the original fractional extent rather than
+clipping a partial pixel off either edge -- instead of being left fractional for `.read()` to silently
+resample away. This touches every WAC_EMP reprojection call project-wide, not just ones near the ±60°
+boundary, since the window-computation code is shared; the practical effect elsewhere is a sub-pixel
+registration shift, not a duplicate row, except at whatever other fractional-window boundaries happen
+to hit the same rounding edge case this one did. Verified against the specific pixel traced during this
+investigation: 0.1395 (matching the defect's own peak, unmasked) -> 0.1256 (in line with the ~0.125
+surrounding baseline).
+
+**Real, broad effect on the actual corrected imagery -- and an honest non-result.** The fix changed the
+validation notebook's own headline jump-shrink numbers for all three entries (58.3%/47.5%/62.4% for
+`M1314469291CE`/`M1314314993CE`/`M1309348984CE`, from 62.5%/63.4%/40.9%) -- south no longer clearly
+outperforms north the way Phase 121/122 reported. But it did *not* resolve the specific complaint that
+prompted the investigation: `M1309348984CE`'s own masked band remains almost as elevated relative to
+its surroundings after the fix (mean 0.1297 vs. 0.1222 for the rest of the crop) as before it (0.1280
+vs. 0.1222) -- the one specific duplicated pixel traced was real and is now fixed, but it wasn't the
+dominant contributor to the crop's overall visual impression. The most defensible remaining explanation
+is the archived tile's own real defect at this specific longitude, under-corrected by the polar model's
+own tiny fitted amplitude there (0.0009) -- recorded as the current best understanding in
+`docs/proposed-tasks/open-items.md`, explicitly flagged as not fully ruled out against a further
+undiscovered issue, rather than asserted as settled.
+
+**On README's own notebook-table entry**: an early draft of this phase's own doc updates put the bug's
+full narrative (window duplication, byte-for-byte proof, the two-bug history) into that one-line table
+cell. The user caught this immediately -- "why would this fix be mentioned in README?" -- which is the
+right instinct: README's notebook table is a stable, current-state one-liner per notebook, not a
+running bug-fix changelog; that level of narrative belongs here and in `open-items.md`, not there.
+Trimmed back to a plain description of what the notebook validates and its current headline number.
+
+**Verification**: `wac_emp_seam_correction_validation.py` and `wac_emp_seam_dem_mosaic.py` (the latter
+needed one small robustness fix -- `wac_emp_seam_dem_mosaic.py`'s own hardcoded "seam row" no longer
+had any column where both tiles were simultaneously valid for one entry, a real consequence of the ~1px
+registration shift, guarded rather than assumed) re-executed clean; `wac_emp_seam_edge_model.py`
+unaffected (it constructs its own integer windows directly, never through the fixed function) and
+re-executed clean for consistency. `trntest-lint` clean throughout.
