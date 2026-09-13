@@ -7,20 +7,52 @@ Genuinely open questions/gaps in `trntest`, pointed to from
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
-- **`trntest1` entries 201 and 3 (`M1314469291CE` at -60.738°N/145.2327°E, `M1314314993CE` at
-  -60.6194°N/168.6734°E) both have a horizontal line artifact in their basemap**
-  (`entry.dem_ortho_result.ortho`, the WAC_EMP-derived texture `hillshade` relights — both reported
-  by the user browsing `output/trntest1/reports/`; not yet independently confirmed against the
-  actual ortho file itself, only the gallery's own separate WMS-backdrop thumbnail, which didn't show
-  it at that resolution/data source). Both entries sit right at the ±60° equirect/polar boundary
-  `ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid` mosaics WAC_EMP tiles across (see
-  `docs/data-sources/wac-emp-pds4.md`'s "Multi-tile mosaic" section) — and `M1314314993CE`
-  specifically is already independently documented (an earlier trial run) as having mosaicked two
-  real WAC_EMP tiles there (`WAC_EMP_643NM_P900S0000_304P` + `WAC_EMP_643NM_E300S1350_304P`) and
-  "succeeded" only in the sense of not raising — no one looked at the resulting pixels at the time.
-  Two independent entries at the same boundary showing the same artifact is stronger than
-  coincidence; a stitching seam along a constant-latitude line at that exact boundary is now the
-  leading (still unconfirmed) hypothesis for the *horizontal* line specifically.
+- **The ±60° WAC_EMP horizontal-line artifact (both hemispheres) is corrected but not fully resolved.**
+  Both WAC_EMP tile families (equirectangular, 0-60°; polar-stereographic, 60-90°) carry a real
+  edge-brightening defect right at their shared boundary, confirmed directly in the archived `.IMG`
+  pixels: the equirect tile's last valid row runs bright, and the polar tile has a damped-oscillation
+  overshoot/undershoot in its last few pixels. `wac_emp_edge_correction.py` masks the equirect row
+  outright, masks and models the polar side (a damped cosine fit live per window, not one fixed number
+  per hemisphere), and closes the small resulting coverage gap (`fill_nearby_gaps`, scoped to pixels
+  actually near the masking). Wired into `ortho_wac_emp._reproject_one_wac_emp_tile_to_array`, gated by
+  `TrntestConfig.wac_emp_edge_correction_enabled` (default on). See
+  `notebooks/wac_emp_seam_correction.py` for the derivation and validation: the seam's peak
+  row-to-row jump shrinks 36-61% across the three entries checked (two `trntest1` south entries,
+  `M1314469291CE`/`M1314314993CE`; one `trntest2` north entry, `M1309348984CE`).
+  Still open:
+  1. *Root cause unknown.* Why both archived tile families have this defect (USGS/ASU's own
+     production pipeline) hasn't been investigated.
+  2. *Tile-precedence flicker, untouched by this correction.* The two tiles' coverage boundary is a
+     jagged, locally-diagonal line in the destination grid, not a clean cut, so a single destination
+     row can cross it at scattered, non-contiguous columns — whichever tile isn't given merge
+     precedence there flickers in and out as a periodic pattern, independent of either tile's own
+     radiometry.
+  3. *Effectiveness is geometry-dependent, not just hemisphere/longitude-dependent.* For
+     `M1309348984CE`, the masked equirect row maps into only a narrow, diagonal swath of that entry's
+     own destination grid rather than the full width, so the visible artifact barely changes at
+     full-frame-crop scale even though the correction is running and does change the underlying
+     pixels. Whether this is common across `trntest2`'s other ~10 affected north entries or a one-off
+     for this entry's viewing geometry is unquantified.
+  4. *Mask/correction/reference zone widths (2px/8px/13px) are still shared, hemisphere-wide
+     constants*, tuned only against the two `trntest1` south entries — not yet revisited for the same
+     per-window variation the polar model fit itself now tracks.
+  5. A separate, small coverage-gap defect (unrelated to this edge-brightening artifact) already lives
+     in many of the same archived tiles, confirmed on most boundary-straddling entries checked. Left
+     correctly unfilled by `eligible_gap_fill_mask`'s scoping, not investigated further.
+  `trntest2` is not being regenerated to pick up this correction as part of this change.
+
+- **Five `trntest2` entries whose footprints straddle both the ±60° boundary and the antimeridian at
+  once (`M1309405187CE`/`M1309412188CE`/`M1309419252CE`/`M1309426256CE`/`M1309433256CE`) have a much
+  larger, structurally different coverage gap, unrelated to the edge-brightening defect above** — up to
+  119,501px (~2% of the frame) for the worst, `M1309433256CE`. Each needs three WAC_EMP tiles (two
+  adjacent equirect zones plus the polar tile, e.g. `E300N1350`/`E300N2250`); their combined real
+  coverage falls ~2% short of the destination bbox for the worst entry (per-tile coverage
+  13.9%/51.5%/32.6%, summing to ~98.0%, matching the gap almost exactly). Reproduces identically with
+  `apply_edge_correction=False`, so it's unrelated to that correction. Severity varies continuously
+  across the five (`M1309405187CE`'s gap is negligible; `M1309433256CE`'s is not), consistent with
+  camera geometry pushing progressively farther past the three tiles' combined coverage as the orbit
+  pass continues. Not root-caused: could be a genuine data-availability gap at this tile-zone corner,
+  or a `wac_emp_tile_ids_for_bbox` selection gap (a 4th tile it doesn't know to fetch).
 
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
