@@ -53,11 +53,69 @@ def moon_geocentric_crs(radius_m: float = MOON_RADIUS_M) -> str:
     :param radius_m: Sphere radius, meters.
     :returns: A PROJ4 string usable as a `rasterio.warp` destination CRS.
     """
-    # `rasterio.warp.transform` converts directly from `local_orthographic_crs`'s projected (x, y) plus
-    # elevation `z` into this in one vectorized call, giving each DEM pixel its 3D MOON_ME position
-    # without a hand-derived closed-form correction. `hapke._terrain_photometric_angles` is the one
-    # caller.
+    # `tests/test_geo_utils.py` pins `local_grid_positions_moon_me`'s closed form to this CRS.
     return f"+proj=geocent +R={radius_m} +units=m +no_defs"
+
+
+def local_enu_basis(center_lon_deg: float, center_lat_deg: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The (East, North, Up) unit vectors, in MOON_ME, of the local tangent plane at a point.
+
+    :param center_lon_deg: Tangent point longitude, degrees.
+    :param center_lat_deg: Tangent point latitude, degrees.
+    :returns: `(east, north, up)`, each a MOON_ME unit vector.
+    """
+    lon0, lat0 = math.radians(center_lon_deg), math.radians(center_lat_deg)
+    east = np.array([-math.sin(lon0), math.cos(lon0), 0.0])
+    north = np.array([-math.sin(lat0) * math.cos(lon0), -math.sin(lat0) * math.sin(lon0), math.cos(lat0)])
+    up = np.array([math.cos(lat0) * math.cos(lon0), math.cos(lat0) * math.sin(lon0), math.sin(lat0)])
+    return east, north, up
+
+
+def pixel_center_coords_m(bbox, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
+    """Pixel-center coordinates of a north-up raster covering `bbox`.
+
+    :param bbox: `(minx, miny, maxx, maxy)`, meters.
+    :param width: Raster width, pixels.
+    :param height: Raster height, pixels.
+    :returns: `(x_centers, y_centers)`, 1D; `y_centers[0]` is the top (north) row.
+    """
+    minx, miny, maxx, maxy = bbox
+    x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
+    y_centers = maxy - (np.arange(height) + 0.5) * (maxy - miny) / height
+    return x_centers, y_centers
+
+
+def local_grid_positions_moon_me(
+    x_m: np.ndarray,
+    y_m: np.ndarray,
+    elevation_m: np.ndarray,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    radius_m: float = MOON_RADIUS_M,
+) -> np.ndarray:
+    """True 3D MOON_ME positions of points given in a `local_orthographic_crs` frame plus elevation.
+
+    :param x_m: Local Orthographic x, meters (any shape).
+    :param y_m: Local Orthographic y, meters, same shape as `x_m`.
+    :param elevation_m: Elevation above the `radius_m` sphere, meters, same shape as `x_m`.
+    :param center_lon_deg: Local Orthographic CRS tangent point longitude, degrees.
+    :param center_lat_deg: Local Orthographic CRS tangent point latitude, degrees.
+    :param radius_m: Sphere radius, meters.
+    :returns: `(*x_m.shape, 3)` MOON_ME positions, meters.
+    """
+    # Closed form, exact for `local_orthographic_crs`'s sphere: the orthographic projection of a sphere
+    # point `P` is just its components along the tangent point's east/north axes, so
+    # `P = x*east + y*north + sqrt(R^2 - x^2 - y^2)*up`, and elevation scales `P` radially by
+    # `(R + h) / R` -- exactly what `rasterio.warp.transform` into `moon_geocentric_crs` computes
+    # (pinned to it in `tests/test_geo_utils.py`), without PROJ's per-point overhead (~20x slower on a
+    # 23M-sample grid). True 3D curvature, not a flat tangent-plane approximation; validated as part of
+    # `hapke._terrain_photometric_angles` against ISIS `campt` and ASP `sfs`.
+    east, north, up = local_enu_basis(center_lon_deg, center_lat_deg)
+    x = np.asarray(x_m, dtype=np.float64)[..., None]
+    y = np.asarray(y_m, dtype=np.float64)[..., None]
+    h = np.asarray(elevation_m, dtype=np.float64)[..., None]
+    on_sphere = x * east + y * north + np.sqrt(radius_m**2 - x**2 - y**2) * up
+    return on_sphere * ((radius_m + h) / radius_m)
 
 
 def footprint_bbox_deg(footprint_lonlat):

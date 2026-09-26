@@ -193,13 +193,14 @@ lint's notebook checks).
 |---|---|
 | [`along_track_correction.ipynb`][along_track_correction.ipynb] | Validates `hapke.hapke_shade_ortho`'s along-track motion correction against the frozen-camera-position fallback. |
 | [`crater_sharpness_review.ipynb`][crater_sharpness_review.ipynb] | Visual review of crater sharpness grading for one candidate's footprint — see [`docs/crater-grading.md`](docs/crater-grading.md). |
-| [`hapke_hillshade.ipynb`][hapke_hillshade.ipynb] | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback. |
+| [`hapke_hillshade.ipynb`][hapke_hillshade.ipynb] | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback, and cast shadows on vs. off. |
 | [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment/` rows below) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). |
 | [`real_hapke_params.ipynb`][real_hapke_params.ipynb] | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
 | [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
 | [`spice_entry_poc.ipynb`][spice_entry_poc.ipynb] | Proof of concept for `TrnTestEntrySpice` — five `hillshade`-only entries posed purely from SPICE trajectory data along one real orbit, no EDR involved. |
+| [`sun_aligned_shadow_sweep.ipynb`][sun_aligned_shadow_sweep.ipynb] | Shows `cast_shadow`'s sun-aligned sweep on the lowest-sun candidate, and compares it with ISIS `shadow` (including that tool's row-streak artifacts) and the real WAC image. |
 | [`wac_emp_seam_correction.ipynb`][wac_emp_seam_correction.ipynb] | Shows the ±60° WAC_EMP edge-brightening artifact, what `wac_emp_edge_correction.py`'s masking/model-fit correction does to each tile's own near-boundary profile, and validates the fix with an independent tool (ASP `dem_mosaic`, not this project's own merge code) across both hemispheres — the seam's peak jump shrinks 36-61% across the three entries tested. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
@@ -214,6 +215,7 @@ lint's notebook checks).
 [sensor_calibration_scoping.ipynb]: notebooks/sensor_calibration_scoping.ipynb
 [sfs_validation.ipynb]: notebooks/sfs_validation.ipynb
 [spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
+[sun_aligned_shadow_sweep.ipynb]: notebooks/sun_aligned_shadow_sweep.ipynb
 [wac_emp_seam_correction.ipynb]: notebooks/wac_emp_seam_correction.ipynb
 [wac_isis.ipynb]: notebooks/wac_isis.ipynb
 
@@ -224,6 +226,7 @@ lint's notebook checks).
 | [`cache.py`][cache.py] | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see [`docs/caching.md`](docs/caching.md). |
 | [`camera.py`][camera.py] | Poses the synthetic camera from SPICE trajectory/orientation data (`build_camera`) and solves its corrected FOV (`solve_corrected_fov`) — see [`docs/reproject-fov-investigation.md`](docs/reproject-fov-investigation.md). |
 | [`candidate_window.py`][candidate_window.py] | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
+| [`cast_shadow.py`][cast_shadow.py] | Cast-shadow occlusion for `hillshade`: a per-pixel illumination fraction from a streaming sun-aligned sweep over the DEM (`illumination_fraction`, `sun_sweep`). Pure math — no SPICE or file I/O. |
 | [`catalog.py`][catalog.py] | PDS ODE REST API client — lists EDR/CDR products by time range, matches EDR↔CDR pairs (`list_products`, `find_matching_cdr`). |
 | [`config.py`][config.py] | `TrntestConfig`/`load_config()` — endpoints, paths, product IDs, tunables. TOML file + `TRNTEST_*` env var overrides. |
 | [`crater_depth.py`][crater_depth.py] | Robbins-crater depth measurement off a DEM (Breton et al. 2019) and the Stoffler et al. 2006 fresh-crater reference depth, for a `sharpness_ratio` grade — see [`docs/crater-grading.md`](docs/crater-grading.md). |
@@ -235,7 +238,7 @@ lint's notebook checks).
 | [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
 | [`entry_poses.py`][entry_poses.py] | `TrnTestDataSet.write_entry_poses()`'s implementation: a ROS-inspired JSON Lines record per entry (position + quaternion attitude, `MOON_ME`, read from its `.tsai`) plus a companion JSON Schema (`ENTRY_POSE_JSON_SCHEMA`) — see the module docstring. |
 | [`geo_utils.py`][geo_utils.py] | Generic CRS/bbox/reprojection math (`geographic_crs`, `local_orthographic_crs`, `pad_bbox`, `reproject_raster_to_local_grid`, ...) shared by every DEM/ortho data-source module — dependency-free by design. |
-| [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need. |
+| [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need; applies `cast_shadow.py`'s cast shadows on top (`cast_shadows`, on by default). |
 | [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`dataset_selection_plots.py` use. |
 | [`isis_campt.py`][isis_campt.py] | ISIS `campt`-based ground-truth ground↔image queries against an already-processed WAC cube (`ground_to_image_pixel`/`ground_point_at_pixel`/`resolve_ground_to_image_model`), plus the CSM ISD generation those queries depend on. |
 | [`isis_wac.py`][isis_wac.py] | Steps a WAC EDR through ISIS3's own pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`) as this project's real-WAC comparison path — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
@@ -254,6 +257,7 @@ lint's notebook checks).
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
+| [`shadow_plotting.py`][shadow_plotting.py] | `sun_aligned_shadow_sweep.ipynb`'s figures (illumination composite, ISIS-vs-sweep mask comparisons, strip vs. real WAC) — split out of `plotting.py` since nothing else needs them. |
 | [`spice_kernels.py`][spice_kernels.py] | Selects/downloads the minimal SPICE kernel set for a date and furnishes it (`fetch_and_furnish`) — see [`docs/data-sources/spice-kernels-isis.md`](docs/data-sources/spice-kernels-isis.md)/[`spice-kernels-naif.md`](docs/data-sources/spice-kernels-naif.md). |
 | [`subprocess_utils.py`][subprocess_utils.py] | `run_quiet` — runs ASP/ISIS subprocesses with captured, on-failure-only output. |
 | [`tasks.py`][tasks.py] | Two `huey` (sqlite-backed) task queues driving `trn_dataset.py`'s `populate()`/`populate_via_workers()`, one per execution mode (`immediate=True` in-process vs. `immediate=False` multi-worker). |
@@ -266,6 +270,7 @@ lint's notebook checks).
 [cache.py]: src/trntest/cache.py
 [camera.py]: src/trntest/camera.py
 [candidate_window.py]: src/trntest/candidate_window.py
+[cast_shadow.py]: src/trntest/cast_shadow.py
 [catalog.py]: src/trntest/catalog.py
 [config.py]: src/trntest/config.py
 [crater_depth.py]: src/trntest/crater_depth.py
@@ -295,6 +300,7 @@ lint's notebook checks).
 [report.py]: src/trntest/report.py
 [session.py]: src/trntest/session.py
 [sfs_plotting.py]: src/trntest/sfs_plotting.py
+[shadow_plotting.py]: src/trntest/shadow_plotting.py
 [sfs_validation.py]: src/trntest/sfs_validation.py
 [spice_kernels.py]: src/trntest/spice_kernels.py
 [subprocess_utils.py]: src/trntest/subprocess_utils.py

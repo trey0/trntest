@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import pytest
+from rasterio.warp import transform as warp_transform
 
 from trntest import geo_utils
 from trntest.config import MOON_RADIUS_M
@@ -133,3 +134,23 @@ def test_merge_local_grid_arrays_single_array_passthrough():
     assert merged[0, 0] == pytest.approx(1.0)
     assert np.isnan(merged[0, 1])
     assert merged[0, 2] == pytest.approx(3.0)
+
+
+def test_local_grid_positions_moon_me_matches_proj_geocentric_transform():
+    # The closed form must reproduce PROJ's own local-Orthographic -> geocentric transform, the
+    # reference the photometric-angle validation against `campt`/`sfs` was originally done with.
+    rng = np.random.default_rng(0)
+    center_lon, center_lat = 177.8, 73.5
+    x = rng.uniform(-150_000, 150_000, 500)
+    y = rng.uniform(-150_000, 150_000, 500)
+    h = rng.uniform(-5_000, 5_000, 500)
+    ours = geo_utils.local_grid_positions_moon_me(x, y, h, center_lon, center_lat, MOON_RADIUS_M)
+    px, py, pz = warp_transform(
+        geo_utils.local_orthographic_crs(center_lon, center_lat, MOON_RADIUS_M),
+        geo_utils.moon_geocentric_crs(MOON_RADIUS_M),
+        x,
+        y,
+        h,
+    )
+    np.testing.assert_allclose(ours, np.stack([px, py, pz], axis=-1), atol=1e-3)
+    assert ours.shape == (500, 3)

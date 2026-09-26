@@ -71,6 +71,19 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   fails outright. NASA's VIRA project (`github.com/nasa/vira`) points at higher-resolution
   LOLA-derived polar mosaics for this gap. Not implemented — would need its own fetch/caching and a
   coverage-based dispatch in `fetch_dem_and_ortho`.
+- **Cast shadows (`cast_shadow.py`) have four known gaps.**
+  - **Occluders outside the AOI are invisible.** The DEM's sun-facing edge is always lit. At a 13°
+    sun a 1 km rim casts a ~4.3 km shadow, so terrain just up-sun of the fetched AOI can matter. A
+    fix would pad the DEM up-sun by about `max_relief / tan(elevation)` before sweeping and crop back
+    afterward.
+  - **Validated on one candidate only** (`M1327218454CE`, ~13° sun). Re-check on a second
+    low-sun candidate.
+  - **The sweep marks roughly half as much shadow as ISIS `shadow`**, with shadows in the same
+    places (see `notebooks/sun_aligned_shadow_sweep.ipynb`). Unexplained; neither is ground truth.
+  - **No penumbra.** The Sun's ~0.53° disk softens a shadow edge over `~0.0093 × D` (`D` = occluder
+    distance along the ray), so it only spans a 100 m pixel once `D` exceeds ~11 km — likely
+    sub-pixel for most candidates. Compute `D` for real low-sun candidates before building it. If
+    it's worth it, the sweep can average several sun directions sampled across the disk.
 - The user's requested "error-handling/fallback-consistency" quality audit only got through
   **Chunk A** (`tie_points.py`+`isis_wac.py`) before spiraling into a real fix rather than staying a
   survey. Chunks B-E were never scoped — re-scope from scratch rather than assume a prior chunking
@@ -86,7 +99,9 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   matches `hapke.real_geometry_photometric_angles` to ~0.0005 deg mean, closing the DEM-aware
   validation gap for incidence — but confirming (not explaining) that the brightness regression and
   three other live visual observations (a real east-brightening gradient the hillshade
-  underrepresents; an apparent ~10 deg shadow rotation confirmed *not* a sun-azimuth bug;
+  underrepresents; an apparent ~10 deg shadow rotation confirmed *not* a sun-azimuth bug, and not
+  explained by missing cast shadows either — at the default candidate's 41.8° sun, `cast_shadow`
+  darkens only ~20 of its ~5.8 M ortho pixels;
   anomalously bright real crater floors) remain genuinely open. `sfs` itself has a structural gap
   for phase/emission cross-checks: its reconstructed CSM camera can't represent
   `along_track_correction`. See [`docs/history.md`](../history.md)'s Phase 70-79 entries for the

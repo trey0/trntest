@@ -201,7 +201,7 @@ class TrnTestEntry(abc.ABC):
         # The resumability win `dataset.populate()`'s second-run-near-instant behavior depends on,
         # since a fresh fetch is by far the most expensive part of generating either product type.
         # Looks for `hapke.DEFAULT_HAPKE_SHADING`/`DEFAULT_ALONG_TRACK_CORRECTION`/
-        # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`'s own filename specifically
+        # `DEFAULT_REAL_HAPKE_PARAMS`/`DEFAULT_ORTHO_SOURCE`/`DEFAULT_CAST_SHADOWS`'s own filename specifically
         # (`ortho_shaded_filename`), and this entry's own `_dem_extra_footprint`'s specific
         # `dem_filled_filename` -- rather than either's hardcoded/bare name, so this can never
         # resume a stale *other*-mode ortho, or a DEM fetched for a *different* footprint, left over
@@ -212,6 +212,7 @@ class TrnTestEntry(abc.ABC):
             hapke.DEFAULT_ALONG_TRACK_CORRECTION,
             hapke.DEFAULT_REAL_HAPKE_PARAMS,
             dem_ortho.DEFAULT_ORTHO_SOURCE,
+            hapke.DEFAULT_CAST_SHADOWS,
         )
         dem_path = self.per_image_config.output_dir / dem_ortho.dem_filled_filename(self._dem_extra_footprint)
         if ortho_path.exists() and dem_path.exists():

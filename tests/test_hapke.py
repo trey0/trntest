@@ -6,7 +6,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds as transform_from_bounds
 
-from trntest import hapke
+from trntest import geo_utils, hapke
 
 
 # The 5 tests below exercise `_terrain_photometric_angles` directly with synthetic, non-real-Moon-
@@ -15,7 +15,7 @@ from trntest import hapke
 # just to build the local Orthographic CRS it inverts DEM points through, even for a synthetic test.
 # These fix an arbitrary tangent point, `(lon, lat) = (0.0, 0.0)`, where MOON_ME's own axes happen to
 # be a simple permutation of the old local (East, North, Up) frame these tests used to work in
-# directly (`_local_enu_basis(0.0, 0.0)`: up=(1,0,0), east=(0,1,0), north=(0,0,1)) -- so each test's
+# directly (`geo_utils.local_enu_basis(0.0, 0.0)`: up=(1,0,0), east=(0,1,0), north=(0,0,1)) -- so each test's
 # own inputs translate mechanically via the two helpers below, and every test's own *expected-value*
 # closed-form math (the actual thing each test checks) is unchanged from before this refactor.
 def _moon_me_position_at_tangent_point_00(east_m=0.0, north_m=0.0, up_m=0.0, radius_m=1_737_400.0):
@@ -41,12 +41,12 @@ def _sun_direction_moon_me_at_tangent_point_00(azimuth_deg, elevation_deg):
 def test_moon_me_direction_from_local_enu_pure_up_returns_the_tangent_points_own_up_axis():
     # The inverse rotation of the old (deleted) `_local_enu_direction`: a local-frame vector with only
     # an "Up" component, rotated into MOON_ME, should land exactly on the tangent point's own real
-    # radial direction (`_local_enu_basis`'s own `up`) -- a direct check of the rotation alone (no
+    # radial direction (`geo_utils.local_enu_basis`'s own `up`) -- a direct check of the rotation alone (no
     # tangent-point *position* subtraction involved, since this is a direction, not a position).
     lon0_deg, lat0_deg = 12.0, -34.0
     magnitude = 1.6  # km/s-scale, but this function is unit-agnostic
     moon_me = hapke._moon_me_direction_from_local_enu([0.0, 0.0, magnitude], lon0_deg, lat0_deg)
-    _, _, up = hapke._local_enu_basis(lon0_deg, lat0_deg)
+    _, _, up = geo_utils.local_enu_basis(lon0_deg, lat0_deg)
     assert moon_me == pytest.approx(magnitude * up, rel=1e-9)
 
 

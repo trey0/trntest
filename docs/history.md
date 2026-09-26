@@ -6564,3 +6564,186 @@ no warning, and every previously-NaN pixel now reads `0` in the final `uint8` ou
 directly, not just "no warning fired"). New test:
 `test_hapke.py::test_stretch_reflectance_to_uint8_maps_nan_to_zero`. Full non-heavy suite (456
 tests) and `trntest-lint` both clean.
+## Phase 125 (2026-09-12) -- ISIS `shadow` cast-shadow spike (step 1) and a real GLD100 artifact found along the way
+
+Ran step 1 of `docs/proposed-tasks/isis-shadow-masking.md`'s plan: a disposable spike
+(`src/scratch/isis_shadow_spike.py`/`.ipynb` -- not committed, `src/scratch/` is structurally outside
+this git repo, see `docs/environment.md`) converting `M1327218454CE`'s (13.6 deg sun elevation, the
+lowest/best cast-shadow-risk candidate in `notebooks/dataset_manifest.csv`) hole-filled DEM to
+radius, into an ISIS cube, through `demprep`, then ISIS `shadow` with `SUNPOSITIONSOURCE=TIME`
+against the candidate's real acquisition ET. All of the plan doc's open questions resolved, mostly
+favorably: `demprep` runs clean on a local-AOI Orthographic cube (skips padding, attaches the needed
+blob); `gdal_translate -of ISIS3` produces a genuinely valid ISIS `Mapping` group straight from this
+project's PROJ4 string, just missing `PixelResolution`/corner fields (three `editlab` calls fix it,
+using values `dem_ortho.fetch_dem` already returns); and the already-cached text PCK
+(`pck00010.tpc`) + SPK (`de421.bsp`) are sufficient for `shadow`'s `TIME` mode -- but the *binary*
+PCK (`moon_pa_de421_1900_2050.bpc`), also already cached and normally the more-precise choice
+elsewhere in this codebase, crashes `shadow` outright (`SIGABRT`,
+`SPICE(FRAMEDATANOTFOUND)` for `IAU_MOON`) since it only furnishes `MOON_PA`, needing a second frame
+kernel `shadow`'s single `PCK=` parameter has no slot for. A first geometric sanity check (`shadow`'s
+LRS mask overlaid on a plain hillshade of the same DEM) showed shadow concentrated on the down-sun
+side of crater rims, not noise -- full details and the updated open-questions list are in the plan
+doc itself, not repeated here.
+
+**A tangent that became the more interesting result.** The user noticed faint, visually-consistent
+horizontal streaking in the shadow-mask renders and asked what it was -- kicking off a real,
+multi-round investigation with several wrong turns, corrected each time by going back to direct
+measurement rather than settling for a plausible-sounding story:
+
+1. First hypothesis: a matplotlib `imshow` downsampling/moire artifact. Ruled out by rendering a crop
+   at strict 1:1 pixel scale (`interpolation="none"`) -- the lines survived, so real, not display.
+2. Second: `dem_mosaic --hole-fill-length 50`'s own interpolation. Ruled out -- this candidate's AOI
+   has zero actual data holes; pre- and post-hole-fill elevation rasters are byte-identical.
+3. Third: a GLD100 mosaic seam between adjacent WAC orbit strips, since the same row-level anomaly
+   showed up in the raw Astropedia file's own native grid before any reprojection. Investigated
+   further and **wrong** -- the anomalous rows' large gradients turned out confined to a narrow
+   column band each time (1-3.3% of the row's ~11,580px width, checked at 4 rows), each with a smooth
+   multi-hundred-to-thousand-meter rise over a handful of pixels: real crater-wall/rim profiles, not
+   a mosaic-wide seam.
+4. Revised to "real crater terrain, amplified by low-sun grazing light." The user pushed back hard on
+   this, correctly, based on the shadow-mask visual alone -- pointing out the elimination up to that
+   point had only ever been checked against the raw GLD100 render, which had never actually been
+   *shown*. Rendering it (a hillshade at the candidate's own real grazing sun geometry) and checking
+   numerically at the specific row a line was visible found no discrete elevation jump there either
+   -- but this check turned out to compare the wrong rows entirely: native-GLD100-grid row numbers
+   against a line observed in the *reprojected* grid, wrongly treated as interchangeable.
+5. Redone correctly, on the actual grid the shadow-mask figures use: a direct same-grid, same-geometry
+   side-by-side (plain Lambertian hillshade of the DEM vs. `shadow`'s own LRS mask) showed a thin
+   bright line spanning a crop's **full column width** -- unlike the earlier narrow-column crater-wall
+   cases -- present identically in a bare `matplotlib` hillshade with no ISIS involved at all. A
+   full-image-height scan for this signature found **49 such peaks across 2437 rows**, median spacing
+   ~41 rows (range 17-111) -- clearly systematic, not scattered.
+6. **Root cause pinned down** by fetching a second, independent source entirely: the user recalled
+   hearing about a `*_100M.IMG` PDS product distinct from what this project fetches. Researched (web
+   search + `curl -I`/embedded-PDS3-label inspection, no download needed to confirm) and found it's
+   real -- the *original* NASA PDS-archived GLD100 tile set (10 tiles: 8 equatorial quadrangles + 2
+   polar), which Astropedia's own single flat-file mosaic (what this project actually fetches) is
+   presumably built from. Downloaded the relevant north-polar tile directly
+   (`WAC_GLD100_P900N0000_100M.IMG`, 693.6 MB, confirmed via its own embedded PDS3 label) and ran the
+   identical peak search on it: **55 peaks across 2965 rows, median 45.5-row spacing** -- closely
+   matching Astropedia's version. Since this file was fetched straight from NASA and never touched by
+   Astropedia's mosaicking or this project's own reprojection, this conclusively rules both out: the
+   banding is inherited directly from GLD100's own original photogrammetric production (Scholten et
+   al., ~69,000 individually block-adjusted WAC stereo models) -- most likely a residual seam between
+   adjacent stereo models or orbit passes, physically consistent with the ~4-5 km recurrence scale
+   measured. Not a bug in this codebase anywhere; folded into
+   `docs/data-sources/astropedia-gld100.md` as a known, real, minor characteristic of the DEM source,
+   worth a look if this DEM is ever trusted for sub-few-meter precision at low sun angles.
+
+**Why this is worth recording in full, wrong turns included**: every one of the intermediate
+"confirmed" conclusions above was wrong, and each was overturned only by going back to a more direct
+measurement (1:1 rendering, a same-grid comparison, an independently-sourced second file) rather than
+accepting a plausible mechanism as good enough. The user's specific pushback at step 4 -- refusing to
+accept "real terrain" without seeing the raw source data directly -- is what actually broke the
+stall; worth remembering that a confident-sounding physical explanation (grazing-light amplification
+of ordinary terrain noise) can still be dead wrong, and that the fix for "here's a story that fits
+the data" is checking a row you haven't checked yet, not a better story.
+
+## Phase 126 (2026-09-13) -- ASP `sfs --model-shadows` as an alternate shadow mask: blocked, not just untried
+
+Tried to cross-check Phase 125/`docs/proposed-tasks/gld100-banding-artifact.md`'s row-level
+streaking finding against a second, independently-implemented shadow ray-tracer -- ASP's `sfs`, run
+with `--model-shadows --save-sim-intensity-only` (a single forward simulation pass, no actual
+shape-from-shading DEM refinement) -- on the theory that if a totally different tool reproduced the
+same streaks on the same DEM, that would be strong evidence for a real terrain artifact rather than
+something specific to ISIS `shadow`'s own implementation. Result, in `notebooks/asp_sfs_shadow_spike.py`/
+`.ipynb`: **blocked**, across every camera representation this project can produce, not merely "not
+yet gotten working":
+
+1. The real ISIS WAC crop cube (`entry.crop_result`): `sfs` rejected it outright -- `"Seems to have
+   Isis camera type 1 ... Maybe it will work with CSM"` -- ASP's ISIS session code doesn't support
+   this project's WAC VIS Pushframe camera type.
+2. The error's own suggested fallback, a CSM ISD for that same real camera
+   (`isis_campt.run_isd_generate_for_crop`): not attempted, since that path is already documented
+   (`isis_wac.py`'s module docstring) as depending on a confirmed `usgscsm` Pushframe `groundToImage`
+   bug (~0.2-0.4 correlation against ISIS's own correct reprojection) -- building on it would make any
+   result uninformative.
+3. This project's own *synthetic* camera instead (the plain TSAI/pinhole model `render.run_sat_sim`
+   already uses for `sat_sim`/`mapproject`, paired with its own rendered image): ran without error, but
+   logged `"Skipped image 0: ... with no data for this DEM"` and produced an all-zero
+   simulated-intensity raster (`min=max=mean=0.0`, confirmed by direct inspection, not just a
+   suspicious-looking mask).
+4. The same synthetic camera as a CSM Frame model instead of raw TSAI (`sfs_usage.rst`'s own
+   preferred representation): identical "no data" message, identical all-zero output.
+5. Ruled out a bad automatic exposure estimate specifically: forcing a non-zero exposure directly
+   via `--image-exposures-prefix` (bypassing whatever `--num-samples-for-estim` sampling produced the
+   `0`) still gave an all-zero result. But running ASP's own `mapproject` -- a separate, independently-
+   tested code path -- on the *identical* DEM + rendered image + CSM JSON triplet succeeded, with 66%
+   valid coverage and real terrain-shaded values over a ~155km-wide region well inside the DEM's own
+   bounds. That rules out a real geometry/registration problem on this project's side: whatever `sfs`
+   means by "no data for this DEM" here, it isn't a real absence of overlap.
+
+No ASP source access to debug the C++ side further within this session. Left as a documented dead
+end in the notebook itself (including a "if picking this back up later" section: re-check after an
+ASP upgrade, consider filing an upstream issue with this exact repro, or skip the whole
+second-tool-integration problem and directly ray-trace one specific marginal pixel's line-of-sight
+against the DEM in Python instead -- `gld100-banding-artifact.md`'s own already-proposed next step,
+which answers the real underlying question without needing any external tool to cooperate at all.
+
+Incidental finding along the way, flagged as a separate task and fixed the same session (see Phase
+124): `hapke.py`'s final shaded-ortho normalize-and-cast step (`np.clip(...).astype(np.uint8)`) cast
+NaN straight to an undefined uint8 value with only a `RuntimeWarning`, not a real error or a defined
+fallback -- triggered by this same candidate's own very low (13.3 deg) sun elevation regardless of
+`hapke=True`/`False`. `isis_shadow_spike.py` had sidestepped this by never fetching an ortho for this
+candidate at all; this notebook needed one (for `sat_sim`'s texture input) and hit it directly.
+
+## Phase 127 (2026-09-26) -- Cast shadows in `hillshade`, via a pure-Python sun-aligned sweep
+
+`hillshade` now renders cast shadows by default. Before this, both shading paths were per-facet
+only: a crater floor facing the Sun rendered lit even with its rim blocking the light.
+
+**Method.** `cast_shadow.py` builds a frame with the Sun at infinity along `+x`, projects the
+(2x-upsampled) DEM's true 3D MOON_ME positions into it, bins them by `(x, y)` keeping the max height,
+and sweeps each row from the sun-facing edge with `np.maximum.accumulate`. The result is a 0-1
+illumination fraction that `hapke.despeckle_and_shade_ortho` multiplies into either shading mode's
+output (before the display stretch). It is controlled by a new `cast_shadows` flag
+(`hapke.DEFAULT_CAST_SHADOWS = True`), which adds a `_castshadow` shaded-ortho filename suffix. It was
+prototyped in `sun_aligned_shadow_sweep.ipynb` (on the `isis-shadow-masking-alt` branch), where two
+design points were settled:
+
+- **True 3D positions, not a tangent plane.** The Moon's curvature over half a ~240 km DEM is
+  ~4.2 km, the same order as the terrain relief.
+- **Bins at 2x the upsampled spacing, not 1x.** At 1x, 78% of occupied bins held exactly one sample,
+  and the output showed a Moire "screen door" pattern. Raising the upsample factor doesn't help,
+  because the ratio is scale-invariant.
+
+**Productionizing it.**
+
+- **Streaming.** The prototype held ~23 M upsampled samples as whole-grid float64 arrays (over
+  1 GB). The library version runs three passes over row chunks, keeping only an int32 bin index per
+  sample: ~200 MB extra, and bit-identical for any chunk size (unit-tested).
+- **Speed.** `rasterio.warp.transform` into the geocentric CRS was 60% of the runtime, so
+  `geo_utils.local_grid_positions_moon_me` now uses the exact closed form for an Orthographic sphere,
+  pinned to PROJ's output by a unit test. That cut ~16.6 s to ~6.3 s per DEM, and `hapke`'s own
+  angle computation shares it.
+- **Registration fix.** The prototype's `ndimage.zoom` mapped corner samples to corner samples while
+  positions were computed at pixel centers, putting heights up to 1/4 native pixel out of register at
+  the DEM edges. The library version uses `spline_filter` plus `map_coordinates` at pixel centers.
+- On `M1327218454CE` the library version reproduces the prototype's numbers: mean lit fraction
+  0.916 cast-only, 0.915 with self-shadow folded in versus ISIS `shadow`'s 0.821, and 4.11 samples
+  per occupied bin.
+
+**`sfs_validation` always uses `cast_shadows=False`.** `sfs` runs without `--model-shadows`, so it
+models per-facet shading only. A cast shadow in our ortho would be a disagreement unrelated to the
+angles/Hapke math that module checks, and would break `true_albedo_map`'s `shaded / H(real)`
+inversion.
+
+**Alternatives set aside, and their notebooks deleted.** `isis_shadow_spike.ipynb` (Phase 125),
+`asp_sfs_shadow_spike.ipynb` (Phase 126) and `gld100_banding_investigation.ipynb` were deleted, along
+with the `isis-shadow-masking`, `standalone-shadow-mask-tool`, `gld100-banding-artifact` and
+`sun-aligned-shadow-sweep` plan docs. Recover them with
+`git log --diff-filter=D -- notebooks/isis_shadow_spike.py`. Their durable findings now live in
+`docs/external-tools.md`'s "Terrain-shadow tools" section:
+
+- why ASP `sfs --model-shadows` can't run against any camera this project has;
+- ISIS `shadow`'s preparation gotchas;
+- why ISIS `shadow` was set aside: its row streaks, some from caching and some unexplained.
+
+`sun_aligned_shadow_sweep.ipynb` was kept and refactored into a thin demo over the library. It runs
+ISIS `shadow` itself, so its streak figures no longer depend on another notebook's scratch output.
+
+**Retraction.** Phase 125's conclusion that the streaks trace to "GLD100's own upstream production"
+(a row-level banding artifact confirmed in NASA's PDS tile) does not stand. The row-peak detector
+behind it was later found to flag the wrong rows. No elevation-domain check found anything at the
+real streak rows, and the real WAC image and the sweep both show nothing at row 1016. No GLD100
+row-level artifact has been confirmed; `docs/data-sources/astropedia-gld100.md` now says so.

@@ -38,7 +38,7 @@ import rasterio.windows
 
 from trntest import cache, geo_utils, trace
 from trntest.config import DEFAULT_CACHE_ROOT, MOON_RADIUS_M, TrntestConfig, load_config
-from trntest.dem_ortho import DemOrthoResult
+from trntest.dem_ortho import DemFetchResult, DemOrthoResult
 from trntest.product_io import atomic_publish, atomic_publish_path, writes_product
 from trntest.subprocess_utils import run_quiet
 from trntest.wac_format import SAMPLES, VIS_BLOCK_HEIGHT
@@ -699,7 +699,7 @@ def ensure_crop_for_camera(
     return CropResult(cub_path=cached)
 
 
-def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
+def _orthographic_map_pvl(dem_ortho_result: DemFetchResult | DemOrthoResult) -> str:
     """Build an ISIS PVL "Mapping" group cloning `dem_ortho_result`'s own local Orthographic CRS.
 
     :param dem_ortho_result: DEM/ortho pair whose projection to clone.
@@ -743,12 +743,13 @@ def _orthographic_map_pvl(dem_ortho_result: DemOrthoResult) -> str:
 
 @writes_product("crop_cam2map")
 def run_cam2map_for_crop(
-    crop: CropResult, dem_ortho_result: DemOrthoResult, config: TrntestConfig | None = None
+    crop: CropResult, dem_ortho_result: DemFetchResult | DemOrthoResult, config: TrntestConfig | None = None
 ) -> Path:
     """Reproject `crop` onto the map via ISIS's own native `cam2map`.
 
     :param crop: Cropped cube to reproject.
-    :param dem_ortho_result: DEM/ortho pair whose grid/projection this reprojects onto.
+    :param dem_ortho_result: DEM (or DEM/ortho pair) whose projection this reprojects onto; only its
+        `.dem` is read.
     :param config: Project config; `load_config()` if not given.
     :returns: Path to the reprojected, single-band GeoTIFF.
     """
@@ -836,6 +837,39 @@ def run_cam2map_for_crop(
         )
         run_quiet(["gdal_translate", "-b", "1", "-mask", "none", str(mapproj_cub), str(tmp_tif)])
     return mapproj_tif
+
+
+def crop_reflectance_on_dem_grid(
+    crop: CropResult, dem: DemFetchResult | DemOrthoResult, config: TrntestConfig | None = None
+) -> np.ndarray:
+    """The real WAC crop's calibrated reflectance, resampled pixel-for-pixel onto `dem`'s own grid.
+
+    :param crop: Cropped cube (e.g. `TrnTestEntryEdr.crop_result`).
+    :param dem: DEM whose exact grid (not just projection) to land on.
+    :param config: Project config; `load_config()` if not given.
+    :returns: float32 array, `dem`'s shape; NaN outside the crop's coverage.
+    """
+    # `run_cam2map_for_crop` shares `dem`'s projection but auto-sizes its own extent to the crop's
+    # footprint, so a bilinear `reproject` onto the DEM's exact transform is still needed for a
+    # pixel-aligned comparison against anything computed on the DEM grid.
+    cam2map_tif = run_cam2map_for_crop(crop, dem, config)
+    with rasterio.open(dem.dem) as dst:
+        dst_transform, dst_crs, dst_shape = dst.transform, dst.crs, dst.shape
+    with rasterio.open(cam2map_tif) as src:
+        source = src.read(1, masked=True).filled(np.nan).astype(np.float32)
+        on_dem_grid = np.full(dst_shape, np.nan, dtype=np.float32)
+        rasterio.warp.reproject(
+            source=source,
+            destination=on_dem_grid,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            src_nodata=np.nan,
+            dst_nodata=np.nan,
+            resampling=rasterio.warp.Resampling.bilinear,
+        )
+    return on_dem_grid
 
 
 _INSTRUMENT_POINTING_LABEL_EXCLUDE = {"Name", "StartByte", "Bytes", "Records", "ByteOrder", "Field"}

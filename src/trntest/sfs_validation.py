@@ -11,6 +11,13 @@ entry) for what this cross-check does and doesn't resolve.
 # motion (`along_track_correction`), so `run_sfs_forward_render`'s Hapke comparison is not a fully
 # apples-to-apples match to `hapke_shade_ortho`'s own default output. `run_sfs_lambertian_incidence`
 # sidesteps this and every other Hapke-parameterization concern entirely -- see its own docstring.
+#
+# Every `sfs` run here uses a `cast_shadows=False` ortho (`_without_cast_shadows`), whatever
+# `dem_ortho_result` the caller passes. `sfs` runs without `--model-shadows` (unusable against this
+# project's cameras -- see docs/external-tools.md), so it models per-facet shading only. The point of
+# this module is checking our per-facet angles and Hapke evaluation; a cast shadow in our ortho would
+# show up as a disagreement unrelated to either, and would also break `true_albedo_map`'s
+# `shaded / H(real)` inversion (recovering near-zero albedo in every shadow).
 
 import dataclasses
 from pathlib import Path
@@ -18,10 +25,10 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
-from trntest import hapke, illumination, isis_wac, render
+from trntest import dem_ortho, hapke, illumination, isis_wac, render
 from trntest.camera import Camera
 from trntest.config import TrntestConfig, load_config
-from trntest.dem_ortho import DemOrthoResult
+from trntest.dem_ortho import DemFetchResult, DemOrthoResult
 from trntest.subprocess_utils import run_quiet
 
 # ASP `sfs --model-coeffs` Hapke order is (omega, b, c, B0, h) -- confirmed via ISIS's own
@@ -64,7 +71,7 @@ def true_albedo_map(shaded_ortho: np.ndarray, real_reflectance: np.ndarray) -> n
     """A per-pixel "true albedo" proxy for ASP `sfs --input-albedo`, consistent with `sfs`'s own
     `image = exposure * albedo * reflectance(geometry)` formalization.
 
-    :param shaded_ortho: `dem_ortho_result.ortho` -- `hapke_shade_ortho`'s already-shaded output
+    :param shaded_ortho: A `cast_shadows=False` shaded ortho -- `hapke_shade_ortho`'s already-shaded output
         (`raw_ortho * H(real)/H(reference)`, clipped to `[0,255]`), not the raw pre-shading WAC_EMP
         texture (this project doesn't keep the raw texture around after shading).
     :param real_reflectance: The same H(real) factor `hapke_shade_ortho` itself multiplied in
@@ -102,6 +109,28 @@ def true_albedo_map(shaded_ortho: np.ndarray, real_reflectance: np.ndarray) -> n
     return np.where(valid, ratio, 0.0)
 
 
+def _without_cast_shadows(camera: Camera, dem_ortho_result: DemOrthoResult, config: TrntestConfig) -> DemOrthoResult:
+    """`dem_ortho_result`'s same DEM, paired with a `cast_shadows=False` shaded ortho.
+
+    :param camera: The camera `dem_ortho_result` was fetched for.
+    :param dem_ortho_result: Any DEM/ortho pair for `camera`.
+    :param config: Project config (the entry's own, so the ortho lands beside the default one).
+    :returns: A `DemOrthoResult` whose ortho has per-facet shading only. Cached on disk under its own
+        `dem_ortho.ortho_shaded_filename`, so only the first call re-shades.
+    """
+    # See this module's header comment for why.
+    ortho_path = config.output_dir / dem_ortho.ortho_shaded_filename(True, cast_shadows=False)
+    if ortho_path.exists():
+        return dem_ortho.result_from_files(ortho_path, dem_ortho_result.dem)
+    dem = DemFetchResult(
+        dem=dem_ortho_result.dem,
+        bbox=dem_ortho_result.bbox,
+        width=dem_ortho_result.width,
+        height=dem_ortho_result.height,
+    )
+    return dem_ortho.fetch_and_shade_ortho(camera, dem, config, cast_shadows=False)
+
+
 def _camera_cub_for_sfs(
     camera: Camera, dem_ortho_result: DemOrthoResult, out_path: Path, config: TrntestConfig
 ) -> Path:
@@ -132,6 +161,8 @@ class SfsForwardRenderResult:
 
     :ivar sim_intensity_tif: `sfs`'s raw forward-rendered intensity, on the DEM's own grid; `0.0`
         (untagged) outside camera coverage -- see `mask_sfs_uncovered`.
+    :ivar ortho_tif: The `cast_shadows=False` shaded ortho `sfs` was compared against -- the one to
+        diff/plot against `sim_intensity_tif`, not the caller's own (default, cast-shadowed) ortho.
     :ivar albedo_tif: The `true_albedo_map` passed to `sfs --input-albedo`.
     :ivar camera_cub: The ISIS cube `sfs` was run against (`_camera_cub_for_sfs`'s output).
     :ivar model_coeffs: `hapke_params_to_asp_model_coeffs`'s output, passed to `sfs --model-coeffs`.
@@ -139,6 +170,7 @@ class SfsForwardRenderResult:
     """
 
     sim_intensity_tif: Path
+    ortho_tif: Path
     albedo_tif: Path
     camera_cub: Path
     model_coeffs: str
@@ -152,7 +184,8 @@ def run_sfs_forward_render(
     DEM and a `true_albedo_map` built from its own ortho.
 
     :param camera: Camera whose pose/geometry to render.
-    :param dem_ortho_result: DEM/ortho pair to render against.
+    :param dem_ortho_result: DEM/ortho pair to render against. Only its DEM is used as-is; the ortho
+        is replaced by its `cast_shadows=False` counterpart (see this module's header comment).
     :param config: Project config; `load_config()` if not given.
     :returns: An `SfsForwardRenderResult`.
     """
@@ -181,6 +214,7 @@ def run_sfs_forward_render(
     # `sfs` writes literal `0.0` (not a tagged nodata value) for DEM pixels outside the camera's
     # actual coverage -- see `mask_sfs_uncovered` before doing any brightness comparison against it.
     config = config or load_config()
+    dem_ortho_result = _without_cast_shadows(camera, dem_ortho_result, config)
     center = camera.footprint_lonlat_deg["center"]
     assert center is not None, "camera's nadir footprint center must be a real ground point"
 
@@ -232,6 +266,7 @@ def run_sfs_forward_render(
     sim_intensity_tif = out_prefix.parent / f"{out_prefix.name}-{camera_cub_path.stem}-sim-intensity.tif"
     return SfsForwardRenderResult(
         sim_intensity_tif=sim_intensity_tif,
+        ortho_tif=dem_ortho_result.ortho,
         albedo_tif=albedo_path,
         camera_cub=camera_cub_path,
         model_coeffs=model_coeffs,
@@ -288,7 +323,8 @@ def run_sfs_lambertian_incidence(
     `sim-intensity` output is exactly `exposure * cos(incidence)`.
 
     :param camera: Camera whose pose/geometry to render.
-    :param dem_ortho_result: DEM/ortho pair to render against.
+    :param dem_ortho_result: DEM/ortho pair to render against (its ortho replaced by its
+        `cast_shadows=False` counterpart, as in `run_sfs_forward_render`).
     :param config: Project config; `load_config()` if not given.
     :returns: An `SfsLambertianIncidenceResult`.
     """
@@ -313,6 +349,7 @@ def run_sfs_lambertian_incidence(
     # convention elsewhere -- `exposures.txt`'s one line, `"<image path> <exposure>"`, is parsed
     # accordingly.
     config = config or load_config()
+    dem_ortho_result = _without_cast_shadows(camera, dem_ortho_result, config)
     with rasterio.open(dem_ortho_result.dem) as src:
         dem = src.read(1)
         dem_profile = src.profile

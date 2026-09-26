@@ -42,6 +42,8 @@
 #   `sfs_validation.mask_sfs_uncovered` converts `sfs`'s own literal-`0.0` "outside coverage"
 #   convention to `nodata` before any brightness comparison, or the comparison is dominated by that
 #   region instead of signal.
+# - `sfs` models per-facet shading only (no cast shadows), so every comparison here uses our own
+#   ortho with cast shadows turned off (`sfs_result.ortho_tif`), not the default hillshade basemap.
 
 # %%
 import numpy as np
@@ -67,8 +69,8 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 #
 # `entry.dem_ortho_result` is the current default basemap (resumed from disk if
 # `image_generation.ipynb` already generated it for this manifest entry, fetched fresh otherwise).
-# `sfs_validation.run_sfs_forward_render` builds the true-albedo map and the Hapke `--model-coeffs`
-# string from it, then runs `sfs -i <dem> --reflectance-type 2 --model-coeffs ...
+# `sfs_validation.run_sfs_forward_render` swaps in the same basemap shaded with `cast_shadows=False`,
+# builds the true-albedo map and the Hapke `--model-coeffs` string from it, then runs `sfs -i <dem> --reflectance-type 2 --model-coeffs ...
 # --input-albedo ... --save-sim-intensity-only <our own CSM-attached camera cube>`.
 
 # %%
@@ -93,7 +95,7 @@ sfs_validation.mask_sfs_uncovered(sfs_result.sim_intensity_tif, sim_masked_path)
 real_wac_mapproj_path = entry.crop._mapprojected_path()  # noqa: SLF001 -- notebook-side use
 
 diff_vs_sfs = compute_brightness_matched_diff(real_wac_mapproj_path, sim_masked_path)
-diff_vs_ours = compute_brightness_matched_diff(real_wac_mapproj_path, dem_ortho_result.ortho)
+diff_vs_ours = compute_brightness_matched_diff(real_wac_mapproj_path, sfs_result.ortho_tif)
 print("brightness-matched diff, real WAC vs. our hillshade:      ", diff_vs_ours)
 print("brightness-matched diff, real WAC vs. sfs forward-render: ", diff_vs_sfs)
 
@@ -109,7 +111,7 @@ print("brightness-matched diff, real WAC vs. sfs forward-render: ", diff_vs_sfs)
 # %%
 _ = sfs_plotting.plot_sfs_comparison(
     real_wac_mapproj_path,
-    dem_ortho_result.ortho,
+    sfs_result.ortho_tif,
     sim_masked_path,
     title=f"{entry.edr_product} -- real WAC vs. our hillshade vs. independent ASP sfs forward-render",
 )

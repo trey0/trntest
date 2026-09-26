@@ -24,6 +24,7 @@ from trntest.dem_gld100 import fetch_dem_astropedia, reproject_astropedia_elevat
 from trntest.geo_utils import footprint_bbox_local_m, pad_bbox, pixel_dims_for_gsd, union_bbox
 from trntest.hapke import (
     DEFAULT_ALONG_TRACK_CORRECTION,
+    DEFAULT_CAST_SHADOWS,
     DEFAULT_HAPKE_SHADING,
     DEFAULT_REAL_HAPKE_PARAMS,
     despeckle_and_shade_ortho,
@@ -93,6 +94,7 @@ def ortho_shaded_filename(
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
+    cast_shadows: bool = DEFAULT_CAST_SHADOWS,
 ) -> str:
     """The `output_dir`-relative filename `hapke.despeckle_and_shade_ortho` writes its shaded ortho to.
 
@@ -102,6 +104,7 @@ def ortho_shaded_filename(
     :param real_hapke_params: Whether calibrated (vs. placeholder) Hapke parameters were used. Only
         affects the filename when `hapke=True`.
     :param ortho_source: Which ortho/texture source was fetched (see `ORTHO_SOURCES`).
+    :param cast_shadows: Whether cast-shadow occlusion was applied.
     :returns: The filename `hapke.despeckle_and_shade_ortho` writes to for this combination.
     """
     # Factored out so `trn_dataset.TrnTestEntry.dem_ortho_result`'s resumption check can ask for
@@ -114,12 +117,13 @@ def ortho_shaded_filename(
     # must not be resumed as if they matched. `_wacemp` is appended whenever
     # `ortho_source="wac_emp_pds"`, independent of `hapke`, since the input texture's numeric convention
     # (reflectance, not WMS DN) changes regardless of which shading mode blends it;
-    # `ortho_source="lunaserv_wms"` keeps the original, suffix-less filenames.
-    wacemp_suffix = "_wacemp" if ortho_source == "wac_emp_pds" else ""
+    # `ortho_source="lunaserv_wms"` keeps the original, suffix-less filenames. `_castshadow` is likewise
+    # independent of `hapke`, since cast shadows darken either shading mode's output.
+    source_suffix = ("_wacemp" if ortho_source == "wac_emp_pds" else "") + ("_castshadow" if cast_shadows else "")
     if not hapke:
-        return f"ortho_shaded{wacemp_suffix}.tif"
+        return f"ortho_shaded{source_suffix}.tif"
     suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "") + "_normaltilt"
-    return f"ortho_shaded_hapke{suffix}{wacemp_suffix}.tif"
+    return f"ortho_shaded_hapke{suffix}{source_suffix}.tif"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -256,6 +260,7 @@ def fetch_and_shade_ortho(
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
+    cast_shadows: bool = DEFAULT_CAST_SHADOWS,
 ) -> DemOrthoResult:
     """The ortho-shading half of the old combined `fetch_dem_and_ortho`, split out alongside
     `fetch_dem` -- see that function's own docstring for why.
@@ -280,6 +285,7 @@ def fetch_and_shade_ortho(
         that case; a caller that wants the fallback has to ask for it explicitly. A footprint
         straddling a tile boundary (the equator, a 90-deg lon zone, or the equirect/polar split) is
         mosaicked, not an error.
+    :param cast_shadows: Passed through to `hapke.despeckle_and_shade_ortho`. On by default.
     """
     # Taking `dem` (`fetch_dem`'s output) as an input and always reusing its `bbox`/`width`/`height`
     # exactly closes the entanglement `fetch_dem`'s docstring describes for the DEM/ortho pairing
@@ -294,7 +300,7 @@ def fetch_and_shade_ortho(
     #
     # `hapke._terrain_photometric_angles`'s own curvature-aware surface normal is unconditionally
     # applied (not a parameter here at all, see that function's docstring). Each
-    # `hapke`/`along_track_correction`/`real_hapke_params` combination writes to its own filename
+    # `hapke`/`along_track_correction`/`real_hapke_params`/`cast_shadows` combination writes to its own filename
     # (`ortho_shaded_filename`) rather than a single shared one, so any combination can be fetched for
     # the same camera and compared directly (e.g. `notebooks/hapke_hillshade.ipynb`/
     # `notebooks/along_track_correction.ipynb`/`notebooks/real_hapke_params.ipynb`), and so
@@ -359,7 +365,7 @@ def fetch_and_shade_ortho(
             fmt="image/tiff",
         )
     ortho_shaded_path = config.output_dir / ortho_shaded_filename(
-        hapke, along_track_correction, real_hapke_params, ortho_source
+        hapke, along_track_correction, real_hapke_params, ortho_source, cast_shadows
     )
     despeckle_and_shade_ortho(
         ortho_path,
@@ -372,6 +378,7 @@ def fetch_and_shade_ortho(
         along_track_correction=along_track_correction,
         real_hapke_params=real_hapke_params,
         ortho_source=ortho_source,
+        cast_shadows=cast_shadows,
     )
 
     return DemOrthoResult(
@@ -391,6 +398,7 @@ def fetch_dem_and_ortho(
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
+    cast_shadows: bool = DEFAULT_CAST_SHADOWS,
 ) -> DemOrthoResult:
     """Compose `fetch_dem` + `fetch_and_shade_ortho`.
 
@@ -401,6 +409,7 @@ def fetch_dem_and_ortho(
     :param along_track_correction: Passed through to `fetch_and_shade_ortho`.
     :param real_hapke_params: Passed through to `fetch_and_shade_ortho`.
     :param ortho_source: Passed through to `fetch_and_shade_ortho`.
+    :param cast_shadows: Passed through to `fetch_and_shade_ortho`.
     :returns: A `DemOrthoResult` for the fetched DEM/ortho pair.
     """
     # See `fetch_dem`/`fetch_and_shade_ortho`'s own docstrings for what's now individually
@@ -414,4 +423,5 @@ def fetch_dem_and_ortho(
         along_track_correction=along_track_correction,
         real_hapke_params=real_hapke_params,
         ortho_source=ortho_source,
+        cast_shadows=cast_shadows,
     )

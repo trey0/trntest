@@ -30,7 +30,9 @@ just code comments) when a concrete choice changes.
   project supplies that shading itself (`hapke.despeckle_and_shade_ortho` — a real Hapke BRDF via
   ISIS `photomet` by default, `hapke_shade_ortho`, with a plain Lambertian `shade_ortho` fallback;
   both lit with real SPICE sun geometry, not relying on any shading baked into the source imagery,
-  which was never guaranteed to match the simulated frame's real sun angle in the first place).
+  which was never guaranteed to match the simulated frame's real sun angle in the first place),
+  plus cast shadows from other terrain (`cast_shadow.illumination_fraction`, a pure-Python sweep —
+  neither tool below is used for that; see "Terrain-shadow tools").
 - **`--dem-height-error-tol`'s default (0.001m) is too tight for this project's DEM and causes
   visible salt-and-pepper speckle** in the render (`sat_sim`'s ray/DEM-intersection root-finder
   misbehaves at scattered pixels). Root cause: Lunaserv's DTM layer serves planetocentric radius
@@ -581,3 +583,43 @@ per-app doc source, and direct experimentation):
 Live-validated for correctness, not just speed: 100 real crop pixels' own real ground points
 (round-tripped through `campt`), batched vs. the old per-point loop — 0 mismatches, 46x faster on
 that sample size.
+
+## Terrain-shadow tools: ASP `sfs --model-shadows` and ISIS `shadow` (neither used)
+
+Both were tried as cast-shadow sources for `hillshade`, and both were set aside in favor of this
+project's own sweep (`cast_shadow.py`; compared against ISIS `shadow` and the real WAC image in
+`notebooks/sun_aligned_shadow_sweep.ipynb`). Read this before trying either again.
+
+**ASP `sfs --model-shadows`** (run as a forward render, `--save-sim-intensity-only`): no camera this
+project can give it works.
+
+- The real WAC ISIS crop cube is rejected outright ("Seems to have Isis camera type 1 ... Maybe it
+  will work with CSM") — ASP's ISIS session doesn't support WAC's Pushframe camera type.
+- A CSM ISD of that same camera isn't worth trying: it depends on the `usgscsm` Pushframe
+  `groundToImage` bug above.
+- This project's synthetic camera, as TSAI or as a CSM Frame model, runs without error but logs
+  "Skipped image 0: ... with no data for this DEM" and writes an all-zero simulated intensity, even
+  with a forced non-zero exposure (`--image-exposures-prefix`). `mapproject` on the identical
+  DEM/image/camera triplet succeeds with real coverage well inside the DEM, so it isn't a geometry
+  or overlap problem on this side. Unexplained without the ASP source; worth re-checking after an
+  ASP upgrade.
+
+`sfs_validation.py`'s angle and Hapke cross-checks run `sfs` *without* `--model-shadows`, which works.
+
+**ISIS `shadow`** runs cleanly on this project's DEMs, with two preparation steps:
+
+- The DEM must be radius (`elevation + MOON_RADIUS_M`), converted with `gdal_translate -of ISIS3`.
+  That writes a valid Orthographic `Mapping` group but omits `PixelResolution`/`UpperLeftCornerX`/
+  `UpperLeftCornerY`, and `demprep` fails without them — add them with `editlab options=addkey`.
+  `demprep` then skips pole padding on a local Orthographic cube and attaches the
+  `ShapeModelStatistics` table `shadow` needs.
+- `SUNPOSITIONSOURCE=TIME` works with the already-cached `de421.bsp` and the **text** PCK
+  `pck00010.tpc`. The binary `moon_pa_de421_1900_2050.bpc` crashes it (`SPICE(FRAMEDATANOTFOUND)`):
+  `shadow` needs IAU_MOON, and its single `PCK=` slot can't also take the frame kernels MOON_PA needs.
+
+It was set aside for its output: the mask has single-row horizontal streaks. The weaker kind (e.g.
+row 1023 of `M1327218454CE`'s DEM) is a `SHADOWMAP`/`LIGHTCURTAIN` caching artifact that
+`PRESET=ACCURATE` removes, at a much higher CPU cost. The stronger kind (row 1016) persists and even
+strengthens under `ACCURATE`, yet appears in neither the sweep nor the real WAC image, and the DEM has
+no step there — unexplained, and specific to ISIS `shadow`. It also marks roughly twice as much area
+shadowed as the sweep, with shadows in the same places.

@@ -18,9 +18,14 @@ from matplotlib.colors import LightSource
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import transform
 
-from trntest import illumination, isis_wac
+from trntest import cast_shadow, illumination, isis_wac
 from trntest.config import MOON_RADIUS_M, TrntestConfig
-from trntest.geo_utils import geographic_crs, local_orthographic_crs, moon_geocentric_crs
+from trntest.geo_utils import (
+    geographic_crs,
+    local_enu_basis,
+    local_grid_positions_moon_me,
+    pixel_center_coords_m,
+)
 from trntest.product_io import atomic_publish
 from trntest.subprocess_utils import run_quiet
 
@@ -70,12 +75,13 @@ DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM = 643
 HG2_VALID_RANGE = (0.0, 1.0)
 
 # `dem_ortho.fetch_dem_and_ortho`/`despeckle_and_shade_ortho`'s own `hapke`/`along_track_correction`/
-# `real_hapke_params` parameter defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s
+# `real_hapke_params`/`cast_shadows` parameter defaults -- shared with `trn_dataset.TrnTestEntry.dem_ortho_result`'s
 # resumption check (via `dem_ortho.ortho_shaded_filename`) so the two can't disagree about which
 # shading mode's cached ortho file is "the" default one to resume from. `shade_ortho`'s plain
 # Lambertian blend (`hapke=False`), the uncorrected per-pixel geometry
 # (`along_track_correction=False`), and the illustrative placeholder Hapke coefficients
-# (`real_hapke_params=False`) all remain available as explicit fallbacks.
+# (`real_hapke_params=False`) all remain available as explicit fallbacks, as does per-facet shading
+# alone with no terrain occlusion (`cast_shadows=False`, see `cast_shadow.py`).
 #
 # The DEM-gradient normal-tilt correction (`_terrain_photometric_angles`) and the Hapke-ratio
 # relighting correction (`hapke_shade_ortho`) are unconditional, with no parameter to opt out: both are
@@ -87,6 +93,7 @@ HG2_VALID_RANGE = (0.0, 1.0)
 DEFAULT_HAPKE_SHADING = True
 DEFAULT_ALONG_TRACK_CORRECTION = True
 DEFAULT_REAL_HAPKE_PARAMS = True
+DEFAULT_CAST_SHADOWS = True
 
 # `hapke_shade_ortho`'s final, purely cosmetic reflectance->uint8 display stretch
 # (`stretch_reflectance_to_uint8`) -- a fixed linear range, not a per-image adaptive/percentile
@@ -144,32 +151,13 @@ def shade_ortho(
     # synthetic render has to come from here. A direct multiply, not `0.5 + 0.5 * hillshade` (an
     # earlier version's artificial floor that halved the shading term's usable dynamic range and
     # washed out the render relative to WAC imagery): terrain facing away from the sun should render
-    # dark, not floored at ~50% gray. This is still just local per-facet shading, not cast-shadow
-    # occlusion from other terrain, which remains out of scope (same section).
+    # dark, not floored at ~50% gray. This is local per-facet shading only; cast-shadow occlusion from
+    # other terrain is applied separately, by `despeckle_and_shade_ortho`.
     light = LightSource(azdeg=azimuth_deg, altdeg=elevation_deg)
     hillshade = light.hillshade(dem.astype(np.float64), dx=cellsize_m, dy=cellsize_m)
     ortho_norm = ortho.astype(np.float64) / 255.0
     blended = ortho_norm * hillshade
     return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
-
-
-def _local_enu_basis(center_lon_deg: float, center_lat_deg: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The (East, North, Up) unit vectors, in MOON_ME, of the local tangent plane at a point.
-
-    :param center_lon_deg: Tangent point longitude, degrees.
-    :param center_lat_deg: Tangent point latitude, degrees.
-    :returns: `(east, north, up)`, each a MOON_ME unit vector.
-    """
-    # Used by `_moon_me_direction_from_local_enu` to rotate a single local-frame direction (the sun's
-    # azimuth/elevation) into MOON_ME. `_terrain_photometric_angles` itself works entirely in MOON_ME
-    # (positions -- DEM points, camera -- are never embedded into a local tangent plane, which is a
-    # lossy approximation); a free direction has no such embedding step, so rotating one between
-    # orthonormal frames stays exact, and this is the one remaining boundary that still needs it.
-    lon0, lat0 = math.radians(center_lon_deg), math.radians(center_lat_deg)
-    east = np.array([-math.sin(lon0), math.cos(lon0), 0.0])
-    north = np.array([-math.sin(lat0) * math.cos(lon0), -math.sin(lat0) * math.sin(lon0), math.cos(lat0)])
-    up = np.array([math.cos(lat0) * math.cos(lon0), math.cos(lat0) * math.sin(lon0), math.sin(lat0)])
-    return east, north, up
 
 
 def _moon_me_direction_from_local_enu(local_enu_vector, center_lon_deg: float, center_lat_deg: float) -> np.ndarray:
@@ -181,9 +169,11 @@ def _moon_me_direction_from_local_enu(local_enu_vector, center_lon_deg: float, c
     :param center_lat_deg: Tangent point latitude, degrees.
     :returns: The direction as a MOON_ME vector.
     """
-    # Via `_local_enu_basis`'s orthonormal (East, North, Up) triad -- the linear combination
+    # Via `geo_utils.local_enu_basis`'s orthonormal (East, North, Up) triad -- the linear combination
     # `east*e + north*n + up*u`. Lossless either direction, since (east, north, up) are orthonormal.
-    east, north, up = _local_enu_basis(center_lon_deg, center_lat_deg)
+    # This is the one remaining local-frame-to-MOON_ME boundary: `_terrain_photometric_angles` itself
+    # works entirely in MOON_ME, and rotating a free direction between orthonormal frames is exact.
+    east, north, up = local_enu_basis(center_lon_deg, center_lat_deg)
     e, n, u = np.asarray(local_enu_vector, dtype=np.float64)
     return e * east + n * north + u * up
 
@@ -221,9 +211,9 @@ def _terrain_photometric_angles(
     # own vector to the spacecraft), not just from local terrain slope.
     #
     # Fully MOON_ME-native: no local tangent-plane position embedding anywhere in this function.
-    # `ground`, each DEM pixel's true 3D position, comes from `rasterio.warp.transform` converting
-    # `dem`'s local orthographic `(x, y)` plus its own elevation directly into `moon_geocentric_crs`'s
-    # MOON_ME X/Y/Z. `camera_center_moon_me_m`/`along_track_direction_moon_me` are used directly, with
+    # `ground`, each DEM pixel's true 3D position, comes from `geo_utils.local_grid_positions_moon_me`,
+    # converting `dem`'s local orthographic `(x, y)` plus its own elevation directly into MOON_ME
+    # X/Y/Z. `camera_center_moon_me_m`/`along_track_direction_moon_me` are used directly, with
     # no rotation into any local frame. `sun_direction_moon_me` is the one input converted from a local
     # frame (the sun's azimuth/elevation, by `real_geometry_photometric_angles`'s caller, via
     # `_moon_me_direction_from_local_enu`) -- rotating a free direction between orthonormal frames is
@@ -268,27 +258,12 @@ def _terrain_photometric_angles(
     # already photometrically normalized in a way this project's own re-shading was never validated
     # against. See `docs/proposed-tasks/open-items.md`.
     height, width = dem.shape
-    minx, miny, maxx, maxy = bbox
-    x_centers = minx + (np.arange(width) + 0.5) * (maxx - minx) / width
-    y_centers = maxy - (np.arange(height) + 0.5) * (maxy - miny) / height  # row 0 = north/top, matches `dy` below
+    x_centers, y_centers = pixel_center_coords_m(bbox, width, height)  # row 0 = north/top, matches `dy` below
     x_grid, y_grid = np.meshgrid(x_centers, y_centers)
 
     dy = -cellsize_m
-    dem64 = dem.astype(np.float64)
-    # Each DEM pixel's 3D MOON_ME position, via one vectorized `rasterio.warp.transform` call from
-    # `dem`'s local orthographic (x, y) plus its elevation into `moon_geocentric_crs`'s MOON_ME X/Y/Z.
-    ground_x, ground_y, ground_z = transform(
-        local_orthographic_crs(center_lon_deg, center_lat_deg, radius_m),
-        moon_geocentric_crs(radius_m),
-        x_grid.ravel(),
-        y_grid.ravel(),
-        dem64.ravel(),
-    )
-    ground_shape = (height, width)
-    ground = np.stack(
-        [np.reshape(ground_x, ground_shape), np.reshape(ground_y, ground_shape), np.reshape(ground_z, ground_shape)],
-        axis=-1,
-    )
+    # Each DEM pixel's 3D MOON_ME position.
+    ground = local_grid_positions_moon_me(x_grid, y_grid, dem, center_lon_deg, center_lat_deg, radius_m)
 
     # `normal`: the surface normal, via each of `ground`'s 3 MOON_ME coordinate channels' partial
     # derivatives (row/col index space -> physical space, `dy`/`cellsize_m`) and their cross product --
@@ -781,6 +756,7 @@ def despeckle_and_shade_ortho(
     along_track_correction: bool = DEFAULT_ALONG_TRACK_CORRECTION,
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = "wac_emp_pds",
+    cast_shadows: bool = DEFAULT_CAST_SHADOWS,
 ) -> None:
     """Despeckle the fetched ortho and blend in a sun-lit hillshade computed from the (already
     hole-filled) DEM, writing the result to `output_path`.
@@ -803,6 +779,9 @@ def despeckle_and_shade_ortho(
         `dem_ortho.DEFAULT_ORTHO_SOURCE`, duplicated rather than imported to avoid a dependency in the
         wrong direction -- every real caller passes this explicitly) -- affects how the Lambertian
         fallback (`hapke=False`) normalizes the input.
+    :param cast_shadows: Darken terrain the Sun can't see past other terrain, by
+        `cast_shadow.illumination_fraction` (the default). Applies to either shading mode;
+        `cast_shadows=False` gives per-facet shading alone.
     """
     # `hapke=True`'s branch applies `stretch_reflectance_to_uint8` explicitly, right here, to
     # `hapke_shade_ortho`'s relit-reflectance output -- the one place that cosmetic display step
@@ -817,6 +796,11 @@ def despeckle_and_shade_ortho(
     # stretch first, turning the array back into DN-like `[0, 255]` before handing it to `shade_ortho`,
     # fixes this without touching `shade_ortho` itself. `ortho_source="lunaserv_wms"` skips this (its
     # `cleaned` is already DN, `shade_ortho`'s own native convention).
+    #
+    # `cast_shadows` multiplies the Hapke branch's reflectance *before* the display stretch, which
+    # clips at `DISPLAY_STRETCH_REFLECTANCE_MAX` -- multiplying after would leave a saturated pixel
+    # saturated inside a shadow. A NaN illumination fraction (only where the DEM itself is NaN) is
+    # treated as lit: no data means "don't darken", not black.
     with rasterio.open(ortho_path) as src:
         ortho = src.read(1)
         profile = src.profile
@@ -829,6 +813,15 @@ def despeckle_and_shade_ortho(
     assert center is not None, "camera's nadir footprint center must be a real ground point"
     center_lon, center_lat = center
     azimuth_deg, elevation_deg = illumination.sun_azimuth_elevation_deg(center_lon, center_lat, camera.et)
+    if cast_shadows:
+        shadow_multiplier = np.nan_to_num(
+            cast_shadow.illumination_fraction(
+                dem, bbox, center_lon, center_lat, illumination.sun_direction_moon_me(camera.et)
+            ),
+            nan=1.0,
+        )
+    else:
+        shadow_multiplier = None
     if hapke:
         relit_reflectance = hapke_shade_ortho(
             cleaned,
@@ -842,10 +835,14 @@ def despeckle_and_shade_ortho(
             along_track_correction=along_track_correction,
             real_hapke_params=real_hapke_params,
         )
+        if shadow_multiplier is not None:
+            relit_reflectance = relit_reflectance * shadow_multiplier
         shaded = stretch_reflectance_to_uint8(relit_reflectance)
     else:
         lambertian_input = stretch_reflectance_to_uint8(cleaned) if ortho_source == "wac_emp_pds" else cleaned
         shaded = shade_ortho(lambertian_input, dem, azimuth_deg, elevation_deg, config.dem_target_gsd_m)
+        if shadow_multiplier is not None:
+            shaded = np.round(shaded * shadow_multiplier).astype(np.uint8)
 
     profile.update(count=1, dtype="uint8")
     with atomic_publish(Path(output_path)) as tmp:

@@ -56,3 +56,12 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   pure measurement here, not applied) — all four came out ~0.444-0.447%, no meaningful difference,
   unlike the original tolerance sweep this default came from (order-of-magnitude swings in both
   directions). No change needed to `DEM_HEIGHT_ERROR_TOL_M`.
+- **No row-level artifact confirmed.** ISIS `shadow`'s mask of this DEM shows horizontal single-row
+  streaks at low sun, but no check has found anything in the elevation data that explains them: no
+  elevation-domain detector (Hampel z-score, fold-and-stack against non-flagged control rows, raw
+  column profiles) separates streak rows from ordinary terrain, and the real WAC image and
+  `cast_shadow`'s sweep show nothing there either. See `docs/external-tools.md`'s "Terrain-shadow
+  tools".
+- **Low-sun caveat: 100 m posting smooths away small relief.** At low sun, shadow length is
+  `height / tan(elevation)` — at ~13 deg, a 20 m obstruction the DEM can't resolve would cast a shadow
+  nearly a pixel long. Any shadow model built on this DEM undercounts real shadow at low sun angles.

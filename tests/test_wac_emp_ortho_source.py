@@ -32,7 +32,7 @@ def test_fetch_dem_and_ortho_wac_emp_pds_default_produces_a_real_non_saturating_
     entry = dataset[0]
 
     dem_ortho_result = entry.dem_ortho_result
-    assert dem_ortho_result.ortho.name.endswith("_wacemp.tif"), (
+    assert dem_ortho_result.ortho.stem.split("_").count("wacemp") == 1, (
         "the live default ortho_source is 'wac_emp_pds' -- the resumed/fetched file must carry the "
         "_wacemp filename suffix (dem_ortho.ortho_shaded_filename), not a stale pre-migration name"
     )
@@ -73,7 +73,7 @@ def test_fetch_dem_and_ortho_wac_emp_pds_lambertian_fallback_is_not_all_black():
     dem_ortho_lambertian = dem_ortho.fetch_dem_and_ortho(
         entry.camera, entry.per_image_config, extra_footprint_lonlat_deg=entry.crop_footprint, hapke=False
     )
-    assert dem_ortho_lambertian.ortho.name.endswith("_wacemp.tif")
+    assert dem_ortho_lambertian.ortho.stem.split("_").count("wacemp") == 1
 
     with rasterio.open(dem_ortho_lambertian.ortho) as src:
         shaded = src.read(1)

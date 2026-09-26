@@ -60,6 +60,9 @@ sentence. Rationale for a specific design choice (why this default, why this app
 is fine to keep if it's still true and still load-bearing for using the notebook; a blow-by-blow of
 how an investigation got there is not.
 
+Refer to a jupytext-paired notebook by its `.ipynb` name (e.g. `image_generation.ipynb`), in docs
+and in conversation with the user, not by its `.py` twin.
+
 When a notebook's whole premise goes stale -- not just a fact needing correction, but the question
 it set out to answer already settled by later work -- archiving it to `old_notebooks/` (see its own
 `README.md`) is usually the better call than rewriting it forward.

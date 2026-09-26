@@ -24,7 +24,10 @@
 # available as a fallback (`hapke=False`) -- sun-direction-lit, but not a physically-based
 # photometric model (no opposition surge, no macroscopic-roughness term, no lunar-specific
 # reflectance behavior). This notebook is a reference/regression comparison between the two --
-# showing what the Hapke default changes relative to that fallback for one candidate image.
+# showing what the Hapke default changes relative to that fallback for one candidate image. The
+# candidate is `M1327218454CE`, the lowest-sun entry in the manifest (~13 deg elevation): low sun
+# exaggerates the differences between shading models and gives long cast shadows for the last
+# comparison below.
 #
 # The tricky part evaluated here: `photomet`'s automatic angle sources (`ANGLESOURCE=ELLIPSOID`/
 # `DEM`) need a real ISIS camera model embedded in the cube (via `spiceinit`) to derive
@@ -58,7 +61,7 @@ images = trntest.read_manifest("dataset_manifest.csv")
 session = trntest.Session()
 
 dataset = trntest.TrnTestDataSet.create(session.config.output_dir / "trn_dataset", images, session.config)
-entry = dataset[0]
+entry = dataset["M1327218454CE"]
 camera = entry.camera
 
 print(f"EDR product: {entry.edr_product}")
@@ -72,8 +75,9 @@ print(f"Ground footprint center (lon, lat): {camera.footprint_lonlat_deg['center
 # see `TrnTestEntry.dem_ortho_result`'s own docstring for how it stays mode-aware about which
 # cached file to resume from). `dem_ortho.fetch_dem_and_ortho(..., hapke=False)` fetches the same
 # DEM/ortho pair again -- cheap, Lunaserv/Astropedia fetches are independently cached by `cache.py`
-# -- but shades it with the plain Lambertian fallback instead, writing to its own `ortho_shaded.tif`
-# so it doesn't collide with the Hapke file. Passes `extra_footprint_lonlat_deg=entry.crop_footprint`
+# -- but shades it with the plain Lambertian fallback instead, writing to its own filename
+# (`dem_ortho.ortho_shaded_filename`) so it doesn't collide with the Hapke file. Both get cast shadows
+# (the default), so the comparison isolates the shading model. Passes `extra_footprint_lonlat_deg=entry.crop_footprint`
 # explicitly, matching `entry.dem_ortho_result`'s own internal call -- without it, this second call's
 # smaller camera-only-footprint AOI would silently overwrite the *shared* per-candidate
 # `dem_filled-tile-0.tif` with a differently-sized DEM, corrupting `entry.dem_ortho_result`'s
@@ -115,4 +119,28 @@ plotting.plot_render_toggle(
     height_km,
     "Lambertian hillshade",
     "ISIS photomet (Hapke)",
+)
+
+# %% [markdown]
+# ## Cast shadows on vs. off
+#
+# On top of either shading model, the default basemap is multiplied by `cast_shadow`'s illumination
+# fraction, which darkens terrain the Sun can't reach past other terrain (see
+# `sun_aligned_shadow_sweep.ipynb`). `cast_shadows=False` fetches the same Hapke-shaded ortho without
+# that step, under its own filename. What to look for: crater floors and down-sun slopes behind tall
+# rims going dark, while per-facet shading elsewhere is unchanged.
+
+# %%
+dem_ortho_no_shadows = dem_ortho.fetch_dem_and_ortho(
+    camera, entry.per_image_config, extra_footprint_lonlat_deg=entry.crop_footprint, cast_shadows=False
+)
+print("Hapke ortho, no cast shadows:", dem_ortho_no_shadows.ortho)
+plotting.plot_render_toggle(
+    dem_ortho_no_shadows.ortho,
+    dem_ortho_hapke.ortho,
+    0,
+    width_km,
+    height_km,
+    "Hapke, no shadows",
+    "Hapke + shadows (default)",
 )
