@@ -4,11 +4,12 @@
 cast-shadowed) that `hapke.despeckle_and_shade_ortho` applies on top of its per-facet shading, so
 `hillshade` renders get real shadows cast across crater floors, not just dark sun-facing-away walls.
 
-The method is a sun-aligned sweep. Build a Cartesian frame with the Sun at infinity along `+x`.
-Every sun ray is then parallel to the x-axis, so occlusion along one row of that frame (fixed `y`)
-reduces to a running maximum of height (`z`), swept from the sun-facing edge inward: a point is lit
-iff nothing closer to the Sun on its row is taller. That is one `np.maximum.accumulate` per row
-rather than a per-pixel ray march against the DEM.
+The method is a sun-aligned sweep. Build a Cartesian frame with the Sun at infinity along `+x`,
+`y` horizontal and perpendicular to the Sun's azimuth, and `z` perpendicular to the sun rays. Every
+ray stays at fixed `y` and fixed `z`, so a point is shadowed iff some terrain on its `y` row that is
+horizontally closer to the Sun has a larger `z`. Binning rows by horizontal distance toward the Sun
+(`d`) makes that a running maximum of `z`, swept from the sun-facing edge inward: one
+`np.maximum.accumulate` per row rather than a per-pixel ray march against the DEM.
 
 Pure math -- no SPICE, no file I/O, no config -- so it runs on synthetic DEMs in tests.
 """
@@ -52,8 +53,8 @@ class SunSweep:
         cast-shadowed, NaN where the DEM itself is NaN.
     :ivar basis: `(x_hat, y_hat, z_hat)`, MOON_ME unit vectors; `x_hat` points at the Sun.
     :ivar bin_size_m: Sun-frame bin size, meters.
-    :ivar bin_counts: int32, `(nx, ny)` sun-frame raster of samples per bin (axis 0 = `x`, toward the
-        Sun). Diagnostic only.
+    :ivar bin_counts: int32, `(nd, ny)` sun-frame raster of samples per bin (axis 0 = `d`, horizontal
+        distance toward the Sun). Diagnostic only.
     """
 
     illumination_fraction: np.ndarray
@@ -66,7 +67,7 @@ class SunSweep:
         occupied = self.bin_counts > 0
         n_occupied = int(occupied.sum())
         lines = [
-            f"sun-frame raster: {self.bin_counts.shape[0]} (x, toward Sun) x {self.bin_counts.shape[1]} (y), "
+            f"sun-frame raster: {self.bin_counts.shape[0]} (d, toward Sun) x {self.bin_counts.shape[1]} (y), "
             f"bin size {self.bin_size_m:.1f} m",
             f"bins with >=1 sample: {n_occupied / self.bin_counts.size:.3f}",
         ]
@@ -104,11 +105,11 @@ def sun_aligned_basis(sun_direction_moon_me, up_moon_me) -> tuple[np.ndarray, np
 def sweep_illuminated(z_max: np.ndarray) -> np.ndarray:
     """Per-bin lit/shadowed classification of a sun-frame height raster.
 
-    :param z_max: `(nx, ny)` per-bin max height, axis 0 = `x` increasing toward the Sun; NaN for an
+    :param z_max: `(nd, ny)` per-bin max `z`, axis 0 = `d` increasing toward the Sun; NaN for an
         empty bin.
     :returns: float array, same shape: `1.0` lit, `0.0` shadowed, NaN for an empty bin.
     """
-    # Light travels in `-x`, so sweep from the highest `x` (the sun-facing edge) inward. An empty bin
+    # Sweep from the highest `d` (the sun-facing edge) inward. An empty bin
     # is `-inf` in the running max -- a gap can't occlude anything -- and stays NaN in the output,
     # since there is nothing there to classify. A bin is lit iff its height is at least the running
     # max *including itself*, i.e. nothing closer to the Sun on its row is strictly taller.
@@ -194,9 +195,13 @@ def sun_sweep(
     # Moon's curvature (sagitta) over half a ~240 km-wide DEM is ~4.2 km, the same order as typical
     # terrain relief.
     #
-    # The sweep treats terrain as a height field along `z_hat`: everything below a bin's max height is
-    # solid. That holds whenever `z_hat` is close to local up, which is exactly the low-sun geometry
-    # where cast shadows matter.
+    # Rows are ordered by `d` (horizontal distance toward the Sun), not by `x` (distance along the
+    # ray). In the vertical plane of the Sun's azimuth, `z = h cos(e) - d sin(e)`, and terrain Q shadows
+    # P iff `d_Q > d_P` and `z_Q > z_P`, at any sun elevation `e`. A DEM is single-valued in `d`, so
+    # that ordering is always right. Ordering by `x = d cos(e) + h sin(e)` instead folds on any
+    # sun-facing slope steeper than `90 - e` degrees (6 deg at 84 deg sun), letting terrain on the far
+    # side cast false shadows. Curvature tilts local up by up to a few degrees across a DEM, so `d`
+    # itself only folds on slopes within that angle of vertical.
     #
     # Self-shadow (a facet whose own slope faces away from the Sun) is deliberately not part of this
     # output. The per-facet reflectance models this multiplies against already render such a facet
@@ -220,7 +225,7 @@ def sun_sweep(
         illumination = np.where(np.isnan(dem), np.nan, 1.0).astype(np.float32)
         return SunSweep(illumination, (up, up, up), bin_size_m, np.zeros((0, 0), dtype=np.int32))
 
-    frame = _SunFrame(basis, center_lon_deg, center_lat_deg, radius_m)
+    frame = _SunFrame(basis, up, center_lon_deg, center_lat_deg, radius_m)
     chunks = [(r, min(r + chunk_rows, height)) for r in range(0, height, chunk_rows)]
     grid = _sun_grid(frame, dem, bbox, chunks, bin_size_m)
     z_max, counts, bin_index = _bin_heights(frame, grid, dem, bbox, chunks, upsample_factor)
@@ -231,25 +236,30 @@ def sun_sweep(
 
 @dataclasses.dataclass(frozen=True)
 class _SunFrame:
-    """Projection from the local Orthographic frame (plus elevation) into sun-frame `(X, Y, Z)`."""
+    """Projection from the local Orthographic frame (plus elevation) into sun-frame `(D, Y, Z)`:
+    horizontal distance toward the Sun, then `basis`'s `y_hat` and `z_hat`."""
 
     basis: tuple[np.ndarray, np.ndarray, np.ndarray]
+    up: np.ndarray
     center_lon_deg: float
     center_lat_deg: float
     radius_m: float
 
     def project(self, x_m: np.ndarray, y_m: np.ndarray, elevation_m: np.ndarray) -> np.ndarray:
         """`(..., 3)` sun-frame coordinates, relative to the tangent point (keeps magnitudes small)."""
+        x_hat, y_hat, z_hat = self.basis
+        d_hat = x_hat - np.dot(x_hat, self.up) * self.up
+        d_hat = d_hat / np.linalg.norm(d_hat)
         args = (self.center_lon_deg, self.center_lat_deg, self.radius_m)
         zero = np.array(0.0)
         origin = local_grid_positions_moon_me(zero, zero, zero, *args)
         positions = local_grid_positions_moon_me(x_m, y_m, elevation_m, *args)
-        return (positions - origin) @ np.stack(self.basis).T
+        return (positions - origin) @ np.stack((d_hat, y_hat, z_hat)).T
 
 
 @dataclasses.dataclass(frozen=True)
 class _SunGrid:
-    """The sun-frame raster: `(nx, ny)` bins of `bin_size_m`, lower corner `lo`."""
+    """The sun-frame raster: `(nx, ny)` bins of `bin_size_m` over `(D, Y)`, lower corner `lo`."""
 
     lo: np.ndarray
     bin_size_m: float

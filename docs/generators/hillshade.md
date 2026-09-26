@@ -39,7 +39,9 @@ entry point `render.run_sat_sim`.
 
 `cast_shadow.py` computes a per-pixel illumination fraction (`1` = fully lit, `0` = fully shadowed)
 with a sun-aligned sweep: in a frame with the Sun at infinity along `+x`, each row is swept from the
-sun-facing edge inward with a running height maximum. The module docstring covers the method;
+sun-facing edge inward, in order of horizontal distance toward the Sun, with a running maximum of
+height perpendicular to the rays. Ordering by horizontal distance (not distance along the ray) keeps
+it correct at any sun elevation. The module docstring covers the method;
 [`../../notebooks/sun_aligned_shadow_sweep.ipynb`](../../notebooks/sun_aligned_shadow_sweep.ipynb)
 shows it on the lowest-sun candidate, next to ISIS `shadow` and the real WAC image.
 

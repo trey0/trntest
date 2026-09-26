@@ -24,7 +24,8 @@
 #
 # The method is a *sun-aligned sweep*. In a Cartesian frame with the Sun at infinity along `+x`, every
 # sun ray runs along the x-axis, so each row of that frame is an independent 1D problem: sweep from the
-# sun-facing edge inward, track the tallest terrain seen so far, and anything below it is in shadow.
+# sun-facing edge inward (in order of horizontal distance toward the Sun), track the tallest terrain
+# seen so far (height measured perpendicular to the rays), and anything below it is in shadow.
 # `cast_shadow`'s module docstring and comments cover the details (true 3D positions rather than a
 # flat plane, upsampling for antialiasing, bin sizing, streaming).
 #

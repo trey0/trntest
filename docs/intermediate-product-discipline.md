@@ -15,6 +15,12 @@ files should be named, stored, and shared across code paths — not an implement
      comparison). Identified by label plus whatever parameters/variant actually determine content,
      baked into the identity itself.
 
+   Identity covers the code that produced an artifact, not just its parameters. A resume-by-filename
+   lookup can't tell old code's output from new code's, so a behavior change with no parameter change
+   silently reuses stale files. When changing what a cached artifact contains, either bump a version
+   token in its name (e.g. `_castshadow` -> `_castshadow2`) or confirm every stale copy is deleted,
+   across the shared `output/`/`scratch/`/`cache/` trees, not just one dataset.
+
 2. **Exactly one code path writes any given label.** This should be auditable, ideally cheaply —
    discoverable by inspection or a lightweight registry, not re-derived by reading every caller. A
    function that legitimately produces variants of a label still owns the whole family: one *owner*,

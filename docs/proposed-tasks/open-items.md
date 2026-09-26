@@ -76,14 +76,32 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
     sun a 1 km rim casts a ~4.3 km shadow, so terrain just up-sun of the fetched AOI can matter. A
     fix would pad the DEM up-sun by about `max_relief / tan(elevation)` before sweeping and crop back
     afterward.
-  - **Validated on one candidate only** (`M1327218454CE`, ~13° sun). Re-check on a second
-    low-sun candidate.
+  - **Validated on few candidates**: `M1327218454CE` (~13° sun) in depth; `M1314350330CE` (16°) and
+    `M1314313691CE` (84°) visually, after the high-sun ordering fix (`docs/history.md` Phase 128).
+    Re-check a mid-elevation (40-60°) candidate.
   - **The sweep marks roughly half as much shadow as ISIS `shadow`**, with shadows in the same
     places (see `notebooks/sun_aligned_shadow_sweep.ipynb`). Unexplained; neither is ground truth.
   - **No penumbra.** The Sun's ~0.53° disk softens a shadow edge over `~0.0093 × D` (`D` = occluder
     distance along the ray), so it only spans a 100 m pixel once `D` exceeds ~11 km — likely
     sub-pixel for most candidates. Compute `D` for real low-sun candidates before building it. If
     it's worth it, the sweep can average several sun directions sampled across the disk.
+- **`reproject` renders show dashes/specks from the WAC framelet-boundary NULL pixels.** The
+  fixed bad-pixel mask (56 columns NULL on the first line of every 14-line framelet, see
+  `docs/data-sources/lroc-wac-edr-cdr.md`) reaches `isis_wac.run_cam2map_for_crop` unfilled.
+  `cam2map` fills nearly all of them with some value (only 12 interior nodata px remain in
+  `trntest1` entry 175's texture, `M1314448520CE`), and the result shows up as short horizontal
+  dashes along instrument lines next to crater shadows, plus bright specks inside shadows -- very
+  visible in that entry's report zoom. How `cam2map` fills them is unconfirmed (a guess: it falls
+  back to a neighboring pixel when its interpolation window touches a NULL). `hapke.despeckle` has
+  never run on this path and wouldn't help (it targets isolated single pixels; it would change
+  0.08% of this texture). Likely fix: fill the 1-3 px NULL gaps row-wise in the crop before
+  `cam2map`, as `plotting._fill_dead_columns_for_display` already does for display only, then
+  regenerate `reproject` (and `crop`, if the fill belongs there) for every dataset entry.
+- **`trntest1` DEMs have implausibly steep pixels.** 38 of 207 filled DEMs have pixels steeper
+  than 60° at 100 m posting (up to ~300 per DEM, max 76.1° in `M1314424588CE`); real lunar slopes
+  at that scale rarely exceed ~40°. Likely seams, hole fills or source-DEM defects. Cast shadows
+  render them faithfully, so at low sun they would cast shadows that the real terrain doesn't.
+  Not yet looked at; start by imaging `M1314424588CE`'s DEM and slope map.
 - The user's requested "error-handling/fallback-consistency" quality audit only got through
   **Chunk A** (`tie_points.py`+`isis_wac.py`) before spiraling into a real fix rather than staying a
   survey. Chunks B-E were never scoped — re-scope from scratch rather than assume a prior chunking

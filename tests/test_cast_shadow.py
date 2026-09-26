@@ -145,3 +145,27 @@ def test_dem_grid_positions_center_at_zero_elevation_is_radius_times_up():
     )
     _, _, up = geo_utils.local_enu_basis(CENTER_LON_DEG, CENTER_LAT_DEG)
     np.testing.assert_allclose(position, radius_m * up, atol=1e-6)
+
+
+def test_high_sun_sun_facing_slope_is_not_shadowed_by_itself():
+    # Sun from the east at 84 deg over a 20 deg slope descending eastward (toward the Sun). Along the sun
+    # ray, the slope folds back on itself (`x` decreases eastward whenever the slope exceeds
+    # 90 - elevation = 6 deg), so ordering the sweep by `x` would let the slope's top shadow its own
+    # sun-facing face. Nothing here can cast a shadow.
+    cols = np.arange(SIZE_PX)
+    ramp = -np.clip(cols - 30, 0, 60) * CELLSIZE_M * math.tan(math.radians(20.0))
+    dem = np.tile(ramp, (SIZE_PX, 1))
+    illumination = _sweep(dem, 90.0, 84.0).illumination_fraction
+    assert np.all(illumination > 0.99)
+
+
+def test_high_sun_tall_block_does_not_shadow_its_sun_side():
+    # Sun from the east at 84 deg; a 2 km north-south block at columns 40-42. Its shadow falls west
+    # (~2000 / tan(84) = ~210 m, ~2 px; the spline rounds the block's edges, so only the pixel next to
+    # it is fully dark), never on the floor east of it, even though the block is higher than that floor.
+    dem = np.zeros((SIZE_PX, SIZE_PX))
+    dem[:, 40:43] = 2000.0
+    illumination = _sweep(dem, 90.0, 84.0).illumination_fraction
+    assert np.all(illumination[:, 43:] > 0.99)
+    assert np.all(illumination[30:90, 39] < 0.5)
+    assert np.all(illumination[:, :36] > 0.99)

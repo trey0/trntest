@@ -6747,3 +6747,32 @@ ISIS `shadow` itself, so its streak figures no longer depend on another notebook
 behind it was later found to flag the wrong rows. No elevation-domain check found anything at the
 real streak rows, and the real WAC image and the sweep both show nothing at row 1016. No GLD100
 row-level artifact has been confirmed; `docs/data-sources/astropedia-gld100.md` now says so.
+
+## Phase 128 (2026-09-26) -- Cast-shadow sweep fixed for high sun
+
+A two-entry smoke test before regenerating `trntest1` with Phase 127's cast shadows showed large
+false shadows at high sun. `M1314313691CE` (84° elevation) got solid black blobs up to ~20 km across
+on basin floors; `M1314350330CE` (16°) looked right.
+
+**Cause.** The sweep ordered each row by `x`, distance along the sun ray. In the vertical plane of
+the Sun's azimuth, `x = d cos(e) + h sin(e)` (`d` horizontal distance toward the Sun, `h` height,
+`e` sun elevation), so at high sun `x` mostly measures height. On any sun-facing slope steeper than
+`90 - e` degrees (6° at 84°), `x` folds back on itself: the slope looks like an overhang, and higher
+terrain on the side away from the Sun was treated as nearer the Sun and cast false shadows. The
+code's own comment noted the assumption ("holds whenever `z_hat` is close to local up"), but nothing
+enforced it.
+
+**Fix.** Order by `d` instead, keeping `z` (height perpendicular to the rays) as the compared value.
+Q shadows P iff `d_Q > d_P` and `z_Q > z_P`, exactly, at any elevation, and a DEM is single-valued in
+`d`. Only `_SunFrame.project`'s first axis changed; cost is unchanged. Curvature tilt
+(local up drifts up to ~4° across a 240 km DEM) means `d` can still fold only on slopes within that
+angle of vertical; the steepest pixel in any `trntest1` DEM is 76°.
+
+Two regression tests (84° sun over a 20° sun-facing slope, and over a 2 km block) failed before the
+fix and pass after. On the real entries, the 84° entry is now essentially unshadowed, and the 16°
+entry is unchanged (0.68% vs 0.70% of pixels darkened by more than 1%).
+
+Also: `hapke.despeckle_and_shade_ortho` now masks the DEM's `nodata` value to NaN before the sweep.
+A raw sentinel (-3.4e38) would ring through the sweep's cubic spline into huge false occluders. No
+current DEM has `nodata` pixels, so this is a guard, not a fix for anything observed.
+

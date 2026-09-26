@@ -637,7 +637,7 @@ results.append(
 # confirmed, to a position/attitude near-singularity in `fit_pose_correction`'s unconstrained 6-DOF
 # least-squares on SIFT's smaller point set. Regenerating under current code reproduces none of
 # that: `delta_position_m` is a plausible few meters, and the ground-space residual is a modest
-# improvement (183.8m -> 112.9m) in line with every other row in the table. Neither the original
+# improvement (~131m -> ~114m) in line with every other row in the table. Neither the original
 # regression nor why it stopped reproducing was investigated further -- the final corrected overlay
 # below is built from LightGlue's fit (row 10), not SIFT's, unaffected either way.
 

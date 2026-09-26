@@ -806,6 +806,7 @@ def despeckle_and_shade_ortho(
         profile = src.profile
     with rasterio.open(dem_path) as src:
         dem = src.read(1)
+        dem_nodata = src.nodata
 
     cleaned = despeckle(ortho)
 
@@ -816,7 +817,13 @@ def despeckle_and_shade_ortho(
     if cast_shadows:
         shadow_multiplier = np.nan_to_num(
             cast_shadow.illumination_fraction(
-                dem, bbox, center_lon, center_lat, illumination.sun_direction_moon_me(camera.et)
+                # A raw nodata sentinel (e.g. -3.4e38) would ring through the sweep's cubic spline
+                # into huge false occluders; NaN is a gap that occludes nothing.
+                np.where(dem == dem_nodata, np.nan, dem) if dem_nodata is not None else dem,
+                bbox,
+                center_lon,
+                center_lat,
+                illumination.sun_direction_moon_me(camera.et),
             ),
             nan=1.0,
         )
