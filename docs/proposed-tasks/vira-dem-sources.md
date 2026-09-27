@@ -146,9 +146,11 @@ wrap.
 6. **End-to-end.** Render a few entries near each seam type through all three generators; confirm
    `image_generation.ipynb`'s geometry checks don't regress. Check DEM↔ortho registration: GLD100 is
    WAC-derived and so co-registered with WAC_EMP by construction; SLDEM (LOLA-controlled) may not be,
-   which would show up as shading offset from texture. If the real-WAC crop's map projection writes
-   onto the DEM's own pixel lattice (in progress on another branch as `wac_resample.py`), a DEM grid
-   change also changes that output grid — re-check it here.
+   which would show up as shading offset from texture. `wac_resample.py` map-projects the real WAC
+   crop onto the DEM's own pixel lattice, so a DEM grid change also changes that output grid —
+   re-check it here. It terrain-corrects with ISIS's own `LRO_LOLA_LDEM` shape model (~237 m), not
+   this DEM, so the real and synthetic images already use different terrain; note whether the
+   switch narrows or widens that gap.
 7. **Switch the default**, regenerate what needs it, update docs.
 
 ### Milestone 2: polar caps
