@@ -23,7 +23,8 @@ on this product's first-ever generation).
 5. ISIS `crop` crops that cube to the footprint being compared.
 6. `isd_generate` produces an accurately-scoped ISD sidecar for the crop — not usable for
    reprojection (`usgscsm`'s ground-to-image solve is unreliable for this sensor's Pushframe camera
-   model). Reprojection instead uses ISIS's native camera model via `cam2map` — see
+   model). Reprojection instead goes through `wac_resample.map_project_crop` (this project's own
+   resampler over `wac_camera_model` by default, or ISIS's `cam2map`) — see
    [`reproject.md`](reproject.md).
 
 See [`../external-tools.md`](../external-tools.md) for ISIS app flags and gotchas.

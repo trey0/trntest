@@ -202,6 +202,7 @@ lint's notebook checks).
 | [`spice_entry_poc.ipynb`][spice_entry_poc.ipynb] | Proof of concept for `TrnTestEntrySpice` — five `hillshade`-only entries posed purely from SPICE trajectory data along one real orbit, no EDR involved. |
 | [`sun_aligned_shadow_sweep.ipynb`][sun_aligned_shadow_sweep.ipynb] | Shows `cast_shadow`'s sun-aligned sweep on the lowest-sun candidate, and compares it with ISIS `shadow` (including that tool's row-streak artifacts) and the real WAC image. |
 | [`wac_emp_seam_correction.ipynb`][wac_emp_seam_correction.ipynb] | Shows the ±60° WAC_EMP edge-brightening artifact, what `wac_emp_edge_correction.py`'s masking/model-fit correction does to each tile's own near-boundary profile, and validates the fix with an independent tool (ASP `dem_mosaic`, not this project's own merge code) across both hemispheres — the seam's peak jump shrinks 36-61% across the three entries tested. |
+| [`wac_framelet_null_fill.ipynb`][wac_framelet_null_fill.ipynb] | Traces `reproject`'s dashes to the WAC framelet-boundary NULLs and `cam2map`'s seam misplacement, and validates `wac_resample`'s replacement for `cam2map`. |
 | [`wac_isis.ipynb`][wac_isis.ipynb] | Step-by-step walkthrough of ISIS3's EDR-to-`framestitch` pipeline for one real WAC product. |
 
 [image_generation.ipynb]: notebooks/image_generation.ipynb
@@ -217,6 +218,7 @@ lint's notebook checks).
 [spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
 [sun_aligned_shadow_sweep.ipynb]: notebooks/sun_aligned_shadow_sweep.ipynb
 [wac_emp_seam_correction.ipynb]: notebooks/wac_emp_seam_correction.ipynb
+[wac_framelet_null_fill.ipynb]: notebooks/wac_framelet_null_fill.ipynb
 [wac_isis.ipynb]: notebooks/wac_isis.ipynb
 
 ## Source files (`src/trntest/`)
@@ -241,7 +243,7 @@ lint's notebook checks).
 | [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need; applies `cast_shadow.py`'s cast shadows on top (`cast_shadows`, on by default). |
 | [`illumination.py`][illumination.py] | Sun/orbit geometry via SPICE (sun elevation/azimuth, sub-solar point, node-crossing search) plus the angle-wraparound math helpers `dataset_selection.py`/`dataset_selection_plots.py` use. |
 | [`isis_campt.py`][isis_campt.py] | ISIS `campt`-based ground-truth ground↔image queries against an already-processed WAC cube (`ground_to_image_pixel`/`ground_point_at_pixel`/`resolve_ground_to_image_model`), plus the CSM ISD generation those queries depend on. |
-| [`isis_wac.py`][isis_wac.py] | Steps a WAC EDR through ISIS3's own pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`→`cam2map`) as this project's real-WAC comparison path — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
+| [`isis_wac.py`][isis_wac.py] | Steps a WAC EDR through ISIS3's pipeline (`lrowac2isis`→`spiceinit`→`lrowaccal`→`framestitch`→`crop`) to produce the real-WAC crop, plus the optional `cam2map` map projection — see [`docs/external-tools.md`](docs/external-tools.md)'s ISIS Pushframe pipeline section. |
 | [`lunaserv_wms.py`][lunaserv_wms.py] | Deprecated fallback DEM source: Lunaserv's own WMS-served DTM layer, in its native unprojected geographic CRS — superseded by `dem_gld100.py`, kept for comparison and a few one-off diagnostics. See [`docs/data-sources/lunaserv-wms.md`](docs/data-sources/lunaserv-wms.md). |
 | [`maneuver_detection.py`][maneuver_detection.py] | Detects likely propulsive maneuvers in LRO's reconstructed-orbit SPK via step changes in angular momentum/orbital energy (`find_maneuver_candidates`) — see the module docstring for the derivation. |
 | [`orientation.py`][orientation.py] | Notebook-display-only north-up rotation (does not touch the sensor model). |
@@ -265,6 +267,8 @@ lint's notebook checks).
 | [`trn_dataset.py`][trn_dataset.py] | `TrnTestDataSet`/`TrnTestEntry` (abstract, two concrete kinds — `TrnTestEntryEdr`/`TrnTestEntrySpice`, see the module's own docstring) — a structured, resumable dataset folder; `populate()`/`populate_via_workers()` drive generation sequentially or across worker processes via `trn_products.py`'s product classes. `write_index()` writes a dataset-wide `status.csv`/`reports/index.html` nav bar after each `populate*()` call. |
 | [`trn_products.py`][trn_products.py] | `TrnTestProduct` — one product type of one `TrnTestEntry`, covering all five product types (`TrnTestImage` subclasses `TrnTestCropImage`/`TrnTestHillshadeImage`/`TrnTestReprojectImage`; `TrnTestReport` is the per-entry HTML report, self-ensuring its `primary_image` dependency; `TrnTestGalleryThumb` persists the same overlay-vs-basemap blink as two plain PNGs for the gallery page, self-ensuring the same `primary_image` dependency — both default-on in `PRODUCT_TYPES`, `TrnTestEntryEdr`-only). Split out of `trn_dataset.py`. |
 | [`wac_emp_edge_correction.py`][wac_emp_edge_correction.py] | Masks/corrects the archived WAC_EMP tiles' edge-brightening defect at their shared ±60° boundary, both hemispheres independently fit (`mask_equirect_edge_row`/`mask_and_correct_polar_edge`), plus `fill_nearby_gaps` for the small coverage gap the masking opens — kept separate from `ortho_wac_emp.py` since it's a fix for one specific archive defect, not reprojection machinery. Called from `ortho_wac_emp.py` only when `TrntestConfig.wac_emp_edge_correction_enabled` is true (the default). |
+| [`wac_framelet_fill.py`][wac_framelet_fill.py] | Investigation helpers for the WAC framelet-boundary NULL pixels (fills, `cam2map` source-pixel trace), used by `wac_framelet_null_fill.ipynb`. |
+| [`wac_resample.py`][wac_resample.py] | Map-projects the real WAC crop onto the DEM grid (`map_project_crop`), in place of `cam2map` unless `TrntestConfig.crop_map_projection` says otherwise. |
 | [`wac_format.py`][wac_format.py] | WAC-VIS sensor frame-geometry constants (`SAMPLES`, `VIS_BLOCK_HEIGHT`) — true of the physical camera regardless of extraction method; dependency-free. |
 
 [cache.py]: src/trntest/cache.py
@@ -309,6 +313,8 @@ lint's notebook checks).
 [trn_dataset.py]: src/trntest/trn_dataset.py
 [trn_products.py]: src/trntest/trn_products.py
 [wac_emp_edge_correction.py]: src/trntest/wac_emp_edge_correction.py
+[wac_framelet_fill.py]: src/trntest/wac_framelet_fill.py
+[wac_resample.py]: src/trntest/wac_resample.py
 [wac_format.py]: src/trntest/wac_format.py
 
 ## Development history

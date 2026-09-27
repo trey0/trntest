@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from trntest import dem_ortho, isis_campt, isis_wac, plotting, render
+from trntest import dem_ortho, isis_campt, plotting, render, wac_resample
 from trntest.dem_ortho import DemOrthoResult
 
 if TYPE_CHECKING:
@@ -281,9 +281,9 @@ class TrnTestCropImage(TrnTestImage):
         shutil.copy(isd.json_path, self.sidecar_json_path)
 
     def _mapprojected_path(self) -> Path:
-        # Operates on the scratch-dir crop_result, not raster_path, so cam2map's own intermediates
-        # (the .ortho.map PVL file, the intermediate .cub) don't spill into crop/.
-        return isis_wac.run_cam2map_for_crop(
+        # Operates on the scratch-dir crop_result, not raster_path, so map projection's own outputs
+        # (and cam2map's intermediates, if configured) don't spill into crop/.
+        return wac_resample.map_project_crop(
             self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
         )
 
@@ -395,9 +395,9 @@ class TrnTestReprojectImage(TrnTestHillshadeImage):
 
     @functools.cached_property
     def _reproject_dem_ortho(self) -> DemOrthoResult:
-        """The real WAC crop's own reflectance, reprojected (`isis_wac.run_cam2map_for_crop`) and
+        """The real WAC crop's own reflectance, reprojected (`wac_resample.map_project_crop`) and
         wrapped as a `DemOrthoResult` sharing `entry.dem_ortho_result`'s own DEM."""
-        wac_ortho_path = isis_wac.run_cam2map_for_crop(
+        wac_ortho_path = wac_resample.map_project_crop(
             self.entry.crop_result, self.entry.dem_ortho_result, self.entry.per_image_config
         )
         return dem_ortho.result_from_files(wac_ortho_path, self.entry.dem_ortho_result.dem)

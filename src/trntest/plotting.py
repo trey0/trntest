@@ -315,8 +315,8 @@ def plot_isis_comparison(
 ):
     """Synthetic render next to a same-footprint crop of the ISIS-processed WAC image
     (`isis_wac.crop_for_camera`) -- an ad hoc km/north-up comparison, not true pixel-for-pixel
-    geo-registration; for that, see `plot_overlay`'s `cam2map`-based overlay of this same
-    ISIS-processed cube (`isis_wac.run_cam2map_for_crop`) instead.
+    geo-registration; for that, see `plot_overlay`'s overlay of this same ISIS-processed cube,
+    map-projected by `wac_resample.map_project_crop`, instead.
 
     :param camera: Camera whose pose drove both the synthetic render and the crop window.
     :param tie_point_results: From `session.select_tie_points` + `tie_points.resolve_crop_pixels`

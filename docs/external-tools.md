@@ -369,10 +369,21 @@ model even on the known-good full cube) had missed both. Full investigation:
   (0.9954 vs. 0.9999986 at the broken default) but missed a real striping artifact concentrated at
   framelet boundaries, invisible to a correlation dominated by the much larger unaffected bulk of the
   image; a direct `PATCHSIZE` sweep (1/2/4/8/14) confirmed 8/14 markedly worse and 1 the clear best
-  choice. **Not a complete fix**: a high-pass comparison found only a modest ~2.4% reduction in
-  fine-scale energy vs. `PATCHSIZE=4`, and a faint striping residual remains visible at `PATCHSIZE=1`
-  on close inspection — consistent with genuine, modest photometric discontinuities at framelet
-  transitions (inherent to any patch-based warp), not pursued further.
+  choice. **Not a complete fix**: a faint striping residual remains at `PATCHSIZE=1`. It is
+  `cam2map` misplacing each framelet's last line: those pixels (~3-6% of the map) land 3-5 map px
+  along-track from where `campt` says they image, while every other line lands within
+  nearest-neighbor rounding. Measured on four entries in `notebooks/wac_framelet_null_fill.ipynb`.
+  Together with the framelet-boundary NULLs `cam2map` lets through, this is why the pipeline
+  map-projects crops with `wac_resample.py` instead (`TrntestConfig.crop_map_projection`).
+- **`cam2map`'s `INTERP=CUBICCONVOLUTION` behaves as the Keys kernel with a = -1**, not the a = -0.5
+  variant that reproduces planes and quadratics exactly: on the same source coordinates, a = -1
+  matches `cam2map`'s output to 0.8% of the image's std, a = -0.5 to 4.5%. The a = -1 kernel
+  looks sharper (boosted high frequencies) but is off by ~2% of a pixel step on a plane.
+  `wac_resample` uses a = -0.5.
+- **`cam2map` maps each WAC VIS band through that band's own camera geometry** (each filter sits on
+  a different detector strip). A per-pixel trace written into band 2 of an index cube does not
+  describe band 1's mapping; `wac_framelet_fill.cam2map_source_pixels` encodes line and sample in
+  band 1 only for this reason.
 - **Position residual — real at the time, since found to not be reproducible** (see
   `docs/data-sources/spice-kernels-isis.md`). Even after the fixes above, the crop's designated
   center pixel (checked directly via `campt`, not just an aggregate valid-pixel centroid) appeared

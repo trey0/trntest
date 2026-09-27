@@ -39,7 +39,7 @@ import rasterio
 import spiceypy as spice
 
 import trntest
-from trntest import cache, cast_shadow, dem_ortho, hapke, illumination, isis_wac, shadow_plotting
+from trntest import cache, cast_shadow, dem_ortho, hapke, illumination, shadow_plotting, wac_resample
 from trntest.config import MOON_RADIUS_M
 from trntest.subprocess_utils import run_quiet
 
@@ -209,12 +209,12 @@ for label, row in ROWS_OF_INTEREST.items():
 # ## Comparison with the real WAC image
 #
 # The real WAC crop is what the sensor actually saw -- the closest thing to a reference for either
-# shadow model. `isis_wac.crop_reflectance_on_dem_grid` resamples it pixel-for-pixel onto the DEM's
+# shadow model. `wac_resample.crop_reflectance_on_dem_grid` resamples it pixel-for-pixel onto the DEM's
 # grid. The strip below is at strict 1:1 pixel scale around row 1016, one of ISIS's streak rows
 # (the one that survives `PRESET=ACCURATE`).
 
 # %%
-wac_on_dem_grid = isis_wac.crop_reflectance_on_dem_grid(entry.crop_result, dem_result, config)
+wac_on_dem_grid = wac_resample.crop_reflectance_on_dem_grid(entry.crop_result, dem_result, config)
 fig = shadow_plotting.plot_strip_vs_wac(
     wac_on_dem_grid,
     hillshade,

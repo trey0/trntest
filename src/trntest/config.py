@@ -157,6 +157,18 @@ DEFAULT_DELETE_ISIS_INTERMEDIATES = True
 # reproduce the original artifact for comparison.
 DEFAULT_WAC_EMP_EDGE_CORRECTION_ENABLED = True
 
+# How `wac_resample.map_project_crop` map-projects the real WAC crop (the `reproject` generator's
+# texture, the `crop` overlay, `crop_reflectance_on_dem_grid`): "wac_resample" (the default,
+# `wac_resample.resample_crop_to_map`) or "cam2map" (`isis_wac.run_cam2map_for_crop`). `cam2map`
+# leaves dashes from the framelet-boundary NULL pixels and misplaces each framelet's last line by 3-5
+# map px; kept for comparison. See notebooks/wac_framelet_null_fill.py.
+DEFAULT_CROP_MAP_PROJECTION = "wac_resample"
+
+# Whether `wac_resample.resample_crop_to_map` also writes a mask of the pixels its small-hole fill
+# invented (`<crop>-resampled-filled.tif`, 1 = filled). Off by default: nothing reads it, and the
+# output's `FILLED_PERCENT` tag already reports how much was filled (a handful of pixels at most).
+DEFAULT_CROP_MAP_WRITE_FILL_MASK = False
+
 
 @dataclasses.dataclass(frozen=True)
 class TrntestConfig:
@@ -203,6 +215,8 @@ class TrntestConfig:
     delete_full_raw_edr: bool = DEFAULT_DELETE_FULL_RAW_EDR
     delete_isis_intermediates: bool = DEFAULT_DELETE_ISIS_INTERMEDIATES
     wac_emp_edge_correction_enabled: bool = DEFAULT_WAC_EMP_EDGE_CORRECTION_ENABLED
+    crop_map_projection: str = DEFAULT_CROP_MAP_PROJECTION  # "wac_resample" | "cam2map"
+    crop_map_write_fill_mask: bool = DEFAULT_CROP_MAP_WRITE_FILL_MASK
 
 
 _PATH_FIELDS = ("cache_root", "output_dir", "scratch_dir")

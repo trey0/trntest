@@ -85,18 +85,56 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
     distance along the ray), so it only spans a 100 m pixel once `D` exceeds ~11 km — likely
     sub-pixel for most candidates. Compute `D` for real low-sun candidates before building it. If
     it's worth it, the sweep can average several sun directions sampled across the disk.
-- **`reproject` renders show dashes/specks from the WAC framelet-boundary NULL pixels.** The
-  fixed bad-pixel mask (56 columns NULL on the first line of every 14-line framelet, see
-  `docs/data-sources/lroc-wac-edr-cdr.md`) reaches `isis_wac.run_cam2map_for_crop` unfilled.
-  `cam2map` fills nearly all of them with some value (only 12 interior nodata px remain in
-  `trntest1` entry 175's texture, `M1314448520CE`), and the result shows up as short horizontal
-  dashes along instrument lines next to crater shadows, plus bright specks inside shadows -- very
-  visible in that entry's report zoom. How `cam2map` fills them is unconfirmed (a guess: it falls
-  back to a neighboring pixel when its interpolation window touches a NULL). `hapke.despeckle` has
-  never run on this path and wouldn't help (it targets isolated single pixels; it would change
-  0.08% of this texture). Likely fix: fill the 1-3 px NULL gaps row-wise in the crop before
-  `cam2map`, as `plotting._fill_dead_columns_for_display` already does for display only, then
-  regenerate `reproject` (and `crop`, if the fill belongs there) for every dataset entry.
+- **Existing `reproject` renders still carry `cam2map`'s framelet dashes/specks.** The crop is now
+  map-projected by `wac_resample.map_project_crop` (default `TrntestConfig.crop_map_projection =
+  "wac_resample"`), which avoids the framelet-boundary NULLs and `cam2map`'s last-line misplacement
+  (`notebooks/wac_framelet_null_fill.py`). Still to do: regenerate `reproject` (and the `crop`
+  overlays/reports, which use the same map projection) for `trntest1`, `trntest2` and the frozen
+  manifest (`reproject`'s `exists()` will otherwise keep the old renders); re-run
+  `image_generation.py` (updating its intro table together with `docs/generators.md`'s, both still
+  say "`cam2map` reproject"), `sun_aligned_shadow_sweep.py` and `sfs_validation.py`; and re-measure
+  the brightness-matched hillshade/crop diff below (`plotting.compute_brightness_matched_diff`),
+  which compares against the map-projected crop.
+- **Decide: adopt a workflow manager, or extend the homegrown product graph.** `truncate()` deletes
+  only the generator outputs it's given, so dependents go stale (truncating `reproject` leaves
+  `report`/`gallery`, built from it, marked done). It also can't express "this intermediate changed"
+  (e.g. the crop's map projection, which feeds `reproject`, `report` and `gallery`), and unused
+  files pile up in `_work/` (1.8 GB of `cam2map` outputs in `trntest1`/`trntest2`). The underlying
+  structure is a product-level dependency graph; generators are bundles of products, useful as the
+  `populate()` interface. Snakemake covers most of this: rules with `input:`/`output:` (the body
+  gets its paths from the declarations), per-entry wildcards, `-R` to rerun a rule and everything
+  downstream, `-j`/`--retries`/`--keep-going`, and `--rerun-triggers code params` (the rule's own
+  code only, not imported `trntest` code). Costs: notebooks use in-process generate-on-demand
+  properties (`entry.crop_result` etc.) that don't map onto CLI jobs, per-job process startup
+  (imports, SPICE kernels), and replacing `tasks.py`/`populate*`/`truncate`/skip list/`status`.
+  Dagster's asset model (partitions per entry, `code_version` staleness) fits the framing best but
+  adds a UI/daemon; Bazel's hermetic sandboxing fights network fetches and GB rasters. Next step: a
+  Snakemake spike of one entry (crop -> crop map projection -> `reproject` render -> report) calling
+  the existing `trntest` functions, checking `-R` semantics, code-change triggers, per-job overhead,
+  and notebook fit.
+  Fallback if it doesn't fit, in stages that can stop after any one:
+  1. Declare reads with the unused `product_io.reads_product` next to `writes_product` (principle 7
+     of `docs/intermediate-product-discipline.md`), give each product a `_work/<entry>/<product>/`
+     home, and make `truncate(entries, products=...)` delete the downstream closure, never
+     upstream. Products regenerated on every use still pass invalidation through; `cache/`
+     products need an explicit opt-in; generator names alias their final products.
+  2. Per-label path resolvers in `product_io` as the only place product paths are built
+     (lint-checked).
+  3. A `ProductPath` type carrying its label, checked by the decorators at call time, which also
+     catches undeclared reads of paths passed in (e.g. `DemOrthoResult.dem`).
+  Either way, deciding which product a library code change invalidates stays a manual call.
+- **`docs/external-tools.md` is bloated** (~640 lines, one file for every external tool, heavy on
+  investigation narrative). Prune it per `docs/docs-style.md`, or split it into per-tool files behind
+  a thin index, as `docs/data-sources.md` and `docs/generators.md` already do.
+- **Some `reproject` renders reach past the crop's footprint.** 38 of 276 `trntest1`/`trntest2`
+  renders have nodata pixels touching the image's top edge (up to 0.2% of the image), as blobs on
+  crater rims rather than a strip along the edge. Unconfirmed guess: the render's view extends past
+  the crop's along-track end, and elevated terrain seen obliquely lands beyond it. `sat_sim` writes
+  nodata there (checked: a nodata square in the texture becomes exactly nodata in the render), but
+  `reproject`'s nodata is the ISIS sentinel -3.4e38, declared only in the GeoTIFF tag
+  (`hillshade` uses NaN), so a consumer that ignores the tag reads huge negative values. Likely fix:
+  crop a few extra framelets along-track. Separately, 3 `trntest1` renders have interior nodata
+  blobs (39-58 px), probably `cam2map` holes; check them after `reproject` is regenerated.
 - **`trntest1` DEMs have implausibly steep pixels.** 38 of 207 filled DEMs have pixels steeper
   than 60° at 100 m posting (up to ~300 per DEM, max 76.1° in `M1314424588CE`); real lunar slopes
   at that scale rarely exceed ~40°. Likely seams, hole fills or source-DEM defects. Cast shadows

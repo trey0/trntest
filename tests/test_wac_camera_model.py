@@ -61,7 +61,7 @@ def test_calibrate_et_per_crop_line_fits_an_exact_affine_line_through_two_real_p
 
 def test_find_framelet_and_project_returns_none_when_no_framelet_contains_the_point():
     # A point that projects out of [1, SAMPLES] range on every framelet in the crop.
-    with patch.object(wac_camera_model, "_project_at_framelet", return_value=(-50.0, 7.5)):
+    with patch.object(wac_camera_model, "project_at_framelet", return_value=(-50.0, 7.5)):
         result = wac_camera_model.find_framelet_and_project(np.zeros(3), n_framelets=70, et0=0.0, et_per_line=0.0)
     assert result is None
 
@@ -76,7 +76,7 @@ def test_find_framelet_and_project_finds_the_single_containing_framelet():
         within_line = 3.0 - wac_camera_model.FRAMELET_HEIGHT * (f - true_f)
         return 400.0, within_line
 
-    with patch.object(wac_camera_model, "_project_at_framelet", side_effect=fake_project):
+    with patch.object(wac_camera_model, "project_at_framelet", side_effect=fake_project):
         result = wac_camera_model.find_framelet_and_project(np.zeros(3), n_framelets=70, et0=0.0, et_per_line=0.0)
 
     assert result == (400.0, true_f * wac_camera_model.FRAMELET_HEIGHT + 3.0)
@@ -96,7 +96,7 @@ def test_find_framelet_and_project_picks_the_overlap_candidate_closest_to_its_ow
         within_line = 2.0 + step * (5 - f)
         return 674.0, within_line
 
-    with patch.object(wac_camera_model, "_project_at_framelet", side_effect=fake_project):
+    with patch.object(wac_camera_model, "project_at_framelet", side_effect=fake_project):
         result = wac_camera_model.find_framelet_and_project(np.zeros(3), n_framelets=70, et0=0.0, et_per_line=0.0)
 
     expected_within_line = 2.0 + step * (5 - 4)
@@ -182,7 +182,7 @@ def test_fit_pose_correction_converges_to_near_zero_residual_on_synthetic_data()
     observed_pixels = []
     with patch.object(wac_camera_model, "camera_pose_moon_me", side_effect=fake_camera_pose):
         for f, sample_target, within_line_target in targets:
-            et = et_per_line * wac_camera_model._center_line(f)
+            et = et_per_line * wac_camera_model.center_line(f)
             c_m, r_cam_to_me = fake_camera_pose(et)[:2]
             ux_mm, uy_mm = _focal_plane_offset_for_target(sample_target, within_line_target)
             ray_cam = np.array([ux_mm, uy_mm, wac_camera_model.FOCAL_LENGTH_MM])
@@ -190,7 +190,7 @@ def test_fit_pose_correction_converges_to_near_zero_residual_on_synthetic_data()
             ground_pt = c_m + altitude_m * (r_cam_to_me @ ray_cam)
             ground_points.append(ground_pt)
 
-            observed = wac_camera_model._project_at_framelet(
+            observed = wac_camera_model.project_at_framelet(
                 ground_pt, f, et0=0.0, et_per_line=et_per_line, correction=true_correction
             )
             observed_pixels.append((observed[0], f * wac_camera_model.FRAMELET_HEIGHT + observed[1]))

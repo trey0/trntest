@@ -128,8 +128,7 @@ def crop_to_footprint(reference_path, footprint_source_path, out_path, pad_fract
 
 def native_wac_gsd_m(camera) -> float:
     """Estimates the WAC crop's own native ground sample distance -- i.e. before
-    `isis_wac.run_cam2map_for_crop`'s `PIXRES=map` forces its output onto the basemap's ~100 m/px
-    working grid (see that function's docstring).
+    `wac_resample.map_project_crop` puts it on the basemap's ~100 m/px working grid.
 
     :param camera: A `Camera` with `cross_track_width_km`/`km_per_frame` already computed (see
         `camera.compute_n_frames_for_square_crop`).

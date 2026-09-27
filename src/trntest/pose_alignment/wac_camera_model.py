@@ -144,7 +144,7 @@ def calibrate_et_per_crop_line(cub_path: Path, n_lines: int) -> tuple[float, flo
     return et0, et_per_line
 
 
-def _center_line(framelet_index: int) -> float:
+def center_line(framelet_index: int) -> float:
     return framelet_index * FRAMELET_HEIGHT + (FRAMELET_HEIGHT + 1) / 2.0
 
 
@@ -166,7 +166,7 @@ class PoseCorrection:
         return PoseCorrection(delta_position_m=np.zeros(3), delta_rotation=np.eye(3))
 
 
-def _project_at_framelet(
+def project_at_framelet(
     ground_me_m: np.ndarray,
     framelet_index: int,
     et0: float,
@@ -183,7 +183,7 @@ def _project_at_framelet(
     :param correction: Applied on top of the framelet's own pose, if given.
     :returns: `(cube_sample, within_framelet_line)`, see `project_in_known_framelet`.
     """
-    et = et0 + et_per_line * _center_line(framelet_index)
+    et = et0 + et_per_line * center_line(framelet_index)
     c_m, r_cam_to_me, _, _ = camera_pose_moon_me(et)
     if correction is not None:
         c_m = c_m + correction.delta_position_m
@@ -224,8 +224,8 @@ def find_framelet_and_project(
     #    the wrong framelet for the opposite-yaw case.
     # 2. A 2D containment check (`1 <= sample <= SAMPLES`, `1 <= within_framelet_line <=
     #    FRAMELET_HEIGHT`) on the bracketing framelet(s) from step 1, since the monotonic signal alone
-    #    doesn't guarantee the sample axis also lands in range. Adjacent framelets overlap by ~4 of
-    #    their 14 lines (~29%, confirmed via live Docker validation, matching
+    #    doesn't guarantee the sample axis also lands in range. Adjacent framelets overlap by 2-4 of
+    #    their 14 lines, varying by product (confirmed via live Docker validation, matching
     #    docs/external-tools.md's independent note from the `usgscsm` bug investigation that adjacent
     #    Pushframe exposures have ground-coverage overlap) -- a ground point can validly land in two
     #    different framelets, and either is an equally correct answer; there's no "right" one to
@@ -237,12 +237,12 @@ def find_framelet_and_project(
     #    the point sits deepest inside its valid range maximizes the neighborhood of nearby
     #    ground/pose perturbations that stay on the same framelet before the choice flips.
     lo, hi = 0, n_framelets - 1
-    _, within_line_lo = _project_at_framelet(ground_me_m, lo, et0, et_per_line, correction)
-    _, within_line_hi = _project_at_framelet(ground_me_m, hi, et0, et_per_line, correction)
+    _, within_line_lo = project_at_framelet(ground_me_m, lo, et0, et_per_line, correction)
+    _, within_line_hi = project_at_framelet(ground_me_m, hi, et0, et_per_line, correction)
     increasing = within_line_hi > within_line_lo
     while lo < hi:
         mid = (lo + hi) // 2
-        _, within_line = _project_at_framelet(ground_me_m, mid, et0, et_per_line, correction)
+        _, within_line = project_at_framelet(ground_me_m, mid, et0, et_per_line, correction)
         if 1.0 <= within_line <= FRAMELET_HEIGHT:
             lo = hi = mid
         elif (within_line < 1.0) == increasing:
@@ -253,7 +253,7 @@ def find_framelet_and_project(
     candidates = [f for f in (lo - 1, lo, lo + 1) if 0 <= f < n_framelets]
     valid = []
     for f in candidates:
-        sample, within_line = _project_at_framelet(ground_me_m, f, et0, et_per_line, correction)
+        sample, within_line = project_at_framelet(ground_me_m, f, et0, et_per_line, correction)
         if 1.0 <= sample <= SAMPLES and 1.0 <= within_line <= FRAMELET_HEIGHT:
             valid.append((f, sample, within_line))
     if not valid:

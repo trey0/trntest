@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import datetime
 import json
 import shutil
 import subprocess
@@ -312,6 +313,18 @@ def _catlab(cub_path: Path) -> str:
         print(result.stderr, end="")
         result.check_returncode()
     return result.stdout
+
+
+def cube_start_time(cub_path: Path) -> datetime.datetime:
+    """A cube's `Instrument.StartTime`, as a naive UTC datetime.
+
+    :param cub_path: Cube whose label to read.
+    :returns: The start time.
+    """
+    start = pvl.loads(_catlab(cub_path))["IsisCube"]["Instrument"]["StartTime"]
+    if isinstance(start, datetime.datetime):
+        return start.replace(tzinfo=None)
+    return datetime.datetime.fromisoformat(str(start).rstrip("Z"))
 
 
 def _strip_isis_alias_prefix(path: str) -> str:
@@ -780,10 +793,9 @@ def run_cam2map_for_crop(
     #
     # `PATCHSIZE=1` specifically, not the `4` an earlier version of this used: a visible striping
     # artifact in the mapprojected output gets markedly worse at `PATCHSIZE=8`/`14`, and `PATCHSIZE=1`
-    # is a visible improvement over `4`. Not a complete fix -- a faint residual pattern remains visible
-    # at `PATCHSIZE=1` on close inspection, consistent with modest photometric discontinuities where
-    # the resampled product transitions between adjacent framelets (an inherent, small artifact of any
-    # patch-based warp), not the more severe missing/bad-data-looking pattern `PATCHSIZE=4` showed.
+    # is a visible improvement over `4`. Not a complete fix -- a faint residual pattern remains at
+    # `PATCHSIZE=1`: `cam2map` places each framelet's last line 3-5 map px along-track from where
+    # `campt` says it images (see docs/external-tools.md's "ISIS Pushframe pipeline" section).
     # `PATCHSIZE=1` costs runtime (~16s vs. ~10s for this crop) but doesn't trade away coverage at all
     # (71.39% vs. 71.38%, essentially identical) -- worthwhile, just not complete; diminishing returns
     # past this point.
@@ -837,39 +849,6 @@ def run_cam2map_for_crop(
         )
         run_quiet(["gdal_translate", "-b", "1", "-mask", "none", str(mapproj_cub), str(tmp_tif)])
     return mapproj_tif
-
-
-def crop_reflectance_on_dem_grid(
-    crop: CropResult, dem: DemFetchResult | DemOrthoResult, config: TrntestConfig | None = None
-) -> np.ndarray:
-    """The real WAC crop's calibrated reflectance, resampled pixel-for-pixel onto `dem`'s own grid.
-
-    :param crop: Cropped cube (e.g. `TrnTestEntryEdr.crop_result`).
-    :param dem: DEM whose exact grid (not just projection) to land on.
-    :param config: Project config; `load_config()` if not given.
-    :returns: float32 array, `dem`'s shape; NaN outside the crop's coverage.
-    """
-    # `run_cam2map_for_crop` shares `dem`'s projection but auto-sizes its own extent to the crop's
-    # footprint, so a bilinear `reproject` onto the DEM's exact transform is still needed for a
-    # pixel-aligned comparison against anything computed on the DEM grid.
-    cam2map_tif = run_cam2map_for_crop(crop, dem, config)
-    with rasterio.open(dem.dem) as dst:
-        dst_transform, dst_crs, dst_shape = dst.transform, dst.crs, dst.shape
-    with rasterio.open(cam2map_tif) as src:
-        source = src.read(1, masked=True).filled(np.nan).astype(np.float32)
-        on_dem_grid = np.full(dst_shape, np.nan, dtype=np.float32)
-        rasterio.warp.reproject(
-            source=source,
-            destination=on_dem_grid,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            src_nodata=np.nan,
-            dst_nodata=np.nan,
-            resampling=rasterio.warp.Resampling.bilinear,
-        )
-    return on_dem_grid
 
 
 _INSTRUMENT_POINTING_LABEL_EXCLUDE = {"Name", "StartByte", "Bytes", "Records", "ByteOrder", "Field"}

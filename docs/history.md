@@ -6776,3 +6776,69 @@ Also: `hapke.despeckle_and_shade_ortho` now masks the DEM's `nodata` value to Na
 A raw sentinel (-3.4e38) would ring through the sweep's cubic spline into huge false occluders. No
 current DEM has `nodata` pixels, so this is a guard, not a fix for anything observed.
 
+## Phase 129 (2026-09-27) -- WAC framelet-boundary NULLs, `cam2map`'s seam misplacement, and a resampler prototype
+
+Started from the open item about dashes/specks in `reproject` renders (`trntest1` entry 175,
+`M1314448520CE`). `notebooks/wac_framelet_null_fill.ipynb` holds the full trail.
+
+**NULLs.** `lrowaccal` leaves 53 fixed columns NULL on the first line of every 14-line VIS framelet,
+band 1 only (plus 3 columns dead on every line). A nearest-neighbor `cam2map` of a line-index cube
+showed the first line wins its full share of the map over the previous framelet's overlapping lines,
+so the NULLs land in the map and `cam2map` substitutes nearby values: the dashes. Filling them in the
+crop before `cam2map` removes the dashes. A donor from the previous framelet's overlap (per-column
+line offset ~10.4-11.9, sample shift ±0.5, a radial-distortion shape) halves held-out error vs.
+row interpolation. `wac_camera_model` predicts the same overlap to ~0.05 lines, so the framelets are
+consistently registered.
+
+**Seams.** The remaining faint seam dashes turned out to be `cam2map` misplacing each framelet's last
+line by 3-5 map px along-track, confirmed by `campt` round trip on four entries (every other line is
+within rounding). The earlier explanation, photometric discontinuities, was wrong. One false lead
+along the way: a sample-index trace written into band 2 showed a ±2 px cross-track error, but
+`cam2map` maps each WAC band through its own geometry, so a band-2 trace doesn't describe band 1.
+
+**Resampler.** `wac_resample.resample_crop` replaces `cam2map` for a crop: map-to-image through a
+vectorized `wac_camera_model` optics chain (heights from the same LOLA shape model the crop's
+`spiceinit` attached), a bisection framelet search, one mid-overlap seam steered around NULL taps,
+bilinear within one framelet, valid-tap averaging next to dead columns only where the containing
+pixel is valid, and `fill_small_holes` for enclosed gaps. On four entries (`M1314448520CE`,
+`M1309273576CE`, `M1314403930CE`, and the opposite-yaw `M1327210646CE`) it agrees with `campt` to
+≤0.04 px, matches `cam2map`'s basemap alignment and coverage (within 0.02%), leaves no interior NULLs
+(one swath-edge notch filled), and runs in 4-12 s vs. 19-25 s. A first version used a linear framelet
+estimate that landed up to two framelets off far from the crop's middle, leaving holes; the
+bisection replaced it. Wired in in Phase 130.
+
+## Phase 130 (2026-09-27) -- `wac_resample` replaces `cam2map` for the crop's map projection
+
+Picked up Phase 129's open decision. First question: does bilinear interpolation soften the texture?
+A radial power spectrum said `cam2map` kept 3-5x more high-frequency power, but that was mostly
+`cam2map`'s own seam errors: tracing each map pixel's source coordinates (bilinear `cam2map` of
+sample- and line-index ramp cubes) showed both geometries smooth and in agreement to 0.012 px inside
+framelets, and there bilinear `cam2map` and the bilinear resampler gave the same values (0.7% of the
+image's std) and the same high-pass energy. The real kernel cost was cubic vs. bilinear inside
+framelets: bilinear kept ~75% of `cam2map`'s high-pass energy.
+
+So the resampler got cubic convolution within the framelet, falling back to bilinear, then to the
+valid-tap average. `cam2map`'s cubic turned out to be the Keys a = -1 kernel (matches `cam2map` to
+0.8% of std; a = -0.5 to 4.5%). a = -1 doesn't reproduce even a plane (off by ~2% of a pixel step),
+so the resampler uses a = -0.5, keeping ~90% of `cam2map`'s interior high-pass energy.
+
+Wired in as `wac_resample.map_project_crop`, dispatching on the new
+`TrntestConfig.crop_map_projection` (`"wac_resample"` default, `"cam2map"`). It writes onto the DEM's
+own pixel lattice trimmed to the crop footprint (`cam2map`'s auto-sized grid never extended past
+the DEM on four entries), furnishes its own SPICE kernels from the crop's `StartTime`, and is used
+by the `reproject` texture, the `crop` overlay and `crop_reflectance_on_dem_grid` (moved here from
+`isis_wac`). `pose_alignment_spike.py` stays on `cam2map`: the resampler takes poses from the SPICE
+kernels, not the cube's tables, so it can't see a pose-corrected crop. Running over the whole DEM
+grid first made it slower than `cam2map` on large crops (44 s vs. 25 s); profiling showed the
+vectorized distortion's fixed-point iteration dominating, and a Newton solve on the radius (the
+polynomial is monotonic) brought it to 8-25 s vs. 19-25 s. A detour on the way: skipping iteration
+for far-off-detector points looked safe until a test showed one fixed-point step pulls a point at
+50 mm back to the center.
+
+Filled pixels are reported, not hidden: the output's `FILLED_PERCENT` tag, a printed notice for
+enclosed holes over 4 px (left as nodata), and an optional mask (`crop_map_write_fill_mask`, off by
+default since nothing reads it yet). A check of what `sat_sim` does with texture gaps (writes
+nodata, invents nothing) turned up existing `reproject` renders whose view runs past the crop's
+footprint; logged in `docs/proposed-tasks/open-items.md`, along with regenerating existing
+datasets, which still hold `cam2map`-based renders.
+

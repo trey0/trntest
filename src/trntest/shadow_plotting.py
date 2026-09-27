@@ -117,7 +117,7 @@ def plot_strip_vs_wac(
 ):
     """A thin strip at strict 1:1 pixel scale: real WAC | hillshade | sweep, with one row marked.
 
-    :param wac_on_dem_grid: `isis_wac.crop_reflectance_on_dem_grid`'s output.
+    :param wac_on_dem_grid: `wac_resample.crop_reflectance_on_dem_grid`'s output.
     :param hillshade: `lambertian_hillshade`'s output.
     :param illumination_fraction: The sweep's illumination fraction.
     :param rows: Strip rows.

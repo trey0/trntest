@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from trntest import dem_ortho, isis_wac, product_io, render
+from trntest import dem_ortho, isis_wac, product_io, render, wac_resample
 
 # -- atomic_publish / atomic_publish_path -----------------------------------------------------------
 
@@ -232,6 +232,7 @@ def test_real_pipeline_writers_are_registered():
     assert product_io.writer_of("isis_stitched_cube") is isis_wac.run_framestitch
     assert product_io.writer_of("isis_crop_cube") is isis_wac.crop_for_camera
     assert product_io.writer_of("crop_cam2map") is isis_wac.run_cam2map_for_crop
+    assert product_io.writer_of("crop_resampled") is wac_resample.resample_crop_to_map
     assert product_io.writer_of("sat_sim_render") is render.run_sat_sim
 
 

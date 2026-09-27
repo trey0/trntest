@@ -18,6 +18,10 @@ very large ones), pushing each batch to the branch as you go. Don't `git push or
 until the user has reviewed that specific batch and given the go-ahead — an earlier approval for one
 batch doesn't carry over to the next.
 
+The point is to catch a wrong direction early, before it costs a whole task's token quota; ~3 files
+is roughly one human review sitting, sized so the agent isn't blocked for long. It doesn't apply to
+work that's already finished: review that as one diff.
+
 ## Publish valuable output before cleanup
 
 `output/<worktree-name>/` is scoped to that worktree — `scripts/cleanup_worktrees.sh delete` removes
