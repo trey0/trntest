@@ -6842,3 +6842,23 @@ nodata, invents nothing) turned up existing `reproject` renders whose view runs 
 footprint; logged in `docs/proposed-tasks/open-items.md`, along with regenerating existing
 datasets, which still hold `cam2map`-based renders.
 
+## Phase 131 (2026-09-27) -- WAC_EMP NaN strip along 180° longitude
+
+Five `trntest2` entries straddling both 60°N and 180° had a coverage gap of up to 2% of the frame
+(`M1309433256CE`), previously blamed on either a missing fourth tile or a real archive hole. Neither:
+the NaN pixels formed a ~0.4°-wide strip along 180° (179.65-180.07°), exactly where the 90-180° and
+180-270° equirect tiles meet. Each tile's read window came from `transform_bounds` into the tile's
+own `lon_0=0` CRS; for an AOI straddling 180° that returns a whole-sphere min/max (-179.93° to
+179.65°) whose seam-side edges are just the densified edge samples nearest the cut, so the western
+tile's window stopped at 179.65° and the eastern one's (after the existing one-circumference shift)
+started at 180.07°. Those windows were also ~109k columns wide, a full lap of the Moon.
+
+Fix: compute the read window in the same tile-centered Equirectangular CRS the warp already used,
+and shift x back by the tile's raw center, which also replaced the one-circumference shift.
+Worst-entry NaN went from 111,096 to 238 px; the remainder are small fixed-location archive holes,
+not the seam. Twelve control entries (2-tile mosaics at ±60° north and south, one east of 180°,
+single-tile entries) came out byte-identical. The five fixed entries also differ by ~1.5e-4
+reflectance (median; max 7.7e-3) across the equirect area even with the edge correction off,
+presumably GDAL's resampling-scale estimate reacting to the old whole-sphere window; larger (>1e-2)
+differences are confined to the newly covered 180°/60° corner, where the edge correction now sees
+real data. Existing renders not regenerated (logged in `docs/proposed-tasks/open-items.md`).

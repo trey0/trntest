@@ -41,19 +41,12 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
      correctly unfilled by `eligible_gap_fill_mask`'s scoping, not investigated further.
   `trntest2` is not being regenerated to pick up this correction as part of this change.
 
-- **Five `trntest2` entries whose footprints straddle both the ±60° boundary and the antimeridian at
-  once (`M1309405187CE`/`M1309412188CE`/`M1309419252CE`/`M1309426256CE`/`M1309433256CE`) have a much
-  larger, structurally different coverage gap, unrelated to the edge-brightening defect above** — up to
-  119,501px (~2% of the frame) for the worst, `M1309433256CE`. Each needs three WAC_EMP tiles (two
-  adjacent equirect zones plus the polar tile, e.g. `E300N1350`/`E300N2250`); their combined real
-  coverage falls ~2% short of the destination bbox for the worst entry (per-tile coverage
-  13.9%/51.5%/32.6%, summing to ~98.0%, matching the gap almost exactly). Reproduces identically with
-  `apply_edge_correction=False`, so it's unrelated to that correction. Severity varies continuously
-  across the five (`M1309405187CE`'s gap is negligible; `M1309433256CE`'s is not), consistent with
-  camera geometry pushing progressively farther past the three tiles' combined coverage as the orbit
-  pass continues. Not root-caused: could be a genuine data-availability gap at this tile-zone corner,
-  or a `wac_emp_tile_ids_for_bbox` selection gap (a 4th tile it doesn't know to fetch).
-
+- **Five `trntest2` `hillshade` renders still carry the fixed 180° WAC_EMP seam gap**
+  (`M1309405187CE`/`M1309412188CE`/`M1309419252CE`/`M1309426256CE`/`M1309433256CE`, up to ~2% of
+  the frame). `_work/<entry>/ortho_wac_emp.tif` and everything built on it predate the fix;
+  regenerate with `truncate(entries, product_types=("hillshade", "report", "gallery"))` after
+  deleting those entries' `ortho_*.tif`, then `populate()`. Don't overlap another `populate` run
+  on the same dataset folder.
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which

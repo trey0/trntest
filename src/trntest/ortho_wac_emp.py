@@ -279,35 +279,36 @@ def _reproject_one_wac_emp_tile_to_array(
     # docstrings for the resulting numeric-pipeline change).
     with rasterio.open(wac_emp_path) as src:
         src_nodata = src.nodata
-        left, bottom, right, top = transform_bounds(
-            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m), src.crs, *dst_bbox_m
-        )
-        # The equirect tiles' own branch-cut bug (see below) is specific to their linear
-        # `x = R * lon_rad` formula -- the polar tiles' real Polar Stereographic projection has no
-        # such branch cut (longitude enters through smooth sin/cos terms, not a raw multiply that
-        # needs unwrapping), so none of this correction applies there. Gating on the actual PROJ4
-        # `proj` tag (not e.g. a filename check) means this stays correct even if a future WAC_EMP
-        # tile family turns out to need the same treatment, or an existing one doesn't.
+        # Only the equirect tiles have a longitude branch cut (`x = R * lon_rad`); the polar tiles'
+        # Polar Stereographic projection doesn't. Gated on the PROJ4 `proj` tag, not the filename.
         is_equirect = src.crs.to_dict().get("proj") == "eqc"
         if is_equirect:
-            # `transform_bounds` normalizes longitude into (-180, 180] before applying `src.crs`'s
-            # `central_meridian=0` Equirectangular formula (`x = R * lon_rad`), but each WAC_EMP tile's
-            # own PDS4 georeferencing is written in unwrapped, continuous longitude -- the "E300*2250"
-            # (180-270 deg) tile's raster spans x in [R*pi, R*1.5pi], entirely positive, never negated
-            # back into (-180, 180]'s range. For any AOI whose true longitude falls past +-180 deg in
-            # that continuous domain (confirmed via a real `M1314068239CE` repro, longitude -160.04 deg
-            # / 199.96 deg unwrapped), the normalized-vs-unwrapped mismatch lands `left`/`right` a full
-            # sphere circumference away from the tile's actual raster -- silently producing a `Window`
-            # with a wildly wrong offset that later reads as zero-width (`CPLE_AppDefinedError: Invalid
-            # dataset dimensions`). Latitude has no such branch cut, so `bottom`/`top` need no
-            # correction. Shifting by the sphere's own circumference (this CRS's one linear
-            # degree-of-freedom) puts the window back where the tile's own longitude convention
-            # actually stores it.
-            circumference_m = 2 * math.pi * moon_radius_m
-            if right < src.bounds.left:
-                left, right = left + circumference_m, right + circumference_m
-            elif left > src.bounds.right:
-                left, right = left - circumference_m, right - circumference_m
+            # Each tile's PDS4 georeferencing uses `lon_0=0` but unwrapped, continuous longitude (the
+            # 180-270 deg tile spans x in [R*pi, R*1.5pi]), while PROJ normalizes longitude into
+            # (-180, 180]. Transforming the AOI into `src.crs` directly therefore breaks at +-180 deg:
+            # an AOI east of 180 lands a full circumference away from the tile (`M1314068239CE`), and
+            # an AOI straddling 180 comes back as a min/max spanning the whole sphere, with the edge
+            # near the seam truncated to wherever `transform_bounds`' edge densification happened to
+            # sample (a ~0.4 deg-wide NaN strip along 180 deg in `M1309433256CE`, where two equirect
+            # tiles meet). Instead, work in an equivalent Equirectangular CRS centered on this tile's
+            # own (PROJ-normalized) center: every point near a 90-deg-wide zone sits well within 180
+            # deg of that center, so neither the window bounds below nor `reproject`'s per-pixel
+            # transform ever crosses the cut. A pure `lon_0` change is an additive x shift in this
+            # linear projection, so `src_center_x` converts between the two frames exactly.
+            src_center_x = (src.bounds.left + src.bounds.right) / 2
+            src_center_y = (src.bounds.bottom + src.bounds.top) / 2
+            (warp_center_lon_deg,), _ = warp_transform(
+                src.crs, geographic_crs(moon_radius_m), [src_center_x], [src_center_y]
+            )
+            warp_src_crs = f"+proj=eqc +lat_ts=0 +lon_0={warp_center_lon_deg} +R={moon_radius_m} +units=m +no_defs"
+            window_x_offset = src_center_x
+        else:
+            warp_src_crs = src.crs
+            window_x_offset = 0.0
+        left, bottom, right, top = transform_bounds(
+            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m), warp_src_crs, *dst_bbox_m
+        )
+        left, right = left + window_x_offset, right + window_x_offset
         window = window_from_bounds(left, bottom, right, top, transform=src.transform)
         # `window`'s offsets/lengths are generally fractional -- this AOI's bounds essentially never
         # align exactly to this tile's native pixel grid -- but reading a fractional-sized window
@@ -360,39 +361,16 @@ def _reproject_one_wac_emp_tile_to_array(
                     reflectance, src_transform, src.crs, moon_radius_m, src_nodata, masked_out
                 )
 
-        if not is_equirect:
-            warp_src_crs, warp_src_transform = src.crs, src_transform
-        else:
-            # The same branch cut bites `rasterio.warp.reproject` below, not just the window read
-            # above: it runs its own `src.crs` <-> destination-CRS coordinate transform per pixel,
-            # which normalizes longitude into (-180, 180] exactly like `transform_bounds` did, and
-            # (for a `central_meridian=0` tile whose own raster lives in unwrapped, past-180-deg
-            # coordinates) finds nothing there -- silently producing an all-nodata output instead of
-            # raising. Re-expressing the read window in an equivalent Equirectangular CRS whose
-            # `central_meridian` is this tile's own PROJ-normalized center (rather than the tile
-            # file's literal one, whatever that happens to be) sidesteps this: every point within one
-            # 90-deg-wide WAC_EMP zone sits within 45 deg of its own center, so no destination
-            # longitude near it can cross +-180 deg from that center either. `src.crs`'s inverse
-            # projection (`warp_transform`, i.e. real PROJ, not a hand-rolled `x = R * lon_rad`
-            # assumption that would only hold for `central_meridian=0` specifically) gives this
-            # tile's own center point's true, already-normalized longitude; a pure `central_meridian`
-            # change is just an additive shift in this linear projection, so translating
-            # `src_transform`'s origin by that same center's raw-frame X keeps every pixel at its
-            # real physical location.
-            src_center_x = (src.bounds.left + src.bounds.right) / 2
-            src_center_y = (src.bounds.bottom + src.bounds.top) / 2
-            (warp_center_lon_deg,), _ = warp_transform(
-                src.crs, geographic_crs(moon_radius_m), [src_center_x], [src_center_y]
-            )
-            warp_src_crs = f"+proj=eqc +lat_ts=0 +lon_0={warp_center_lon_deg} +R={moon_radius_m} +units=m +no_defs"
-            warp_src_transform = rasterio.Affine(
-                src_transform.a,
-                src_transform.b,
-                src_transform.c - src_center_x,
-                src_transform.d,
-                src_transform.e,
-                src_transform.f,
-            )
+        # Re-express the read window in `warp_src_crs` (tile-centered for equirect, see above) so
+        # `reproject`'s per-pixel transform doesn't hit the same branch cut.
+        warp_src_transform = rasterio.Affine(
+            src_transform.a,
+            src_transform.b,
+            src_transform.c - window_x_offset,
+            src_transform.d,
+            src_transform.e,
+            src_transform.f,
+        )
 
     dst_array = reproject_raster_to_local_grid_array(
         reflectance,

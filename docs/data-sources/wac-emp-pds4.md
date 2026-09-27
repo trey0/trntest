@@ -107,11 +107,13 @@ mirroring this project's earlier DEM-source move off Lunaserv to Astropedia's fl
   actually stores that location. This silently produced a degenerate, zero-width read `Window`
   (`CPLE_AppDefinedError: Invalid dataset dimensions`) and, once that was worked around, an
   all-nodata `rasterio.warp.reproject` output (the same branch cut, hit a second time by the
-  pixel-level warp) — see `ortho_wac_emp._reproject_one_wac_emp_tile_to_array`'s own inline
-  comments for the two-part fix (shifting the read window by one circumference when it lands outside
-  the tile's own stored bounds; re-expressing the source CRS's `central_meridian` at the tile's own
-  PROJ-normalized center before the warp, so no destination point needs to cross ±180° from it) and
-  `tests/test_ortho_wac_emp.py`'s own antimeridian regression test. Only the "225°" zone (both
+  pixel-level warp). An AOI *straddling* 180° hits it a third way: `transform_bounds` returns a
+  whole-sphere min/max whose seam-side edge stops at the nearest densified edge sample, leaving a
+  NaN strip along 180° where the 90-180° and 180-270° tiles meet (~2% of `M1309433256CE`'s frame).
+  The fix (`ortho_wac_emp._reproject_one_wac_emp_tile_to_array`): compute both the read window and
+  the warp in an equivalent Equirectangular CRS centered on the tile's own PROJ-normalized center,
+  so nothing near the tile crosses ±180° from it, and shift x back by the tile's raw center. See
+  `tests/test_ortho_wac_emp.py`'s two antimeridian regression tests. Only the "225°" zone (both
   hemispheres) is confirmed to need this; whether the "315°" zone's tiles use the same unwrapped
   (rather than canonical -90°..0°) convention is unverified -- the fix itself doesn't assume either
   way (it derives the tile's own domain from its real `bounds`/`crs`, not a hardcoded zone list), so

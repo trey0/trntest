@@ -200,6 +200,42 @@ def test_reproject_wac_emp_reflectance_to_local_grid_handles_zone_past_antimerid
     assert result == pytest.approx(reflectance_value, abs=1e-4)
 
 
+def test_reproject_wac_emp_reflectance_to_local_grid_mosaics_across_antimeridian(tmp_path):
+    # Regression test for a real bug: five `trntest2` entries straddling 180 deg (worst
+    # `M1309433256CE`) had a NaN strip along the seam between the 90-180 and 180-270 deg tiles.
+    # `transform_bounds` into the tiles' own `lon_0=0` CRS returned a whole-sphere min/max whose
+    # seam-side edge was truncated to the nearest densified sample, so each tile's read window fell
+    # short of 180 deg.
+    moon_radius_m = 1_737_400.0
+    reflectance_value = 0.08
+    west_path = tmp_path / "wac_emp_west_of_180.tif"
+    east_path = tmp_path / "wac_emp_east_of_180.tif"
+    _write_wac_emp_antimeridian_style_tif(west_path, reflectance_value, 179.0, 180.0, 256, moon_radius_m)
+    _write_wac_emp_antimeridian_style_tif(east_path, reflectance_value, 180.0, 181.0, 256, moon_radius_m)
+
+    center_lon, center_lat = 180.0, 0.0
+    dst_bbox_m = (-10_000.0, -5_000.0, 10_000.0, 5_000.0)
+    dst_width, dst_height = 64, 32
+    output_path = tmp_path / "reprojected.tif"
+
+    result_path = ortho_wac_emp.reproject_wac_emp_reflectance_to_local_grid(
+        [west_path, east_path],
+        dst_bbox_m,
+        dst_width,
+        dst_height,
+        center_lon,
+        center_lat,
+        moon_radius_m,
+        output_path,
+        apply_edge_correction=False,
+    )
+
+    with rasterio.open(result_path) as src:
+        result = src.read(1)
+    assert not np.isnan(result).any()
+    assert result == pytest.approx(reflectance_value, abs=1e-4)
+
+
 def _write_wac_emp_polar_style_tif(
     path, reflectance_value, center_lon_deg, center_lat_deg, half_width_m, size, moon_radius_m
 ):
