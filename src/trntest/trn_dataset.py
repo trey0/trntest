@@ -644,7 +644,7 @@ class TrnTestDataSet:
         product_types: tuple[str, ...] | None = None,
         retry_failed: bool = False,
         limit: int | None = None,
-        workers: int = 4,
+        workers: int = 8,
         write_index: bool = True,
         result_timeout: float | None = 1800.0,
     ) -> None:

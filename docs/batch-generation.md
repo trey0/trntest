@@ -33,7 +33,7 @@ but opt-in (see `trn_dataset.py`'s module docstring) -- pass it explicitly:
 ```python
 PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery", "reproject")
 
-dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4)
+dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=8)
 dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
 ```
 
@@ -77,7 +77,7 @@ PRODUCT_TYPES = ("crop", "hillshade", "report", "gallery")  # add "reproject" on
 dataset.populate_via_workers(product_types=PRODUCT_TYPES, limit=2, workers=1)
 
 # 2. Scale up once the cache is warm.
-dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4)
+dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=8)
 
 # 3. Check for failures -- huey_instance is required to see populate_via_workers()'s own state.
 status = dataset.status(product_types=PRODUCT_TYPES, huey_instance=tasks.huey_parallel)
@@ -85,7 +85,7 @@ failed = status[(status[list(PRODUCT_TYPES)] == "failed").any(axis=1)]
 print(failed)
 
 # 4. Retry, if the failure looks transient (a network blip) rather than a reproducible bug.
-dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=4, retry_failed=True)
+dataset.populate_via_workers(product_types=PRODUCT_TYPES, workers=8, retry_failed=True)
 ```
 
 Prefer a large or omitted `limit` for `populate_via_workers()` calls, not a small one repeated many
@@ -222,8 +222,8 @@ protects against many *different* entries' tasks all cold-fetching the same not-
 resource at once (see "Cold-cache concurrent fetch races" below), nothing else:
 
 ```python
-dataset.populate_via_workers(product_types=("crop",), workers=4)
-dataset.populate_via_workers(product_types=("hillshade",), workers=4)
+dataset.populate_via_workers(product_types=("crop",), workers=8)
+dataset.populate_via_workers(product_types=("hillshade",), workers=8)
 ```
 
 This still parallelizes fully across *entries* (today's manifest has one `edr_product` per row, so

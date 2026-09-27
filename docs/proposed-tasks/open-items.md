@@ -41,12 +41,6 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
      correctly unfilled by `eligible_gap_fill_mask`'s scoping, not investigated further.
   `trntest2` is not being regenerated to pick up this correction as part of this change.
 
-- **Five `trntest2` `hillshade` renders still carry the fixed 180° WAC_EMP seam gap**
-  (`M1309405187CE`/`M1309412188CE`/`M1309419252CE`/`M1309426256CE`/`M1309433256CE`, up to ~2% of
-  the frame). `_work/<entry>/ortho_wac_emp.tif` and everything built on it predate the fix;
-  regenerate with `truncate(entries, product_types=("hillshade", "report", "gallery"))` after
-  deleting those entries' `ortho_*.tif`, then `populate()`. Don't overlap another `populate` run
-  on the same dataset folder.
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
@@ -78,16 +72,9 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
     distance along the ray), so it only spans a 100 m pixel once `D` exceeds ~11 km — likely
     sub-pixel for most candidates. Compute `D` for real low-sun candidates before building it. If
     it's worth it, the sweep can average several sun directions sampled across the disk.
-- **Existing `reproject` renders still carry `cam2map`'s framelet dashes/specks.** The crop is now
-  map-projected by `wac_resample.map_project_crop` (default `TrntestConfig.crop_map_projection =
-  "wac_resample"`), which avoids the framelet-boundary NULLs and `cam2map`'s last-line misplacement
-  (`notebooks/wac_framelet_null_fill.py`). Still to do: regenerate `reproject` (and the `crop`
-  overlays/reports, which use the same map projection) for `trntest1`, `trntest2` and the frozen
-  manifest (`reproject`'s `exists()` will otherwise keep the old renders); re-run
-  `image_generation.py` (updating its intro table together with `docs/generators.md`'s, both still
-  say "`cam2map` reproject"), `sun_aligned_shadow_sweep.py` and `sfs_validation.py`; and re-measure
-  the brightness-matched hillshade/crop diff below (`plotting.compute_brightness_matched_diff`),
-  which compares against the map-projected crop.
+- **Two consumers of the crop's map projection haven't been re-checked since `cam2map` was
+  replaced by `wac_resample`:** `sfs_validation.ipynb` (not re-run) and the brightness-matched
+  hillshade/crop diff below (`plotting.compute_brightness_matched_diff`, not re-measured).
 - **Decide: adopt a workflow manager, or extend the homegrown product graph.** `truncate()` deletes
   only the generator outputs it's given, so dependents go stale (truncating `reproject` leaves
   `report`/`gallery`, built from it, marked done). It also can't express "this intermediate changed"
@@ -119,15 +106,18 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
 - **`docs/external-tools.md` is bloated** (~640 lines, one file for every external tool, heavy on
   investigation narrative). Prune it per `docs/docs-style.md`, or split it into per-tool files behind
   a thin index, as `docs/data-sources.md` and `docs/generators.md` already do.
-- **Some `reproject` renders reach past the crop's footprint.** 38 of 276 `trntest1`/`trntest2`
-  renders have nodata pixels touching the image's top edge (up to 0.2% of the image), as blobs on
-  crater rims rather than a strip along the edge. Unconfirmed guess: the render's view extends past
-  the crop's along-track end, and elevated terrain seen obliquely lands beyond it. `sat_sim` writes
-  nodata there (checked: a nodata square in the texture becomes exactly nodata in the render), but
-  `reproject`'s nodata is the ISIS sentinel -3.4e38, declared only in the GeoTIFF tag
-  (`hillshade` uses NaN), so a consumer that ignores the tag reads huge negative values. Likely fix:
-  crop a few extra framelets along-track. Separately, 3 `trntest1` renders have interior nodata
-  blobs (39-58 px), probably `cam2map` holes; check them after `reproject` is regenerated.
+- **Some renders have nodata blobs at the image's top edge.** After regeneration, 21 of 207
+  `trntest1` and 15 of 69 `trntest2` `reproject` renders have them (up to 0.2% of the image), as
+  blobs on crater rims, not a strip along the edge. It isn't `reproject`-specific: in 13 of the 21
+  `trntest1` entries the `hillshade` render has exactly the same nodata pixels, which points at the
+  render's view reaching past the DEM (or failing to intersect it) rather than past the crop; the
+  other 8 are `reproject`-only, which fits the view reaching past the crop's along-track end.
+  `trntest2`'s two renders mostly differ pixel-for-pixel, though most of its `hillshade` renders
+  are older than its `reproject` ones. `sat_sim` writes nodata there (a nodata square in the
+  texture becomes exactly nodata in the render), but `reproject`'s nodata is the ISIS sentinel
+  -3.4e38, declared only in the GeoTIFF tag (`hillshade` uses NaN), so a consumer that ignores the
+  tag reads huge negative values. Start by checking the render footprint against the DEM and crop
+  extents for `M1314340826CE` (both renders) and `M1314357076CE` (`reproject` only).
 - **`trntest1` DEMs have implausibly steep pixels.** 38 of 207 filled DEMs have pixels steeper
   than 60° at 100 m posting (up to ~300 per DEM, max 76.1° in `M1314424588CE`); real lunar slopes
   at that scale rarely exceed ~40°. Likely seams, hole fills or source-DEM defects. Cast shadows

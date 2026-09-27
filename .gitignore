@@ -22,7 +22,7 @@ docker/.env
 # closeout" section.
 /.session-done
 
-# cache/output/scratch live outside this repo entirely (see docs/environment.md), but
+# cache/output/output_global/scratch live outside this repo entirely (see docs/environment.md), but
 # docker-compose.yml bind-mounts them at these paths inside the container, nested under this
 # repo's own working directory from git's point of view -- without these entries, `git ls-files
 # --others` (and therefore `trntest-lint --all`) walks into them and reports their contents as
@@ -30,3 +30,4 @@ docker/.env
 /cache/
 /output/
 /scratch/
+/output_global/

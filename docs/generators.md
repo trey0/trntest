@@ -9,7 +9,7 @@ generated and validated together by `notebooks/image_generation.py`.
 |---|---|---|---|
 | [`hillshade`](generators/hillshade.md) | Astropedia GLD100 DEM, WAC_EMP PDS4 reflectance (fixed geometry) | Hapke relight, cast shadows, `sat_sim` render, `cam_gen` CSM sidecar | Synthetic image from real terrain, posed by the real trajectory |
 | [`crop`](generators/crop.md) | Real WAC EDR (LROC) | ISIS3 `lrowac2isis` -> `spiceinit` -> `lrowaccal` -> `framestitch` -> `crop` | The real spacecraft image itself, calibrated and geometrically usable |
-| [`reproject`](generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `cam2map` reproject, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
+| [`reproject`](generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `wac_resample` map projection, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
 
 Each generator's doc has the full data-source/processing detail. `README.md`'s Source files
 table covers the underlying modules (`dem_ortho.py`/`hapke.py`, `render.py`, `isis_wac.py`, `trn_products.py`).

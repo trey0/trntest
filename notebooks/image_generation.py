@@ -26,7 +26,7 @@
 # |---|---|---|---|
 # | [`hillshade`](../docs/generators/hillshade.md) | Astropedia GLD100 DEM, WAC_EMP PDS4 reflectance (fixed geometry) | Hapke relight, cast shadows, `sat_sim` render, `cam_gen` CSM sidecar | Synthetic image from real terrain, posed by the real trajectory |
 # | [`crop`](../docs/generators/crop.md) | Real WAC EDR (LROC) | ISIS3 `lrowac2isis` -> `spiceinit` -> `lrowaccal` -> `framestitch` -> `crop` | The real spacecraft image itself, calibrated and geometrically usable |
-# | [`reproject`](../docs/generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `cam2map` reproject, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
+# | [`reproject`](../docs/generators/reproject.md) | `crop`'s calibrated I/F (real acquisition geometry) | `wac_resample` map projection, `sat_sim` render (no relighting) | Isolates the effect of texture source alone, geometry held fixed |
 #
 # See [`../docs/generators.md`](../docs/generators.md) for the canonical version of this table.
 #
@@ -230,8 +230,8 @@ entry.hillshade.plot_zoom_blink_over()
 #
 # Unlike 5B, 6B doesn't go through ASP's `mapproject` via a CSM sidecar -- `usgscsm`'s ground-to-image
 # solve is unreliable for this sensor's Pushframe camera model (see `isis_wac.py`'s module
-# docstring). `TrnTestCropImage.plot_overlay()` instead uses ISIS's native camera model via
-# `cam2map`.
+# docstring). `TrnTestCropImage.plot_overlay()` instead map-projects the crop with
+# `wac_resample.map_project_crop`, through `wac_camera_model`.
 
 # %%
 tie_point_results = tie_points.resolve_crop_pixels(tie_point_results, entry.crop_result)
