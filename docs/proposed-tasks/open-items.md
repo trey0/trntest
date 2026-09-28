@@ -41,6 +41,30 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
      correctly unfilled by `eligible_gap_fill_mask`'s scoping, not investigated further.
   `trntest2` is not being regenerated to pick up this correction as part of this change.
 
+- **GLD100 has its own ±60° seam: a nodata row the DEM pipeline never fills.** Separate from the
+  WAC_EMP artifact above (same latitude, different source). The cached Astropedia file itself has
+  nodata at 60°N (row 5761: 40,383 of 109,165 columns; row 5760: 3,891 more) and a smaller partial
+  row at 60°S (3,826 columns). The bilinear warp to the local grid keeps it as a 1-px NaN row, and
+  `dem_mosaic --hole-fill-length` doesn't fill it (probably because it touches the raster edge, so it
+  isn't an enclosed hole), leaving -3.4e38 nodata in `dem_filled_*.tif`. Shading then draws a
+  visible curved line along the parallel: in `trntest2` entry 37 (`M1309363051CE`) the basemap's
+  row mean goes 28 → 3 on the gap row and 35-47 just poleward, while the underlying (edge-corrected)
+  WAC_EMP reflectance is flat across it (0.1217 → 0.1204). That entry's footprint stops short of
+  60°N, so only its basemap shows the line, but any entry whose footprint reaches the gap feeds
+  that nodata row to `sat_sim`/`mapproject` too. Possibly also behind some of the "implausibly steep
+  pixels" item below. Likely fix: fill DEM NaNs right after the GLD100 warp, before `dem_mosaic`,
+  with a fill that also catches edge-touching gaps.
+- **Cast shadows speckle on slopes nearly parallel to the sun.** `cast_shadow.sun_sweep`'s lit test
+  (`filled >= running_max`) flips pixel-by-pixel where a slope faces away from the sun at close to
+  the sun's elevation, since height across the rays is then nearly constant and small DEM variation
+  (integer-meter GLD100, spline-upsampled) decides each pixel. Seen as a "screen door" of black dots
+  in `trntest2` entry 37's zoomed basemap (sun elevation 15.5°); rerunning
+  `cast_shadow.illumination_fraction` with that camera's SPICE sun vector reproduces all 103 dots in
+  the crop. Across that DEM, 89% of isolated shadow pixels have an uphill-toward-sun slope of
+  0.10-0.35 (median 0.21; tan 15.5° = 0.28), vs. 14% of all pixels. Not the bin-aliasing moiré
+  `BIN_SIZE_SAFETY_FACTOR` fixes (99.9% of occupied bins hold more than one sample). Possible fixes: a
+  small height tolerance in the lit test, or dropping shadow pixels without shadowed neighbors.
+
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
   consumer, `wac.py`'s manual CDR mosaic extraction, was deleted (superseded by `isis_wac.py`, which
