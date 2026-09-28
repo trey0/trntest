@@ -72,7 +72,7 @@ def test_populate_via_workers_writes_a_parseable_health_log(tmp_path, monkeypatc
     assert fields["pending"] == "0"
     assert fields["pct_ok"] == "100.0"
     assert fields["pct_done"] == "100.0"
-    assert fields["active"] == "0/4"
+    assert fields["active"] == "0/8"
 
 
 def test_populate_via_workers_health_log_counts_failures(tmp_path, monkeypatch):
