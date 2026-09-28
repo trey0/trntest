@@ -6862,3 +6862,29 @@ reflectance (median; max 7.7e-3) across the equirect area even with the edge cor
 presumably GDAL's resampling-scale estimate reacting to the old whole-sphere window; larger (>1e-2)
 differences are confined to the newly covered 180°/60° corner, where the edge correction now sees
 real data. Existing renders not regenerated (logged in `docs/proposed-tasks/open-items.md`).
+
+## Phase 132 (2026-09-27) -- Seam probes for the WAC_EMP reflectance mosaic
+
+Phase 131's bug was only found because five real entries happened to land on it. To look for seam
+defects directly, `seam_probes.py` renders a synthetic 200 km AOI (no camera or SPICE) centered on
+each of the 12 points where three or four WAC_EMP tiles meet, through the production mosaic path,
+and measures every seam crossing it from a seam-normal profile: `NaN` near the seam, a step between
+the two sides (each extrapolated from a line fit 6-30 px out, since flat side medians let terrain
+slopes read as steps), a spike at the seam, and a near-seam gradient ratio. Terrain moves all of
+these, so each seam is compared with control lines 80-320 px away inside one tile; a z-score of the
+spike against bin-to-bin scatter was tried and dropped, since terrain gave controls z-scores up to 9.
+Only the gradient ratio separates real seams from controls today: the ±60° seams score 1.3-2.2
+against a control maximum of 1.23, while the longitude and equator seams sit inside the control
+spread on every metric. `reflectance_seams.ipynb` is an index: a one-row-per-probe health table
+(the same pass/fail `tests/test_reflectance_seams.py` asserts, limits set from the controls) linking
+to per-probe report notebooks rendered from `seam_probe_template.py` the way dataset reports are,
+with renders, profiles and a straightened ±40 px strip per seam (a profile averages along the whole
+seam; the strip shows where along it an artifact sits). A first version put every probe's figures
+in the index itself: 7 MB committed even as JPEG, and side-by-side panels too small to read in a
+notebook viewer, so the reports are generated, not committed, and every figure is full width. Run against the pre-Phase-131 `ortho_wac_emp.py`, that test fails at exactly the
+three 180° probes, including the equator one (0°, 180°E), which no dataset entry had reached. The
+strips also showed the ±60° residual concentrated within ~15-20 km of the longitude-seam corners at
+7 of 8 corners. Reviewing the reports, the user judged the ±60° correction inadequate: blatant
+streaks at those 7 corners, and gradient spikes even where the streak is subtle to the eye. The ±60°
+gradient limit was set to 1.4, which only the visually acceptable corner (60°N 0°E, 1.32) meets; the
+other 7 are strict expected failures in the test, to be removed as a better correction fixes them.

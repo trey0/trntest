@@ -80,7 +80,11 @@ Starting at #1 is the right optimization: if both seam types are handled there, 
 follow, and any interaction between them (e.g. the branch-cut fix changing which tile wins merge
 precedence) only shows up there. #7 is still needed.
 
-**Harness.** `dem_ortho.fetch_dem` only reads `camera.footprint_lonlat_deg`, so a probe can pass a
+**Harness.** `trntest.seam_probes` now exists for the WAC_EMP reflectance mosaic
+(`reflectance_seams.ipynb`, `tests/test_reflectance_seams.py`): synthetic square AOIs, per-seam
+profiles against control lines, and shared pass limits. The DEM side needs a `Renderer` and its own
+`Seam` list; the planned `dem_seams.ipynb` should reuse the rest. `dem_ortho.fetch_dem` only reads
+`camera.footprint_lonlat_deg`, so a probe can pass a
 stub footprint (square, nadir-sized, centered on the point) without SPICE or an EDR. Add an optional
 rotation of the square, since seams that are axis-aligned in the destination grid hide some artifacts.
 Output under this worktree's `output/<name>/seam_probes/`. Once a probe is also worth rendering,

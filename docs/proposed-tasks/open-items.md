@@ -7,7 +7,7 @@ Genuinely open questions/gaps in `trntest`, pointed to from
 When one of these resolves, delete it — state any fact still needed directly where it's needed,
 e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Resolved" entry here.
 
-- **The ±60° WAC_EMP horizontal-line artifact (both hemispheres) is corrected but not fully resolved.**
+- **The ±60° WAC_EMP horizontal-line artifact (both hemispheres): the correction is inadequate.**
   Both WAC_EMP tile families (equirectangular, 0-60°; polar-stereographic, 60-90°) carry a real
   edge-brightening defect right at their shared boundary, confirmed directly in the archived `.IMG`
   pixels: the equirect tile's last valid row runs bright, and the polar tile has a damped-oscillation
@@ -39,6 +39,13 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   5. A separate, small coverage-gap defect (unrelated to this edge-brightening artifact) already lives
      in many of the same archived tiles, confirmed on most boundary-straddling entries checked. Left
      correctly unfilled by `eligible_gap_fill_mask`'s scoping, not investigated further.
+  6. *Inadequate at the three-tile corners, both visually and by metric.* `reflectance_seams.ipynb`'s
+     probes show blatant horizontal streaks within ~15-20 km of where a longitude seam meets ±60° at
+     7 of the 8 corners (60°N 0°E is the only visually acceptable one; strongest at 60°N 180°E/270°E),
+     and a near-seam gradient spike (ratio 1.3-2.2 vs. 1.23 for control lines) even where the streak
+     is subtle to the eye. Those 7 fail `seam_probes.wac_emp_thresholds`' ±60° gradient limit (1.4)
+     and are strict expected failures in `tests/test_reflectance_seams.py`: remove each marker as a
+     better correction fixes that corner.
   `trntest2` is not being regenerated to pick up this correction as part of this change.
 
 - **GLD100 has its own ±60° seam: a nodata row the DEM pipeline never fills.** Separate from the

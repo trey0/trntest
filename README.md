@@ -196,6 +196,8 @@ lint's notebook checks).
 | [`hapke_hillshade.ipynb`][hapke_hillshade.ipynb] | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback, and cast shadows on vs. off. |
 | [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment/` rows below) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). |
 | [`real_hapke_params.ipynb`][real_hapke_params.ipynb] | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
+| [`reflectance_seams.ipynb`][reflectance_seams.ipynb] | Seam probes on the WAC_EMP reflectance mosaic at every point where three or four tiles meet: a health table (one row per probe, the same pass/fail `tests/test_reflectance_seams.py` checks) linking to per-probe report notebooks it generates under `output/seam_probes/reflectance/` (not committed). |
+| [`seam_probe_template.py`][seam_probe_template.py] | The `{{ }}`-templated source for per-probe seam reports (renders, profiles, straightened strips), filled in and executed by `seam_probes.write_probe_reports`; not paired, like `report_template.py`. |
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
 | [`sensor_calibration_scoping.ipynb`][sensor_calibration_scoping.ipynb] | Derives the fixed, centered-principal-point sensor model (`camera.FIXED_FOCAL_LENGTH_PX`) and the nominal boresight pointing disk (`camera.NOMINAL_BORESIGHT_PITCH_DEG`/`NOMINAL_BORESIGHT_YAW_DEG`/`NOMINAL_POINTING_DISK_RADIUS_DEG`) `build_camera`'s default (`fixed_sensor=True`) path uses. |
 | [`sfs_validation.ipynb`][sfs_validation.ipynb] | Independent forward-render cross-check of `hapke_shade_ortho` against ASP `sfs`. |
@@ -212,7 +214,9 @@ lint's notebook checks).
 [hapke_hillshade.ipynb]: notebooks/hapke_hillshade.ipynb
 [pose_alignment_spike.ipynb]: notebooks/pose_alignment_spike.ipynb
 [real_hapke_params.ipynb]: notebooks/real_hapke_params.ipynb
+[reflectance_seams.ipynb]: notebooks/reflectance_seams.ipynb
 [report_template.py]: notebooks/report_template.py
+[seam_probe_template.py]: notebooks/seam_probe_template.py
 [sensor_calibration_scoping.ipynb]: notebooks/sensor_calibration_scoping.ipynb
 [sfs_validation.ipynb]: notebooks/sfs_validation.ipynb
 [spice_entry_poc.ipynb]: notebooks/spice_entry_poc.ipynb
@@ -256,6 +260,8 @@ lint's notebook checks).
 | [`product_io.py`][product_io.py] | Intermediate-product access-discipline primitives (`writes_product`/`reads_product`/`deletes_product`, `atomic_publish*`) — see [`docs/intermediate-product-discipline.md`](docs/intermediate-product-discipline.md). |
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
 | [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Also writes the dataset-wide `reports/overview_table.html`, `reports/gallery.html` (a synchronized blink-comparator thumbnail grid, one per entry — `write_gallery_html`, `TrnTestGalleryThumb`), and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/report-generation.md` for the full design. |
+| [`seam_plotting.py`][seam_plotting.py] | Figures and tables for `seam_probes` results (health table, metrics vs. control lines, per-probe renders/profiles/strips), one full-width figure each. |
+| [`seam_probes.py`][seam_probes.py] | Seam probes: render a source mosaic on a synthetic AOI centered where its tiles meet (no camera needed), profile each seam and control lines, and check summary metrics against limits. Sources are registered in `SOURCES`; per-probe reports come from `write_probe_reports`. Shared by `reflectance_seams.ipynb` and `tests/test_reflectance_seams.py`. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |
@@ -302,6 +308,8 @@ lint's notebook checks).
 [product_io.py]: src/trntest/product_io.py
 [render.py]: src/trntest/render.py
 [report.py]: src/trntest/report.py
+[seam_plotting.py]: src/trntest/seam_plotting.py
+[seam_probes.py]: src/trntest/seam_probes.py
 [session.py]: src/trntest/session.py
 [sfs_plotting.py]: src/trntest/sfs_plotting.py
 [shadow_plotting.py]: src/trntest/shadow_plotting.py
