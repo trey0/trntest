@@ -71,19 +71,6 @@ def _write_astropedia_style_tif(path, elevation_value, bbox_m, width, height, mo
         dst.write(data, 1)
 
 
-def _eqc_deg_bbox_for_meters_bbox(bbox_m, moon_radius_m):
-    """Invert the same `+proj=eqc +lat_ts=0 +lon_0=180` forward formula (lon_0=180, standard
-    parallel 0 makes it a simple linear relationship: x = R*radians(lon-180), y = R*radians(lat)) to
-    get the lon/lat bbox that maps onto a chosen meters bbox in that CRS -- avoids needing `pyproj`
-    directly in the test, and keeps the fixture's AOI request exactly aligned with its own data."""
-    minx, miny, maxx, maxy = bbox_m
-    minlon = 180.0 + math.degrees(minx / moon_radius_m)
-    maxlon = 180.0 + math.degrees(maxx / moon_radius_m)
-    minlat = math.degrees(miny / moon_radius_m)
-    maxlat = math.degrees(maxy / moon_radius_m)
-    return minlon, minlat, maxlon, maxlat
-
-
 def test_reproject_astropedia_elevation_to_local_grid_preserves_constant_field(tmp_path):
     # Mirrors lunaserv_wms's test_reproject_dem_to_local_grid_preserves_constant_field, but for the
     # Astropedia-style source (Equirectangular meters CRS, real elevation already -- not radius) --
@@ -96,15 +83,8 @@ def test_reproject_astropedia_elevation_to_local_grid_preserves_constant_field(t
     native_path = tmp_path / "astropedia_native.tif"
     _write_astropedia_style_tif(native_path, elevation_value, native_bbox_m, native_width, native_height, moon_radius_m)
 
-    # AOI well within the native file's coverage (a smaller, centered sub-region).
+    # AOI well within the native file's coverage, centered on it.
     minx, miny, maxx, maxy = native_bbox_m
-    aoi_bbox_m = (
-        minx + (maxx - minx) * 0.25,
-        miny + (maxy - miny) * 0.25,
-        maxx - (maxx - minx) * 0.25,
-        maxy - (maxy - miny) * 0.25,
-    )
-    deg_bbox = _eqc_deg_bbox_for_meters_bbox(aoi_bbox_m, moon_radius_m)
     center_lon = 180.0 + math.degrees(((minx + maxx) / 2) / moon_radius_m)
     center_lat = math.degrees(((miny + maxy) / 2) / moon_radius_m)
 
@@ -114,7 +94,6 @@ def test_reproject_astropedia_elevation_to_local_grid_preserves_constant_field(t
 
     result_path = dem_gld100.reproject_astropedia_elevation_to_local_grid(
         native_path,
-        deg_bbox,
         dst_bbox_m,
         dst_width,
         dst_height,
@@ -131,3 +110,60 @@ def test_reproject_astropedia_elevation_to_local_grid_preserves_constant_field(t
     # Elevation preserved directly -- no planetocentric-radius offset subtracted, unlike the
     # deprecated Lunaserv path.
     assert result == pytest.approx(elevation_value, abs=1.0)
+
+
+def test_reproject_astropedia_elevation_to_local_grid_wraps_across_raster_edge(tmp_path):
+    # Like the real file: a global raster centered on 180 deg, so its edges meet at 0 deg, a bit
+    # wider than the circumference. An AOI straddling 0 deg needs both edges; the value is a smooth
+    # function of longitude, so a misplaced or missing piece shows.
+    moon_radius_m = 1_737_400.0
+    pixel_m = 2_000.0
+    width = math.ceil(2 * math.pi * moon_radius_m / pixel_m) + 1
+    height = 200
+    left = -width * pixel_m / 2 + 30.0
+    native_bbox_m = (left, -height * pixel_m / 2, left + width * pixel_m, height * pixel_m / 2)
+    xs = left + (np.arange(width) + 0.5) * pixel_m
+    lon = 180.0 + np.degrees(xs / moon_radius_m)
+    values = (1000.0 * np.sin(np.radians(lon))).astype("int16")
+    native_path = tmp_path / "global.tif"
+    _write_astropedia_style_tif(native_path, 0, native_bbox_m, width, height, moon_radius_m)
+    with rasterio.open(native_path, "r+") as dst:
+        dst.write(np.tile(values, (height, 1)), 1)
+
+    dst_bbox_m = (-100_000.0, -100_000.0, 100_000.0, 100_000.0)
+    output_path = tmp_path / "reprojected.tif"
+    dem_gld100.reproject_astropedia_elevation_to_local_grid(
+        native_path, dst_bbox_m, 50, 50, 0.0, 0.0, moon_radius_m, output_path
+    )
+    with rasterio.open(output_path) as src:
+        result = src.read(1)
+    assert not np.isnan(result).any()
+    # Columns run west to east across 0 deg: sin(lon) goes from negative to positive.
+    row = result[25]
+    assert row[0] < -40 and row[-1] > 40
+    assert np.all(np.diff(row) > 0)
+
+
+def test_reproject_astropedia_elevation_to_local_grid_registers_to_subpixel(tmp_path):
+    # A ramp in x, read through windows whose offsets land at arbitrary fractions of a source pixel:
+    # each output pixel must match the ramp at its own position, not one shifted by that fraction.
+    moon_radius_m = 1_737_400.0
+    pixel_m = 1_000.0
+    width, height = 400, 400
+    native_bbox_m = (-200_000.0, 500_000.0, 200_000.0, 900_000.0)
+    native_path = tmp_path / "ramp.tif"
+    _write_astropedia_style_tif(native_path, 0, native_bbox_m, width, height, moon_radius_m)
+    with rasterio.open(native_path, "r+") as dst:
+        dst.write(np.tile((np.arange(width) * 10).astype("int16"), (height, 1)), 1)
+
+    for center_x_m in (1_230.0, 7_770.0, -15_500.0):
+        center_lon = 180.0 + math.degrees(center_x_m / moon_radius_m)
+        center_lat = math.degrees(700_000.0 / moon_radius_m)
+        output_path = tmp_path / "reprojected.tif"
+        dem_gld100.reproject_astropedia_elevation_to_local_grid(
+            native_path, (-500.0, -500.0, 500.0, 500.0), 1, 1, center_lon, center_lat, moon_radius_m, output_path
+        )
+        with rasterio.open(output_path) as src:
+            value = float(src.read(1)[0, 0])
+        expected = ((center_x_m - native_bbox_m[0]) / pixel_m - 0.5) * 10
+        assert value == pytest.approx(expected, abs=0.5)

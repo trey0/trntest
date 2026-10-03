@@ -166,8 +166,10 @@ file, not a per-request sliver (see `docs/data-sources/astropedia-gld100.md` for
 Cloud-Optimized GeoTIFF, so a windowed remote read pulls full-width row strips, too slow to repeat
 per-camera).
 
-Not built on `cached_get` — see `docs/data-sources/astropedia-gld100.md`'s "Caching" bullet for the
-resume mechanism, or `cache.fetch_astropedia_gld100`'s own docstring.
+Not built on `cached_get`: `cache.fetch_large_file` resumes into a stable `.part` path with `curl -C -`,
+under a per-file lock so concurrent cold fetches wait for one download instead of racing on the same
+`.part`. The six SLDEM2015 tiles (`cache.fetch_sldem2015_tile`, ~1.9 GB each) use the same path. See
+`docs/data-sources/astropedia-gld100.md`'s "Caching" bullet.
 
 ## LightGlue/DISK pretrained-weight caching
 

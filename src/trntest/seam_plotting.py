@@ -1,5 +1,5 @@
-"""Figures and tables for `seam_probes` results: the index notebooks (`reflectance_seams.ipynb`) and
-the per-probe reports rendered from `notebooks/seam_probe_template.py`.
+"""Figures and tables for `seam_probes` results: the index notebooks (`reflectance_seams.ipynb`,
+`dem_seams.ipynb`) and the per-probe reports rendered from `notebooks/seam_probe_template.py`.
 
 Every figure is a single full-width panel, so a notebook viewer shows it at a usable size. Each
 `plot_*` function closes its figure before returning it, so a bare last-expression call displays it
@@ -7,6 +7,7 @@ exactly once.
 """
 
 import html
+import math
 from collections.abc import Callable, Mapping
 
 import matplotlib.pyplot as plt
@@ -17,10 +18,15 @@ from matplotlib.colors import ListedColormap
 
 from trntest import seam_probes
 from trntest.seam_probes import ProbeResult, SeamThresholds
+from trntest.shadow_plotting import lambertian_hillshade
 
 _NAN_COLOR = "red"
 _SEAM_COLORS = [f"C{i}" for i in range(10)]  # matplotlib's default color cycle
 _WIDTH_IN = 12
+_SHADE_ELEVATION_DEG = 15.0
+"""Sun elevation for elevation renders' hillshades: low, so a small step or a line stands out."""
+_RENDER_AZIMUTH_DEG = 45.0
+"""Sun azimuth for a whole elevation render: oblique to both lat and lon seams."""
 
 
 def _stretch(array: np.ndarray) -> tuple[float, float]:
@@ -51,6 +57,15 @@ def _show_with_nan(ax, array: np.ndarray, extent=None, cmap="gray", vmin=None, v
 
 def _value_label(result: ProbeResult) -> str:
     return f"{result.value_name} ({result.value_units})"
+
+
+def _shown(result: ProbeResult, azimuth_deg: float = _RENDER_AZIMUTH_DEG) -> tuple[np.ndarray, str]:
+    # What a render panel draws: the array itself, or its hillshade for a shaded (elevation) source.
+    if not result.shade:
+        return result.array, _value_label(result)
+    shaded = lambertian_hillshade(result.array, azimuth_deg, _SHADE_ELEVATION_DEG, result.grid.gsd_m)
+    label = f"hillshade of {result.value_name} (sun azimuth {azimuth_deg:g}, elevation {_SHADE_ELEVATION_DEG:g} deg)"
+    return shaded, label
 
 
 def _gradient_units(result: ProbeResult) -> str:
@@ -101,9 +116,10 @@ def plot_probe_render(result: ProbeResult):
     :returns: The `Figure`.
     """
     h, w = result.array.shape
+    shown, label = _shown(result)
     fig, ax = plt.subplots(figsize=(_WIDTH_IN, _WIDTH_IN * 0.9), constrained_layout=True)
-    image = _show_with_nan(ax, result.array)
-    fig.colorbar(image, ax=ax, shrink=0.8, label=_value_label(result) + " (1st-99th percentile stretch)")
+    image = _show_with_nan(ax, shown)
+    fig.colorbar(image, ax=ax, shrink=0.8, label=label + " (1st-99th percentile stretch)")
     _draw_seams(ax, result, slice(0, h), slice(0, w))
     rows, cols = _zoom_window(result)
     ax.add_patch(
@@ -127,11 +143,12 @@ def plot_probe_zoom(result: ProbeResult):
     :returns: The `Figure`.
     """
     rows, cols = _zoom_window(result)
-    vmin, vmax = _stretch(result.array)
+    shown, label = _shown(result)
+    vmin, vmax = _stretch(shown)
     fig, ax = plt.subplots(figsize=(_WIDTH_IN, _WIDTH_IN * 0.9), constrained_layout=True)
     extent = (cols.start - 0.5, cols.stop - 0.5, rows.stop - 0.5, rows.start - 0.5)
-    image = _show_with_nan(ax, result.array[rows, cols], extent=extent, vmin=vmin, vmax=vmax)
-    fig.colorbar(image, ax=ax, shrink=0.8, label=_value_label(result) + " (same stretch as the full render)")
+    image = _show_with_nan(ax, shown[rows, cols], extent=extent, vmin=vmin, vmax=vmax)
+    fig.colorbar(image, ax=ax, shrink=0.8, label=label + " (same stretch as the full render)")
     _draw_seams(ax, result, rows, cols)
     _label_image_axes(ax)
     ax.set_title(f"{result.grid.probe.name}: center zoom ({rows.stop - rows.start} px)")
@@ -158,7 +175,7 @@ def _mark_bands(ax, seam: seam_probes.Seam):
 def plot_seam_profile(result: ProbeResult, seam_name: str):
     """Median value per 1-px distance bin across one seam, with its interquartile range, each side's
     trend fit to its reference bins (dashed, extrapolated to the seam) and the `NaN` fraction (red, if
-    any), with `step_rel`/`spike_rel`/`nan_near` defined in the title.
+    any), with `step`/`spike`/`nan_near` defined in the title.
 
     :param result: `seam_probes.run_probe`'s output.
     :param seam_name: One of `result.distances_px`'s keys.
@@ -176,10 +193,11 @@ def plot_seam_profile(result: ProbeResult, seam_name: str):
         x = np.linspace(0, sign * seam_probes.REFERENCE_PX[1], 20)
         ax.plot(x, trend(x), color="black", linestyle="--", linewidth=1, label="side trend" if sign < 0 else None)
     ax.set_ylabel(_value_label(result))
+    per = " / probe median" if result.relative else f" ({result.value_units})"
     ax.set_title(
         f"{seam_name}: profile across the seam\n"
-        f"step_rel = {m.step_rel:+.3f}: ({positive} trend - {negative} trend) at the seam / probe median\n"
-        f"spike_rel = {m.spike_rel:.3f}: largest |at-seam median - its own side's trend| / probe median\n"
+        f"step = {m.step:+.3f}: ({positive} trend - {negative} trend) at the seam{per}\n"
+        f"spike = {m.spike:.3f}: largest |at-seam median - its own side's trend|{per}\n"
         f"nan_near = {m.nan_near}: NaN pixels within {seam_probes.NEAR_SEAM_PX} px of the seam",
         loc="left",
         fontsize=10,
@@ -219,13 +237,17 @@ def plot_seam_gradient(result: ProbeResult, seam_name: str):
 def plot_seam_strip(result: ProbeResult, seam_name: str):
     """The band around one seam, straightened so the seam runs down the middle, each cell's mean
     divided by its row's median (`seam_probes.seam_strip`). Shows where along the seam an artifact
-    sits, which the profiles average away.
+    sits, which the profiles average away. An elevation source is straightened as a hillshade lit
+    from across the seam, so a step shows as a bright or dark line.
 
     :param result: `seam_probes.run_probe`'s output.
     :param seam_name: One of `result.distances_px`'s keys.
     :returns: The `Figure`.
     """
-    strip = seam_probes.seam_strip(result, seam_name)
+    seam = next(p.seam for p in result.profiles if p.seam.name == seam_name)
+    # Sun from the seam's north/east side, perpendicular to it.
+    shown, label = _shown(result, azimuth_deg=0.0 if seam.kind == "lat" else 90.0)
+    strip = seam_probes.seam_strip(result, seam_name, array=shown)
     contrast = strip.contrast()
     spread = float(np.nanpercentile(np.abs(contrast - 1), 99)) if np.isfinite(contrast).any() else 0.1
     d = strip.distance_px
@@ -234,7 +256,7 @@ def plot_seam_strip(result: ProbeResult, seam_name: str):
     fig, ax = plt.subplots(figsize=(_WIDTH_IN, 11), constrained_layout=True)
     extent = (d[0] - 0.5, d[-1] + 0.5, strip.along_px[-1] + bin_px / 2, strip.along_px[0] - bin_px / 2)
     image = _show_with_nan(ax, contrast, extent=extent, cmap="RdBu_r", vmin=1 - spread, vmax=1 + spread, aspect="auto")
-    fig.colorbar(image, ax=ax, shrink=0.6, label=f"{result.value_name} / median of its row (unitless)")
+    fig.colorbar(image, ax=ax, shrink=0.6, label=f"{label} / median of its row (unitless)")
     ax.invert_yaxis()
     ax.axvline(0, color="black", linewidth=0.5, linestyle=":")
     ax.set_title(
@@ -261,8 +283,8 @@ def show_seam_diagnostics(result: ProbeResult) -> None:
 def _over_limits(row, limits: SeamThresholds) -> dict[str, bool]:
     return {
         "nan_near": row.nan_near > limits.nan_near_max,
-        "step_rel": not abs(row.step_rel) <= limits.abs_step_rel_max,
-        "spike_rel": not row.spike_rel <= limits.spike_rel_max,
+        "step": not abs(row.step) <= limits.abs_step_max,
+        "spike": not row.spike <= limits.spike_max,
         "gradient_ratio": not row.gradient_ratio <= limits.gradient_ratio_max,
     }
 
@@ -286,7 +308,7 @@ def show_probe_summary(result: ProbeResult, thresholds: Callable[[str], SeamThre
     limits = [thresholds(seam) for seam in real.seam]
     over = [_over_limits(row, lim) for row, lim in zip(real.itertuples(), limits, strict=True)]
     real["limits (nan / |step| / spike / gradient)"] = [
-        f"{t.nan_near_max} / {t.abs_step_rel_max:g} / {t.spike_rel_max:g} / {t.gradient_ratio_max:g}" for t in limits
+        f"{t.nan_near_max} / {t.abs_step_max:g} / {t.spike_max:g} / {t.gradient_ratio_max:g}" for t in limits
     ]
 
     def highlight(column: pd.Series) -> list[str]:
@@ -316,12 +338,15 @@ def show_health_table(health: pd.DataFrame, links: Mapping[str, str] | None = No
     display(HTML(styled.to_html(escape=False)))
 
 
-def plot_metrics_vs_controls(table: pd.DataFrame, thresholds: Callable[[str], SeamThresholds] | None = None):
+def plot_metrics_vs_controls(
+    table: pd.DataFrame, thresholds: Callable[[str], SeamThresholds] | None = None, step_units: str = "/ probe median"
+):
     """Each metric per probe, one panel under another: control lines as grey dots, real seams as colored
     markers, pass limits as short bars (if `thresholds` is given).
 
     :param table: `seam_probes.metrics_table`'s output.
     :param thresholds: Seam name -> limits, e.g. `seam_probes.wac_emp_thresholds`.
+    :param step_units: Axis-label units of `step`/`spike`, e.g. `"m"`.
     :returns: The `Figure`.
     """
     probes = list(dict.fromkeys(table.probe))
@@ -330,8 +355,8 @@ def plot_metrics_vs_controls(table: pd.DataFrame, thresholds: Callable[[str], Se
     seam_names = list(dict.fromkeys(real.seam))
     color_of = {s: _SEAM_COLORS[i % len(_SEAM_COLORS)] for i, s in enumerate(seam_names)}
     panels = (
-        ("|step_rel| (unitless)", lambda t: t.step_rel.abs(), "abs_step_rel_max"),
-        ("spike_rel (unitless)", lambda t: t.spike_rel, "spike_rel_max"),
+        (f"|step| ({step_units})", lambda t: t.step.abs(), "abs_step_max"),
+        (f"spike ({step_units})", lambda t: t.spike, "spike_max"),
         ("gradient_ratio (unitless)", lambda t: t.gradient_ratio, "gradient_ratio_max"),
     )
     fig, axes = plt.subplots(
@@ -345,8 +370,8 @@ def plot_metrics_vs_controls(table: pd.DataFrame, thresholds: Callable[[str], Se
         for seam in seam_names:
             rows = real[real.seam == seam]
             ax.scatter(rows.probe.map(x_of), value(rows), color=color_of[seam], s=60, marker="D", label=seam)
-            if thresholds is not None:
-                limit = getattr(thresholds(seam), limit_field)
+            limit = getattr(thresholds(seam), limit_field) if thresholds is not None else math.inf
+            if math.isfinite(limit):
                 for x in rows.probe.map(x_of):
                     ax.hlines(limit, x - 0.3, x + 0.3, color=color_of[seam], linewidth=1)
         ax.set_ylabel(label)

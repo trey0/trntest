@@ -88,10 +88,9 @@ file). Then, as needed:
   (shared narrative docs/`dataset_manifest.csv` as merge-conflict risks, resolving `.ipynb` conflicts
   by merging the `.py` and regenerating rather than reading the JSON diff, why `clean.sh`/
   `archive.sh`/`restore.sh` are the user's own session-teardown tools and not something an agent
-  should run, a real concurrency race in the one-time Astropedia GLD100 fetch, and per-worktree
-  Docker image cleanup) if another agent might be active at the same time. Verify your own worktree
-  name yourself (`git rev-parse --show-toplevel`) rather than trusting a
-  name you're told — it can be stale in a multi-agent conversation.
+  should run, and per-worktree Docker image cleanup) if another agent might be active at the same
+  time. Verify your own worktree name yourself (`git rev-parse --show-toplevel`) rather than trusting
+  a name you're told — it can be stale in a multi-agent conversation.
 - Keep `README.md`'s status, source-files, and notebooks tables current as things change, and record
   newly-learned facts (exact product IDs, kernel filenames, gotchas) in `docs/data-sources.md`
   rather than only in code comments or commit messages — this repo's docs are meant to carry context

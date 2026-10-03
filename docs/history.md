@@ -6888,3 +6888,33 @@ strips also showed the ±60° residual concentrated within ~15-20 km of the long
 streaks at those 7 corners, and gradient spikes even where the streak is subtle to the eye. The ±60°
 gradient limit was set to 1.4, which only the visually acceptable corner (60°N 0°E, 1.32) meets; the
 other 7 are strict expected failures in the test, to be removed as a better correction fixes them.
+
+## Phase 133 (2026-10-03) -- SLDEM2015 cached; GLD100 seam probes find a wrap gap, a half-pixel shift and its own seams
+
+Started Milestone 1 of `docs/proposed-tasks/vira-dem-sources.md`. Step 0 first fetched VIRA's six
+256 ppd SLDEM2015 tiles; the user then pointed out the server also has 512 ppd (~59 m) tiles, finer
+than the ~100 m DEM grid where 256 ppd (~118 m) would be upsampled onto it, so the cache now holds
+the 32 512-ppd tiles (~45 GB) and the 1-ppd data-quality map instead. Downloads go through a new
+`cache.fetch_large_file`, the GLD100 download's resumable curl pattern plus a per-file lock, which
+also closes that download's documented concurrency race. The tiles share GLD100's CRS exactly (eqc,
+`lon_0=180`, R = 1737.4 km) and hold km above the sphere (`docs/data-sources/sldem2015.md`).
+
+Step 1: `seam_probes` got a DEM source, rendering GLD100 before hole fill on 42 synthetic AOIs where
+the 512 ppd tiles meet. `step`/`spike` became absolute for elevation (the metrics were renamed from
+`step_rel`/`spike_rel`); on elevation they turned out to be terrain-dominated (controls reach
+~280/330 m), so only `NaN` and the gradient ratio have limits. The first probe found the bug the
+plan suspected: AOIs straddling 0° had a full-height `NaN` strip up to ~0.5° wide just west of it,
+the same `transform_bounds` failure Phase 131 fixed for WAC_EMP at 180°, except that GLD100 is one
+raster whose own edges meet at 0°, so the fix reads one window per raster edge in an AOI-centered
+CRS and warps each. Comparing old and new output on probes nowhere near 0° showed differences of tens
+of meters, which turned out to be a second bug: the AOI window was fractional, GDAL reads a
+fractional window as the nearest whole pixels, and the warp kept the fraction, so every DEM had been
+shifted by up to ±0.5 px per axis (RMS 6-10 m against an exact resample, 0.5-2 m after; the Phase
+123 bug in WAC_EMP, never fixed here). Existing datasets weren't regenerated.
+
+The baseline: the 0° wrap, ±30°, the equator and most meridians are clean on GLD100. GLD100 is itself
+assembled at ±60°, across its full width (row-to-row elevation change 19 m vs. 3-5 m at 60°S, a
+texture change on both sides, nodata stretches), and the probe at 30°N 270°E turned up a one-column
+line along 270° between ±60°, confirmed in the raw file, along with a weaker one at 90° that the
+probes miss (a median-based check first said 90° was clean; integer-meter medians were too coarse). Those 17 probes are strict xfails in
+`tests/test_dem_seams.py`. The SLDEM2015/GLD100 cut planned for step 3 falls on the ±60° line.

@@ -196,14 +196,6 @@ automatically.
   other worktree's per-agent tag), and `rm -rf`s the entire shared `cache/`, `output/`, and
   `scratch/` — not just yours. If you think cleanup is needed, ask the user rather than running
   these (or equivalent manual `docker system prune`/`rm -rf` on those shared dirs) yourself.
-- **`cache.fetch_astropedia_gld100`'s one-time ~10GB GLD100 download is not concurrency-safe** —
-  unlike every other fetch path in `cache.py` (which downloads to a uniquely-named temp file before
-  an atomic rename, so concurrent cold fetches of the same small file are safe, if slightly
-  wasteful), this one deliberately resumes into a *stable* `<dest>.part` path so a `curl -C -` can
-  continue an interrupted multi-GB transfer (see `docs/caching.md`). Two agents both triggering a
-  cold fetch of this file at the same time will race on that same partial file. In practice this
-  only matters once (it's cached forever after) — check `cache/astropedia/*.tif` already exists
-  before kicking off a full pipeline run if you're unsure whether another agent got there first.
 - **`cache/wac_crop/<edr_product>_crop.cub` is a shared, cross-dataset cache, not scoped to one
   worktree's dataset folder.** Any `TrnTestDataSet` (any worktree, any agent) that shares this
   session's `cache_root` and generates the same `edr_product` reuses this same cached crop — a real

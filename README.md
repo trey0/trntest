@@ -196,6 +196,7 @@ lint's notebook checks).
 | [`hapke_hillshade.ipynb`][hapke_hillshade.ipynb] | Compares ISIS `photomet` Hapke hillshading against the plain Lambertian fallback, and cast shadows on vs. off. |
 | [`pose_alignment_spike.ipynb`][pose_alignment_spike.ipynb] | Exercises the camera-pose-alignment tooling (`pose_alignment/` rows below) — see [`docs/pose-alignment.md`](docs/pose-alignment.md). |
 | [`real_hapke_params.ipynb`][real_hapke_params.ipynb] | Compares real, ISIS-calibration-sourced Hapke parameters against the illustrative placeholder defaults. |
+| [`dem_seams.ipynb`][dem_seams.ipynb] | Seam probes on the GLD100 DEM (before hole fill) at every point where the planned SLDEM2015 mosaic's 512-ppd tiles meet (every 30° of latitude to ±60°, every 45° of longitude, including GLD100's own wrap at 0°): a health table linking to per-probe reports under `output/seam_probes/dem_gld100/` (not committed), GLD100's own ±60° and 90°/270° seams in the raw file, and what `hole_fill_dem` leaves of each gap. |
 | [`reflectance_seams.ipynb`][reflectance_seams.ipynb] | Seam probes on the WAC_EMP reflectance mosaic at every point where three or four tiles meet: a health table (one row per probe, the same pass/fail `tests/test_reflectance_seams.py` checks) linking to per-probe report notebooks it generates under `output/seam_probes/reflectance/` (not committed). |
 | [`seam_probe_template.py`][seam_probe_template.py] | The `{{ }}`-templated source for per-probe seam reports (renders, profiles, straightened strips), filled in and executed by `seam_probes.write_probe_reports`; not paired, like `report_template.py`. |
 | [`report_template.py`][report_template.py] | The `{{ }}`-templated source for per-entry HTML reports (not paired/executable itself, so linked as `.py` — there's no `.ipynb`) — see `report.py` row below. |
@@ -214,6 +215,7 @@ lint's notebook checks).
 [hapke_hillshade.ipynb]: notebooks/hapke_hillshade.ipynb
 [pose_alignment_spike.ipynb]: notebooks/pose_alignment_spike.ipynb
 [real_hapke_params.ipynb]: notebooks/real_hapke_params.ipynb
+[dem_seams.ipynb]: notebooks/dem_seams.ipynb
 [reflectance_seams.ipynb]: notebooks/reflectance_seams.ipynb
 [report_template.py]: notebooks/report_template.py
 [seam_probe_template.py]: notebooks/seam_probe_template.py
@@ -229,7 +231,7 @@ lint's notebook checks).
 
 | Module | Responsibility |
 |---|---|
-| [`cache.py`][cache.py] | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC) — see [`docs/caching.md`](docs/caching.md). |
+| [`cache.py`][cache.py] | Local-mirror disk caching for all external fetches (NAIF, Lunaserv, LROC, and whole multi-GB files like GLD100/SLDEM2015 via `fetch_large_file`) — see [`docs/caching.md`](docs/caching.md). |
 | [`camera.py`][camera.py] | Poses the synthetic camera from SPICE trajectory/orientation data (`build_camera`) and solves its corrected FOV (`solve_corrected_fov`) — see [`docs/reproject-fov-investigation.md`](docs/reproject-fov-investigation.md). |
 | [`candidate_window.py`][candidate_window.py] | Public multi-image API: `images_for_window()` evaluates EDR candidates over a time window (throttled/illumination-filtered); `generate_dataset()` renders the selected ones. |
 | [`cast_shadow.py`][cast_shadow.py] | Cast-shadow occlusion for `hillshade`: a per-pixel illumination fraction from a streaming sun-aligned sweep over the DEM (`illumination_fraction`, `sun_sweep`). Pure math — no SPICE or file I/O. |
@@ -261,7 +263,7 @@ lint's notebook checks).
 | [`render.py`][render.py] | Renders the synthetic image via ASP `sat_sim`, then converts the camera to a CSM Frame sidecar via `cam_gen` (`run_sat_sim`). |
 | [`report.py`][report.py] | Per-entry HTML report helpers/pipeline (`generate_report`, `problem_flags`, ...) for `notebooks/report_template.py`, used by `TrnTestReport` below. Also writes the dataset-wide `reports/overview_table.html`, `reports/gallery.html` (a synchronized blink-comparator thumbnail grid, one per entry — `write_gallery_html`, `TrnTestGalleryThumb`), and the `reports/index.html` nav bar (`write_overview_table_html`/`write_index_html`) — see `docs/report-generation.md` for the full design. |
 | [`seam_plotting.py`][seam_plotting.py] | Figures and tables for `seam_probes` results (health table, metrics vs. control lines, per-probe renders/profiles/strips), one full-width figure each. |
-| [`seam_probes.py`][seam_probes.py] | Seam probes: render a source mosaic on a synthetic AOI centered where its tiles meet (no camera needed), profile each seam and control lines, and check summary metrics against limits. Sources are registered in `SOURCES`; per-probe reports come from `write_probe_reports`. Shared by `reflectance_seams.ipynb` and `tests/test_reflectance_seams.py`. |
+| [`seam_probes.py`][seam_probes.py] | Seam probes: render a source mosaic on a synthetic AOI centered where its tiles meet (no camera needed), profile each seam and control lines, and check summary metrics against limits. Sources (WAC_EMP reflectance, GLD100 elevation) are registered in `SOURCES`; per-probe reports come from `write_probe_reports`. Shared by `reflectance_seams.ipynb`/`dem_seams.ipynb` and `tests/test_reflectance_seams.py`/`tests/test_dem_seams.py`. |
 | [`session.py`][session.py] | `Session` facade — thin one-line delegators so notebook cells don't repeat `config=...`. |
 | [`sfs_plotting.py`][sfs_plotting.py] | `sfs_validation.py`'s own comparison plots (`plot_sfs_comparison`, `plot_incidence_validation`) — split out of `plotting.py` since neither is needed outside the ASP `sfs` forward-render cross-check. |
 | [`sfs_validation.py`][sfs_validation.py] | Cross-checks `hapke.hapke_shade_ortho` against ASP `sfs` run as an independent forward renderer, for DEM-aware ground truth on the Hapke shading math. |

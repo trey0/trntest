@@ -262,43 +262,81 @@ def astropedia_rel_path(url: str) -> str:
     return f"astropedia/{url.rsplit('/', maxsplit=1)[-1]}"
 
 
-def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
-    """Download and cache Astropedia's flat-file GLD100 DEM (~10GB, see
-    docs/data-sources/astropedia-gld100.md) once, resumably."""
+def fetch_large_file(url: str, rel_path: str, cache_root: Path) -> Path:
+    """Download and cache one multi-GB file once, resumably, under `cache_root / rel_path`.
+
+    Safe to call from several processes at once: a per-file lock serializes them, and a caller that
+    waits for it finds the finished file and returns it.
+
+    :param url: The file's URL.
+    :param rel_path: Cache-relative destination path.
+    :param cache_root: Cache root.
+    :returns: The cached file's path.
+    """
     # Deliberately *not* built on `cached_get` above -- that function downloads to a freshly
     # uniquely-named temp file every call and deletes it on any failure, both correct for small
     # WMS tiles but actively wrong for one huge file: a fresh random name each attempt gives
     # `curl -C -` nothing to resume *from*, and deleting a mostly-complete download on a transient
     # failure would throw away exactly the progress being protected. Uses a stable `<dest>.part`
     # path instead, and deliberately leaves it in place on failure for the next call to resume
-    # from.
+    # from. The stable path is also why the lock is needed: two concurrent cold fetches would
+    # otherwise both append to the same `.part`.
     #
     # `curl -C -` (continue-at), not a hand-rolled `requests` Range-header implementation: `curl`
     # is already a Docker image dependency (see `docker/Dockerfile`'s ASP tarball fetch), and its
-    # resume support is mature and well-tested -- confirmed against this exact file/server, not
+    # resume support is mature and well-tested -- confirmed against the GLD100 file/server, not
     # just assumed from curl's own docs. Not run through `subprocess_utils.run_quiet` (that helper
     # is scoped to ASP/ISIS binary calls) -- curl's own progress meter has live value for a
     # transfer this size, unlike a quick ASP tool call's noise, so it's left to print directly
     # rather than captured.
-    dest = cache_root / astropedia_rel_path(base_url)
+    dest = cache_root / rel_path
     if dest.exists() and dest.stat().st_size > 0:
         if trace.enabled():
             print(f"cache hit: {dest}")
         return dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = dest.parent / (dest.name + ".part")
-    if trace.enabled():
-        print(f"fetching {base_url} -> {dest} (~10GB, resumable -- may already be partially downloaded)")
-    result = subprocess.run(["curl", "-fL", "-C", "-", "-o", str(partial), base_url], check=False)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"curl failed (exit {result.returncode}) downloading {base_url} -- "
-            f"partial download kept at {partial} for the next call to resume from"
-        )
-    partial.rename(dest)
+    with pacing_gate(dest.parent / (dest.name + ".lock")):
+        if dest.exists() and dest.stat().st_size > 0:
+            return dest
+        partial = dest.parent / (dest.name + ".part")
+        if trace.enabled():
+            print(f"fetching {url} -> {dest} (resumable -- may already be partially downloaded)")
+        result = subprocess.run(["curl", "-fL", "-C", "-", "-o", str(partial), url], check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"curl failed (exit {result.returncode}) downloading {url} -- "
+                f"partial download kept at {partial} for the next call to resume from"
+            )
+        partial.rename(dest)
     if trace.enabled():
         print(f"wrote {dest}")
     return dest
+
+
+def fetch_astropedia_gld100(cache_root: Path, base_url: str) -> Path:
+    """Download and cache Astropedia's flat-file GLD100 DEM (~10GB, see
+    docs/data-sources/astropedia-gld100.md) once, resumably."""
+    return fetch_large_file(base_url, astropedia_rel_path(base_url), cache_root)
+
+
+def sldem2015_rel_path(filename: str) -> str:
+    """`sldem2015/<filename>` -- the cache path for one SLDEM2015 tile's `.IMG` or `.LBL`."""
+    return f"sldem2015/{filename}"
+
+
+def fetch_sldem2015_tile(tile_name: str, cache_root: Path, base_url: str) -> Path:
+    """Download and cache one SLDEM2015 product (a ~1.4GB tile or the small data-quality map, see
+    docs/data-sources/sldem2015.md) and its detached PDS3 label, once, resumably.
+
+    :param tile_name: e.g. `"SLDEM2015_512_30N_60N_000_045_FLOAT"`.
+    :param cache_root: Cache root.
+    :param base_url: The product's directory URL, ending in `/`.
+    :returns: The cached `.LBL` path, which is what GDAL opens (it points at the `.IMG`).
+    """
+    # The label first: it's small, and a tile whose `.IMG` is cached but whose label isn't can't be
+    # opened.
+    label = fetch_large_file(base_url + tile_name + ".LBL", sldem2015_rel_path(tile_name + ".LBL"), cache_root)
+    fetch_large_file(base_url + tile_name + ".IMG", sldem2015_rel_path(tile_name + ".IMG"), cache_root)
+    return label
 
 
 def robbins_craters_rel_path(url: str) -> str:

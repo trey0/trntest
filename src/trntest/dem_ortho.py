@@ -232,11 +232,10 @@ def fetch_dem(
     # `reproject_astropedia_elevation_to_local_grid` reads just this AOI from the local file and
     # reprojects it onto this same local-CRS grid -- already elevation (not planetocentric radius), so
     # `lunaserv_wms.radius_to_elevation` is skipped.
-    astropedia_path, astropedia_deg_bbox = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
+    astropedia_path = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
     dem_elevation_path = config.output_dir / "dem_elevation.tif"
     reproject_astropedia_elevation_to_local_grid(
         astropedia_path,
-        astropedia_deg_bbox,
         bbox,
         width,
         height,

@@ -51,9 +51,9 @@ health = seam_probes.probe_health_table(results, source.thresholds)
 # from the seam (1 px bins, positive to the north or east), away from the probe's other seam.
 #
 # - `nan_near`: `NaN` pixels within 3 px of the seam. A coverage gap along a seam is a bug.
-# - `step_rel`: the difference between the two sides, each extrapolated to the seam from a straight
+# - `step`: the difference between the two sides, each extrapolated to the seam from a straight
 #   line fit 6-30 px out, relative to the probe's median reflectance.
-# - `spike_rel`: the largest deviation of a near-seam bin (within 3 px) from its side's line,
+# - `spike`: the largest deviation of a near-seam bin (within 3 px) from its side's line,
 #   relative to the median. A bright or dark line shows up here; so does the blended edge of a step.
 # - `gradient_ratio`: the largest near-seam median gradient magnitude, divided by the reference
 #   bins'. A line or a texture change raises it even when the mean doesn't move.

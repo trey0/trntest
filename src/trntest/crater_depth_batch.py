@@ -246,7 +246,6 @@ def grade_tile(
         dem_elevation_path = Path(tmp_dir) / "dem_elevation.tif"
         dem_gld100.reproject_astropedia_elevation_to_local_grid(
             astropedia_path,
-            padded,
             dst_bbox_m,
             dst_width,
             dst_height,

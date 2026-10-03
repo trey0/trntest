@@ -48,19 +48,28 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
      better correction fixes that corner.
   `trntest2` is not being regenerated to pick up this correction as part of this change.
 
-- **GLD100 has its own ±60° seam: a nodata row the DEM pipeline never fills.** Separate from the
-  WAC_EMP artifact above (same latitude, different source). The cached Astropedia file itself has
-  nodata at 60°N (row 5761: 40,383 of 109,165 columns; row 5760: 3,891 more) and a smaller partial
-  row at 60°S (3,826 columns). The bilinear warp to the local grid keeps it as a 1-px NaN row, and
-  `dem_mosaic --hole-fill-length` doesn't fill it (probably because it touches the raster edge, so it
-  isn't an enclosed hole), leaving -3.4e38 nodata in `dem_filled_*.tif`. Shading then draws a
-  visible curved line along the parallel: in `trntest2` entry 37 (`M1309363051CE`) the basemap's
-  row mean goes 28 → 3 on the gap row and 35-47 just poleward, while the underlying (edge-corrected)
-  WAC_EMP reflectance is flat across it (0.1217 → 0.1204). That entry's footprint stops short of
-  60°N, so only its basemap shows the line, but any entry whose footprint reaches the gap feeds
-  that nodata row to `sat_sim`/`mapproject` too. Possibly also behind some of the "implausibly steep
-  pixels" item below. Likely fix: fill DEM NaNs right after the GLD100 warp, before `dem_mosaic`,
-  with a fill that also catches edge-touching gaps.
+- **GLD100 has its own seams at ±60° and along 90°/270°, in the source file.** Separate from the
+  WAC_EMP artifact above (same latitude, different source). Across the file's full width the typical
+  row-to-row elevation change jumps at ±60° (60°S: 19 m vs. 3-5 m nearby; 60°N: 7 m vs. 2-4 m), with
+  different texture on each side and no consistent vertical offset; one-column lines run along 90°
+  and 270° between them (only the 270° one is strong enough for the probes to flag). See `docs/data-sources/astropedia-gld100.md`. On the local grid ±60° is a
+  one-pixel line in a low-sun hillshade and a near-seam gradient spike of 1.4-2.0× at the 60°S probes
+  in `notebooks/dem_seams.ipynb`, up to 1.4× at 60°N (control lines mostly stay under 1.16). 60°N also
+  has a nodata row (40,383 of 109,165 columns), and 60°S short ones (3,826 columns): the warp keeps
+  them as 1-px `NaN` rows (up to ~2,450 px in a 200 km probe), `dem_mosaic --hole-fill-length` leaves
+  almost all of it (`dem_seams.ipynb`), and shading draws a curved line along the parallel
+  (`trntest2` entry 37, `M1309363051CE`, basemap row mean 28 → 3 on the gap row). The 17 affected
+  probes are strict expected failures in `tests/test_dem_seams.py`. Within ±60° the planned switch
+  to SLDEM2015 (`vira-dem-sources.md`) replaces the equatorward side and the 90°/270° lines; the poleward
+  side and the nodata rows stay until GLD100 is retired there (that plan's Milestone 2). Possibly also
+  behind some of the "implausibly steep pixels" item below.
+- **Existing datasets' DEMs are up to half a pixel misregistered.** `dem_gld100`'s AOI read used a
+  fractional window, which GDAL reads as the nearest whole pixels while the warp kept the fraction,
+  shifting every DEM by up to ±0.5 px (≤50 m) per axis relative to the true positions and to the
+  WAC_EMP texture (RMS 6-10 m elevation error against an exact resample on two probes; 0.5-2 m after
+  the fix). Footprints within ~0.5° west of 0° longitude also had a full-height `NaN` strip there
+  before hole fill. Fixed in code; `trntest1`/`trntest2` (and `cache/crater_depth_tiles_*`) still
+  hold DEMs and renders from before the fix and haven't been regenerated.
 - **Cast shadows speckle on slopes nearly parallel to the sun.** `cast_shadow.sun_sweep`'s lit test
   (`filled >= running_max`) flips pixel-by-pixel where a slope faces away from the sun at close to
   the sun's elevation, since height across the rays is then nearly constant and small DEM variation

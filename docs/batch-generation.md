@@ -240,13 +240,10 @@ is ever live VPS-wide regardless of worker count, and regardless of which worktr
 A large `workers` count no longer scales aggregate request rate the way it used to; there's no need
 to hold a batch's first run to `workers=1` just to avoid that specific failure mode.
 
-One gap this fix does *not* cover: the one-time ~10GB Astropedia GLD100 download
-(`cache.fetch_astropedia_gld100`) is deliberately not built on `cached_get` (it needs a stable,
-resumable `.part` path across retries -- see that function's own comment), so it isn't
-serialized by the same lock and remains not concurrency-safe. Check
-`cache/astropedia/*.tif` already exists before pointing a fresh worker pool (or a fresh agent) at a
-dataset whose footprints might trigger this fetch, rather than relying on request-pacing to protect
-it the way it now does for everything else.
+The one-time ~10GB Astropedia GLD100 download (`cache.fetch_astropedia_gld100`) isn't built on
+`cached_get` (it needs a stable, resumable `.part` path across retries), so request pacing doesn't
+cover it; `cache.fetch_large_file`'s own per-file lock does, so concurrent workers wait for one
+download rather than racing on the `.part`.
 
 **`spiceinit web=yes` overload -- fixed.** A different external host than any of the above, hit
 through a different mechanism: ISIS's `spiceinit` subprocess (`isis_wac.run_spiceinit`,

@@ -1,6 +1,7 @@
 # Plan sketch: switch the default DEM to VIRA's multi-source selection
 
-Status: **not started** — a plan sketch, written ahead of the work. Once the work is done, fold the
+Status: **Milestone 1 steps 0-1 done** (SLDEM2015 cached and checked; GLD100 baseline probes in
+`notebooks/dem_seams.ipynb`); step 2 next. Once the work is done, fold the
 lasting facts into `docs/data-sources/` (one file per new source) and `dem_ortho.py`'s docstrings,
 and delete this file.
 
@@ -19,13 +20,13 @@ SLDEM2015 for ±60° (Milestone 1); the polar caps come later. Together they als
 | Band | Product | Host | Format | Posting | Encoding (from `.LBL`) |
 |---|---|---|---|---|---|
 | 60–90°N | `LDEM_60N_120M` | imbrium.mit.edu (LOLA GDR) | PDS3 `.IMG`, polar stereo, 15520² | 120 m | Int16 × 0.5 m, height above 1737.4 km sphere; label says "preliminary LOLA data" |
-| 0–60°N, 60°S–0 | `SLDEM2015_256_*_FLOAT` (6 tiles, 120° lon each: `000_120`, `120_240`, `240_360`) | imbrium.mit.edu | PDS3 `.IMG`, simple cylindrical, 30720×15360 each | 256 ppd (~118.45 m) | float32 **km**, height above 1737.4 km; `CENTER_LONGITUDE = 180` |
+| 0–60°N, 60°S–0 | `SLDEM2015_256_*_FLOAT` (6 tiles, 120° lon each: `000_120`, `120_240`, `240_360`) | imbrium.mit.edu | PDS3 `.IMG`, simple cylindrical, 30720×15360 each | 256 ppd (~118.45 m) | float32 **km**, height above 1737.4 km; `CENTER_LONGITUDE = 180`. **We use the 512 ppd tiles instead** (deviation below). |
 | 60–90°S | `LDEM_60S_60MPP_ADJ` | pgda.gsfc.nasa.gov | GeoTIFF | 60 m | not yet checked |
 | 80–90°S | `LDEM_80S_20MPP_ADJ` | pgda.gsfc.nasa.gov | GeoTIFF | 20 m | not yet checked |
 | 87–90°S | `ldem_87s_5mpp` | pgda.gsfc.nasa.gov | GeoTIFF | 5 m | not yet checked |
 
-Download size: ~21 GB total (SLDEM ~1.9 GB × 6, north polar ~0.5 GB, south 3.1 + 2.7 + 3.5 GB per
-`Content-Length`). Coverage is asymmetric: the north pole is 120 m only, the south is nested 60/20/5 m.
+Download size per `Content-Length`: VIRA's set is ~21 GB (SLDEM ~1.9 GB × 6, north polar ~0.5 GB,
+south 3.1 + 2.7 + 3.5 GB); with SLDEM2015 at 512 ppd instead (~1.4 GB × 32), ~55 GB. Coverage is asymmetric: the north pole is 120 m only, the south is nested 60/20/5 m.
 
 ## Seam inventory
 
@@ -44,7 +45,7 @@ the first three (`wac_emp_edge_correction.py`, `ortho_wac_emp.py`'s branch-cut f
    20 m/5 m products must be *downsampled* — bilinear would alias, so each side of the seam would get
    different high-frequency content. Use `average` resampling for downsampling. A finer working
    grid (see "DEM working resolution" below) would move where downsampling vs. upsampling happens.
-3. **Longitude tile seams (0°/360°, 120°, 240°).** Between SLDEM tiles. 0°/360° is also the global
+3. **SLDEM tile seams: every 45° of longitude, and ±30°/0° latitude** (512 ppd tiles are 45° × 30°). 0°/360° is also the global
    wrap, since SLDEM (like GLD100) uses a `CENTER_LONGITUDE = 180` frame: its raster edge is the prime
    meridian, not the antimeridian.
 4. **Coordinate branch cut (±180°, or wherever each CRS puts it).** Not a data seam, a math one:
@@ -55,10 +56,10 @@ the first three (`wac_emp_edge_correction.py`, `ortho_wac_emp.py`'s branch-cut f
    `dem_gld100.astropedia_coverage_bbox_deg`-style degree-bbox logic breaks. Source selection has to
    work from the footprint polygon in each source's own CRS.
 
-Possible latent baseline bug worth checking first: GLD100's raster edge is also at 0°/360° (CM 180),
-and `reproject_astropedia_elevation_to_local_grid` builds its read window with `transform_bounds`
-from a degree bbox. A footprint straddling the prime meridian may already misbehave today.
-Milestone 1 step 1 tests this against current code before anything changes.
+GLD100's raster edge is at 0°/360° (CM 180) too, and a footprint straddling it did misbehave (a
+`NaN` strip up to ~0.5° wide just west of 0°); step 1 found and fixed it, along with a half-pixel
+misregistration in every GLD100 read. SLDEM2015's tiles share GLD100's CRS (eqc, `lon_0=180`,
+`R=1737400`), so the same read pattern applies to them.
 
 ## Test-first: seam probes, worst case first
 
@@ -80,16 +81,15 @@ Starting at #1 is the right optimization: if both seam types are handled there, 
 follow, and any interaction between them (e.g. the branch-cut fix changing which tile wins merge
 precedence) only shows up there. #7 is still needed.
 
-**Harness.** `trntest.seam_probes` now exists for the WAC_EMP reflectance mosaic
-(`reflectance_seams.ipynb`, `tests/test_reflectance_seams.py`): synthetic square AOIs, per-seam
-profiles against control lines, and shared pass limits. The DEM side needs a `Renderer` and its own
-`Seam` list; the planned `dem_seams.ipynb` should reuse the rest. `dem_ortho.fetch_dem` only reads
-`camera.footprint_lonlat_deg`, so a probe can pass a
-stub footprint (square, nadir-sized, centered on the point) without SPICE or an EDR. Add an optional
-rotation of the square, since seams that are axis-aligned in the destination grid hide some artifacts.
-Output under this worktree's `output/<name>/seam_probes/`. Once a probe is also worth rendering,
-look for a real LRO pass near it with `TrnTestEntrySpice` (LRO is polar, so every latitude gets
-crossed; longitude is the constraint).
+**Harness.** `trntest.seam_probes` has a DEM source (`dem_gld100`: `DEM_SEAMS`, `DEM_PROBES`,
+`render_gld100_elevation`, `dem_thresholds`), run by `notebooks/dem_seams.ipynb` and
+`tests/test_dem_seams.py`. It probes every point where four 512-ppd SLDEM2015 tiles meet (three at
+±60°): ±60°, ±30° and 0° latitude × every 45° of longitude, plus #6's ±45° 0° wrap-only points. The mosaic will need its own renderer and source entry, reusing
+`DEM_SEAMS`/`DEM_PROBES` so its numbers compare directly against the GLD100 baseline. Not done yet:
+an optional rotation of the probe square (seams that are axis-aligned in the destination grid hide
+some artifacts), and probes #4, #5 and #7 from the table above. Once a probe is also worth rendering, look for a
+real LRO pass near it with `TrnTestEntrySpice` (LRO is polar, so every latitude gets crossed;
+longitude is the constraint).
 
 **Metrics per probe DEM** (all computed on the final local-ortho grid, with the seam curve
 rasterized into that grid, since seams aren't axis-aligned there):
@@ -109,14 +109,20 @@ rasterized into that grid, since seams aren't axis-aligned there):
 
 Keep the probe list and thresholds in a `@pytest.mark.heavy` test so regressions are caught later.
 
+On elevation, step and spike turned out to be terrain-dominated: control lines reach ~280 m and
+~330 m at 100 m posting, so they carry no pass limit (`seam_probes.dem_thresholds`). The gradient
+ratio (controls ≤ 1.31) and `NaN` are what separate a seam from terrain. Slope outliers, the
+`dem_mosaic`/`gdalwarp` cross-check and a curvature-based metric aren't implemented; add them if
+the mosaic's seams need finer discrimination than the gradient ratio gives.
+
 ## Milestones
 
 Ordered by value. Milestone 1 is the near-term goal; Milestone 2 may wait a long time.
 
 ### Milestone 1: SLDEM2015 for ±60°
 
-SLDEM2015 replaces GLD100 wherever it has data. Its posting is similar (~118 vs. 100 m), but it is
-reported to be substantially better quality. GLD100 stays in use for 60–79°, so nothing that works
+SLDEM2015 replaces GLD100 wherever it has data. At 512 ppd its posting (~59 m) is finer than GLD100's
+100 m and than the ~100 m DEM grid, and it is reported to be substantially better quality. GLD100 stays in use for 60–79°, so nothing that works
 today regresses, and >79° still fails as it does now. This creates a **transitional** SLDEM↔GLD100
 seam at ±60°. Unlike the eventual SLDEM↔LDEM seam, the two overlap (GLD100 runs to 79°), so the step
 between them can be measured directly and feathered if needed.
@@ -124,13 +130,16 @@ between them can be measured directly and feathered if needed.
 The four-corners probe still comes first: at (±60°, 0°) two SLDEM tiles and GLD100 meet across the
 wrap.
 
-0. **Reconnaissance, SLDEM only.** Download the 6 tiles (~11 GB) with the resumable `curl -C -`
-   pattern from `cache.fetch_astropedia_gld100`, plus a lock (`docs/environment.md` notes that
-   fetch's concurrency race). Check each tile with `gdalinfo` against its `.LBL`: units (km),
-   scale/offset (GDAL exposes PDS3 `SCALING_FACTOR`/`OFFSET` as metadata but does not apply them on
-   read), nodata, exact extent. Record in a new `docs/data-sources/sldem2015.md`.
-1. **Baseline probes on GLD100** at #1–#3 and #6, against current code. This settles the
-   prime-meridian question and gives numbers to compare against.
+0. **Reconnaissance, SLDEM only.** *Done.* The 32 tiles at 512 ppd plus the data-quality map, via
+   `cache.fetch_sldem2015_tile` (resumable, locked); facts in `docs/data-sources/sldem2015.md`:
+   exact 45°×30° tiles in GLD100's own CRS, km above 1737.4 km.
+1. **Baseline probes on GLD100.** *Done* (`dem_seams.ipynb`). Found and fixed: the 0° wrap gap and
+   a ≤0.5 px misregistration of every GLD100 read (`dem_gld100.reproject_astropedia_elevation_to_local_grid`).
+   Found, not fixed: GLD100's own seams, a one-row line along all of ±60° plus nodata stretches,
+   and one-column lines along 90° and 270° between them (17 of 42 probes fail, strict xfails in
+   `tests/test_dem_seams.py`). Every other probed meridian, ±30° and the equator are clean on
+   GLD100: the baseline the mosaic's tile seams have to match. Within ±60° SLDEM replaces GLD100's
+   90°/270° seams outright.
 2. **Source abstraction.** Generalize `dem_gld100.py` so a DEM is built from per-source reads:
    coverage test in the source's own CRS, fetch/cache, read-and-reproject one source onto the local
    grid (the pattern `ortho_wac_emp._reproject_one_wac_emp_tile_to_array` already uses, including its
@@ -139,7 +148,9 @@ wrap.
    `docs/intermediate-product-discipline.md`, the DEM source goes into `dem_filled_filename` so the
    two can't collide on one name. Design it for more than two sources, since Milestone 2 adds them.
 3. **Merge.** Per-pixel precedence (SLDEM where valid, else GLD100), then `hole_fill_dem`. Start with
-   a hard cut. Add feathering or offset correction only if step 4 measures a step that needs it — the
+   a hard cut. GLD100's own ±60° seam sits exactly on this cut, so a hard cut at 60° leaves
+   GLD100's poleward edge rows (including the 60°N nodata row) as the polar side's first rows;
+   consider cutting a few rows poleward of 60° instead, once the mosaic can measure it. Add feathering or offset correction only if step 4 measures a step that needs it — the
    WAC_EMP work showed each correction brings its own new edge cases.
 4. **Probe the mosaic**, #1 first, then #2, #3, #6, #7. Fix, re-probe.
 5. **Quality check: is SLDEM actually better here?** Same entries, both sources:
@@ -180,7 +191,8 @@ When both milestones are done, fold this plan away.
 - **Keep the fine south products.** A DEM finer than the output image may still improve it, and a
   DEM's effective resolution can be much coarser than its nominal posting. "DEM working
   resolution" below covers both.
-- **~21 GB of extra cache is fine.**
+- **~21 GB of extra cache is fine.** Later (2026-10-03): SLDEM2015 at 512 ppd (~45 GB) rather than
+  VIRA's 256 ppd; the 256 ppd tiles were deleted once the 512 ones checked out.
 
 ## DEM working resolution vs. output GSD
 

@@ -347,17 +347,35 @@ def reproject_raster_to_local_grid(
         dst_nodata=dst_nodata,
     )
 
+    return write_local_grid_array(reprojected, dst_bbox_m, center_lon_deg, center_lat_deg, moon_radius_m, output_path)
+
+
+def write_local_grid_array(
+    array: np.ndarray, dst_bbox_m, center_lon_deg: float, center_lat_deg: float, moon_radius_m: float, output_path
+) -> Path:
+    """Write a `reproject_raster_to_local_grid_array`-shaped array (or a merge of several) as a
+    single-band float32 GeoTIFF on its local Orthographic grid, atomically.
+
+    :param array: `(height, width)` array, `NaN` = no data.
+    :param dst_bbox_m: The grid's `(minx, miny, maxx, maxy)`, meters, local Orthographic CRS.
+    :param center_lon_deg: CRS tangent point longitude, degrees.
+    :param center_lat_deg: CRS tangent point latitude, degrees.
+    :param moon_radius_m: Sphere radius, meters.
+    :param output_path: Where to write it.
+    :returns: `output_path`, as a `Path`.
+    """
+    height, width = array.shape
     profile = {
         "driver": "GTiff",
-        "height": dst_height,
-        "width": dst_width,
+        "height": height,
+        "width": width,
         "count": 1,
         "dtype": "float32",
         "crs": local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m),
-        "transform": transform_from_bounds(*dst_bbox_m, dst_width, dst_height),
+        "transform": transform_from_bounds(*dst_bbox_m, width, height),
         "nodata": None,
     }
     with atomic_publish(Path(output_path)) as tmp:
         with rasterio.open(tmp, "w", **profile) as dst:
-            dst.write(reprojected, 1)
+            dst.write(array, 1)
     return Path(output_path)

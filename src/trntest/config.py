@@ -99,6 +99,19 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # reads. See docs/data-sources/astropedia-gld100.md.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
+# SLDEM2015 (LOLA + Kaguya TC), 60S-60N, at its finest posting: 512 ppd (~59 m), as 32 float32 tiles of
+# 30 deg x 45 deg from the LOLA team's PDS mirror, plus its 1-ppd data-quality map. Not yet used by
+# the DEM pipeline. Each tile is ~1.4 GB, fetched whole once (`cache.fetch_sldem2015_tile`). See
+# docs/data-sources/sldem2015.md.
+DEFAULT_SLDEM2015_BASE_URL = "https://imbrium.mit.edu/DATA/SLDEM2015/TILES/FLOAT_IMG/"
+DEFAULT_SLDEM2015_QUALITY_BASE_URL = "https://imbrium.mit.edu/DATA/SLDEM2015/GLOBAL/FLOAT_IMG/"
+SLDEM2015_TILE_NAMES = tuple(
+    f"SLDEM2015_512_{band}_{lon:03d}_{lon + 45:03d}_FLOAT"
+    for band in ("30N_60N", "00N_30N", "30S_00S", "60S_30S")
+    for lon in range(0, 360, 45)
+)
+SLDEM2015_QUALITY_NAME = "SLDEM2015_DATA_QUALITY_FLOAT"
+
 # Live default ortho/texture source: ASU/LROC's WAC_EMP product, fetched directly from its own PDS4
 # archive (`ortho_wac_emp.wac_emp_tile_ids_for_bbox`/`fetch_wac_emp_reflectance`) rather than through
 # Lunaserv's WMS render, which carries an uncorrected affine display stretch. One base URL covers
@@ -186,6 +199,8 @@ class TrntestConfig:
     lunaserv_dem_srs: str = DEFAULT_LUNASERV_DEM_SRS  # deprecated path only, see comment above
     dem_native_ppd: float = DEFAULT_DEM_NATIVE_PPD  # deprecated path only, see comment above
     astropedia_gld100_url: str = DEFAULT_ASTROPEDIA_GLD100_URL
+    sldem2015_base_url: str = DEFAULT_SLDEM2015_BASE_URL
+    sldem2015_quality_base_url: str = DEFAULT_SLDEM2015_QUALITY_BASE_URL
     wac_emp_base_url: str = DEFAULT_WAC_EMP_BASE_URL
     robbins_craters_url: str = DEFAULT_ROBBINS_CRATERS_URL
     isis_kernel_base_url: str = DEFAULT_ISIS_KERNEL_BASE_URL

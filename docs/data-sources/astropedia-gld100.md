@@ -24,6 +24,24 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   reads this directly from the file's own embedded `crs`/`transform` (`rasterio.open(path).crs`) rather
   than hardcoding the PROJ4 parameters by hand — unlike Lunaserv's GetMap responses, this file's
   embedded georeferencing is trustworthy.
+- **Raster edges meet at 0°, and overlap.** Central meridian 180° puts the raster's left edge at
+  exactly 0° (x = -πR) and its right edge 109165 × 100 m later, ~94 m (almost a pixel) past 360°. An
+  AOI straddling 0° needs both ends of the file; `reproject_astropedia_elevation_to_local_grid` reads
+  the two as separate windows (in a CRS centered on the AOI) and warps each, rather than joining them
+  into one array, which would misregister one side by that overlap.
+- **±60° seam, in the file itself, full width.** GLD100 is assembled from parts that meet at ±60°:
+  the typical (median) row-to-row elevation change jumps at the 60°S row (19 m vs. 3-5 m on nearby
+  rows) and at 60°N (7 m vs. 2-4 m), with different texture on each side (row-to-row change 2-3 m
+  equatorward of 60°N, 4 m poleward). There's no consistent vertical offset: the signed step's median
+  is within ±12 m in every 30° longitude bin. 60°N also has a nodata row (row 5761, 40,383 of
+  109,165 columns; 3,891 more in row 5760), and 60°S a short one (row 42151, 3,826 columns).
+  `notebooks/dem_seams.ipynb` measures both on the local grid.
+- **90° and 270° seams, between ±60°.** One-column lines exactly at 90° and 270° longitude, from
+  about 59°S to 61°N and nowhere else. The mean column-to-column change across 270° is 1.5-2.4× its
+  neighbors' in every 10° latitude band in that range; across 90° it is 0.7-1.6×, differing in
+  every band but in both directions, so it nearly cancels over the full range. 0° (the raster edge),
+  45°, 135°, 180°, 225° and 315° show nothing, nor do ±30° or ±45°. So the ±60° part looks
+  assembled from a near-side and a far-side half meeting at 90°/270°.
 - **Not a Cloud-Optimized GeoTIFF**: `gdalinfo` reports `Band 1 Block=109165x1` — row-strip internal
   layout (one TIFF strip per full-width row), not 2D-tiled. A remote windowed read via GDAL's
   `/vsicurl/` (HTTP range requests) therefore pulls full-width row strips for any AOI, not a small
@@ -33,7 +51,7 @@ Index: [`docs/data-sources.md`](../data-sources.md).
 - **Caching**: `cache.fetch_astropedia_gld100` downloads and caches the **entire ~10 GB file locally
   once** (confirmed: final size 10,461,394,351 bytes), rather than repeated remote windowed reads —
   after which local windowed reads (`reproject_astropedia_elevation_to_local_grid`) are fast (no
-  network, no row-strip-over-HTTP penalty). Resumable: `curl -fL -C - -o <stable .part path> <url>`
+  network, no row-strip-over-HTTP penalty). Resumable and locked per file (`cache.fetch_large_file`): `curl -fL -C - -o <stable .part path> <url>`
   (not built on `cache.cached_get` — see that function's own docstring for why: `cached_get`'s
   per-call-unique-temp-filename and delete-on-failure behavior, both correct for small WMS tiles,
   actively defeat resume for one huge file). **Confirmed empirically, not just assumed from `curl`'s

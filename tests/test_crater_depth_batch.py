@@ -49,16 +49,18 @@ def _write_flat_floor_rim_astropedia_like(
     rim_elev=50.0,
     nodata=-32768.0,
 ):
-    """A synthetic stand-in for the real GLD100 flat file: a plain geographic (lon/lat degrees) raster
-    covering `bounds_deg`, with a flat floor disc / flat rim annulus around `(crater_lon_deg,
-    crater_lat_deg)` at exact known elevations, `nodata` everywhere else -- same "exact, not
-    percentile-estimated" trick `test_crater_depth._write_flat_floor_rim_dem` uses, adapted to degree
-    space near the equator (where a flat-Earth meters<->degrees approximation is fine)."""
+    """A synthetic stand-in for the real GLD100 flat file: an Equidistant Cylindrical (`lon_0=180`, like
+    the real file) raster covering `bounds_deg`, with a flat floor disc / flat rim annulus around
+    `(crater_lon_deg, crater_lat_deg)` at exact known elevations, `nodata` everywhere else -- same
+    "exact, not percentile-estimated" trick `test_crater_depth._write_flat_floor_rim_dem` uses, near
+    the equator (where a flat-Earth meters<->degrees approximation is fine)."""
     minlon, minlat, maxlon, maxlat = bounds_deg
     deg_per_px = pixel_size_m * _DEG_PER_M
     width = int(math.ceil((maxlon - minlon) / deg_per_px))
     height = int(math.ceil((maxlat - minlat) / deg_per_px))
-    transform = rasterio.transform.from_origin(minlon, maxlat, deg_per_px, deg_per_px)
+    transform = rasterio.transform.from_origin(
+        math.radians(minlon - 180.0) * _MOON_RADIUS_M, math.radians(maxlat) * _MOON_RADIUS_M, pixel_size_m, pixel_size_m
+    )
 
     cols, rows = np.meshgrid(np.arange(width), np.arange(height))
     lon = minlon + (cols + 0.5) * deg_per_px
@@ -71,7 +73,7 @@ def _write_flat_floor_rim_astropedia_like(
     dem[r <= floor_radius_m] = floor_elev
     dem[(r >= rim_inner_m) & (r <= rim_outer_m)] = rim_elev
 
-    crs = geo_utils.geographic_crs(_MOON_RADIUS_M)
+    crs = f"+proj=eqc +lat_ts=0 +lon_0=180 +R={_MOON_RADIUS_M} +units=m +no_defs"
     with rasterio.open(
         path,
         "w",

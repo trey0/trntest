@@ -5,7 +5,7 @@ tests.
 
 A probe needs no camera or SPICE: its AOI is a square local-Orthographic grid, the same kind of grid
 every generator's DEM/ortho uses. A source (`SeamSource`, registered in `SOURCES`) is its seams, its
-probes, a renderer and pass limits, so a new source (e.g. a DEM) plugs in without changing the rest.
+probes, a renderer and pass limits: today the WAC_EMP reflectance mosaic and the GLD100 DEM.
 """
 
 import dataclasses
@@ -22,6 +22,7 @@ from pyproj import Transformer
 
 from trntest import ortho_wac_emp
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.dem_gld100 import fetch_dem_astropedia, reproject_astropedia_elevation_to_local_grid
 from trntest.geo_utils import geographic_crs, local_orthographic_crs, pixel_center_coords_m
 from trntest.report import render_template
 from trntest.subprocess_utils import run_quiet
@@ -192,6 +193,59 @@ def render_wac_emp_reflectance(
     return array, sorted(tile_id for _, tile_id in tiles)
 
 
+# --- DEM elevation ---------------------------------------------------------------------------------
+
+_DEM_SEAM_LATS_DEG = (60.0, 30.0, 0.0, -30.0, -60.0)
+_DEM_SEAM_LONS_DEG = tuple(float(lon) for lon in range(0, 360, 45))
+
+DEM_SEAMS: tuple[Seam, ...] = (
+    *(Seam(f"lat {lat:+g}" if lat else "lat 0", "lat", lat) for lat in _DEM_SEAM_LATS_DEG),
+    *(Seam(f"lon {lon:g}", "lon", lon) for lon in _DEM_SEAM_LONS_DEG),
+)
+"""Where a GLD100/SLDEM2015 DEM mosaic's sources meet: SLDEM2015's 512-ppd tile edges (every 30 deg of
+latitude up to +-60 deg, every 45 deg of longitude; 180 deg, the geographic CRS's branch cut, is one of
+them). GLD100 alone is one file whose only edge is 0 deg (it is centered on 180 deg), so for it the
+others are ordinary terrain, except +-60 deg, where GLD100 is itself assembled."""
+
+DEM_PROBES: tuple[SeamProbe, ...] = (
+    *(
+        SeamProbe(f"{abs(lat):g}{'N' if lat > 0 else 'S' if lat < 0 else ''}_{lon:03.0f}E", lon, lat)
+        for lat in _DEM_SEAM_LATS_DEG
+        for lon in _DEM_SEAM_LONS_DEG
+    ),
+    SeamProbe("45N_000E", 0.0, 45.0),
+    SeamProbe("45S_000E", 0.0, -45.0),
+)
+"""Every point where four `DEM_SEAMS` tiles meet (or three, at +-60 deg), plus 0 deg away from any
+lat seam (the wrap alone)."""
+
+
+def render_gld100_elevation(grid: ProbeGrid, config: TrntestConfig, output_path: Path) -> tuple[np.ndarray, list[str]]:
+    """`Renderer` for GLD100 elevation through `dem_ortho.fetch_dem`'s read-and-warp, before
+    `dem_ortho.hole_fill_dem`, so a gap shows as `NaN` instead of being filled over.
+
+    :param grid: The probe grid.
+    :param config: Project config (cache location, GLD100 URL).
+    :param output_path: Where to write the elevation GeoTIFF.
+    :returns: `(elevation_m, ["GLD100"])`.
+    """
+    probe = grid.probe
+    path = fetch_dem_astropedia(grid.bbox_m, probe.center_lon_deg, probe.center_lat_deg, config)
+    reproject_astropedia_elevation_to_local_grid(
+        path,
+        grid.bbox_m,
+        grid.width,
+        grid.height,
+        probe.center_lon_deg,
+        probe.center_lat_deg,
+        MOON_RADIUS_M,
+        output_path,
+    )
+    with rasterio.open(output_path) as src:
+        array = src.read(1).astype(np.float64)
+    return array, ["GLD100"]
+
+
 # --- Profiles and metrics ------------------------------------------------------------------------
 
 NEAR_SEAM_PX = 3
@@ -234,17 +288,19 @@ class SeamProfile:
 
 @dataclasses.dataclass
 class SeamMetrics:
-    """Summary numbers for one seam in one probe. The heavy tests threshold these.
+    """Summary numbers for one seam in one probe. The heavy tests threshold these. `step` and `spike`
+    are relative to the probe's median for a relative source (`SeamSource.relative`, e.g. reflectance)
+    and in the source's units otherwise (e.g. meters of elevation).
 
     :ivar probe: Probe name.
     :ivar seam: Seam name (a control line's name ends in its offset, e.g. `"lon 180 +80px"`).
     :ivar control: Whether this is a control line rather than a real seam.
     :ivar length_px: Pixels per bin adjacent to the seam (how much of the seam the profile sees).
     :ivar nan_near: `NaN` pixels within `NEAR_SEAM_PX` of the seam.
-    :ivar step_rel: North/east reference trend minus south/west, both extrapolated to the seam
-        (`reference_trends`), relative to the overall median.
-    :ivar spike_rel: Largest |bin median - its own side's extrapolated trend| within `NEAR_SEAM_PX`,
-        relative to the overall median (a bright/dark line at the seam, or a step's blended edge).
+    :ivar step: North/east reference trend minus south/west, both extrapolated to the seam
+        (`reference_trends`).
+    :ivar spike: Largest |bin median - its own side's extrapolated trend| within `NEAR_SEAM_PX` (a
+        bright/dark line at the seam, or a step's blended edge).
     :ivar gradient_ratio: Largest near-seam gradient median divided by the reference bins' median.
     """
 
@@ -253,8 +309,8 @@ class SeamMetrics:
     control: bool
     length_px: int
     nan_near: int
-    step_rel: float
-    spike_rel: float
+    step: float
+    spike: float
     gradient_ratio: float
 
 
@@ -270,6 +326,8 @@ class ProbeResult:
     :ivar metrics: One per crossing seam, then one per control line (`CONTROL_OFFSETS_PX`).
     :ivar value_name: What `array` holds, for labels, e.g. `"reflectance"`.
     :ivar value_units: Its units, e.g. `"unitless"` or `"m"`.
+    :ivar relative: Whether `metrics`' `step`/`spike` are relative to the probe's median.
+    :ivar shade: Whether to show `array` as a hillshade (elevation) rather than directly.
     """
 
     grid: ProbeGrid
@@ -280,6 +338,8 @@ class ProbeResult:
     metrics: list[SeamMetrics]
     value_name: str = "value"
     value_units: str = "unitless"
+    relative: bool = True
+    shade: bool = False
 
     @property
     def nan_count(self) -> int:
@@ -345,22 +405,28 @@ def reference_trends(profile: SeamProfile) -> tuple[np.poly1d, np.poly1d]:
 
 
 def seam_metrics(
-    probe_name: str, profile: SeamProfile, array: np.ndarray, distance_px: np.ndarray, control: bool = False
+    probe_name: str,
+    profile: SeamProfile,
+    array: np.ndarray,
+    distance_px: np.ndarray,
+    control: bool = False,
+    relative: bool = True,
 ) -> SeamMetrics:
     """Reduce a profile to `SeamMetrics`.
 
     :param probe_name: For labeling.
     :param profile: `seam_profile`'s output.
-    :param array: The rendered array (for the near-seam `NaN` count).
+    :param array: The rendered array (for the near-seam `NaN` count and the median).
     :param distance_px: The seam's signed distance (same as passed to `seam_profile`).
     :param control: Whether `profile` is a control line's.
+    :param relative: Divide `step`/`spike` by `array`'s median.
     :returns: The metrics.
     """
     d, med = profile.distance_px, profile.median
     south_ref, north_ref = _reference_bins(d)
     near = np.abs(d) <= NEAR_SEAM_PX
     trend_s, trend_n = reference_trends(profile)
-    overall = np.nanmedian(array)
+    scale = np.nanmedian(array) if relative else 1.0
     # Each near-seam bin is compared with its own side's trend. Bilinear blending across a pure step
     # puts up to half the step into the two bins beside the seam, so a step also shows up here.
     trend = np.where(d < 0, trend_s(d), trend_n(d))
@@ -373,8 +439,8 @@ def seam_metrics(
         control=control,
         length_px=int(profile.count[np.abs(d) < 1].mean()),
         nan_near=int((np.isnan(array) & (np.abs(distance_px) <= NEAR_SEAM_PX)).sum()),
-        step_rel=float((trend_n(0.0) - trend_s(0.0)) / overall),
-        spike_rel=spike / overall,
+        step=float((trend_n(0.0) - trend_s(0.0)) / scale),
+        spike=spike / scale,
         gradient_ratio=float(np.nanmax(profile.gradient_median[near]) / grad_ref),
     )
 
@@ -404,12 +470,16 @@ class SeamStrip:
             return self.mean / np.nanmedian(self.mean, axis=1, keepdims=True)
 
 
-def seam_strip(result: "ProbeResult", seam_name: str, along_bin_px: int = 10) -> SeamStrip:
+def seam_strip(
+    result: "ProbeResult", seam_name: str, along_bin_px: int = 10, array: np.ndarray | None = None
+) -> SeamStrip:
     """Straighten the `PROFILE_MAX_PX` band around one of `result`'s seams.
 
     :param result: `run_probe`'s output.
     :param seam_name: One of `result.distances_px`'s keys.
     :param along_bin_px: Row height, pixels.
+    :param array: What to straighten, on `result`'s grid (e.g. a hillshade of it); defaults to
+        `result.array`.
     :returns: The strip.
     """
     grid, distance = result.grid, result.distances_px[seam_name]
@@ -430,7 +500,7 @@ def seam_strip(result: "ProbeResult", seam_name: str, along_bin_px: int = 10) ->
     row = np.clip(np.digitize(along[in_band], along_edges) - 1, 0, len(along_edges) - 2)
     cell = row * n_cols + column[in_band].astype(int)
     n_cells = (len(along_edges) - 1) * n_cols
-    values = result.array[in_band]
+    values = (result.array if array is None else array)[in_band]
     finite = np.isfinite(values)
     count = np.bincount(cell, minlength=n_cells)
     finite_count = np.bincount(cell[finite], minlength=n_cells)
@@ -457,6 +527,8 @@ def run_probe(
     gsd_m: float | None = None,
     value_name: str = "value",
     value_units: str = "unitless",
+    relative: bool = True,
+    shade: bool = False,
 ) -> ProbeResult:
     """Render `probe` with `renderer` and profile every seam in `seams` that crosses it.
 
@@ -468,6 +540,8 @@ def run_probe(
     :param gsd_m: Pixel size; defaults to `config.dem_target_gsd_m`.
     :param value_name: What the renderer produces, for labels.
     :param value_units: Its units.
+    :param relative: Report `step`/`spike` relative to the probe's median.
+    :param shade: Show the render as a hillshade.
     :returns: The result.
     """
     grid = probe_grid(probe, gsd_m or config.dem_target_gsd_m)
@@ -485,7 +559,7 @@ def run_probe(
         )
         profile = seam_profile(array, distances[seam.name], exclude, seam)
         profiles.append(profile)
-        metrics.append(seam_metrics(probe.name, profile, array, distances[seam.name]))
+        metrics.append(seam_metrics(probe.name, profile, array, distances[seam.name], relative=relative))
     all_seams = np.logical_or.reduce(list(near_seam.values()) + [np.zeros_like(array, bool)])
     for seam in crossing:
         for offset_px in CONTROL_OFFSETS_PX:
@@ -494,9 +568,11 @@ def run_probe(
             if not _crosses(distance):
                 continue
             profile = seam_profile(array, distance, all_seams, control)
-            metrics.append(seam_metrics(probe.name, profile, array, distance, control=True))
+            metrics.append(seam_metrics(probe.name, profile, array, distance, control=True, relative=relative))
     distances_crossing = {s.name: distances[s.name] for s in crossing}
-    return ProbeResult(grid, array, source_ids, distances_crossing, profiles, metrics, value_name, value_units)
+    return ProbeResult(
+        grid, array, source_ids, distances_crossing, profiles, metrics, value_name, value_units, relative, shade
+    )
 
 
 def _crosses(distance_px: np.ndarray) -> bool:
@@ -527,21 +603,21 @@ class SeamThresholds:
     """Pass limits for one seam's `SeamMetrics`.
 
     :ivar nan_near_max: Max `nan_near`.
-    :ivar abs_step_rel_max: Max |`step_rel`|.
-    :ivar spike_rel_max: Max `spike_rel`.
+    :ivar abs_step_max: Max |`step`|.
+    :ivar spike_max: Max `spike`.
     :ivar gradient_ratio_max: Max `gradient_ratio`.
     """
 
     nan_near_max: int
-    abs_step_rel_max: float
-    spike_rel_max: float
+    abs_step_max: float
+    spike_max: float
     gradient_ratio_max: float
 
 
 # Set from the control lines' spread across all of `WAC_EMP_PROBES` (max |step| 0.048, spike 0.035,
 # gradient ratio 1.23), with some margin. `nan_near_max` leaves room for the archive's own small holes.
 _WAC_EMP_DEFAULT_THRESHOLDS = SeamThresholds(
-    nan_near_max=20, abs_step_rel_max=0.06, spike_rel_max=0.045, gradient_ratio_max=1.3
+    nan_near_max=20, abs_step_max=0.06, spike_max=0.045, gradient_ratio_max=1.3
 )
 # The +-60 deg seams get a looser gradient limit than the controls' 1.3: 1.4 is where the one
 # visually acceptable corner (60N 0E, 1.32) passes. `wac_emp_edge_correction` doesn't get most
@@ -559,6 +635,24 @@ def wac_emp_thresholds(seam_name: str) -> SeamThresholds:
     return _WAC_EMP_POLAR_SEAM_THRESHOLDS if seam_name in ("lat +60", "lat -60") else _WAC_EMP_DEFAULT_THRESHOLDS
 
 
+# Set from the control lines' spread across `DEM_PROBES` on GLD100 (gradient ratio p95 1.16, max
+# 1.51: terrain occasionally reaches a real seam's level, so this limit is a judgment call, not a
+# clean separation). Step and spike get no limit: at 100 m posting terrain alone moves them by up to ~280/330 m
+# on the controls, far more than any seam offset worth catching, so only the gradient ratio and
+# `NaN` separate seams from terrain. `nan_near_max` leaves room for a lon seam crossing a lat seam's
+# gap, which the lat seam already reports.
+_DEM_THRESHOLDS = SeamThresholds(nan_near_max=20, abs_step_max=math.inf, spike_max=math.inf, gradient_ratio_max=1.35)
+
+
+def dem_thresholds(seam_name: str) -> SeamThresholds:
+    """Pass limits for a `DEM_SEAMS` seam.
+
+    :param seam_name: The seam's name.
+    :returns: Its limits.
+    """
+    return _DEM_THRESHOLDS
+
+
 def threshold_violations(table: pd.DataFrame, thresholds: Callable[[str], SeamThresholds]) -> pd.DataFrame:
     """The real (non-control) seams in `table` that exceed their limits.
 
@@ -574,8 +668,8 @@ def threshold_violations(table: pd.DataFrame, thresholds: Callable[[str], SeamTh
             name
             for name, over in (
                 ("nan_near", row.nan_near > limits.nan_near_max),
-                ("step_rel", not abs(row.step_rel) <= limits.abs_step_rel_max),
-                ("spike_rel", not row.spike_rel <= limits.spike_rel_max),
+                ("step", not abs(row.step) <= limits.abs_step_max),
+                ("spike", not row.spike <= limits.spike_max),
                 ("gradient_ratio", not row.gradient_ratio <= limits.gradient_ratio_max),
             )
             if over
@@ -590,8 +684,8 @@ def _limit_fractions(row, limits: SeamThresholds) -> dict[str, float]:
     # count of zero reads as 0 and any count over the limit exceeds 1.
     return {
         "nan_near": row.nan_near / (limits.nan_near_max + 1),
-        "step_rel": abs(row.step_rel) / limits.abs_step_rel_max,
-        "spike_rel": row.spike_rel / limits.spike_rel_max,
+        "step": abs(row.step) / limits.abs_step_max,
+        "spike": row.spike / limits.spike_max,
         "gradient_ratio": (row.gradient_ratio - 1) / (limits.gradient_ratio_max - 1),
     }
 
@@ -602,7 +696,7 @@ def probe_health_table(results: Sequence[ProbeResult], thresholds: Callable[[str
 
     :param results: `run_probe` outputs.
     :param thresholds: Seam name -> limits, e.g. `wac_emp_thresholds`.
-    :returns: Columns `probe`, `tiles`, `nan_px`, `nan_near`, `max_abs_step_rel`, `max_spike_rel`,
+    :returns: Columns `probe`, `tiles`, `nan_px`, `nan_near`, `max_abs_step`, `max_spike`,
         `max_gradient_ratio`, `limit_use` (the largest metric/limit fraction; `gradient_ratio` counts
         from 1, `nan_near` from 0), `limit_use_by` (`"<seam>: <metric>"` behind it), `status`
         (`"pass"`/`"FAIL"`) and `failed` (`threshold_violations`' failures, `"; "`-joined).
@@ -624,8 +718,8 @@ def probe_health_table(results: Sequence[ProbeResult], thresholds: Callable[[str
                 "tiles": len(result.source_ids),
                 "nan_px": result.nan_count,
                 "nan_near": int(real.nan_near.max()),
-                "max_abs_step_rel": float(real.step_rel.abs().max()),
-                "max_spike_rel": float(real.spike_rel.max()),
+                "max_abs_step": float(real.step.abs().max()),
+                "max_spike": float(real.spike.max()),
                 "max_gradient_ratio": float(real.gradient_ratio.max()),
                 "limit_use": worst_use,
                 "limit_use_by": worst_by,
@@ -650,6 +744,9 @@ class SeamSource:
     :ivar thresholds: Seam name -> pass limits.
     :ivar value_name: What the renderer produces, for labels.
     :ivar value_units: Its units.
+    :ivar relative: Report `step`/`spike` relative to each probe's median (right for reflectance, not
+        for elevation, whose median can be near zero).
+    :ivar shade: Show renders as a hillshade (elevation) rather than directly.
     """
 
     name: str
@@ -659,6 +756,8 @@ class SeamSource:
     thresholds: Callable[[str], SeamThresholds]
     value_name: str
     value_units: str
+    relative: bool = True
+    shade: bool = False
 
 
 SOURCES: dict[str, SeamSource] = {
@@ -670,6 +769,17 @@ SOURCES: dict[str, SeamSource] = {
         wac_emp_thresholds,
         value_name="WAC_EMP reflectance",
         value_units="unitless",
+    ),
+    "dem_gld100": SeamSource(
+        "dem_gld100",
+        DEM_SEAMS,
+        DEM_PROBES,
+        render_gld100_elevation,
+        dem_thresholds,
+        value_name="GLD100 elevation, before hole fill",
+        value_units="m",
+        relative=False,
+        shade=True,
     ),
 }
 """Every probed source, by name."""
@@ -709,6 +819,8 @@ def _run_source_probe(source: SeamSource, probe: SeamProbe, config: TrntestConfi
         render_dir(source.name, config),
         value_name=source.value_name,
         value_units=source.value_units,
+        relative=source.relative,
+        shade=source.shade,
     )
 
 

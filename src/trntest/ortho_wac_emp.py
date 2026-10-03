@@ -3,11 +3,9 @@ Lunaserv's WMS render. See docs/data-sources/wac-emp-pds4.md and `dem_ortho.fetc
 """
 
 import math
-from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import Resampling, transform_bounds
 from rasterio.warp import transform as warp_transform
 from rasterio.windows import Window
@@ -23,9 +21,9 @@ from trntest.geo_utils import (
     merge_local_grid_arrays,
     pad_bbox,
     reproject_raster_to_local_grid_array,
+    write_local_grid_array,
 )
 from trntest.hapke import DEFAULT_HAPKE_CALIBRATION_WAVELENGTH_NM, HAPKE_CALIBRATION_WAVELENGTHS_NM
-from trntest.product_io import atomic_publish
 
 # The WAC_EMP PDS4 archive's equirect (non-polar) tile grid covers only 0-60 deg in each hemisphere
 # -- a separate polar-stereographic tile pair (`P900N`/`P900S`) covers the rest, 60-90 deg each
@@ -483,19 +481,4 @@ def reproject_wac_emp_reflectance_to_local_grid(
             merged, wac_emp_edge_correction.GAP_FILL_MAX_RADIUS_PX, eligible
         )
 
-    dst_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
-    dst_transform = transform_from_bounds(*dst_bbox_m, dst_width, dst_height)
-    profile = {
-        "driver": "GTiff",
-        "height": dst_height,
-        "width": dst_width,
-        "count": 1,
-        "dtype": "float32",
-        "crs": dst_crs,
-        "transform": dst_transform,
-        "nodata": None,
-    }
-    with atomic_publish(Path(output_path)) as tmp:
-        with rasterio.open(tmp, "w", **profile) as dst:
-            dst.write(merged, 1)
-    return Path(output_path)
+    return write_local_grid_array(merged, dst_bbox_m, center_lon_deg, center_lat_deg, moon_radius_m, output_path)
