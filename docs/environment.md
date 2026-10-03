@@ -152,15 +152,13 @@ that agent's `scripts/run_notebook.sh` runs live) rather than the main checkout 
 directly in the main checkout, and the user doesn't run a persistent server there either, so it's
 normal for these per-worktree servers to be the only ones running at any given time.
 
-**Jupyter port assignment is now manual, not automatic — a stale convention still lives in the
-setup script.** The script still writes `TRNTEST_JUPYTER_PORT` into each worktree's own
-`docker/.env` as `8887 + <the worktree name's own trailing digit>`, a leftover from the old
-terminal workflow where the user assigned each new agent a small sequential number by hand (`a1`,
-`a2`, ...) specifically to keep ports collision-free. Claude Desktop's own auto-generated worktree
-names don't offer that same manual control, so this derived port is closer to pseudo-random than
-deliberately non-colliding — **don't trust it to avoid a collision with another concurrent agent.**
-In practice, ask the user which port to use (they'll typically just tell you one they know is
-free) rather than relying on the automatic assignment.
+**Jupyter ports are assigned from 8888 up.** The setup script writes `TRNTEST_JUPYTER_PORT` into
+each worktree's `docker/.env` as the lowest port ≥ 8888 that no other worktree's `docker/.env`
+claims and nothing on the host is listening on. Re-running keeps a worktree's existing port unless
+another worktree claims it. This keeps the active agents' servers on a small contiguous range
+(8888, 8889, ...) so the user can reuse one SSH command that forwards a few ports. Two agents
+running the setup script at the same instant could still pick the same port; `docker compose up`
+then fails on the second one, and re-running the script fixes it.
 
 Worktree agents still use `docker compose run --rm demo <cmd>` for one-off commands (e.g.
 `trntest-lint`, a one-shot fetch) alongside their own `docker compose up` server — the two aren't
