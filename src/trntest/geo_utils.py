@@ -17,8 +17,9 @@ from trntest.product_io import atomic_publish
 
 # A small pad applied before checking/fetching a data source's own coverage, accounting for a
 # resampling kernel needing neighbor samples just past the destination edge -- shared by
-# `dem_gld100.astropedia_coverage_bbox_deg` and `ortho_wac_emp.wac_emp_tile_ids_for_bbox`, both of
-# which derive a degree-space coverage bbox from the same padded local-Orthographic working grid.
+# `dem_gld100.check_astropedia_coverage`, `dem_gld100.reproject_astropedia_elevation_to_local_grid` and
+# `ortho_wac_emp.wac_emp_tile_ids_for_bbox`, all of which derive their coverage from the same padded
+# local-Orthographic working grid.
 DEM_FETCH_SAFETY_MARGIN_FRACTION = 0.02
 
 

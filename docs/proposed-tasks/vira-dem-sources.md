@@ -53,7 +53,7 @@ the first three (`wac_emp_edge_correction.py`, `ortho_wac_emp.py`'s branch-cut f
    circumference away (exactly `ortho_wac_emp.py`'s bug). Occurs anywhere the source CRS's
    `lon_0 ± 180` falls inside a footprint.
 5. **Poles.** A footprint containing a pole has a degree-space bbox of `lon ∈ [-180, 180]`, so
-   `dem_gld100.astropedia_coverage_bbox_deg`-style degree-bbox logic breaks. Source selection has to
+   `dem_gld100.check_astropedia_coverage`-style degree-bbox logic breaks. Source selection has to
    work from the footprint polygon in each source's own CRS.
 
 GLD100's raster edge is at 0°/360° (CM 180) too, and a footprint straddling it did misbehave (a

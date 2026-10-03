@@ -27,40 +27,38 @@ from trntest.geo_utils import (
 
 # Astropedia's flat-file GLD100 DEM (`config.astropedia_gld100_url`) covers +-79 deg latitude
 # (`gdalinfo`'s own corner coordinates: 79d0'6.57" both ways). No silent fallback to the deprecated
-# Lunaserv-native path for footprints beyond this -- see `astropedia_coverage_bbox_deg`.
+# Lunaserv-native path for footprints beyond this -- see `check_astropedia_coverage`.
 ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0
 
 
-def astropedia_coverage_bbox_deg(
+def check_astropedia_coverage(
     dst_bbox_m: tuple, center_lon_deg: float, center_lat_deg: float, moon_radius_m: float
-) -> tuple:
-    """The lon/lat degree bbox needed to fully cover `dst_bbox_m` once reprojected, plus a small
-    safety margin for the resampling kernel's own footprint.
+) -> None:
+    """Check that the GLD100 file covers `dst_bbox_m`, plus a small safety margin for the resampling
+    kernel's own footprint.
 
     :param dst_bbox_m: The local-Orthographic working grid's own bbox, meters -- see
         `dem_ortho.fetch_dem`.
     :param center_lon_deg: Local Orthographic CRS tangent point longitude, degrees.
     :param center_lat_deg: Local Orthographic CRS tangent point latitude, degrees.
     :param moon_radius_m: Sphere radius, meters.
-    :returns: `(minlon, minlat, maxlon, maxlat)`, degrees.
-    :raises ValueError: If the result extends beyond `ASTROPEDIA_MAX_ABS_LATITUDE_DEG`.
+    :raises ValueError: If the padded AOI extends beyond `ASTROPEDIA_MAX_ABS_LATITUDE_DEG`.
     """
     # The `DEM_FETCH_SAFETY_MARGIN_FRACTION` pad accounts for bilinear resampling needing neighbor
     # samples just past the destination edge.
     #
-    # Derived directly from `dst_bbox_m`'s own boundary (`rasterio.warp.transform_bounds` densely
-    # samples the whole edge, not just the 4 corners), not by independently padding a degree-space bbox
-    # around the footprint's own corners: two independently-padded bboxes -- one in degrees, one in
-    # local-Orthographic meters -- aren't guaranteed to cover each other, since a square's diagonal
-    # corners are ~41% farther from center than its edge midpoints. Deriving the degree bbox from
-    # `dst_bbox_m` directly makes that mismatch structurally impossible.
+    # The latitude range comes from `dst_bbox_m`'s own boundary (`rasterio.warp.transform_bounds`
+    # densely samples the whole edge, not just the 4 corners), not from a degree-space bbox padded
+    # independently around the footprint's own corners: two independently-padded bboxes -- one in
+    # degrees, one in local-Orthographic meters -- aren't guaranteed to cover each other, since a
+    # square's diagonal corners are ~41% farther from center than its edge midpoints.
     #
     # No automatic fallback to the deprecated Lunaserv path -- a caller that wants one has to ask for
     # it explicitly.
     padded_bbox_m = pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION)
     geo_crs = geographic_crs(moon_radius_m)
     ortho_crs = local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m)
-    minlon, minlat, maxlon, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
+    _, minlat, _, maxlat = transform_bounds(ortho_crs, geo_crs, *padded_bbox_m)
     if minlat < -ASTROPEDIA_MAX_ABS_LATITUDE_DEG or maxlat > ASTROPEDIA_MAX_ABS_LATITUDE_DEG:
         raise ValueError(
             f"Camera footprint's padded AOI (latitude range {minlat:.2f}..{maxlat:.2f} deg) extends "
@@ -69,7 +67,6 @@ def astropedia_coverage_bbox_deg(
             "path (lunaserv_wms.fetch_dem_native/reproject_dem_to_local_grid) covers this latitude "
             "range but has its own known, unfixed artifact, and isn't used automatically here."
         )
-    return minlon, minlat, maxlon, maxlat
 
 
 def fetch_dem_astropedia(
@@ -84,17 +81,12 @@ def fetch_dem_astropedia(
     :param config: Project config (`cache_root`, `astropedia_gld100_url`).
     :returns: The local cached file path.
     :raises ValueError: If the footprint needs data outside the file's coverage
-        (`astropedia_coverage_bbox_deg`).
+        (`check_astropedia_coverage`).
     """
     # `cache.fetch_astropedia_gld100` fetches the whole ~10GB file, once, resumably; see its own
     # docstring for why this doesn't fetch a remote AOI window directly: the file isn't a
     # Cloud-Optimized GeoTIFF, so a remote windowed read pulls full-width row strips, which is slow.
-    #
-    # `dst_bbox_m` is passed in directly, not re-derived from the raw camera footprint, so there's
-    # exactly one padded AOI decision, not two independent ones (see
-    # `astropedia_coverage_bbox_deg`'s own trailing comment for why that used to cause corner nodata
-    # gaps).
-    astropedia_coverage_bbox_deg(dst_bbox_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M)
+    check_astropedia_coverage(dst_bbox_m, center_lon_deg, center_lat_deg, MOON_RADIUS_M)
     return cache.fetch_astropedia_gld100(config.cache_root, config.astropedia_gld100_url)
 
 

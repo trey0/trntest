@@ -427,7 +427,7 @@ def generate_dataset(
     # aborts the whole batch.
     #
     # The only other exception caught (and skipped) here is `ValueError` from
-    # `dem_gld100.astropedia_coverage_bbox_deg`'s coverage check: a candidate whose padded AOI falls
+    # `dem_gld100.check_astropedia_coverage`: a candidate whose padded AOI falls
     # outside Astropedia's GLD100 flat file's +-79-ish deg latitude coverage. Checked deliberately
     # narrow, same reasoning as `_evaluate_illuminated_candidates` above: this pipeline's other
     # assert-guarded invariants (`dem_ortho.py`'s `assert center is not None`) are defensive checks on

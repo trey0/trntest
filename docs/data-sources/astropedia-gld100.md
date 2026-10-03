@@ -16,7 +16,7 @@ Index: [`docs/data-sources.md`](../data-sources.md).
   (`reproject_astropedia_elevation_to_local_grid` reprojects the elevation values as-is).
   Coverage confirmed via the same `gdalinfo` output's corner coordinates: 79°0'6.57"N to
   79°0'6.57"S — `dem_gld100.ASTROPEDIA_MAX_ABS_LATITUDE_DEG = 79.0` encodes this exactly, and
-  `dem_gld100.astropedia_coverage_bbox_deg` raises rather than silently falling back to the deprecated
+  `dem_gld100.check_astropedia_coverage` raises rather than silently falling back to the deprecated
   Lunaserv path for any camera footprint that needs data outside it.
 - CRS: a Moon-specific Equidistant Cylindrical ("Equirectangular") `PROJCRS`, standard parallel 0,
   central meridian 180° (`ELLIPSOID["Moon_localRadius",1737400,0,...]` — confirmed the real Moon

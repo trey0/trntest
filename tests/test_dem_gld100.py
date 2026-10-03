@@ -4,46 +4,28 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.warp import transform as warp_transform
 
 from trntest import dem_gld100
 from trntest.config import MOON_RADIUS_M
 
 
-def test_astropedia_coverage_bbox_deg_within_range():
+def test_check_astropedia_coverage_accepts_aoi_within_range():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
-    bbox = dem_gld100.astropedia_coverage_bbox_deg(dst_bbox_m, 10.0, 5.0, MOON_RADIUS_M)
-    assert len(bbox) == 4
-    minlon, minlat, maxlon, maxlat = bbox
-    assert minlon < 10.0 < maxlon
-    assert minlat < 5.0 < maxlat
+    dem_gld100.check_astropedia_coverage(dst_bbox_m, 10.0, 5.0, MOON_RADIUS_M)
 
 
-def test_astropedia_coverage_bbox_deg_raises_beyond_max_latitude():
+def test_check_astropedia_coverage_raises_beyond_max_latitude():
     dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
     with pytest.raises(ValueError, match="beyond Astropedia"):
-        dem_gld100.astropedia_coverage_bbox_deg(dst_bbox_m, 10.0, 85.0, MOON_RADIUS_M)
+        dem_gld100.check_astropedia_coverage(dst_bbox_m, 10.0, 85.0, MOON_RADIUS_M)
 
 
-def test_astropedia_coverage_bbox_deg_covers_dst_bbox_corners():
-    """Regression test for the real corner-nodata bug this function's rewrite fixed (see
-    docs/history.md's dated entry): the returned degree bbox, transformed back through the same
-    local-Orthographic projection, must fully cover `dst_bbox_m`'s own corners, not just its
-    center -- independently padding a degree-space bbox around the raw footprint (the old approach)
-    used to undershoot them."""
-    center_lon, center_lat = 10.0, 5.0
-    dst_bbox_m = (-80000.0, -60000.0, 90000.0, 70000.0)  # deliberately asymmetric, not a plain square
-    minlon, minlat, maxlon, maxlat = dem_gld100.astropedia_coverage_bbox_deg(
-        dst_bbox_m, center_lon, center_lat, MOON_RADIUS_M
-    )
-
-    ortho_crs = f"+proj=ortho +lon_0={center_lon} +lat_0={center_lat} +R={MOON_RADIUS_M} +units=m +no_defs"
-    geo_crs = f"+proj=longlat +R={MOON_RADIUS_M} +no_defs"
-    minx, miny, maxx, maxy = dst_bbox_m
-    lons, lats = warp_transform(ortho_crs, geo_crs, [minx, maxx, minx, maxx], [miny, miny, maxy, maxy])
-    for lon, lat in zip(lons, lats, strict=True):
-        assert minlon <= lon <= maxlon
-        assert minlat <= lat <= maxlat
+def test_check_astropedia_coverage_checks_the_aoi_edge_not_its_center():
+    # A 100 km square reaches ~1.7 deg north of its center: past 79 deg from 78.2, not from 77.
+    dst_bbox_m = (-50000.0, -50000.0, 50000.0, 50000.0)
+    dem_gld100.check_astropedia_coverage(dst_bbox_m, 10.0, 77.0, MOON_RADIUS_M)
+    with pytest.raises(ValueError, match="beyond Astropedia"):
+        dem_gld100.check_astropedia_coverage(dst_bbox_m, 10.0, 78.2, MOON_RADIUS_M)
 
 
 def _write_astropedia_style_tif(path, elevation_value, bbox_m, width, height, moon_radius_m):
@@ -88,8 +70,9 @@ def test_reproject_astropedia_elevation_to_local_grid_preserves_constant_field(t
     center_lon = 180.0 + math.degrees(((minx + maxx) / 2) / moon_radius_m)
     center_lat = math.degrees(((miny + maxy) / 2) / moon_radius_m)
 
-    dst_bbox_m = (-5_000.0, -5_000.0, 5_000.0, 5_000.0)
-    dst_width, dst_height = 32, 32
+    # Deliberately asymmetric, not a plain square: every corner must come back covered.
+    dst_bbox_m = (-8_000.0, -6_000.0, 9_000.0, 7_000.0)
+    dst_width, dst_height = 34, 26
     output_path = tmp_path / "reprojected.tif"
 
     result_path = dem_gld100.reproject_astropedia_elevation_to_local_grid(

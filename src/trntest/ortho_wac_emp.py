@@ -143,8 +143,8 @@ def wac_emp_tile_ids_for_bbox(
     # there's no longitude zoning at a pole).
     #
     # Uses the same `transform_bounds`-on-the-destination-grid technique
-    # `dem_gld100.astropedia_coverage_bbox_deg` uses, not an independently-padded degree-space bbox
-    # (see that function's own trailing comment for why the latter causes corner nodata gaps).
+    # `dem_gld100.check_astropedia_coverage` uses, not an independently-padded degree-space bbox
+    # (see that function's own comment for why the latter causes corner nodata gaps).
     if wavelength_nm not in HAPKE_CALIBRATION_WAVELENGTHS_NM:
         raise ValueError(
             f"wavelength_nm={wavelength_nm} is not one of the archive's own bands {HAPKE_CALIBRATION_WAVELENGTHS_NM}"

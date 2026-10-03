@@ -193,7 +193,7 @@ def query_craters_for_raster(
     :returns: Matching craters.
     """
     # Same "derive the padded bbox from the destination grid's own extent, not an independently
-    # computed one" approach `dem_gld100.astropedia_coverage_bbox_deg` already uses (and documents why:
+    # computed one" approach `dem_gld100.check_astropedia_coverage` already uses (and documents why:
     # two independently-padded bboxes aren't guaranteed to agree). Shared by `crater_overlay_layer`
     # and `crater_depth.crater_depths_for_footprint` -- both want "every Robbins crater whose ellipse
     # might overlap this raster," just for different downstream uses.
