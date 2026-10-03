@@ -59,7 +59,5 @@ and open seam defects in [`proposed-tasks/open-items.md`](proposed-tasks/open-it
     interactions show up. Each source's probe notebook (`notebooks/*_seams.py`) is its seam
     inventory, and its heavy test (`tests/test_*_seams.py`) marks known defects as strict expected
     failures, so a fix has to remove the marker. The inventory runs two passes, without and with
-    mitigations, so it records which mitigation is enabled at which seam and why.
-
-11. **Don't let hole filling hide a seam.** Measure coverage before any fill, and treat a gap at a
-    seam as a bug until shown otherwise.
+    mitigations, so it records which mitigation is enabled at which seam and why. The pass without
+    them is also what keeps a mitigation such as gap filling from hiding a defect nobody looked at.
