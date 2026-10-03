@@ -119,6 +119,30 @@ def local_grid_positions_moon_me(
     return on_sphere * ((radius_m + h) / radius_m)
 
 
+def local_grid_coords_from_moon_me(
+    positions_moon_me: np.ndarray,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    radius_m: float = MOON_RADIUS_M,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Inverse of `local_grid_positions_moon_me`: `local_orthographic_crs` x/y plus elevation.
+
+    :param positions_moon_me: `(..., 3)` MOON_ME positions, meters, on the tangent point's hemisphere.
+    :param center_lon_deg: Local Orthographic CRS tangent point longitude, degrees.
+    :param center_lat_deg: Local Orthographic CRS tangent point latitude, degrees.
+    :param radius_m: Sphere radius, meters.
+    :returns: `(x_m, y_m, elevation_m)`, each `positions_moon_me.shape[:-1]`.
+    """
+    # Undo the radial elevation scaling, then read off the east/north components. Pinned to PROJ's
+    # geocentric -> local-Orthographic transform, and to round-trip `local_grid_positions_moon_me`, in
+    # `tests/test_geo_utils.py`.
+    east, north, _ = local_enu_basis(center_lon_deg, center_lat_deg)
+    p = np.asarray(positions_moon_me, dtype=np.float64)
+    r = np.linalg.norm(p, axis=-1)
+    on_sphere = p * (radius_m / r)[..., None]
+    return on_sphere @ east, on_sphere @ north, r - radius_m
+
+
 def footprint_bbox_deg(footprint_lonlat):
     """Bounding box of a camera's footprint corners.
 

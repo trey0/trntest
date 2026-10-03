@@ -20,7 +20,13 @@ import numpy as np
 from scipy import ndimage
 
 from trntest.config import MOON_RADIUS_M
-from trntest.geo_utils import local_enu_basis, local_grid_positions_moon_me, pixel_center_coords_m
+from trntest.geo_utils import (
+    local_enu_basis,
+    local_grid_coords_from_moon_me,
+    local_grid_positions_moon_me,
+    local_orthographic_crs,
+    pixel_center_coords_m,
+)
 
 # DEM refinement factor before projecting into the sun-aligned frame. The refinement (a cubic spline)
 # is what makes the output fractional: each native pixel's illumination is the mean over its
@@ -39,6 +45,24 @@ BIN_SIZE_SAFETY_FACTOR = 2.0
 
 # Native DEM rows per streaming chunk. Bounds the per-sample working arrays; see `sun_sweep`.
 CHUNK_ROWS = 128
+
+# `horizon_sweep`: a sample counts as lit when its `Z` is within this of the horizon. Covers float32
+# horizon storage (~1 mm at the ~10 km `Z` magnitudes curvature reaches across a DEM) and the
+# exactly-grazing case, where the sample and its horizon lie on the same plane.
+HORIZON_TOLERANCE_M = 0.01
+
+# `horizon_sweep`'s terrain solve: iterate until every grid point's height mismatch is below this.
+TERRAIN_SOLVE_TOLERANCE_M = 1e-3
+_TERRAIN_SOLVE_MAX_ITERATIONS = 10
+
+# `horizon_sweep`: sun-grid points whose zero-elevation location falls more than this far outside the
+# DEM's bbox are skipped outright, rather than solved and then discarded. Must exceed the largest
+# horizontal shift the terrain solve can make: relief times the tangent of curvature's tilt of local
+# vertical (~5 km x tan 4 deg = ~350 m at this project's DEM sizes).
+_TERRAIN_SOLVE_BBOX_MARGIN_M = 2000.0
+
+# `horizon_sweep`: target sun-grid points per streaming chunk.
+_HORIZON_CHUNK_POINTS = 1 << 20
 
 # `sun_aligned_basis` treats the Sun as overhead (no cast shadows possible) when the Sun direction is
 # this close to parallel with local up -- the frame's `z` axis is undefined there.
@@ -100,6 +124,71 @@ def sun_aligned_basis(sun_direction_moon_me, up_moon_me) -> tuple[np.ndarray, np
     z_hat /= np.linalg.norm(z_hat)
     y_hat = np.cross(z_hat, x_hat)
     return x_hat, y_hat, z_hat
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class SunFrame:
+    """The sun-frame `(D, Y, Z)` coordinates of points given in a `geo_utils.local_orthographic_crs`
+    frame plus elevation: `D` horizontal distance toward the Sun, `Y` = `y_hat`, `Z` = `z_hat`, all
+    meters relative to the tangent point at zero elevation.
+
+    `proj_pipeline` is the reference definition; `to_sun`/`from_sun` are fast closed forms of its
+    forward and inverse directions (pinned to it in `tests/test_cast_shadow.py`).
+
+    :ivar center_lon_deg: Tangent point longitude, degrees.
+    :ivar center_lat_deg: Tangent point latitude, degrees.
+    :ivar radius_m: Sphere radius, meters.
+    :ivar basis: `sun_aligned_basis`'s `(x_hat, y_hat, z_hat)`.
+    :ivar matrix: `(3, 3)`, rows `d_hat` (`x_hat` made horizontal at the tangent point), `y_hat`,
+        `z_hat`. Not orthogonal (`d_hat` and `z_hat` differ by the sun elevation), but invertible.
+    :ivar origin: The tangent point at zero elevation, MOON_ME.
+    """
+
+    center_lon_deg: float
+    center_lat_deg: float
+    radius_m: float
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray]
+    matrix: np.ndarray
+    origin: np.ndarray
+
+    @classmethod
+    def create(
+        cls, center_lon_deg: float, center_lat_deg: float, sun_direction_moon_me, radius_m: float = MOON_RADIUS_M
+    ) -> "SunFrame | None":
+        """Build the frame, or `None` if the Sun is overhead (see `sun_aligned_basis`)."""
+        up = local_enu_basis(center_lon_deg, center_lat_deg)[2]
+        basis = sun_aligned_basis(sun_direction_moon_me, up)
+        if basis is None:
+            return None
+        x_hat, y_hat, z_hat = basis
+        d_hat = x_hat - np.dot(x_hat, up) * up
+        d_hat = d_hat / np.linalg.norm(d_hat)
+        origin = radius_m * up  # == local_grid_positions_moon_me(0, 0, 0, ...)
+        return cls(center_lon_deg, center_lat_deg, radius_m, basis, np.stack((d_hat, y_hat, z_hat)), origin)
+
+    def to_sun(self, x_m: np.ndarray, y_m: np.ndarray, elevation_m: np.ndarray) -> np.ndarray:
+        """`(..., 3)` sun-frame `(D, Y, Z)` of local Orthographic points plus elevation."""
+        args = (self.center_lon_deg, self.center_lat_deg, self.radius_m)
+        return (local_grid_positions_moon_me(x_m, y_m, elevation_m, *args) - self.origin) @ self.matrix.T
+
+    def from_sun(self, sun_xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Inverse of `to_sun`: `(x_m, y_m, elevation_m)` of `(..., 3)` sun-frame points."""
+        positions = np.asarray(sun_xyz, dtype=np.float64) @ np.linalg.inv(self.matrix).T + self.origin
+        return local_grid_coords_from_moon_me(positions, self.center_lon_deg, self.center_lat_deg, self.radius_m)
+
+    def proj_pipeline(self) -> str:
+        """PROJ pipeline string: local Orthographic x/y/elevation -> MOON_ME -> `(D, Y, Z)`."""
+        # Step 1 inverts `geo_utils.local_orthographic_crs` itself (its `+no_defs` is a CRS-only flag),
+        # so this frame can't drift from the one the DEM is gridded on. `affine` computes
+        # `matrix @ p + offset`, so the origin shift folds into `offset = -matrix @ origin`.
+        ortho = local_orthographic_crs(self.center_lon_deg, self.center_lat_deg, self.radius_m).replace(" +no_defs", "")
+        offset = -self.matrix @ self.origin
+        terms = [f"+{axis}off={float(offset[i])!r}" for i, axis in enumerate("xyz")]
+        terms += [f"+s{i + 1}{j + 1}={float(self.matrix[i, j])!r}" for i in range(3) for j in range(3)]
+        return (
+            f"+proj=pipeline +step +inv {ortho} +step +proj=cart +R={self.radius_m!r} "
+            f"+step +proj=affine {' '.join(terms)}"
+        )
 
 
 def sweep_illuminated(z_max: np.ndarray) -> np.ndarray:
@@ -218,43 +307,19 @@ def sun_sweep(
     #      average each native pixel's `upsample_factor**2` samples.
     dem = np.asarray(dem, dtype=np.float64)
     height, width = dem.shape
-    up = local_enu_basis(center_lon_deg, center_lat_deg)[2]
-    basis = sun_aligned_basis(sun_direction_moon_me, up)
+    frame = SunFrame.create(center_lon_deg, center_lat_deg, sun_direction_moon_me, radius_m)
     bin_size_m = (bbox[2] - bbox[0]) / width / upsample_factor * bin_size_factor
-    if basis is None:
+    if frame is None:
+        up = local_enu_basis(center_lon_deg, center_lat_deg)[2]
         illumination = np.where(np.isnan(dem), np.nan, 1.0).astype(np.float32)
         return SunSweep(illumination, (up, up, up), bin_size_m, np.zeros((0, 0), dtype=np.int32))
 
-    frame = _SunFrame(basis, up, center_lon_deg, center_lat_deg, radius_m)
     chunks = [(r, min(r + chunk_rows, height)) for r in range(0, height, chunk_rows)]
     grid = _sun_grid(frame, dem, bbox, chunks, bin_size_m)
     z_max, counts, bin_index = _bin_heights(frame, grid, dem, bbox, chunks, upsample_factor)
     lit = sweep_illuminated(np.where(counts > 0, z_max, np.nan))
     illumination = _gather_illumination(lit, bin_index, chunks, width, upsample_factor)
-    return SunSweep(illumination, basis, bin_size_m, counts)
-
-
-@dataclasses.dataclass(frozen=True)
-class _SunFrame:
-    """Projection from the local Orthographic frame (plus elevation) into sun-frame `(D, Y, Z)`:
-    horizontal distance toward the Sun, then `basis`'s `y_hat` and `z_hat`."""
-
-    basis: tuple[np.ndarray, np.ndarray, np.ndarray]
-    up: np.ndarray
-    center_lon_deg: float
-    center_lat_deg: float
-    radius_m: float
-
-    def project(self, x_m: np.ndarray, y_m: np.ndarray, elevation_m: np.ndarray) -> np.ndarray:
-        """`(..., 3)` sun-frame coordinates, relative to the tangent point (keeps magnitudes small)."""
-        x_hat, y_hat, z_hat = self.basis
-        d_hat = x_hat - np.dot(x_hat, self.up) * self.up
-        d_hat = d_hat / np.linalg.norm(d_hat)
-        args = (self.center_lon_deg, self.center_lat_deg, self.radius_m)
-        zero = np.array(0.0)
-        origin = local_grid_positions_moon_me(zero, zero, zero, *args)
-        positions = local_grid_positions_moon_me(x_m, y_m, elevation_m, *args)
-        return (positions - origin) @ np.stack((d_hat, y_hat, z_hat)).T
+    return SunSweep(illumination, frame.basis, bin_size_m, counts)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -273,7 +338,7 @@ class _SunGrid:
         return (ix * self.ny + iy).astype(np.int32)
 
 
-def _sun_grid(frame: _SunFrame, dem: np.ndarray, bbox: tuple, chunks: list, bin_size_m: float) -> _SunGrid:
+def _sun_grid(frame: "SunFrame", dem: np.ndarray, bbox: tuple, chunks: list, bin_size_m: float) -> _SunGrid:
     """Size the sun-frame raster to cover every sample.
 
     :param frame: The sun frame.
@@ -292,7 +357,7 @@ def _sun_grid(frame: _SunFrame, dem: np.ndarray, bbox: tuple, chunks: list, bin_
     lo, hi = np.full(2, np.inf), np.full(2, -np.inf)
     for row0, row1 in chunks:
         xg, yg = np.meshgrid(x_native, y_native[row0:row1])
-        xy = frame.project(xg, yg, dem_filled[row0:row1])[..., :2].reshape(-1, 2)
+        xy = frame.to_sun(xg, yg, dem_filled[row0:row1])[..., :2].reshape(-1, 2)
         lo, hi = np.minimum(lo, xy.min(axis=0)), np.maximum(hi, xy.max(axis=0))
     pad = 3 * bin_size_m
     nx, ny = (int(np.ceil(n)) for n in (hi - lo + 2 * pad) / bin_size_m)
@@ -300,7 +365,7 @@ def _sun_grid(frame: _SunFrame, dem: np.ndarray, bbox: tuple, chunks: list, bin_
 
 
 def _bin_heights(
-    frame: _SunFrame, grid: _SunGrid, dem: np.ndarray, bbox: tuple, chunks: list, f: int
+    frame: "SunFrame", grid: _SunGrid, dem: np.ndarray, bbox: tuple, chunks: list, f: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Pass 1: per-bin max height and sample count, plus each fine sample's bin index.
 
@@ -323,7 +388,7 @@ def _bin_heights(
         z = _fine_heights(spline_coeffs, nan_mask, row0, row1, f)
         xg, yg = np.meshgrid(x_fine, y_fine[row0 * f : row1 * f])
         valid = ~np.isnan(z)
-        sun_xyz = frame.project(xg, yg, np.where(valid, z, 0.0))  # PROJ rejects NaN; masked out below
+        sun_xyz = frame.to_sun(xg, yg, np.where(valid, z, 0.0))  # masked out below
         flat = grid.flat_index(sun_xyz)
         flat[~valid] = -1
         np.maximum.at(z_max, flat[valid], sun_xyz[..., 2][valid])
@@ -353,6 +418,205 @@ def _gather_illumination(lit: np.ndarray, bin_index: np.ndarray, chunks: list, w
         with np.errstate(invalid="ignore", divide="ignore"):
             illumination[row0:row1] = np.where(n_valid > 0, total / n_valid, np.nan)
     return illumination
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class HorizonSweep:
+    """`horizon_sweep`'s result.
+
+    :ivar illumination_fraction: float32, the DEM's own shape. `1` = fully lit, `0` = fully
+        cast-shadowed, NaN where the DEM itself is NaN.
+    :ivar frame: The sun frame, or `None` if the Sun is overhead.
+    :ivar grid_spacing_m: Sun-grid spacing, meters.
+    :ivar grid_shape: `(nd, ny)` sun-grid shape (axis 0 = `D`, toward the Sun).
+    :ivar max_terrain_residual_m: Largest height mismatch left by the terrain solve over valid grid
+        points. Diagnostic only.
+    """
+
+    illumination_fraction: np.ndarray
+    frame: SunFrame | None
+    grid_spacing_m: float
+    grid_shape: tuple[int, int]
+    max_terrain_residual_m: float
+
+
+def horizon_sweep(
+    dem: np.ndarray,
+    bbox: tuple,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    sun_direction_moon_me,
+    radius_m: float = MOON_RADIUS_M,
+    upsample_factor: int = UPSAMPLE_FACTOR,
+    grid_spacing_m: float | None = None,
+    chunk_rows: int = CHUNK_ROWS,
+) -> HorizonSweep:
+    """Cast-shadow illumination fraction for `dem`, by resampling the terrain onto a sun-aligned grid.
+
+    :param dem: Elevation, meters, on the north-up local Orthographic grid described by `bbox`.
+    :param bbox: `(minx, miny, maxx, maxy)`, meters, `geo_utils.local_orthographic_crs` frame.
+    :param center_lon_deg: That frame's tangent point longitude, degrees.
+    :param center_lat_deg: That frame's tangent point latitude, degrees.
+    :param sun_direction_moon_me: Sun direction, MOON_ME (`illumination.sun_direction_moon_me`).
+    :param radius_m: Sphere radius, meters.
+    :param upsample_factor: Lit/shadowed samples per output pixel, per axis; see `UPSAMPLE_FACTOR`.
+    :param grid_spacing_m: Sun-grid spacing, meters. Defaults to the DEM pixel size over
+        `upsample_factor`, so the sun grid is as fine as the samples it's tested against.
+    :param chunk_rows: See `CHUNK_ROWS`.
+    :returns: A `HorizonSweep`.
+    """
+    # Unlike `sun_sweep`, nothing here takes a max over a bin's footprint. A 100 m-wide bin max stands in
+    # for a zero-width ray, overstating each occluder by (cross-sun slope) x (bin width); where that
+    # exceeds a grazing slope's real margin, which samples happen to share a bin decides lit vs.
+    # shadowed, and that varies periodically with the two grids' relative phase (the "screen door").
+    #
+    #   1. Resample: each sun-grid node `(D, Y)` gets the terrain's own `Z` there (`_terrain_z`).
+    #   2. Sweep: each node's horizon is the max `Z` over nodes strictly closer to the Sun in its `Y`
+    #      column -- a running max, streamed from the sun-facing edge inward.
+    #   3. Test: each fine DEM sample is lit iff its `Z` reaches the horizon at its own `(D, Y)`;
+    #      each native pixel averages its `upsample_factor**2` samples.
+    dem = np.asarray(dem, dtype=np.float64)
+    height, width = dem.shape
+    spacing = grid_spacing_m or (bbox[2] - bbox[0]) / width / upsample_factor
+    frame = SunFrame.create(center_lon_deg, center_lat_deg, sun_direction_moon_me, radius_m)
+    if frame is None:
+        illumination = np.where(np.isnan(dem), np.nan, 1.0).astype(np.float32)
+        return HorizonSweep(illumination, None, spacing, (0, 0), 0.0)
+
+    chunks = [(r, min(r + chunk_rows, height)) for r in range(0, height, chunk_rows)]
+    grid = _sun_grid(frame, dem, bbox, chunks, spacing)
+    spline_coeffs, nan_mask = _spline_coefficients(dem)
+    horizon, residual = _horizon_grid(frame, grid, spline_coeffs, nan_mask, bbox)
+    illumination = _gather_horizon(frame, grid, horizon, spline_coeffs, nan_mask, bbox, chunks, upsample_factor)
+    return HorizonSweep(illumination, frame, spacing, (grid.nx, grid.ny), residual)
+
+
+def _dem_pixel_coords(bbox: tuple, shape: tuple, x_m: np.ndarray, y_m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Fractional `(row, col)` native pixel indices of local Orthographic points (pixel centers are
+    integers, matching `geo_utils.pixel_center_coords_m` and `_fine_heights`)."""
+    height, width = shape
+    col = (x_m - bbox[0]) / ((bbox[2] - bbox[0]) / width) - 0.5
+    row = (bbox[3] - y_m) / ((bbox[3] - bbox[1]) / height) - 0.5
+    return row, col
+
+
+def _terrain_z(
+    frame: SunFrame, d: np.ndarray, y: np.ndarray, spline_coeffs: np.ndarray, nan_mask: np.ndarray, bbox: tuple
+) -> tuple[np.ndarray, float]:
+    """The terrain's `Z` at sun-frame `(d, y)`: NaN where that point is off the DEM or in a NaN pixel.
+
+    :returns: `(z, max_residual_m)`.
+    """
+    # Fixed `(D, Y)` is a straight line along the tangent point's vertical (`from_sun` is affine in
+    # MOON_ME). Away from the tangent point, curvature tilts true vertical off that line by up to a few
+    # degrees, so where the line meets the terrain isn't just "the DEM height at the zero-elevation
+    # point" -- solve for it. Each step moves `Z` by the height mismatch times `dZ/dh`, which is
+    # `z_hat . up` (= cos sun elevation) at the tangent point; the leftover error shrinks by roughly
+    # slope x tan(tilt) (~0.02) per step.
+    shape = nan_mask.shape
+    dz_dh = float(frame.basis[2] @ (frame.origin / frame.radius_m))
+    z = np.full(d.shape, np.nan)
+    x0, y0, _ = frame.from_sun(np.stack((d, y, np.zeros_like(d)), axis=-1))
+    margin = _TERRAIN_SOLVE_BBOX_MARGIN_M
+    near = (x0 > bbox[0] - margin) & (x0 < bbox[2] + margin) & (y0 > bbox[1] - margin) & (y0 < bbox[3] + margin)
+    if not near.any():
+        return z, 0.0
+    dn, yn, zn = d[near], y[near], np.zeros(int(near.sum()))
+    for iteration in range(_TERRAIN_SOLVE_MAX_ITERATIONS + 1):
+        xs, ys, hs = frame.from_sun(np.stack((dn, yn, zn), axis=-1))
+        row, col = _dem_pixel_coords(bbox, shape, xs, ys)
+        mismatch = ndimage.map_coordinates(spline_coeffs, [row, col], order=3, mode="mirror", prefilter=False) - hs
+        valid = (xs >= bbox[0]) & (xs <= bbox[2]) & (ys >= bbox[1]) & (ys <= bbox[3])
+        residual = float(np.abs(mismatch[valid]).max()) if valid.any() else 0.0
+        if residual < TERRAIN_SOLVE_TOLERANCE_M or iteration == _TERRAIN_SOLVE_MAX_ITERATIONS:
+            break
+        zn = zn + mismatch * dz_dh
+    nearest = (np.clip(np.rint(row), 0, shape[0] - 1).astype(int), np.clip(np.rint(col), 0, shape[1] - 1).astype(int))
+    valid &= ~nan_mask[nearest]
+    z[near] = np.where(valid, zn, np.nan)
+    return z, residual
+
+
+def _horizon_grid(
+    frame: SunFrame, grid: _SunGrid, spline_coeffs: np.ndarray, nan_mask: np.ndarray, bbox: tuple
+) -> tuple[np.ndarray, float]:
+    """Pass 1+2: each sun-grid node's horizon, the max terrain `Z` over nodes strictly closer to the
+    Sun in its column.
+
+    :returns: `(horizon, max_residual_m)`: `(nx, ny)` float32, `-inf` where nothing closer to the Sun
+        is on the DEM; and `_terrain_z`'s worst residual.
+    """
+    # Node `(i, j)` sits at `grid.lo + (i, j) * spacing`. Streamed in blocks of `D` rows from the
+    # sun-facing edge inward, carrying the running max across blocks.
+    s = grid.bin_size_m
+    y = grid.lo[1] + np.arange(grid.ny) * s
+    horizon = np.empty((grid.nx, grid.ny), dtype=np.float32)
+    running = np.full(grid.ny, -np.inf)
+    residual = 0.0
+    block = max(1, _HORIZON_CHUNK_POINTS // grid.ny)
+    for top in range(grid.nx, 0, -block):
+        bottom = max(top - block, 0)
+        dg, yg = np.meshgrid(grid.lo[0] + np.arange(bottom, top) * s, y, indexing="ij")
+        z, block_residual = _terrain_z(frame, dg, yg, spline_coeffs, nan_mask, bbox)
+        residual = max(residual, block_residual)
+        toward_sun_first = np.where(np.isnan(z), -np.inf, z)[::-1]
+        inclusive = np.maximum.accumulate(np.vstack((running[None], toward_sun_first)), axis=0)
+        horizon[bottom:top] = inclusive[:-1][::-1]
+        running = inclusive[-1]
+    return horizon, residual
+
+
+def _gather_horizon(
+    frame: SunFrame,
+    grid: _SunGrid,
+    horizon: np.ndarray,
+    spline_coeffs: np.ndarray,
+    nan_mask: np.ndarray,
+    bbox: tuple,
+    chunks: list,
+    f: int,
+) -> np.ndarray:
+    """Pass 3: test each fine sample against the horizon at its own `(D, Y)`; average per native pixel.
+
+    :returns: float32 `(height, width)` illumination fraction, NaN where every sample is NaN.
+    """
+    # Along `D`, a sample takes the horizon of the nearest node on its down-sun side, `floor`: that
+    # node's horizon covers every node strictly up-sun of it, which is exactly every node up-sun of the
+    # sample. (Interpolating toward the next node up-sun would drop that node from the horizon.)
+    # Across `Y`, it interpolates linearly between the two neighboring columns, so on a planar
+    # cross-sun slope the horizon is the plane's own value at the sample's `Y` -- not biased toward
+    # either column. If either column has no horizon (`-inf`: nothing up-sun of it is on the DEM),
+    # the sample is lit -- falling back to the other column alone would overstate the horizon by the
+    # cross-sun slope times the spacing, and terrain beyond the DEM isn't modeled anyway. That only
+    # affects samples within one spacing of the DEM's border.
+    height, width = nan_mask.shape
+    x_fine, y_fine = pixel_center_coords_m(bbox, width * f, height * f)
+    s = grid.bin_size_m
+    illumination = np.empty((height, width), dtype=np.float32)
+    for row0, row1 in chunks:
+        z = _fine_heights(spline_coeffs, nan_mask, row0, row1, f)
+        xg, yg = np.meshgrid(x_fine, y_fine[row0 * f : row1 * f])
+        valid = ~np.isnan(z)
+        sun_xyz = frame.to_sun(xg, yg, np.where(valid, z, 0.0))
+        i = np.clip(np.floor((sun_xyz[..., 0] - grid.lo[0]) / s).astype(np.int64), 0, grid.nx - 1)
+        fy = (sun_xyz[..., 1] - grid.lo[1]) / s
+        j = np.clip(np.floor(fy).astype(np.int64), 0, grid.ny - 2)
+        w = np.clip(fy - j, 0.0, 1.0)
+        h0, h1 = horizon[i, j].astype(np.float64), horizon[i, j + 1].astype(np.float64)
+        both = np.isfinite(h0) & np.isfinite(h1)
+        local_horizon = np.where(both, (1 - w) * np.where(both, h0, 0.0) + w * np.where(both, h1, 0.0), -np.inf)
+        lit = sun_xyz[..., 2] >= local_horizon - HORIZON_TOLERANCE_M
+        illumination[row0:row1] = _mean_over_blocks(np.where(valid, lit, np.nan), f)
+    return illumination
+
+
+def _mean_over_blocks(samples: np.ndarray, f: int) -> np.ndarray:
+    """Mean of each `f x f` block of `samples`, ignoring NaN; NaN where a whole block is."""
+    blocks = samples.reshape(samples.shape[0] // f, f, samples.shape[1] // f, f)
+    n_valid = np.sum(~np.isnan(blocks), axis=(1, 3))
+    total = np.nansum(blocks, axis=(1, 3))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(n_valid > 0, total / n_valid, np.nan).astype(np.float32)
 
 
 def illumination_fraction(

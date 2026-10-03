@@ -154,3 +154,22 @@ def test_local_grid_positions_moon_me_matches_proj_geocentric_transform():
     )
     np.testing.assert_allclose(ours, np.stack([px, py, pz], axis=-1), atol=1e-3)
     assert ours.shape == (500, 3)
+
+
+def test_local_grid_coords_from_moon_me_matches_proj_and_inverts_positions():
+    rng = np.random.default_rng(1)
+    center_lon, center_lat = -165.1, 57.6
+    x = rng.uniform(-150_000, 150_000, 500)
+    y = rng.uniform(-150_000, 150_000, 500)
+    h = rng.uniform(-5_000, 5_000, 500)
+    positions = geo_utils.local_grid_positions_moon_me(x, y, h, center_lon, center_lat, MOON_RADIUS_M)
+    ours = geo_utils.local_grid_coords_from_moon_me(positions, center_lon, center_lat, MOON_RADIUS_M)
+    np.testing.assert_allclose(np.stack(ours, axis=-1), np.stack([x, y, h], axis=-1), atol=1e-6)
+    proj = warp_transform(
+        geo_utils.moon_geocentric_crs(MOON_RADIUS_M),
+        geo_utils.local_orthographic_crs(center_lon, center_lat, MOON_RADIUS_M),
+        positions[:, 0],
+        positions[:, 1],
+        positions[:, 2],
+    )
+    np.testing.assert_allclose(np.stack(ours, axis=-1), np.stack(proj, axis=-1), atol=1e-3)
