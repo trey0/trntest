@@ -22,12 +22,14 @@
 # per-pixel multiplier (`1` = fully lit, `0` = fully shadowed) applied on top of the per-facet shading
 # (`hapke.despeckle_and_shade_ortho`'s `cast_shadows`, on by default).
 #
-# The method is a *sun-aligned sweep*. In a Cartesian frame with the Sun at infinity along `+x`, every
-# sun ray runs along the x-axis, so each row of that frame is an independent 1D problem: sweep from the
+# The method is a *sun-aligned sweep*. In a Cartesian frame with the Sun at infinity along `+x`
+# (`cast_shadow.SunFrame`), every sun ray runs along the x-axis. The terrain is resampled onto a
+# regular grid in that frame, so each grid column is an independent 1D problem: sweep from the
 # sun-facing edge inward (in order of horizontal distance toward the Sun), track the tallest terrain
-# seen so far (height measured perpendicular to the rays), and anything below it is in shadow.
-# `cast_shadow`'s module docstring and comments cover the details (true 3D positions rather than a
-# flat plane, upsampling for antialiasing, bin sizing, streaming).
+# seen so far (height measured perpendicular to the rays), and anything below it is in shadow. Each
+# DEM pixel is then tested at four sub-pixel points against that running maximum, and the fraction
+# lit becomes its value. `cast_shadow`'s module docstring and comments cover the details (true 3D
+# positions rather than a flat plane, why the terrain is resampled rather than binned, streaming).
 #
 # This notebook runs the sweep on `M1327218454CE`, the lowest-sun candidate in the manifest (~13 deg
 # elevation, so shadows are long), then compares it with two other views of the same scene: ISIS's
@@ -77,13 +79,14 @@ print(f"Sun azimuth {azimuth_deg:.1f} deg, elevation {elevation_deg:.1f} deg")
 # %% [markdown]
 # ## The sweep
 #
-# `sun_sweep` returns the illumination fraction plus a few diagnostics of the sun-aligned raster it
-# swept. About half of that raster's bins are empty: the DEM's square footprint, rotated into the sun
-# frame, fills only a diamond inside its own bounding box. Each occupied bin should hold several
-# upsampled samples, not one.
+# `horizon_sweep` returns the illumination fraction plus a few diagnostics of the sun grid it swept.
+# Only about half of that grid's nodes land on the DEM: the DEM's square footprint, rotated into the
+# sun frame, fills only a diamond inside the grid's bounding box. Locating each node on the terrain is
+# a small iterative solve (curvature tilts local vertical across the DEM); its worst leftover height
+# error should stay within a centimeter.
 
 # %%
-sweep = cast_shadow.sun_sweep(dem, dem_result.bbox, *center, sun_direction)
+sweep = cast_shadow.horizon_sweep(dem, dem_result.bbox, *center, sun_direction)
 print(sweep.summary())
 
 # %% [markdown]

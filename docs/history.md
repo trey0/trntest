@@ -6918,3 +6918,38 @@ texture change on both sides, nodata stretches), and the probe at 30°N 270°E t
 line along 270° between ±60°, confirmed in the raw file, along with a weaker one at 90° that the
 probes miss (a median-based check first said 90° was clean; integer-meter medians were too coarse). Those 17 probes are strict xfails in
 `tests/test_dem_seams.py`. The SLDEM2015/GLD100 cut planned for step 3 falls on the ±60° line.
+
+## Phase 134 (2026-10-03) -- Cast-shadow "screen door": the binned sweep's per-bin max, replaced by resampling
+
+`trntest2` entry 37's zoomed basemap (`M1309363051CE`, sun 240.6° / 15.5°) showed a regular square
+grid of black dots, ~300 m apart and aligned with the swath rather than the map grid, on slopes facing
+away from the Sun at close to its elevation. The open item had blamed small DEM variation (integer-meter
+GLD100) and ruled out the binning moiré. A perturbation test said otherwise: rerunning the sweep with
+the bin grid shifted half a bin, the sun rotated ±0.5°, or the bin size changed moved 95-99% of the
+3690 isolated dots to different pixels (and cut them 7-8x at larger bins), while the large shadows
+didn't move. An FFT of the dots found ~380 m peaks along the sun-frame axes, matching the moiré
+predicted for a 50 m sample lattice binned into 100 m bins turned 30° from it.
+
+The mechanism: each 100 m bin kept its highest sample, a stand-in for a zero-width ray that
+overstates every occluder by (cross-sun slope) x (bin width). The per-bin lit test mostly cancelled
+that bias, since both sides of each comparison were bin maxima, but only exactly when two bins' samples
+sat at the same cross-sun offsets, and that offset cycles with the two grids' relative phase. On
+slopes near the sun elevation, the real margin is smaller than the leftover bias, so the phase
+decided. Testing each sample against the bin maxima instead would have made it worse (most of any
+cross-sloped grazing slope shadowed); smoothing the DEM would only have hidden it.
+
+`cast_shadow.horizon_sweep` replaces `sun_sweep`. It resamples terrain heights onto a regular 50 m
+`(D, Y)` grid in the sun frame, sweeps a running-max horizon down each column, and tests each of a
+pixel's four sub-samples against the horizon at its own position (the horizon of the nearest node
+down-sun along `D`, interpolated linearly across `Y`, so a planar cross-slope gives no bias). On entry
+37 the isolated dots fell from 3690 to 26, and the same perturbations change 0.02-0.06% of pixels. The
+sun frame became a public `SunFrame` whose reference definition is a PROJ pipeline (inverse
+`local_orthographic_crs`, `cart`, `affine`), with closed-form `to_sun`/`from_sun`/`column_point`
+pinned to it and to each other in tests, plus `geo_utils.local_grid_coords_from_moon_me`, the inverse
+of `local_grid_positions_moon_me`. Locating a node on the terrain is iterative: a fixed `(D, Y)` is a
+line along the tangent point's vertical, which curvature tilts up to ~4° off true vertical at the DEM's
+edges (~280 m of horizontal drift at 4 km of relief). The DEM is padded by odd reflection before the
+spline fit, so heights continue a slope past the outermost pixel centers instead of folding back,
+which had made false shadows in the outer 1-2 px. Runtime went from ~7 s to ~25 s per entry (about
++10% of an entry's total generation time); shaded orthos moved to `_castshadow2` filenames. Existing
+datasets weren't regenerated.

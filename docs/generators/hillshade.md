@@ -38,10 +38,13 @@ entry point `render.run_sat_sim`.
 ## Cast shadows
 
 `cast_shadow.py` computes a per-pixel illumination fraction (`1` = fully lit, `0` = fully shadowed)
-with a sun-aligned sweep: in a frame with the Sun at infinity along `+x`, each row is swept from the
-sun-facing edge inward, in order of horizontal distance toward the Sun, with a running maximum of
-height perpendicular to the rays. Ordering by horizontal distance (not distance along the ray) keeps
-it correct at any sun elevation. The module docstring covers the method;
+with a sun-aligned sweep (`horizon_sweep`). The terrain is resampled onto a 50 m grid in a frame with
+the Sun at infinity along `+x` (`SunFrame`), each grid column is swept from the sun-facing edge
+inward with a running maximum of height perpendicular to the rays, and each DEM pixel's four
+sub-pixel samples are tested against that horizon. Ordering by horizontal distance (not distance
+along the ray) keeps it correct at any sun elevation. `SunFrame` is defined by a PROJ pipeline built
+from `geo_utils.local_orthographic_crs`, with fast forward/inverse closed forms pinned to it in
+tests. The module docstring covers the method;
 [`../../notebooks/sun_aligned_shadow_sweep.ipynb`](../../notebooks/sun_aligned_shadow_sweep.ipynb)
 shows it on the lowest-sun candidate, next to ISIS `shadow` and the real WAC image.
 
@@ -51,11 +54,15 @@ shows it on the lowest-sun candidate, next to ISIS `shadow` and the real WAC ima
   At low sun this can miss real shadows near that edge.
 - GLD100's 100 m posting smooths away small relief, so shadows are undercounted at low sun (see
   [`../data-sources/astropedia-gld100.md`](../data-sources/astropedia-gld100.md)).
-- Runtime is ~6 s and ~200 MB extra memory for a ~2400 px DEM (streamed in row chunks).
+- The terrain is resampled onto the sun grid, never binned with a per-bin max: a max over a bin's
+  footprint overstates occluders by (cross-sun slope) x (bin width), which on slopes near the sun
+  elevation produced a regular "screen door" of shadow dots aligned with the sun direction.
+- Runtime is ~25 s and ~200 MB extra memory for a ~2400 px DEM (streamed in blocks), mostly locating
+  ~46M sun-grid nodes on the terrain.
 - `sfs_validation.py` always uses a `cast_shadows=False` ortho: ASP `sfs` models per-facet shading
   only, so a cast shadow would be a disagreement unrelated to what that check measures.
-- Changing the default changed the shaded-ortho filename (`_castshadow` suffix), so existing
-  entries re-shade on next access. Already-rendered `hillshade` rasters are not regenerated
-  automatically — remove them (or use a fresh dataset folder) to pick up shadows.
+- Shaded-ortho filenames carry `_castshadow2` (plain `_castshadow` was the earlier binned sweep), so
+  existing entries re-shade on next access. Already-rendered `hillshade` rasters are not regenerated
+  automatically — remove them (or use a fresh dataset folder) to pick up the current shadows.
 
 See [`../external-tools.md`](../external-tools.md) for `sat_sim`/`cam_gen` flags and gotchas.

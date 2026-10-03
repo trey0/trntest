@@ -75,16 +75,6 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   the fix). Footprints within ~0.5° west of 0° longitude also had a full-height `NaN` strip there
   before hole fill. Fixed in code; `trntest1`/`trntest2` (and `cache/crater_depth_tiles_*`) still
   hold DEMs and renders from before the fix and haven't been regenerated.
-- **Cast shadows speckle on slopes nearly parallel to the sun.** `cast_shadow.sun_sweep`'s lit test
-  (`filled >= running_max`) flips pixel-by-pixel where a slope faces away from the sun at close to
-  the sun's elevation, since height across the rays is then nearly constant and small DEM variation
-  (integer-meter GLD100, spline-upsampled) decides each pixel. Seen as a "screen door" of black dots
-  in `trntest2` entry 37's zoomed basemap (sun elevation 15.5°); rerunning
-  `cast_shadow.illumination_fraction` with that camera's SPICE sun vector reproduces all 103 dots in
-  the crop. Across that DEM, 89% of isolated shadow pixels have an uphill-toward-sun slope of
-  0.10-0.35 (median 0.21; tan 15.5° = 0.28), vs. 14% of all pixels. Not the bin-aliasing moiré
-  `BIN_SIZE_SAFETY_FACTOR` fixes (99.9% of occupied bins hold more than one sample). Possible fixes: a
-  small height tolerance in the lit test, or dropping shadow pixels without shadowed neighbors.
 
 - **`candidate_window.py`'s CDR-matching (`attach_cdr`, `catalog.find_matching_cdr`, the `cdr_volume`/
   `cdr_subdir`/`cdr_doy`/`cdr_product` manifest columns) is now fully vestigial.** Its one real
