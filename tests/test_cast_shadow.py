@@ -27,12 +27,10 @@ def _east_west_wall_dem(wall_rows=slice(40, 43), height_m=500.0):
     return dem
 
 
-def _sweep(dem, azimuth_deg, elevation_deg, sweep=cast_shadow.sun_sweep, **kwargs):
-    return sweep(dem, BBOX, CENTER_LON_DEG, CENTER_LAT_DEG, _sun_direction(azimuth_deg, elevation_deg), **kwargs)
-
-
-# Behavior every sweep must share: the original binned `sun_sweep` and its replacement `horizon_sweep`.
-both_sweeps = pytest.mark.parametrize("sweep", [cast_shadow.sun_sweep, cast_shadow.horizon_sweep])
+def _sweep(dem, azimuth_deg, elevation_deg, **kwargs):
+    return cast_shadow.horizon_sweep(
+        dem, BBOX, CENTER_LON_DEG, CENTER_LAT_DEG, _sun_direction(azimuth_deg, elevation_deg), **kwargs
+    )
 
 
 def _shadow_rows(illumination, rows, cols=slice(30, 90)):
@@ -40,19 +38,17 @@ def _shadow_rows(illumination, rows, cols=slice(30, 90)):
     return [r for r in rows if illumination[r, cols].mean() < 0.5]
 
 
-@both_sweeps
-def test_flat_dem_is_fully_lit(sweep):
-    illumination = _sweep(np.zeros((SIZE_PX, SIZE_PX)), 135.0, 30.0, sweep=sweep).illumination_fraction
+def test_flat_dem_is_fully_lit():
+    illumination = _sweep(np.zeros((SIZE_PX, SIZE_PX)), 135.0, 30.0).illumination_fraction
     assert illumination.shape == (SIZE_PX, SIZE_PX)
     assert np.all(illumination >= 0.999)
 
 
-@both_sweeps
-def test_wall_shadow_length_matches_height_over_tan_elevation(sweep):
+def test_wall_shadow_length_matches_height_over_tan_elevation():
     # Sun from due north at 20 deg: a 500 m east-west wall shadows ~500/tan(20)/100 = ~13.7 rows south
     # of it (rows increase southward).
     height_m, elevation_deg = 500.0, 20.0
-    illumination = _sweep(_east_west_wall_dem(height_m=height_m), 0.0, elevation_deg, sweep=sweep).illumination_fraction
+    illumination = _sweep(_east_west_wall_dem(height_m=height_m), 0.0, elevation_deg).illumination_fraction
     expected_rows = height_m / math.tan(math.radians(elevation_deg)) / CELLSIZE_M
     shadowed = _shadow_rows(illumination, range(43, SIZE_PX))
     assert shadowed[0] <= 44
@@ -60,54 +56,23 @@ def test_wall_shadow_length_matches_height_over_tan_elevation(sweep):
     assert np.all(illumination[43 + int(expected_rows) + 3 :, 30:90] > 0.99)
 
 
-@both_sweeps
-def test_wall_shadow_moves_to_the_other_side_with_the_sun(sweep):
-    illumination = _sweep(_east_west_wall_dem(), 180.0, 20.0, sweep=sweep).illumination_fraction
+def test_wall_shadow_moves_to_the_other_side_with_the_sun():
+    illumination = _sweep(_east_west_wall_dem(), 180.0, 20.0).illumination_fraction
     assert len(_shadow_rows(illumination, range(43, SIZE_PX))) == 0
     north_side = _shadow_rows(illumination, range(39, -1, -1))
     assert north_side and north_side[0] >= 38
     assert len(north_side) == pytest.approx(500.0 / math.tan(math.radians(20.0)) / CELLSIZE_M, abs=2)
 
 
-@both_sweeps
-def test_output_contract_nan_cell_stays_local(sweep):
+def test_output_contract_nan_cell_stays_local():
     dem = np.zeros((SIZE_PX, SIZE_PX))
     dem[60, 70] = np.nan
-    illumination = _sweep(dem, 135.0, 30.0, sweep=sweep).illumination_fraction
+    illumination = _sweep(dem, 135.0, 30.0).illumination_fraction
     assert illumination.dtype == np.float32
     assert np.isnan(illumination[60, 70])
     assert np.isnan(illumination).sum() == 1
     finite = illumination[np.isfinite(illumination)]
     assert finite.min() >= 0.0 and finite.max() <= 1.0
-
-
-def test_chunked_result_is_bit_identical_to_single_chunk():
-    dem = _east_west_wall_dem()
-    dem[70:80, 20:30] = 300.0
-    whole = _sweep(dem, 30.0, 15.0, chunk_rows=SIZE_PX)
-    chunked = _sweep(dem, 30.0, 15.0, chunk_rows=7)
-    np.testing.assert_array_equal(whole.illumination_fraction, chunked.illumination_fraction)
-    np.testing.assert_array_equal(whole.bin_counts, chunked.bin_counts)
-
-
-def test_bin_occupancy_is_aggregated_not_one_sample_per_bin():
-    # The default bin size aggregates several samples per bin; see `BIN_SIZE_SAFETY_FACTOR`.
-    counts = _sweep(np.zeros((SIZE_PX, SIZE_PX)), 45.0, 30.0).bin_counts
-    occupied = counts[counts > 0]
-    assert occupied.mean() > 3.0
-    assert (occupied == 1).mean() < 0.1
-
-
-def test_sweep_illuminated_gap_never_occludes():
-    # Axis 0 increases toward the Sun, so the sweep runs from the last index down.
-    z_max = np.array([[1.0], [np.nan], [5.0], [np.nan], [2.0]])
-    lit = cast_shadow.sweep_illuminated(z_max)
-    np.testing.assert_array_equal(lit[:, 0], [0.0, np.nan, 1.0, np.nan, 1.0])
-
-
-def test_sweep_illuminated_equal_height_is_lit():
-    lit = cast_shadow.sweep_illuminated(np.array([[3.0], [3.0], [3.0]]))
-    np.testing.assert_array_equal(lit[:, 0], [1.0, 1.0, 1.0])
 
 
 def test_sun_aligned_basis_is_orthonormal_right_handed_and_z_near_up():
@@ -123,26 +88,17 @@ def test_sun_aligned_basis_is_orthonormal_right_handed_and_z_near_up():
     assert math.degrees(math.acos(np.dot(z_hat, up))) == pytest.approx(13.0)
 
 
-def test_sun_aligned_basis_overhead_sun_returns_none_and_sweep_is_all_lit():
-    _, _, up = geo_utils.local_enu_basis(CENTER_LON_DEG, CENTER_LAT_DEG)
-    assert cast_shadow.sun_aligned_basis(up, up) is None
-    dem = _east_west_wall_dem()
-    illumination = cast_shadow.illumination_fraction(dem, BBOX, CENTER_LON_DEG, CENTER_LAT_DEG, up)
-    assert np.all(illumination == 1.0)
-
-
-def test_fine_heights_are_registered_to_fine_pixel_centers():
-    # A linear ramp in columns: away from the mirrored edges (whose influence on a cubic spline decays
-    # geometrically), each fine sample must equal the ramp at its own fine pixel center,
-    # `(j + 0.5) / f - 0.5` native pixels. A corner-aligned mapping (`ndimage.zoom`'s default) would
-    # be off by ~0.12 native px (~1.2 m here) this far in.
-    f, width, margin_px = 2, 40, 10
+def test_fine_heights_are_registered_to_fine_pixel_centers_and_continue_past_the_edges():
+    # A linear ramp in columns: each fine sample must equal the ramp at its own fine pixel center,
+    # `(j + 0.5) / f - 0.5` native pixels -- including the outermost samples, which lie past the outer
+    # native pixel centers, where odd-reflection padding continues the ramp instead of folding it.
+    # A corner-aligned mapping (`ndimage.zoom`'s default) would be off by ~0.12 native px (~1.2 m here).
+    f, width = 2, 40
     dem = np.tile(np.arange(width, dtype=np.float64) * 10.0, (8, 1))
     coeffs, nan_mask = cast_shadow._spline_coefficients(dem)
-    z = cast_shadow._fine_heights(coeffs, nan_mask, 2, 6, f)
+    z = cast_shadow._fine_heights(coeffs, nan_mask, 0, 8, f)
     expected = ((np.arange(width * f) + 0.5) / f - 0.5) * 10.0
-    interior = slice(margin_px * f, -margin_px * f)
-    np.testing.assert_allclose(z[0, interior], expected[interior], atol=1e-3)
+    np.testing.assert_allclose(z, np.tile(expected, (8 * f, 1)), atol=1e-4)
 
 
 def test_dem_grid_positions_center_at_zero_elevation_is_radius_times_up():
@@ -154,8 +110,7 @@ def test_dem_grid_positions_center_at_zero_elevation_is_radius_times_up():
     np.testing.assert_allclose(position, radius_m * up, atol=1e-6)
 
 
-@both_sweeps
-def test_high_sun_sun_facing_slope_is_not_shadowed_by_itself(sweep):
+def test_high_sun_sun_facing_slope_is_not_shadowed_by_itself():
     # Sun from the east at 84 deg over a 20 deg slope descending eastward (toward the Sun). Along the sun
     # ray, the slope folds back on itself (`x` decreases eastward whenever the slope exceeds
     # 90 - elevation = 6 deg), so ordering the sweep by `x` would let the slope's top shadow its own
@@ -163,18 +118,17 @@ def test_high_sun_sun_facing_slope_is_not_shadowed_by_itself(sweep):
     cols = np.arange(SIZE_PX)
     ramp = -np.clip(cols - 30, 0, 60) * CELLSIZE_M * math.tan(math.radians(20.0))
     dem = np.tile(ramp, (SIZE_PX, 1))
-    illumination = _sweep(dem, 90.0, 84.0, sweep=sweep).illumination_fraction
+    illumination = _sweep(dem, 90.0, 84.0).illumination_fraction
     assert np.all(illumination > 0.99)
 
 
-@both_sweeps
-def test_high_sun_tall_block_does_not_shadow_its_sun_side(sweep):
+def test_high_sun_tall_block_does_not_shadow_its_sun_side():
     # Sun from the east at 84 deg; a 2 km north-south block at columns 40-42. Its shadow falls west
     # (~2000 / tan(84) = ~210 m, ~2 px; the spline rounds the block's edges, so only the pixel next to
     # it is fully dark), never on the floor east of it, even though the block is higher than that floor.
     dem = np.zeros((SIZE_PX, SIZE_PX))
     dem[:, 40:43] = 2000.0
-    illumination = _sweep(dem, 90.0, 84.0, sweep=sweep).illumination_fraction
+    illumination = _sweep(dem, 90.0, 84.0).illumination_fraction
     assert np.all(illumination[:, 43:] > 0.99)
     assert np.all(illumination[30:90, 39] < 0.5)
     assert np.all(illumination[:, :36] > 0.99)
@@ -207,18 +161,26 @@ def test_sun_frame_from_sun_inverts_to_sun():
     )
 
 
-def test_sun_frame_is_none_for_overhead_sun_and_horizon_sweep_is_all_lit():
+def test_sun_frame_column_point_is_on_the_column_at_the_requested_elevation():
+    frame = _realistic_frame()
+    x, y, h = _full_size_points(2)
+    d_y = frame.to_sun(x, y, np.zeros_like(x))[:, :2]
+    xc, yc, zc = frame.column_point(d_y[:, 0], d_y[:, 1], h)
+    np.testing.assert_allclose(frame.to_sun(xc, yc, h), np.stack([d_y[:, 0], d_y[:, 1], zc], -1), atol=1e-6)
+
+
+def test_overhead_sun_has_no_frame_and_is_all_lit():
     _, _, up = geo_utils.local_enu_basis(CENTER_LON_DEG, CENTER_LAT_DEG)
     assert cast_shadow.SunFrame.create(CENTER_LON_DEG, CENTER_LAT_DEG, up) is None
     result = cast_shadow.horizon_sweep(_east_west_wall_dem(), BBOX, CENTER_LON_DEG, CENTER_LAT_DEG, up)
     assert np.all(result.illumination_fraction == 1.0)
 
 
-def test_horizon_sweep_chunked_result_is_bit_identical_to_single_chunk():
+def test_chunked_result_is_bit_identical_to_single_chunk():
     dem = _east_west_wall_dem()
     dem[70:80, 20:30] = 300.0
-    whole = _sweep(dem, 30.0, 15.0, sweep=cast_shadow.horizon_sweep, chunk_rows=SIZE_PX)
-    chunked = _sweep(dem, 30.0, 15.0, sweep=cast_shadow.horizon_sweep, chunk_rows=7)
+    whole = _sweep(dem, 30.0, 15.0, chunk_rows=SIZE_PX)
+    chunked = _sweep(dem, 30.0, 15.0, chunk_rows=7)
     np.testing.assert_array_equal(whole.illumination_fraction, chunked.illumination_fraction)
 
 
@@ -232,20 +194,14 @@ def _grazing_cross_sloped_plane(azimuth_deg, along_sun_slope, cross_sun_slope):
     return along_sun_slope * toward_sun + cross_sun_slope * across_sun
 
 
-def test_grazing_cross_sloped_plane_is_lit_without_screen_door():
+def test_grazing_cross_sloped_plane_is_lit_without_screen_door_up_to_the_edges():
     # Rising toward a 15.5 deg Sun at 0.2 (< tan 15.5 = 0.277) is lit everywhere: nothing on the plane
-    # rises above any ray. The cross-sun tilt is what made the binned sweep's per-bin max overstate
-    # occluders by ~0.1 x bin width, more than the ~0.07 x spacing real margin -- the "screen door".
-    #
-    # Checked away from the outer 2 px, where the spline's `mode="mirror"` folds heights back instead of
-    # continuing the plane (true of both sweeps; real DEMs are fetched padded past the footprint).
+    # rises above any ray. The cross-sun tilt is what made a binned per-bin max overstate occluders by
+    # ~0.1 x bin width, more than the real margin -- a regular "screen door" of shadow dots. Checked to
+    # the DEM's edges, where the spline's padding continues the plane.
     azimuth_deg, elevation_deg = 240.0, 15.5
     dem = _grazing_cross_sloped_plane(azimuth_deg, 0.2, 0.1)
-    interior = (slice(2, -2), slice(2, -2))
-    horizon = _sweep(dem, azimuth_deg, elevation_deg, sweep=cast_shadow.horizon_sweep).illumination_fraction
-    assert np.all(horizon[interior] > 0.99)
-    binned = _sweep(dem, azimuth_deg, elevation_deg).illumination_fraction
-    assert (binned[interior] < 0.99).sum() > 0  # the case actually exercises the binned sweep's failure mode
+    assert np.all(_sweep(dem, azimuth_deg, elevation_deg).illumination_fraction > 0.99)
 
 
 def test_terrain_solve_converges_across_a_wide_curved_dem():

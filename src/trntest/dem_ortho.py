@@ -117,9 +117,10 @@ def ortho_shaded_filename(
     # must not be resumed as if they matched. `_wacemp` is appended whenever
     # `ortho_source="wac_emp_pds"`, independent of `hapke`, since the input texture's numeric convention
     # (reflectance, not WMS DN) changes regardless of which shading mode blends it;
-    # `ortho_source="lunaserv_wms"` keeps the original, suffix-less filenames. `_castshadow` is likewise
-    # independent of `hapke`, since cast shadows darken either shading mode's output.
-    source_suffix = ("_wacemp" if ortho_source == "wac_emp_pds" else "") + ("_castshadow" if cast_shadows else "")
+    # `ortho_source="lunaserv_wms"` keeps the original, suffix-less filenames. `_castshadow2` is likewise
+    # independent of `hapke`, since cast shadows darken either shading mode's output; the `2` marks
+    # `cast_shadow.horizon_sweep`, which replaced a binned sweep whose files used plain `_castshadow`.
+    source_suffix = ("_wacemp" if ortho_source == "wac_emp_pds" else "") + ("_castshadow2" if cast_shadows else "")
     if not hapke:
         return f"ortho_shaded{source_suffix}.tif"
     suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "") + "_normaltilt"

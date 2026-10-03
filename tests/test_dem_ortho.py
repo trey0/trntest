@@ -20,14 +20,14 @@ def test_ortho_shaded_filename_matches_todays_defaults():
     # `test_ortho_shaded_filename_real_params_false_matches_pre_phase_69` below for that backward-
     # compat guarantee, which still applies to `real_hapke_params` specifically).
     assert dem_ortho.ortho_shaded_filename(True) == (
-        "ortho_shaded_hapke_atc_realparams_normaltilt_wacemp_castshadow.tif"
+        "ortho_shaded_hapke_atc_realparams_normaltilt_wacemp_castshadow2.tif"
     )
 
 
 def test_ortho_shaded_filename_cast_shadows_suffix_applies_to_both_shading_modes():
     # Cast shadows darken either shading mode's output, so the suffix is independent of `hapke`.
-    assert dem_ortho.ortho_shaded_filename(False) == "ortho_shaded_wacemp_castshadow.tif"
-    assert dem_ortho.ortho_shaded_filename(False, ortho_source="lunaserv_wms") == "ortho_shaded_castshadow.tif"
+    assert dem_ortho.ortho_shaded_filename(False) == "ortho_shaded_wacemp_castshadow2.tif"
+    assert dem_ortho.ortho_shaded_filename(False, ortho_source="lunaserv_wms") == "ortho_shaded_castshadow2.tif"
     assert dem_ortho.ortho_shaded_filename(True, cast_shadows=False) == (
         "ortho_shaded_hapke_atc_realparams_normaltilt_wacemp.tif"
     )
@@ -57,10 +57,10 @@ def test_ortho_shaded_filename_real_params_false_matches_pre_phase_69():
 
 def test_ortho_shaded_filename_real_params_suffix():
     assert dem_ortho.ortho_shaded_filename(True, along_track_correction=True, real_hapke_params=True) == (
-        "ortho_shaded_hapke_atc_realparams_normaltilt_wacemp_castshadow.tif"
+        "ortho_shaded_hapke_atc_realparams_normaltilt_wacemp_castshadow2.tif"
     )
     assert dem_ortho.ortho_shaded_filename(True, along_track_correction=False, real_hapke_params=True) == (
-        "ortho_shaded_hapke_realparams_normaltilt_wacemp_castshadow.tif"
+        "ortho_shaded_hapke_realparams_normaltilt_wacemp_castshadow2.tif"
     )
 
 
