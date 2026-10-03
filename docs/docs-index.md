@@ -10,6 +10,7 @@ up front; this is the complete list.
 | [`external-tools.md`](external-tools.md) | Reference for external tool/library behavior (ASP `sat_sim`, ISIS, `usgscsm`, LightGlue) — flags, formats, sharp edges. |
 | [`caching.md`](caching.md) | Why and how external data (SPICE kernels, WMS tiles) is cached locally instead of re-fetched. |
 | [`intermediate-product-discipline.md`](intermediate-product-discipline.md) | Principles for naming, storing, and sharing generated intermediate files across code paths. |
+| [`map-seams.md`](map-seams.md) | Principles for handling seams in mosaicked products: root cause first, read-window rules, seam placement, report-and-mitigate, two-pass seam probe inventory. |
 | [`batch-generation.md`](batch-generation.md) | Workflow for populating a `TrnTestDataSet` at scale via `populate_via_workers()`, and the races/gotchas to watch for. |
 | [`image-pipeline.md`](image-pipeline.md) | Architecture detail: how the synthetic camera is posed and the crop sized to match a real WAC swath. |
 | [`dataset-selection.md`](dataset-selection.md) | Architecture detail: maneuver detection and orbit-search/candidate-filtering for TRN-OD dataset selection. |

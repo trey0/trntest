@@ -63,6 +63,11 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   to SLDEM2015 (`vira-dem-sources.md`) replaces the equatorward side and the 90°/270° lines; the poleward
   side and the nodata rows stay until GLD100 is retired there (that plan's Milestone 2). Possibly also
   behind some of the "implausibly steep pixels" item below.
+- **The seam inventory doesn't yet do what `docs/map-seams.md` describes.** Each probe notebook runs
+  one pass only: `reflectance_seams.ipynb` with the ±60° edge correction on, `dem_seams.ipynb` before
+  hole fill, with no pass for the other side of either. Generating a product across a seam with a
+  known uncorrectable defect (the WAC_EMP ±60° corners, GLD100's ±60° and 90°/270° seams) logs no
+  caution.
 - **Existing datasets' DEMs are up to half a pixel misregistered.** `dem_gld100`'s AOI read used a
   fractional window, which GDAL reads as the nearest whole pixels while the warp kept the fraction,
   shifting every DEM by up to ±0.5 px (≤50 m) per axis relative to the true positions and to the

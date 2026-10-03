@@ -25,6 +25,9 @@ file). Then, as needed:
   (non-final, non-source) intermediate files across code paths — identity/ownership, storage
   hierarchy, atomicity, and access-mode discipline. Consult before adding a new intermediate artifact
   or a new code path that reads/writes an existing one.
+- `docs/map-seams.md` — principles for handling seams wherever a product mosaics sources or crosses
+  a coordinate discontinuity (root cause first, read-window rules, report-and-mitigate, the seam
+  probe inventory). Consult before writing or changing any mosaicking or source-read code.
 - `docs/batch-generation.md` — the recommended workflow for populating a `TrnTestDataSet` at scale
   via `TrnTestDataSet.populate_via_workers()` (a real multi-worker pool, not `populate()`'s
   sequential default), and the concrete races/gotchas to watch out for when running one. Read this

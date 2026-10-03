@@ -30,7 +30,7 @@ south 3.1 + 2.7 + 3.5 GB); with SLDEM2015 at 512 ppd instead (~1.4 GB × 32), ~5
 
 ## Seam inventory
 
-What a mosaic of these sources can go wrong at. The existing WAC_EMP work already hit versions of
+General principles are in `docs/map-seams.md`. What a mosaic of these sources can go wrong at. The existing WAC_EMP work already hit versions of
 the first three (`wac_emp_edge_correction.py`, `ortho_wac_emp.py`'s branch-cut fix, and the
 `trntest2` three-tile corner gap in `open-items.md`).
 
