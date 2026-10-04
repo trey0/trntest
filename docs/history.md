@@ -6993,3 +6993,17 @@ it. The treated mosaic passes all 42 probes with no `NaN`. The hard cut stays se
 `dem_source = "sldem2015_gld100_hardcut"`, so `dem_seams.ipynb` keeps both passes of the inventory.
 A low-sun hillshade at 60°S 135°E also shows how much more detail SLDEM2015 carries than GLD100: the
 texture still changes at the seam, which no seam treatment can hide.
+
+## Phase 137 (2026-10-04) -- First Claude Code hook: worktree Docker setup at session start
+
+AGENTS.md had grown to carry many "remember to do X first" rules for agents, which an agent can
+forget late in a long session or after compaction. A review of `scripts/` against Claude Code's own
+mechanisms (hooks, permissions, skills, MCP) concluded the scripts should stay the implementation,
+with a thin harness layer added only where it removes a rule that's costly when forgotten. The
+first piece is a SessionStart hook (`.claude/settings.json` → `scripts/claude_session_start.sh`)
+that runs `setup_worktree_docker_env.sh` and reminds the agent to call `ListAgents`, which a hook
+can't call itself. The hook always exits 0 and reports failure on stdout, because a SessionStart
+hook's output reaches the model only on exit 0. `.gitignore` now ignores `.claude/*` except
+`settings.json`, so the hook is tracked while worktree checkouts stay ignored. A SessionStart hook
+that didn't run leaves nothing in context, so the deterministic backstop would be a PreToolUse
+guard on `docker compose` calls; that's not yet added.
