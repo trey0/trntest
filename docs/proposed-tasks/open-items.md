@@ -59,15 +59,16 @@ e.g. a docstring/comment or a `docs/` reference doc, rather than leaving a "Reso
   them as 1-px `NaN` rows (up to ~2,450 px in a 200 km probe), `dem_mosaic --hole-fill-length` leaves
   almost all of it (`dem_seams.ipynb`), and shading draws a curved line along the parallel
   (`trntest2` entry 37, `M1309363051CE`, basemap row mean 28 → 3 on the gap row). The 17 affected
-  probes are strict expected failures in `tests/test_dem_seams.py`. Within ±60° the planned switch
-  to SLDEM2015 (`vira-dem-sources.md`) replaces the equatorward side and the 90°/270° lines; the poleward
-  side and the nodata rows stay until GLD100 is retired there (that plan's Milestone 2). Possibly also
+  probes are strict expected failures in `tests/test_dem_seams.py`. `dem_source = "sldem2015_gld100"`
+  replaces the equatorward side and the 90°/270° lines, and its seam treatment (`dem_sources.LatSeam`)
+  discards and fills GLD100's rows at 60° (all its probes pass); it isn't the default yet, and
+  GLD100's poleward side stays until it's retired there (`vira-dem-sources.md`'s Milestone 2). Possibly also
   behind some of the "implausibly steep pixels" item below.
-- **The seam inventory doesn't yet do what `docs/map-seams.md` describes.** Each probe notebook runs
-  one pass only: `reflectance_seams.ipynb` with the ±60° edge correction on, `dem_seams.ipynb` before
-  hole fill, with no pass for the other side of either. Generating a product across a seam with a
-  known uncorrectable defect (the WAC_EMP ±60° corners, GLD100's ±60° and 90°/270° seams) logs no
-  caution.
+- **The seam inventory doesn't yet do everything `docs/map-seams.md` describes.**
+  `reflectance_seams.ipynb` runs one pass only, with the ±60° edge correction on (`dem_seams.ipynb`
+  has both: the SLDEM2015 + GLD100 hard cut and the treated mosaic). Generating a product across a
+  seam with a known uncorrectable defect (the WAC_EMP ±60° corners, GLD100's ±60° and 90°/270° seams
+  under the default `dem_source`) logs no caution.
 - **Existing datasets' DEMs are up to half a pixel misregistered.** `dem_gld100`'s AOI read used a
   fractional window, which GDAL reads as the nearest whole pixels while the warp kept the fraction,
   shifting every DEM by up to ±0.5 px (≤50 m) per axis relative to the true positions and to the

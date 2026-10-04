@@ -1,17 +1,19 @@
 """DEM sources, and the elevation mosaic `dem_ortho.fetch_dem` builds from them.
 
 A source is a set of Equidistant Cylindrical tiles (GLD100 is one global tile, SLDEM2015 32). A DEM
-is a precedence-ordered tuple of sources (`DEM_SOURCES`, selected by `TrntestConfig.dem_source`):
-each pixel comes from the first source with data there. See docs/data-sources/ and
-docs/map-seams.md.
+is a `DemMosaic` (`DEM_SOURCES`, selected by `TrntestConfig.dem_source`): sources in precedence
+order, each pixel from the first with data there, plus any seam treatments. See docs/data-sources/
+and docs/map-seams.md.
 """
 
 import dataclasses
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+from pyproj import Transformer
+from rasterio.fill import fillnodata
 from rasterio.warp import Resampling, transform_bounds
 
 from trntest import cache, dem_gld100
@@ -22,6 +24,7 @@ from trntest.geo_utils import (
     local_orthographic_crs,
     merge_local_grid_arrays,
     pad_bbox,
+    pixel_center_coords_m,
     read_eqc_raster_to_local_grid_array,
 )
 
@@ -129,12 +132,56 @@ SLDEM2015 = DemSource(
 )
 """SLDEM2015 at 512 ppd: 32 tiles, float32 km above the 1737.4 km sphere, +-60 deg."""
 
-DEM_SOURCES: dict[str, tuple[DemSource, ...]] = {
-    "gld100": (GLD100,),
-    "sldem2015_gld100": (SLDEM2015, GLD100),
+
+@dataclasses.dataclass(frozen=True)
+class LatSeam:
+    """Treatment of the seam where a mosaic's first source stops at a latitude (both hemispheres) and
+    the next takes over.
+
+    :ivar abs_lat_deg: The seam's |latitude|, degrees.
+    :ivar feather_deg: Width of the band equatorward of the seam, degrees, over which the first source
+        blends linearly into the next (both have data there), so a vertical offset between them
+        becomes a gentle slope instead of a step.
+    :ivar reject_deg: `(equatorward, poleward)` extent around the seam, degrees, where the result is
+        discarded and filled from its surroundings: the next source's own defective rows there.
+    """
+
+    abs_lat_deg: float
+    feather_deg: float
+    reject_deg: tuple[float, float]
+
+
+@dataclasses.dataclass(frozen=True)
+class DemMosaic:
+    """A DEM built from sources in precedence order.
+
+    :ivar sources: Precedence order. The last must cover any grid it's used for (its
+        `check_coverage`).
+    :ivar lat_seams: Treatments where the first source meets the next; none means a hard cut.
+    """
+
+    sources: tuple[DemSource, ...]
+    lat_seams: tuple[LatSeam, ...] = ()
+
+
+# GLD100 is itself assembled at +-60 deg: its first ~2 rows poleward of 60 carry a line (gradient
+# ~2x its surroundings) and, at 60N, a nodata row, and its two sides there disagree locally (row-to-row
+# change ~19 m vs. 3-5 m nearby at 60S). SLDEM2015 stops at exactly 60, so the cut can't move away
+# from them. The reject band covers those rows and spreads the local disagreement over ~7 px of the
+# 100 m grid: the narrowest band that brings every probe under `seam_probes.dem_thresholds`' gradient limit
+# (worst 1.28, vs. 1.46 for a 3 px band); wider ones smooth the band below its surroundings' texture
+# (ratio ~0.75). SLDEM2015 runs 4-15 m above GLD100 near 60 (regional, constant up to the seam) and
+# carries more texture; the 0.1 deg (~3 km) feather turns both into gradual changes. Measured in
+# `notebooks/dem_seams.ipynb`.
+_SLDEM2015_GLD100_SEAM = LatSeam(abs_lat_deg=60.0, feather_deg=0.1, reject_deg=(0.007, 0.015))
+
+DEM_SOURCES: dict[str, DemMosaic] = {
+    "gld100": DemMosaic((GLD100,)),
+    "sldem2015_gld100": DemMosaic((SLDEM2015, GLD100), (_SLDEM2015_GLD100_SEAM,)),
+    "sldem2015_gld100_hardcut": DemMosaic((SLDEM2015, GLD100)),
 }
-"""`TrntestConfig.dem_source` -> sources in precedence order. The last must cover any grid it's used
-for (its `check_coverage`)."""
+"""`TrntestConfig.dem_source` -> its mosaic. `"sldem2015_gld100_hardcut"` is the same mosaic without
+its seam treatment, kept for the seam inventory's pass without mitigations (docs/map-seams.md)."""
 
 
 def aoi_lonlat_range_deg(grid: LocalGrid) -> tuple[float, float, float, float]:
@@ -203,24 +250,63 @@ def source_elevation(source: DemSource, grid: LocalGrid, config: TrntestConfig) 
     return merge_local_grid_arrays(arrays) * np.float32(source.to_meters)
 
 
-def mosaic_elevation(sources: Sequence[DemSource], grid: LocalGrid, config: TrntestConfig) -> np.ndarray:
-    """Elevation on `grid` from `sources` in precedence order: each pixel from the first source with
-    data there.
+def grid_latitudes_deg(grid: LocalGrid) -> np.ndarray:
+    """Each pixel center's latitude.
 
-    :param sources: Precedence order, e.g. a `DEM_SOURCES` value.
+    :param grid: The grid.
+    :returns: `(height, width)` latitudes, degrees.
+    """
+    xs, ys = pixel_center_coords_m(grid.bbox_m, grid.width, grid.height)
+    to_geo = Transformer.from_crs(
+        local_orthographic_crs(grid.center_lon_deg, grid.center_lat_deg, MOON_RADIUS_M),
+        geographic_crs(MOON_RADIUS_M),
+        always_xy=True,
+    )
+    _, lat = to_geo.transform(*np.meshgrid(xs, ys))
+    return lat
+
+
+def mosaic_elevation(mosaic: DemMosaic, grid: LocalGrid, config: TrntestConfig) -> np.ndarray:
+    """Elevation on `grid` from `mosaic`: each pixel from the first source with data there, then the
+    mosaic's seam treatments.
+
+    :param mosaic: E.g. a `DEM_SOURCES` value.
     :param grid: The grid.
     :param config: Project config.
     :returns: `(height, width)` float32 elevation, meters; `NaN` where no source has data (gaps
         `dem_ortho.hole_fill_dem` then fills).
     :raises ValueError: If the last source can't cover `grid` (its `check_coverage`).
     """
+    sources = mosaic.sources
     sources[-1].check_coverage(grid)
-    merged = source_elevation(sources[0], grid, config)
+    first = source_elevation(sources[0], grid, config)
+    merged = first.copy()
+    next_source: np.ndarray | None = None
     for source in sources[1:]:
         missing = np.isnan(merged)
-        if not missing.any():
+        if not missing.any() and not mosaic.lat_seams:
             break
-        merged[missing] = source_elevation(source, grid, config)[missing]
+        elevation = source_elevation(source, grid, config)
+        if next_source is None:
+            next_source = elevation
+        merged[missing] = elevation[missing]
+    if not mosaic.lat_seams or next_source is None:
+        return merged
+    distance = np.abs(grid_latitudes_deg(grid))
+    rejected = np.zeros(merged.shape, dtype=bool)
+    for seam in mosaic.lat_seams:
+        from_seam = distance - seam.abs_lat_deg  # negative = equatorward
+        feather = (from_seam > -seam.feather_deg) & (from_seam < 0) & np.isfinite(first) & np.isfinite(next_source)
+        weight = ((from_seam[feather] + seam.feather_deg) / seam.feather_deg).astype(np.float32)
+        merged[feather] = (1 - weight) * first[feather] + weight * next_source[feather]
+        rejected |= (from_seam >= -seam.reject_deg[0]) & (from_seam <= seam.reject_deg[1])
+    if not rejected.any():
+        return merged
+    # Fill only the rejected band (inverse-distance weighting from its edges); any other gap is left
+    # for `dem_ortho.hole_fill_dem`, which doesn't fill a band that reaches the raster's edge.
+    candidate = np.where(rejected, np.nan, merged)
+    filled = fillnodata(np.nan_to_num(candidate, nan=0.0), mask=np.isfinite(candidate), max_search_distance=20)
+    merged[rejected] = filled[rejected]
     return merged
 
 

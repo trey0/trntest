@@ -1,8 +1,8 @@
 # Plan sketch: switch the default DEM to VIRA's multi-source selection
 
-Status: **Milestone 1 steps 0-2 done** (SLDEM2015 cached and checked; GLD100 baseline probes in
-`notebooks/dem_seams.ipynb`; `dem_sources` with `TrntestConfig.dem_source = "sldem2015_gld100"`
-available, not the default); step 3 next. Once the work is done, fold the
+Status: **Milestone 1 steps 0-4 done** (SLDEM2015 cached and checked; `TrntestConfig.dem_source =
+"sldem2015_gld100"` available with its ±60° seam treated, passing all 42 seam probes in
+`notebooks/dem_seams.ipynb`; not yet the default); step 5 next. Once the work is done, fold the
 lasting facts into `docs/data-sources/` (one file per new source) and `dem_ortho.py`'s docstrings,
 and delete this file.
 
@@ -150,13 +150,19 @@ wrap.
    shaded-ortho filenames. The hard-cut precedence merge is already in (`mosaic_elevation`): every
    probe corner within ±60° comes out with no `NaN`, SLDEM 2-11 m above GLD100 on median, 15-33 m RMS
    apart, ~0.6 s per 200 km grid once the tiles are in the OS cache.
-3. **Merge at ±60°.** The hard cut puts GLD100's poleward edge rows, including the 60°N nodata row,
-   right against SLDEM's edge. The seam can't move poleward (SLDEM stops at 60°), so mitigating it
-   means rejecting GLD100's bad rows there and filling across from both sides
-   (`docs/map-seams.md` principle 9); moving it equatorward would only help if SLDEM's own edge rows
-   turn out bad. Decide with step 4's measurements; add feathering or an offset correction only if
-   they show a step that needs it.
-4. **Probe the mosaic**, #1 first, then #2, #3, #6, #7. Fix, re-probe.
+3. **Merge at ±60°.** *Done* (`dem_sources.LatSeam`). SLDEM's own edge rows at 60° are clean; the
+   seam comes from GLD100's first ~2 local pixels poleward of 60° (its own seam, plus the 60°N
+   nodata row) and a regional SLDEM−GLD100 offset of 4-15 m that stays constant up to the seam. The
+   treatment discards a band of ~0.007° equatorward / 0.015° poleward of 60° (~7 px), fills it by
+   inverse-distance weighting, and blends SLDEM into GLD100 over the 0.1° equatorward of 60°. The
+   band width came from a sweep: 3 px left 60°S 135°E at 1.46; ~7 px is the narrowest under the
+   limit (worst 1.28); wider bands smooth it below the surrounding texture. The hard cut stays
+   available as `dem_source = "sldem2015_gld100_hardcut"`, the inventory's pass without mitigations.
+4. **Probe the mosaic.** *Done* for #1-#3 and #6 at all 42 points: SLDEM's tile seams (every 45°,
+   ±30°, the equator) are clean as a hard cut; at ±60° the hard cut fails all 16 probes, the treated
+   mosaic none, with no `NaN` anywhere. Still to do: #7 (more longitudes along ±60°). Not yet looked
+   at: whether the ~3 km feather or the texture change (SLDEM's far sharper detail meeting GLD100's
+   blur, visible in a low-sun hillshade, untreatable at the seam) shows up in rendered images.
 5. **Quality check: is SLDEM actually better here?** Same entries, both sources:
    - the steep-pixel count (`open-items.md`: 38 of 207 `trntest1` DEMs have pixels > 60°; start with
      `M1314424588CE`)

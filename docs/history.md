@@ -6971,3 +6971,25 @@ said 5-14 s per 200 km grid against 0.4 s for GLD100; profiling showed that was 
 each tile from disk, and in fresh processes with the tiles in the OS cache it's ~0.6 s. Writing up
 step 3 showed the plan's idea of moving the ±60° cut poleward can't work, since SLDEM stops at 60°;
 the plan now frames it as rejecting and filling GLD100's bad edge rows instead.
+
+## Phase 136 (2026-10-04) -- SLDEM2015 + GLD100 seam at ±60°: root cause and treatment
+
+Steps 3-4 of `docs/proposed-tasks/vira-dem-sources.md`. Probing the hard-cut mosaic on all 42 points:
+SLDEM2015's own tile seams (every 45°, ±30°, the equator) were clean, GLD100's 270° line was gone,
+and all 16 probes at ±60° failed, gradient ratio 1.3-2.1, with about half of GLD100's nodata still
+there. Before choosing a fix (`docs/map-seams.md` principle 1): SLDEM2015's edge rows at 60° in all 16
+tile edges show no jump; on the local grid GLD100's median slope doubles in the first ~2 px poleward
+of 60° and nowhere else; SLDEM2015 runs a regional 4-15 m above GLD100, the same right up to the seam.
+So the seam is GLD100's own rows next to 60° plus that offset, and since SLDEM2015 stops at 60° the
+cut can't move away from GLD100's rows.
+
+`dem_sources.LatSeam` discards a band around 60° and fills it by inverse-distance weighting
+(`rasterio.fill.fillnodata`, since `dem_mosaic` won't fill a band touching the raster's edge), and
+blends SLDEM2015 into GLD100 over the 0.1° equatorward of 60°. A 3 px band left two 60°S probes over
+the limit (1.37, 1.46): GLD100's two sides of its own seam disagree locally (~19 m row-to-row there),
+which the fill has to bridge. Sweeping the band width, ~7 px is the narrowest that passes everywhere
+(worst 1.28), and wider bands drive the ratio to ~0.75, a stripe smoother than the terrain around
+it. The treated mosaic passes all 42 probes with no `NaN`. The hard cut stays selectable as
+`dem_source = "sldem2015_gld100_hardcut"`, so `dem_seams.ipynb` keeps both passes of the inventory.
+A low-sun hillshade at 60°S 135°E also shows how much more detail SLDEM2015 carries than GLD100: the
+texture still changes at the seam, which no seam treatment can hide.

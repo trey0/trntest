@@ -37,3 +37,8 @@ Available as `TrntestConfig.dem_source = "sldem2015_gld100"` (SLDEM2015 within �
   unbinned LOLA shots and the co-registered TC tile (Barker et al. 2015, Fig. 5 bottom); higher is
   worse. Median 3.5 m, 95th percentile 6.5 m, max 90 m. **It has no data for 30°N-60°N** (that whole
   band is nodata); 60°S-30°N is complete.
+- **Against GLD100**, warped onto the same 100 m local grids: SLDEM2015 runs 2-15 m above GLD100 on
+  median (regional, e.g. +4 m at 60°N 0°E, +14 m at 60°S 135°E), with 6-33 m RMS differences around
+  that. Its median slope on the grid is ~1.3-2× GLD100's, and a low-sun hillshade shows sharp
+  sub-kilometer craters where GLD100 is blurred. Where the two meet at ±60°,
+  `dem_sources.LatSeam` treats the seam (`notebooks/dem_seams.ipynb`).

@@ -235,7 +235,7 @@ def fetch_dem(
     print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
     print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
-    # The DEM's sources come from `config.dem_source` (`dem_sources.DEM_SOURCES`); the last one's
+    # The DEM's mosaic comes from `config.dem_source` (`dem_sources.DEM_SOURCES`); its last source's
     # coverage check raises if this footprint needs data it doesn't have (no silent fallback to the
     # deprecated Lunaserv-native path). Each source's needed tiles are fetched/cached on first use.
     suffix = dem_source_suffix(config.dem_source)

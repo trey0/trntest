@@ -7,7 +7,7 @@ from rasterio.transform import from_origin
 
 from trntest import dem_sources
 from trntest.config import MOON_RADIUS_M, TrntestConfig
-from trntest.dem_sources import DemSource, DemTile, LocalGrid
+from trntest.dem_sources import DemMosaic, DemSource, DemTile, LatSeam, LocalGrid
 
 _M_PER_DEG = math.pi * MOON_RADIUS_M / 180.0
 
@@ -126,7 +126,7 @@ def test_mosaic_elevation_takes_each_pixel_from_the_first_source_with_data(tmp_p
     second = _source(
         tmp_path, "second", [DemTile("second", (0.0, 10.0), (-10.0, 10.0))], lambda lon, lat: lon * 0 + 2.0
     )
-    elevation = dem_sources.mosaic_elevation((first, second), _grid(5.0, 0.0), TrntestConfig())
+    elevation = dem_sources.mosaic_elevation(DemMosaic((first, second)), _grid(5.0, 0.0), TrntestConfig())
     assert not np.isnan(elevation).any()
     north, south = elevation[: elevation.shape[0] // 2 - 2], elevation[elevation.shape[0] // 2 + 2 :]
     assert np.all(north == 2.0)
@@ -136,16 +136,53 @@ def test_mosaic_elevation_takes_each_pixel_from_the_first_source_with_data(tmp_p
 def test_mosaic_elevation_raises_when_the_last_source_cannot_cover(tmp_path):
     only = _source(tmp_path, "only", [DemTile("only", (0.0, 10.0), (-10.0, 10.0))], lambda lon, lat: lon, covers=False)
     with pytest.raises(ValueError, match="doesn't cover"):
-        dem_sources.mosaic_elevation((only,), _grid(5.0, 0.0), TrntestConfig())
+        dem_sources.mosaic_elevation(DemMosaic((only,)), _grid(5.0, 0.0), TrntestConfig())
 
 
 def test_dem_source_suffix():
     assert dem_sources.dem_source_suffix("gld100") == ""
     assert dem_sources.dem_source_suffix("sldem2015_gld100") == "_dem-sldem2015_gld100"
+    assert dem_sources.dem_source_suffix("sldem2015_gld100_hardcut") == "_dem-sldem2015_gld100_hardcut"
     with pytest.raises(ValueError):
         dem_sources.dem_source_suffix("nope")
 
 
 def test_every_dem_source_ends_with_a_source_that_can_cover():
-    for sources in dem_sources.DEM_SOURCES.values():
-        sources[-1].check_coverage(_grid(10.0, 20.0))
+    for mosaic in dem_sources.DEM_SOURCES.values():
+        mosaic.sources[-1].check_coverage(_grid(10.0, 20.0))
+
+
+def test_lat_seam_feathers_the_offset_and_replaces_the_next_sources_bad_rows(tmp_path):
+    # Like SLDEM2015 meeting GLD100 at 60 deg, at 1 deg: the inner source (10 m) stops at |lat| 1;
+    # the outer one (0 m) covers everything but has a bad band of rows just poleward of the seam.
+    inner = _source(
+        tmp_path,
+        "inner",
+        [DemTile("inner", (0.0, 10.0), (-1.0, 1.0))],
+        lambda lon, lat: lon * 0 + 10.0,
+        pixel_deg=0.002,
+        covers=False,
+    )
+    outer = _source(
+        tmp_path,
+        "outer",
+        [DemTile("outer", (0.0, 10.0), (-5.0, 5.0))],
+        lambda lon, lat: np.where((np.abs(lat) > 1.0) & (np.abs(lat) < 1.006), 1000.0, 0.0),
+        pixel_deg=0.002,
+    )
+    seam = LatSeam(abs_lat_deg=1.0, feather_deg=0.2, reject_deg=(0.003, 0.01))
+    grid = _grid(5.0, 1.0, half_m=20_000.0, gsd_m=200.0)
+    elevation = dem_sources.mosaic_elevation(DemMosaic((inner, outer), (seam,)), grid, TrntestConfig())
+    lat = dem_sources.grid_latitudes_deg(grid)
+    assert not np.isnan(elevation).any()
+    assert elevation.max() < 10.5  # the bad rows are gone
+    assert np.allclose(elevation[lat < 0.79], 10.0)  # inner source, outside the feather
+    assert np.allclose(elevation[lat > 1.02], 0.0)  # outer source, past the rejected band
+    column = elevation[:, grid.width // 2]  # north at the top: rises steadily southward to 10 m
+    assert np.all(np.diff(column) >= -1e-3)
+
+
+def test_hardcut_mosaic_is_the_same_sources_without_seam_treatment():
+    treated, hardcut = dem_sources.DEM_SOURCES["sldem2015_gld100"], dem_sources.DEM_SOURCES["sldem2015_gld100_hardcut"]
+    assert hardcut.sources == treated.sources
+    assert treated.lat_seams and not hardcut.lat_seams

@@ -380,3 +380,32 @@ def plot_metrics_vs_controls(
     axes[-1].set_xticklabels(probes, rotation=45)
     axes[-1].set_xlabel("probe")
     return _finish(fig)
+
+
+def plot_shaded_side_by_side(results: Mapping[str, ProbeResult], half_px: int = 100, azimuth_deg: float = 0.0):
+    """Several elevation renders of the same probe, as low-sun hillshades of the same center window
+    side by side (`NaN` in red), to compare how each handles the seams there.
+
+    :param results: Panel title -> `seam_probes.run_probe` output, all for one probe.
+    :param half_px: Half the window's side, pixels.
+    :param azimuth_deg: Sun azimuth, degrees (0 = from the north, across a lat seam).
+    :returns: The `Figure`.
+    """
+    fig, axes = plt.subplots(
+        1, len(results), figsize=(_WIDTH_IN, _WIDTH_IN / len(results) + 0.6), constrained_layout=True
+    )
+    for ax, (title, result) in zip(np.atleast_1d(axes), results.items(), strict=True):
+        h, w = result.array.shape
+        rows, cols = slice(h // 2 - half_px, h // 2 + half_px), slice(w // 2 - half_px, w // 2 + half_px)
+        shaded = lambertian_hillshade(result.array, azimuth_deg, _SHADE_ELEVATION_DEG, result.grid.gsd_m)
+        _show_with_nan(ax, shaded[rows, cols])
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    probe = next(iter(results.values())).grid.probe.name
+    fig.suptitle(
+        f"{probe}: center {2 * half_px} px, hillshade with sun azimuth {azimuth_deg:g}, elevation "
+        f"{_SHADE_ELEVATION_DEG:g} deg",
+        fontsize=10,
+    )
+    return _finish(fig)

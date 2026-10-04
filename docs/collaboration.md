@@ -11,6 +11,10 @@ rendering until the user has had a chance to look at it live — start the Jupyt
 (`docker compose up -d` from `docker/`) and point them at the regenerated notebook, rather than
 committing right after a lint+test pass alone.
 
+Once a long notebook run finishes, leave its output in place until the user has looked at it. Don't
+start another run that overwrites it (e.g. to check a refactor that doesn't change results) without
+asking first: the user then waits for the whole run again before they can review anything.
+
 ## Review before merge
 
 When pushing a multi-file task to a branch for review, work in batches of up to ~3 files (fewer for

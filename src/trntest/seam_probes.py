@@ -227,16 +227,16 @@ def dem_renderer(dem_source: str) -> Renderer:
     :param dem_source: A `dem_sources.DEM_SOURCES` key.
     :returns: The renderer; its source ids are every tile of every source that overlaps the grid.
     """
-    sources = dem_sources.DEM_SOURCES[dem_source]
+    mosaic = dem_sources.DEM_SOURCES[dem_source]
 
     def render(grid: ProbeGrid, config: TrntestConfig, output_path: Path) -> tuple[np.ndarray, list[str]]:
         probe = grid.probe
         local = dem_sources.LocalGrid(grid.bbox_m, grid.width, grid.height, probe.center_lon_deg, probe.center_lat_deg)
-        elevation = dem_sources.mosaic_elevation(sources, local, config)
+        elevation = dem_sources.mosaic_elevation(mosaic, local, config)
         write_local_grid_array(
             elevation, grid.bbox_m, probe.center_lon_deg, probe.center_lat_deg, MOON_RADIUS_M, output_path
         )
-        tile_ids = [tile.tile_id for source in sources for tile in dem_sources.tiles_for_grid(source, local)]
+        tile_ids = [tile.tile_id for source in mosaic.sources for tile in dem_sources.tiles_for_grid(source, local)]
         return elevation.astype(np.float64), tile_ids
 
     return render
@@ -773,6 +773,28 @@ SOURCES: dict[str, SeamSource] = {
         dem_renderer("gld100"),
         dem_thresholds,
         value_name="GLD100 elevation, before hole fill",
+        value_units="m",
+        relative=False,
+        shade=True,
+    ),
+    "dem_sldem2015_gld100_hardcut": SeamSource(
+        "dem_sldem2015_gld100_hardcut",
+        DEM_SEAMS,
+        DEM_PROBES,
+        dem_renderer("sldem2015_gld100_hardcut"),
+        dem_thresholds,
+        value_name="SLDEM2015 + GLD100 elevation, hard cut, before hole fill",
+        value_units="m",
+        relative=False,
+        shade=True,
+    ),
+    "dem_sldem2015_gld100": SeamSource(
+        "dem_sldem2015_gld100",
+        DEM_SEAMS,
+        DEM_PROBES,
+        dem_renderer("sldem2015_gld100"),
+        dem_thresholds,
+        value_name="SLDEM2015 + GLD100 elevation, seam treated, before hole fill",
         value_units="m",
         relative=False,
         shade=True,
