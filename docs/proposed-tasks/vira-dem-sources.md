@@ -82,15 +82,14 @@ Starting at #1 is the right optimization: if both seam types are handled there, 
 follow, and any interaction between them (e.g. the branch-cut fix changing which tile wins merge
 precedence) only shows up there. #7 is still needed.
 
-**Harness.** `trntest.seam_probes` has a DEM source (`dem_gld100`: `DEM_SEAMS`, `DEM_PROBES`,
-`render_gld100_elevation`, `dem_thresholds`), run by `notebooks/dem_seams.ipynb` and
-`tests/test_dem_seams.py`. It probes every point where four 512-ppd SLDEM2015 tiles meet (three at
-±60°): ±60°, ±30° and 0° latitude × every 45° of longitude, plus #6's ±45° 0° wrap-only points. The mosaic will need its own renderer and source entry, reusing
-`DEM_SEAMS`/`DEM_PROBES` so its numbers compare directly against the GLD100 baseline. Not done yet:
-an optional rotation of the probe square (seams that are axis-aligned in the destination grid hide
-some artifacts), and probes #4, #5 and #7 from the table above. Once a probe is also worth rendering, look for a
-real LRO pass near it with `TrnTestEntrySpice` (LRO is polar, so every latitude gets crossed;
-longitude is the constraint).
+**Harness.** `trntest.seam_probes` has three DEM sources, `dem_gld100`, `dem_sldem2015_gld100_hardcut`
+and `dem_sldem2015_gld100` (`dem_renderer(dem_source)`, `DEM_SEAMS`, `DEM_PROBES`, `dem_thresholds`),
+run by `notebooks/dem_seams.ipynb` and `tests/test_dem_seams.py`. They probe every point where four
+512-ppd SLDEM2015 tiles meet (three at ±60°): ±60°, ±30° and 0° latitude × every 45° of longitude,
+plus #6's ±45° 0° wrap-only points. Not done yet: an optional rotation of the probe square (seams
+that are axis-aligned in the destination grid hide some artifacts), and probes #4, #5 and #7 from
+the table above. Once a probe is also worth rendering, look for a real LRO pass near it with
+`TrnTestEntrySpice` (LRO is polar, so every latitude gets crossed; longitude is the constraint).
 
 **Metrics per probe DEM** (all computed on the final local-ortho grid, with the seam curve
 rasterized into that grid, since seams aren't axis-aligned there):
