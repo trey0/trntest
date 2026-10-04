@@ -1,7 +1,7 @@
 """Fetch DEM + ortho imagery for the ground footprint computed by `camera.build_camera`, and prep both
 for `sat_sim`: the DEM as elevation (not raw radius) and hole-filled, the ortho despeckled and blended
 with a sun-lit hillshade (`hapke.despeckle_and_shade_ortho`). Live defaults: Astropedia's GLD100 DEM
-(`dem_gld100.fetch_dem_astropedia`) and WAC_EMP's PDS4 reflectance ortho
+(`dem_sources`, per `TrntestConfig.dem_source`) and WAC_EMP's PDS4 reflectance ortho
 (`ortho_wac_emp.fetch_wac_emp_reflectance`); Lunaserv WMS (`lunaserv_wms.fetch_dem_native`,
 `ortho_source="lunaserv_wms"`) is a deprecated fallback kept for comparison. See
 docs/data-sources/astropedia-gld100.md, docs/data-sources/wac-emp-pds4.md,
@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING
 import rasterio
 
 from trntest import cache
-from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
-from trntest.dem_gld100 import fetch_dem_astropedia, reproject_astropedia_elevation_to_local_grid
-from trntest.geo_utils import footprint_bbox_local_m, pad_bbox, pixel_dims_for_gsd, union_bbox
+from trntest.config import DEFAULT_DEM_SOURCE, MOON_RADIUS_M, TrntestConfig, load_config
+from trntest.dem_sources import DEM_SOURCES, LocalGrid, dem_source_suffix, mosaic_elevation
+from trntest.geo_utils import footprint_bbox_local_m, pad_bbox, pixel_dims_for_gsd, union_bbox, write_local_grid_array
 from trntest.hapke import (
     DEFAULT_ALONG_TRACK_CORRECTION,
     DEFAULT_CAST_SHADOWS,
@@ -51,13 +51,14 @@ DEM_FILLED_FILENAME = "dem_filled-tile-0.tif"  # extra_footprint_lonlat_deg=None
 # to union in -- see TrnTestEntry._dem_extra_footprint).
 
 
-def dem_filled_filename(extra_footprint_lonlat_deg: dict | None) -> str:
+def dem_filled_filename(extra_footprint_lonlat_deg: dict | None, dem_source: str = DEFAULT_DEM_SOURCE) -> str:
     """The `output_dir`-relative filename `fetch_dem` writes its hole-filled DEM to.
 
     :param extra_footprint_lonlat_deg: The same parameter `fetch_dem`/`fetch_dem_and_ortho` take.
-    :returns: `DEM_FILLED_FILENAME` when `None`; otherwise a short hash of the value baked into
-        the name (`f"dem_filled_{digest}-tile-0.tif"`, keeping the literal `"-tile-0.tif"` ending
-        `hole_fill_dem`'s own `dem_mosaic` convention relies on).
+    :param dem_source: `TrntestConfig.dem_source`; a non-default one adds `dem_sources.dem_source_suffix`.
+    :returns: `DEM_FILLED_FILENAME` when `None` and the default source; otherwise a short hash of
+        the footprint and/or the source suffix baked into the name (`f"dem_filled{suffix}_{digest}-tile-0.tif"`,
+        keeping the literal `"-tile-0.tif"` ending `hole_fill_dem`'s own `dem_mosaic` convention relies on).
     """
     # Same purpose as `ortho_shaded_filename` below (letting `TrnTestEntry.dem_ortho_result`'s
     # resumption check ask for exactly the file a matching `fetch_dem` call would produce, so two
@@ -68,10 +69,11 @@ def dem_filled_filename(extra_footprint_lonlat_deg: dict | None) -> str:
     # discrete, intentionally side-by-side-comparable modes), `extra_footprint_lonlat_deg` is a
     # continuous geometric value with no natural short name -- two equal dicts still hash equally,
     # which is all the resumption check actually needs.
+    suffix = dem_source_suffix(dem_source)
     if extra_footprint_lonlat_deg is None:
-        return DEM_FILLED_FILENAME
+        return f"dem_filled{suffix}-tile-0.tif"
     digest = hashlib.sha1(json.dumps(extra_footprint_lonlat_deg, sort_keys=True).encode()).hexdigest()[:8]
-    return f"dem_filled_{digest}-tile-0.tif"
+    return f"dem_filled{suffix}_{digest}-tile-0.tif"
 
 
 def hole_fill_dem(dem_path, filled_path):
@@ -95,6 +97,7 @@ def ortho_shaded_filename(
     real_hapke_params: bool = DEFAULT_REAL_HAPKE_PARAMS,
     ortho_source: str = DEFAULT_ORTHO_SOURCE,
     cast_shadows: bool = DEFAULT_CAST_SHADOWS,
+    dem_source: str = DEFAULT_DEM_SOURCE,
 ) -> str:
     """The `output_dir`-relative filename `hapke.despeckle_and_shade_ortho` writes its shaded ortho to.
 
@@ -105,6 +108,8 @@ def ortho_shaded_filename(
         affects the filename when `hapke=True`.
     :param ortho_source: Which ortho/texture source was fetched (see `ORTHO_SOURCES`).
     :param cast_shadows: Whether cast-shadow occlusion was applied.
+    :param dem_source: The DEM it was shaded with (`TrntestConfig.dem_source`); a non-default one adds
+        `dem_sources.dem_source_suffix`.
     :returns: The filename `hapke.despeckle_and_shade_ortho` writes to for this combination.
     """
     # Factored out so `trn_dataset.TrnTestEntry.dem_ortho_result`'s resumption check can ask for
@@ -120,7 +125,11 @@ def ortho_shaded_filename(
     # `ortho_source="lunaserv_wms"` keeps the original, suffix-less filenames. `_castshadow2` is likewise
     # independent of `hapke`, since cast shadows darken either shading mode's output; the `2` marks
     # `cast_shadow.horizon_sweep`, which replaced a binned sweep whose files used plain `_castshadow`.
-    source_suffix = ("_wacemp" if ortho_source == "wac_emp_pds" else "") + ("_castshadow2" if cast_shadows else "")
+    source_suffix = (
+        ("_wacemp" if ortho_source == "wac_emp_pds" else "")
+        + ("_castshadow2" if cast_shadows else "")
+        + dem_source_suffix(dem_source)
+    )
     if not hapke:
         return f"ortho_shaded{source_suffix}.tif"
     suffix = ("_atc" if along_track_correction else "") + ("_realparams" if real_hapke_params else "") + "_normaltilt"
@@ -226,27 +235,16 @@ def fetch_dem(
     print(f"ROI center (lon,lat deg): {center}, bbox (local m): {bbox}")
     print(f"ROI size {width}x{height} px (~{config.dem_target_gsd_m} m/px)")
 
-    # Live default DEM source: USGS Astropedia's flat-file GLD100, not Lunaserv's WMS -- see
-    # docs/data-sources/astropedia-gld100.md. `fetch_dem_astropedia` ensures the whole ~10GB file is
-    # downloaded/cached locally once (raises if this camera's footprint needs data outside the file's
-    # +-79 deg latitude coverage -- no silent fallback to the deprecated Lunaserv-native path), then
-    # `reproject_astropedia_elevation_to_local_grid` reads just this AOI from the local file and
-    # reprojects it onto this same local-CRS grid -- already elevation (not planetocentric radius), so
-    # `lunaserv_wms.radius_to_elevation` is skipped.
-    astropedia_path = fetch_dem_astropedia(bbox, center_lon, center_lat, config)
-    dem_elevation_path = config.output_dir / "dem_elevation.tif"
-    reproject_astropedia_elevation_to_local_grid(
-        astropedia_path,
-        bbox,
-        width,
-        height,
-        center_lon,
-        center_lat,
-        MOON_RADIUS_M,
-        dem_elevation_path,
-    )
+    # The DEM's sources come from `config.dem_source` (`dem_sources.DEM_SOURCES`); the last one's
+    # coverage check raises if this footprint needs data it doesn't have (no silent fallback to the
+    # deprecated Lunaserv-native path). Each source's needed tiles are fetched/cached on first use.
+    suffix = dem_source_suffix(config.dem_source)
+    grid = LocalGrid(bbox, width, height, center_lon, center_lat)
+    elevation = mosaic_elevation(DEM_SOURCES[config.dem_source], grid, config)
+    dem_elevation_path = config.output_dir / f"dem_elevation{suffix}.tif"
+    write_local_grid_array(elevation, bbox, center_lon, center_lat, MOON_RADIUS_M, dem_elevation_path)
 
-    dem_filled_path = config.output_dir / dem_filled_filename(extra_footprint_lonlat_deg)
+    dem_filled_path = config.output_dir / dem_filled_filename(extra_footprint_lonlat_deg, config.dem_source)
     hole_fill_dem(dem_elevation_path, dem_filled_path)
     return DemFetchResult(dem=dem_filled_path, bbox=bbox, width=width, height=height)
 
@@ -365,7 +363,7 @@ def fetch_and_shade_ortho(
             fmt="image/tiff",
         )
     ortho_shaded_path = config.output_dir / ortho_shaded_filename(
-        hapke, along_track_correction, real_hapke_params, ortho_source, cast_shadows
+        hapke, along_track_correction, real_hapke_params, ortho_source, cast_shadows, config.dem_source
     )
     despeckle_and_shade_ortho(
         ortho_path,

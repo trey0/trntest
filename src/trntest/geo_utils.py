@@ -9,17 +9,21 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+from affine import Affine
 from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.warp import Resampling, reproject
+from rasterio.warp import Resampling, reproject, transform_bounds
+from rasterio.windows import Window
+from rasterio.windows import from_bounds as window_from_bounds
+from rasterio.windows import transform as window_transform
 
 from trntest.config import MOON_RADIUS_M
 from trntest.product_io import atomic_publish
 
 # A small pad applied before checking/fetching a data source's own coverage, accounting for a
 # resampling kernel needing neighbor samples just past the destination edge -- shared by
-# `dem_gld100.check_astropedia_coverage`, `dem_gld100.reproject_astropedia_elevation_to_local_grid` and
-# `ortho_wac_emp.wac_emp_tile_ids_for_bbox`, all of which derive their coverage from the same padded
-# local-Orthographic working grid.
+# `dem_gld100.check_astropedia_coverage`, `read_eqc_raster_to_local_grid_array`,
+# `dem_sources.tiles_for_grid` and `ortho_wac_emp.wac_emp_tile_ids_for_bbox`, all of which derive
+# their coverage from the same padded local-Orthographic working grid.
 DEM_FETCH_SAFETY_MARGIN_FRACTION = 0.02
 
 
@@ -404,3 +408,95 @@ def write_local_grid_array(
         with rasterio.open(tmp, "w", **profile) as dst:
             dst.write(array, 1)
     return Path(output_path)
+
+
+def read_eqc_raster_to_local_grid_array(
+    path,
+    dst_bbox_m,
+    dst_width: int,
+    dst_height: int,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    moon_radius_m: float,
+    resampling: Resampling,
+    tolerance: float = 0.125,
+) -> np.ndarray:
+    """Read the part of one Equidistant Cylindrical raster that covers a local Orthographic grid, and
+    warp it onto that grid. The raster may be global or one tile of a mosaic.
+
+    :param path: The raster (anything GDAL opens, e.g. a GeoTIFF or a PDS3 `.LBL`).
+    :param dst_bbox_m: Destination `(minx, miny, maxx, maxy)`, meters, local Orthographic CRS.
+    :param dst_width: Destination width, pixels.
+    :param dst_height: Destination height, pixels.
+    :param center_lon_deg: Destination CRS tangent point longitude, degrees.
+    :param center_lat_deg: Destination CRS tangent point latitude, degrees.
+    :param moon_radius_m: Sphere radius, meters.
+    :param resampling: `rasterio.warp` resampling method.
+    :param tolerance: `rasterio.warp.reproject` error tolerance.
+    :returns: `(dst_height, dst_width)` float32, the raster's own values (no scaling applied), `NaN`
+        wherever the raster has no data or doesn't reach.
+    :raises ValueError: If the raster isn't Equidistant Cylindrical.
+    """
+    # Transforming an AOI into a raster's own CRS breaks wherever that CRS's branch cut (`lon_0` +-
+    # 180) falls inside the AOI: `transform_bounds` returns a whole-width min/max whose edges are
+    # wherever its densification happened to sample nearest the cut (a NaN strip up to ~0.5 deg wide
+    # just west of 0 deg for GLD100, centered on 180; the same failure `ortho_wac_emp` had at 180 deg).
+    # So the window is computed in an Equirectangular CRS centered on the AOI, where it never crosses
+    # a cut, and read as up to one piece per raster edge the AOI reaches, each warped separately.
+    # Concatenating pieces into one array would misregister one of them: a global raster's width
+    # needn't be an exact circumference (GLD100's is ~94 m more).
+    with rasterio.open(path) as src:
+        if src.crs.to_dict().get("proj") != "eqc":
+            raise ValueError(f"{path} isn't Equidistant Cylindrical: {src.crs}")
+        src_nodata = src.nodata
+        warp_crs = f"+proj=eqc +lat_ts=0 +lon_0={center_lon_deg} +R={moon_radius_m} +units=m +no_defs"
+        left, bottom, right, top = transform_bounds(
+            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m),
+            warp_crs,
+            *pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION),
+        )
+        # x in `src.crs` = x in `warp_crs` + `shift_m` (a `lon_0` change is a pure x shift in this
+        # linear projection), modulo the circumference.
+        src_lon0_deg = src.crs.to_dict().get("lon_0", 0.0)
+        circumference_m = 2 * np.pi * moon_radius_m
+        shift_m = moon_radius_m * np.radians((center_lon_deg - src_lon0_deg + 180.0) % 360.0 - 180.0)
+        full = Window(0, 0, src.width, src.height)
+        pieces = []
+        for wrap_m in (-circumference_m, 0.0, circumference_m):
+            piece_left = max(left + shift_m + wrap_m, src.bounds.left)
+            piece_right = min(right + shift_m + wrap_m, src.bounds.right)
+            piece_bottom, piece_top = max(bottom, src.bounds.bottom), min(top, src.bounds.top)
+            if piece_left >= piece_right or piece_bottom >= piece_top:
+                continue
+            # An integer window, flooring the near edges and ceiling the far ones so it contains the
+            # requested extent. GDAL reads a fractional window as the nearest whole pixels while
+            # `window_transform` keeps the fraction, which put every DEM up to half a pixel off.
+            window = window_from_bounds(piece_left, piece_bottom, piece_right, piece_top, transform=src.transform)
+            col_off, row_off = math.floor(window.col_off), math.floor(window.row_off)
+            col_stop = math.ceil(window.col_off + window.width)
+            row_stop = math.ceil(window.row_off + window.height)
+            window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off).intersection(full)
+            warp_transform = Affine.translation(-shift_m - wrap_m, 0) @ window_transform(window, src.transform)
+            pieces.append((src.read(1, window=window), warp_transform))
+
+    arrays = [
+        reproject_raster_to_local_grid_array(
+            values,
+            warp_crs,
+            warp_transform,
+            dst_bbox_m,
+            dst_width,
+            dst_height,
+            center_lon_deg,
+            center_lat_deg,
+            moon_radius_m,
+            resampling,
+            tolerance,
+            src_nodata=src_nodata,
+            dst_nodata=np.nan,
+        )
+        for values, warp_transform in pieces
+    ]
+    if not arrays:
+        return np.full((dst_height, dst_width), np.nan, dtype="float32")
+    return merge_local_grid_arrays(arrays)

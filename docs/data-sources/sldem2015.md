@@ -2,7 +2,8 @@
 
 Index: [`docs/data-sources.md`](../data-sources.md).
 
-Not yet used by the DEM pipeline: cached and checked as step 0 of
+Available as `TrntestConfig.dem_source = "sldem2015_gld100"` (SLDEM2015 within ±60°, GLD100 beyond;
+`dem_sources.SLDEM2015`), not yet the default; see
 [`docs/proposed-tasks/vira-dem-sources.md`](../proposed-tasks/vira-dem-sources.md)'s Milestone 1.
 
 - **What**: the LOLA team's lunar DEM from LOLA altimetry co-registered with Kaguya Terrain Camera

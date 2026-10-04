@@ -20,10 +20,9 @@ import pandas as pd
 import rasterio
 from pyproj import Transformer
 
-from trntest import ortho_wac_emp
+from trntest import dem_sources, ortho_wac_emp
 from trntest.config import MOON_RADIUS_M, TrntestConfig, load_config
-from trntest.dem_gld100 import fetch_dem_astropedia, reproject_astropedia_elevation_to_local_grid
-from trntest.geo_utils import geographic_crs, local_orthographic_crs, pixel_center_coords_m
+from trntest.geo_utils import geographic_crs, local_orthographic_crs, pixel_center_coords_m, write_local_grid_array
 from trntest.report import render_template
 from trntest.subprocess_utils import run_quiet
 
@@ -220,30 +219,27 @@ DEM_PROBES: tuple[SeamProbe, ...] = (
 lat seam (the wrap alone)."""
 
 
-def render_gld100_elevation(grid: ProbeGrid, config: TrntestConfig, output_path: Path) -> tuple[np.ndarray, list[str]]:
-    """`Renderer` for GLD100 elevation through `dem_ortho.fetch_dem`'s read-and-warp, before
-    `dem_ortho.hole_fill_dem`, so a gap shows as `NaN` instead of being filled over.
+def dem_renderer(dem_source: str) -> Renderer:
+    """A `Renderer` for the DEM `dem_ortho.fetch_dem` builds with `TrntestConfig.dem_source =
+    dem_source`, before `dem_ortho.hole_fill_dem`, so a gap shows as `NaN` instead of being filled
+    over.
 
-    :param grid: The probe grid.
-    :param config: Project config (cache location, GLD100 URL).
-    :param output_path: Where to write the elevation GeoTIFF.
-    :returns: `(elevation_m, ["GLD100"])`.
+    :param dem_source: A `dem_sources.DEM_SOURCES` key.
+    :returns: The renderer; its source ids are every tile of every source that overlaps the grid.
     """
-    probe = grid.probe
-    path = fetch_dem_astropedia(grid.bbox_m, probe.center_lon_deg, probe.center_lat_deg, config)
-    reproject_astropedia_elevation_to_local_grid(
-        path,
-        grid.bbox_m,
-        grid.width,
-        grid.height,
-        probe.center_lon_deg,
-        probe.center_lat_deg,
-        MOON_RADIUS_M,
-        output_path,
-    )
-    with rasterio.open(output_path) as src:
-        array = src.read(1).astype(np.float64)
-    return array, ["GLD100"]
+    sources = dem_sources.DEM_SOURCES[dem_source]
+
+    def render(grid: ProbeGrid, config: TrntestConfig, output_path: Path) -> tuple[np.ndarray, list[str]]:
+        probe = grid.probe
+        local = dem_sources.LocalGrid(grid.bbox_m, grid.width, grid.height, probe.center_lon_deg, probe.center_lat_deg)
+        elevation = dem_sources.mosaic_elevation(sources, local, config)
+        write_local_grid_array(
+            elevation, grid.bbox_m, probe.center_lon_deg, probe.center_lat_deg, MOON_RADIUS_M, output_path
+        )
+        tile_ids = [tile.tile_id for source in sources for tile in dem_sources.tiles_for_grid(source, local)]
+        return elevation.astype(np.float64), tile_ids
+
+    return render
 
 
 # --- Profiles and metrics ------------------------------------------------------------------------
@@ -774,7 +770,7 @@ SOURCES: dict[str, SeamSource] = {
         "dem_gld100",
         DEM_SEAMS,
         DEM_PROBES,
-        render_gld100_elevation,
+        dem_renderer("gld100"),
         dem_thresholds,
         value_name="GLD100 elevation, before hole fill",
         value_units="m",

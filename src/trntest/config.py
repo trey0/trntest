@@ -99,10 +99,10 @@ DEFAULT_DEM_NATIVE_PPD = 128.0
 # reads. See docs/data-sources/astropedia-gld100.md.
 DEFAULT_ASTROPEDIA_GLD100_URL = "https://planetarymaps.usgs.gov/mosaic/Lunar_LRO_WAC_GLD100_DTM_79S79N_100m_v1.1.tif"
 
-# SLDEM2015 (LOLA + Kaguya TC), 60S-60N, at its finest posting: 512 ppd (~59 m), as 32 float32 tiles of
-# 30 deg x 45 deg from the LOLA team's PDS mirror, plus its 1-ppd data-quality map. Not yet used by
-# the DEM pipeline. Each tile is ~1.4 GB, fetched whole once (`cache.fetch_sldem2015_tile`). See
-# docs/data-sources/sldem2015.md.
+# SLDEM2015 (LOLA + Kaguya TC), 60S-60N, at its finest posting: 512 ppd (~59 m), as 32 float32 tiles
+# of 30 deg x 45 deg from the LOLA team's PDS mirror, plus its 1-ppd data-quality map. Used by
+# `dem_source="sldem2015_gld100"` (`dem_sources.SLDEM2015`). Each tile is ~1.4 GB, fetched whole once
+# (`cache.fetch_sldem2015_tile`). See docs/data-sources/sldem2015.md.
 DEFAULT_SLDEM2015_BASE_URL = "https://imbrium.mit.edu/DATA/SLDEM2015/TILES/FLOAT_IMG/"
 DEFAULT_SLDEM2015_QUALITY_BASE_URL = "https://imbrium.mit.edu/DATA/SLDEM2015/GLOBAL/FLOAT_IMG/"
 SLDEM2015_TILE_NAMES = tuple(
@@ -175,6 +175,10 @@ DEFAULT_WAC_EMP_EDGE_CORRECTION_ENABLED = True
 # `wac_resample.resample_crop_to_map`) or "cam2map" (`isis_wac.run_cam2map_for_crop`). `cam2map`
 # leaves dashes from the framelet-boundary NULL pixels and misplaces each framelet's last line by 3-5
 # map px; kept for comparison. See notebooks/wac_framelet_null_fill.py.
+# Which DEM `dem_ortho.fetch_dem` builds: a `dem_sources.DEM_SOURCES` key. "gld100" is GLD100 alone;
+# "sldem2015_gld100" is SLDEM2015 within +-60 deg, GLD100 beyond. See docs/proposed-tasks/vira-dem-sources.md.
+DEFAULT_DEM_SOURCE = "gld100"
+
 DEFAULT_CROP_MAP_PROJECTION = "wac_resample"
 
 # Whether `wac_resample.resample_crop_to_map` also writes a mask of the pixels its small-hole fill
@@ -226,6 +230,7 @@ class TrntestConfig:
     wac_vis_color_fov_deg: float = DEFAULT_WAC_VIS_COLOR_FOV_DEG
     dem_target_gsd_m: float = DEFAULT_DEM_TARGET_GSD_M
     dem_padding_fraction: float = DEFAULT_DEM_PADDING_FRACTION
+    dem_source: str = DEFAULT_DEM_SOURCE  # a dem_sources.DEM_SOURCES key
 
     delete_full_raw_edr: bool = DEFAULT_DELETE_FULL_RAW_EDR
     delete_isis_intermediates: bool = DEFAULT_DELETE_ISIS_INTERMEDIATES

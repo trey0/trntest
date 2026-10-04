@@ -242,8 +242,9 @@ lint's notebook checks).
 | [`craters.py`][craters.py] | Robbins craters catalog overlay: fetches/caches the PDS4 CSV, builds a spatially-indexed GeoPackage, and returns ellipse polygons for a raster's footprint (`crater_overlay_layer`) — see [`docs/data-sources/robbins-craters.md`](docs/data-sources/robbins-craters.md). |
 | [`dataset_selection.py`][dataset_selection.py] | Orbit-level TRN-OD dataset selection (`notebooks/select_datasets.py`): picks multi-day, maneuver-free orbit spans jointly diverse in solar hour angle, then hands one selected window to `candidate_window.py`. |
 | [`dataset_selection_plots.py`][dataset_selection_plots.py] | `notebooks/select_datasets.py`'s own scatter plots (`plot_sun_elevation_vs_edr_count`, `plot_illuminated_node_scatter`) — split out of `plotting.py` since `dataset_selection.py`'s orbit-level candidate geometry is the only reason this depends on `illumination.py`. |
-| [`dem_gld100.py`][dem_gld100.py] | Live default DEM source: fetches/caches USGS Astropedia's flat-file GLD100 DEM and reprojects the AOI onto the per-camera local Orthographic grid — see [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md). |
-| [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_gld100.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
+| [`dem_gld100.py`][dem_gld100.py] | GLD100 specifics: fetches/caches USGS Astropedia's flat-file GLD100 DEM and checks its ±79° coverage — see [`docs/data-sources/astropedia-gld100.md`](docs/data-sources/astropedia-gld100.md). |
+| [`dem_sources.py`][dem_sources.py] | DEM sources (GLD100, SLDEM2015) as sets of Equidistant Cylindrical tiles, and the precedence mosaic `dem_ortho.fetch_dem` builds per `TrntestConfig.dem_source`. |
+| [`dem_ortho.py`][dem_ortho.py] | Orchestrates `dem_sources.py`/`ortho_wac_emp.py`/`lunaserv_wms.py`/`hapke.py` into one DEM/ortho fetch for a camera's footprint (`fetch_dem_and_ortho`) — see the module docstring. |
 | [`entry_poses.py`][entry_poses.py] | `TrnTestDataSet.write_entry_poses()`'s implementation: a ROS-inspired JSON Lines record per entry (position + quaternion attitude, `MOON_ME`, read from its `.tsai`) plus a companion JSON Schema (`ENTRY_POSE_JSON_SCHEMA`) — see the module docstring. |
 | [`geo_utils.py`][geo_utils.py] | Generic CRS/bbox/reprojection math (`geographic_crs`, `local_orthographic_crs`, `pad_bbox`, `reproject_raster_to_local_grid`, ...) shared by every DEM/ortho data-source module — dependency-free by design. |
 | [`hapke.py`][hapke.py] | Despeckles a fetched ortho and blends in a sun-lit hillshade: the default ISIS-`photomet`-backed Hapke relighting (`hapke_shade_ortho`) and its plain-Lambertian fallback (`shade_ortho`), plus the photometric-angle geometry both need; applies `cast_shadow.py`'s cast shadows on top (`cast_shadows`, on by default). |
@@ -291,6 +292,7 @@ lint's notebook checks).
 [dataset_selection.py]: src/trntest/dataset_selection.py
 [dataset_selection_plots.py]: src/trntest/dataset_selection_plots.py
 [dem_gld100.py]: src/trntest/dem_gld100.py
+[dem_sources.py]: src/trntest/dem_sources.py
 [dem_ortho.py]: src/trntest/dem_ortho.py
 [entry_poses.py]: src/trntest/entry_poses.py
 [geo_utils.py]: src/trntest/geo_utils.py

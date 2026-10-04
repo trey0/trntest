@@ -119,7 +119,9 @@ def _without_cast_shadows(camera: Camera, dem_ortho_result: DemOrthoResult, conf
         `dem_ortho.ortho_shaded_filename`, so only the first call re-shades.
     """
     # See this module's header comment for why.
-    ortho_path = config.output_dir / dem_ortho.ortho_shaded_filename(True, cast_shadows=False)
+    ortho_path = config.output_dir / dem_ortho.ortho_shaded_filename(
+        True, cast_shadows=False, dem_source=config.dem_source
+    )
     if ortho_path.exists():
         return dem_ortho.result_from_files(ortho_path, dem_ortho_result.dem)
     dem = DemFetchResult(

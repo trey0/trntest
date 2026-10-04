@@ -105,3 +105,14 @@ def test_dem_filled_filename_differs_for_different_footprints():
 
 def test_dem_filled_filename_none_differs_from_a_real_footprint():
     assert dem_ortho.dem_filled_filename(None) != dem_ortho.dem_filled_filename({"center": (1.5, -2.5)})
+
+
+def test_dem_source_is_part_of_the_dem_and_shaded_ortho_names():
+    # A DEM or shaded ortho built from a non-default DEM source must not resolve to the default's file.
+    assert dem_ortho.dem_filled_filename(None, "gld100") == dem_ortho.DEM_FILLED_FILENAME
+    assert dem_ortho.dem_filled_filename(None, "sldem2015_gld100") == "dem_filled_dem-sldem2015_gld100-tile-0.tif"
+    footprint = {"center": (1.5, -2.5)}
+    assert dem_ortho.dem_filled_filename(footprint, "sldem2015_gld100").endswith("-tile-0.tif")
+    assert dem_ortho.dem_filled_filename(footprint, "sldem2015_gld100") != dem_ortho.dem_filled_filename(footprint)
+    assert dem_ortho.ortho_shaded_filename(True) != dem_ortho.ortho_shaded_filename(True, dem_source="sldem2015_gld100")
+    assert dem_ortho.ortho_shaded_filename(False, dem_source="gld100") == dem_ortho.ortho_shaded_filename(False)

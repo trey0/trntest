@@ -213,8 +213,11 @@ class TrnTestEntry(abc.ABC):
             hapke.DEFAULT_REAL_HAPKE_PARAMS,
             dem_ortho.DEFAULT_ORTHO_SOURCE,
             hapke.DEFAULT_CAST_SHADOWS,
+            self.per_image_config.dem_source,
         )
-        dem_path = self.per_image_config.output_dir / dem_ortho.dem_filled_filename(self._dem_extra_footprint)
+        dem_path = self.per_image_config.output_dir / dem_ortho.dem_filled_filename(
+            self._dem_extra_footprint, self.per_image_config.dem_source
+        )
         if ortho_path.exists() and dem_path.exists():
             return dem_ortho.result_from_files(ortho_path, dem_path)
         return dem_ortho.fetch_dem_and_ortho(

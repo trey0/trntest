@@ -2,16 +2,9 @@
 docs/data-sources/astropedia-gld100.md and `dem_ortho.fetch_dem`.
 """
 
-import math
 from pathlib import Path
 
-import numpy as np
-import rasterio
-from affine import Affine
 from rasterio.warp import Resampling, transform_bounds
-from rasterio.windows import Window
-from rasterio.windows import from_bounds as window_from_bounds
-from rasterio.windows import transform as window_transform
 
 from trntest import cache
 from trntest.config import MOON_RADIUS_M, TrntestConfig
@@ -19,9 +12,8 @@ from trntest.geo_utils import (
     DEM_FETCH_SAFETY_MARGIN_FRACTION,
     geographic_crs,
     local_orthographic_crs,
-    merge_local_grid_arrays,
     pad_bbox,
-    reproject_raster_to_local_grid_array,
+    read_eqc_raster_to_local_grid_array,
     write_local_grid_array,
 )
 
@@ -119,75 +111,17 @@ def reproject_astropedia_elevation_to_local_grid(
     :raises ValueError: If the file isn't Equidistant Cylindrical, as GLD100 is.
     """
     # Fast (no network, no row-strip-over-HTTP penalty), unlike a remote `/vsicurl/` windowed read of
-    # the same file. Uses the file's own embedded georeferencing rather than hardcoding Astropedia's
-    # Equidistant Cylindrical PROJ4 parameters by hand, since this file (unlike Lunaserv's GetMap
-    # responses) has trustworthy embedded georeferencing.
-    #
-    # This data is already elevation (Int16 meters, nodata -32768), not planetocentric radius like
-    # Lunaserv's DTM layer -- `lunaserv_wms.radius_to_elevation` is skipped entirely for this path.
-    #
-    # The file is centered on 180 deg, so its raster edges meet at 0 deg. Transforming an AOI that
-    # straddles 0 deg into the file's own CRS gives a whole-width min/max whose edges are wherever
-    # `transform_bounds`' densification happened to sample nearest the cut: up to ~0.5 deg just west
-    # of 0 deg came back NaN (the `dem_gld100` seam probes at 45N/60N 0E), the same failure
-    # `ortho_wac_emp` had at 180 deg. So the window is computed in an Equirectangular CRS centered on
-    # the AOI, where it never crosses a cut, and read as up to two pieces, one per raster edge, each
-    # warped separately. Concatenating the pieces into one array would misregister one of them: the
-    # raster is 109165 px x 100 m, ~94 m more than the circumference, so its last column overlaps
-    # its first.
-    with rasterio.open(astropedia_path) as src:
-        src_nodata = src.nodata
-        warp_crs = f"+proj=eqc +lat_ts=0 +lon_0={center_lon_deg} +R={moon_radius_m} +units=m +no_defs"
-        left, bottom, right, top = transform_bounds(
-            local_orthographic_crs(center_lon_deg, center_lat_deg, moon_radius_m),
-            warp_crs,
-            *pad_bbox(dst_bbox_m, DEM_FETCH_SAFETY_MARGIN_FRACTION),
-        )
-        # x in `src.crs` = x in `warp_crs` + `shift` (a `lon_0` change is a pure x shift in this
-        # linear projection), modulo the circumference.
-        if src.crs.to_dict().get("proj") != "eqc":
-            raise ValueError(f"{astropedia_path} isn't Equidistant Cylindrical like GLD100: {src.crs}")
-        src_lon0_deg = src.crs.to_dict().get("lon_0", 0.0)
-        circumference_m = 2 * np.pi * moon_radius_m
-        shift_m = moon_radius_m * np.radians((center_lon_deg - src_lon0_deg + 180.0) % 360.0 - 180.0)
-        pieces = []
-        for wrap_m in (-circumference_m, 0.0, circumference_m):
-            piece_left = max(left + shift_m + wrap_m, src.bounds.left)
-            piece_right = min(right + shift_m + wrap_m, src.bounds.right)
-            if piece_left >= piece_right:
-                continue
-            # An integer window, flooring the near edges and ceiling the far ones so it contains the
-            # requested extent. GDAL reads a fractional window as the nearest whole pixels while
-            # `window_transform` keeps the fraction, which put every DEM up to half a pixel off.
-            window = window_from_bounds(piece_left, bottom, piece_right, top, transform=src.transform)
-            col_off, row_off = math.floor(window.col_off), math.floor(window.row_off)
-            col_stop = math.ceil(window.col_off + window.width)
-            row_stop = math.ceil(window.row_off + window.height)
-            window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off).intersection(
-                Window(0, 0, src.width, src.height)
-            )
-            src_transform = window_transform(window, src.transform)
-            warp_transform = Affine.translation(-shift_m - wrap_m, 0) * src_transform
-            pieces.append((src.read(1, window=window), warp_transform))
-
-    arrays = [
-        reproject_raster_to_local_grid_array(
-            elevation,
-            warp_crs,
-            warp_transform,
-            dst_bbox_m,
-            dst_width,
-            dst_height,
-            center_lon_deg,
-            center_lat_deg,
-            moon_radius_m,
-            resampling,
-            tolerance,
-            src_nodata=src_nodata,
-            dst_nodata=np.nan,
-        )
-        for elevation, warp_transform in pieces
-    ]
-    return write_local_grid_array(
-        merge_local_grid_arrays(arrays), dst_bbox_m, center_lon_deg, center_lat_deg, moon_radius_m, output_path
+    # the same file. Already elevation (Int16 meters, nodata -32768), not planetocentric radius like
+    # Lunaserv's DTM layer, so no conversion.
+    elevation = read_eqc_raster_to_local_grid_array(
+        astropedia_path,
+        dst_bbox_m,
+        dst_width,
+        dst_height,
+        center_lon_deg,
+        center_lat_deg,
+        moon_radius_m,
+        resampling,
+        tolerance,
     )
+    return write_local_grid_array(elevation, dst_bbox_m, center_lon_deg, center_lat_deg, moon_radius_m, output_path)

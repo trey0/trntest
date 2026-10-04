@@ -6953,3 +6953,21 @@ spline fit, so heights continue a slope past the outermost pixel centers instead
 which had made false shadows in the outer 1-2 px. Runtime went from ~7 s to ~25 s per entry (about
 +10% of an entry's total generation time); shaded orthos moved to `_castshadow2` filenames. Existing
 datasets weren't regenerated.
+
+## Phase 135 (2026-10-03) -- DEM sources: SLDEM2015 + GLD100 mosaic selectable
+
+Step 2 of `docs/proposed-tasks/vira-dem-sources.md`. GLD100's wrap-safe, whole-pixel read (Phase
+133) became `geo_utils.read_eqc_raster_to_local_grid_array`, for any Equidistant Cylindrical raster,
+global or a tile. A new `dem_sources` module describes a source as a set of such tiles plus a fetch
+and a meters conversion (GLD100: one global file in meters; SLDEM2015: 32 tiles in km), picks the
+tiles overlapping a grid in an AOI-centered frame, averages where a source is finer than the grid
+(59 m SLDEM onto the 100 m grid), and merges sources by precedence; only the last must cover the
+grid. `TrntestConfig.dem_source` selects `"gld100"` (default, output bit-identical to before on five
+probes) or `"sldem2015_gld100"`; a non-default source goes into the DEM and shaded-ortho filenames.
+
+On real data the mosaic has no `NaN` at any SLDEM tile corner probed, including the four-tile corner
+across the 0° wrap; SLDEM sits 2-11 m above GLD100 on median, 15-33 m RMS apart. A first timing
+said 5-14 s per 200 km grid against 0.4 s for GLD100; profiling showed that was the first read of
+each tile from disk, and in fresh processes with the tiles in the OS cache it's ~0.6 s. Writing up
+step 3 showed the plan's idea of moving the ±60° cut poleward can't work, since SLDEM stops at 60°;
+the plan now frames it as rejecting and filling GLD100's bad edge rows instead.

@@ -1,7 +1,8 @@
 # Plan sketch: switch the default DEM to VIRA's multi-source selection
 
-Status: **Milestone 1 steps 0-1 done** (SLDEM2015 cached and checked; GLD100 baseline probes in
-`notebooks/dem_seams.ipynb`); step 2 next. Once the work is done, fold the
+Status: **Milestone 1 steps 0-2 done** (SLDEM2015 cached and checked; GLD100 baseline probes in
+`notebooks/dem_seams.ipynb`; `dem_sources` with `TrntestConfig.dem_source = "sldem2015_gld100"`
+available, not the default); step 3 next. Once the work is done, fold the
 lasting facts into `docs/data-sources/` (one file per new source) and `dem_ortho.py`'s docstrings,
 and delete this file.
 
@@ -140,18 +141,21 @@ wrap.
    `tests/test_dem_seams.py`). Every other probed meridian, ±30° and the equator are clean on
    GLD100: the baseline the mosaic's tile seams have to match. Within ±60° SLDEM replaces GLD100's
    90°/270° seams outright.
-2. **Source abstraction.** Generalize `dem_gld100.py` so a DEM is built from per-source reads:
-   coverage test in the source's own CRS, fetch/cache, read-and-reproject one source onto the local
-   grid (the pattern `ortho_wac_emp._reproject_one_wac_emp_tile_to_array` already uses, including its
-   branch-cut fix), conversion to meters of elevation. Add a `TrntestConfig.dem_source`
-   (`"gld100"` stays available for comparison, as `lunaserv_wms` was). Per
-   `docs/intermediate-product-discipline.md`, the DEM source goes into `dem_filled_filename` so the
-   two can't collide on one name. Design it for more than two sources, since Milestone 2 adds them.
-3. **Merge.** Per-pixel precedence (SLDEM where valid, else GLD100), then `hole_fill_dem`. Start with
-   a hard cut. GLD100's own ±60° seam sits exactly on this cut, so a hard cut at 60° leaves
-   GLD100's poleward edge rows (including the 60°N nodata row) as the polar side's first rows;
-   consider cutting a few rows poleward of 60° instead, once the mosaic can measure it. Add feathering or offset correction only if step 4 measures a step that needs it — the
-   WAC_EMP work showed each correction brings its own new edge cases.
+2. **Source abstraction.** *Done.* `dem_sources`: a `DemSource` is a set of Equidistant Cylindrical
+   tiles (GLD100 one, SLDEM2015 32) with its own fetch and meters conversion, read through
+   `geo_utils.read_eqc_raster_to_local_grid_array` (GLD100's wrap-safe, whole-pixel reader,
+   generalized), averaging where the source is finer than the grid. `DEM_SOURCES` maps
+   `TrntestConfig.dem_source` to sources in precedence order; `"gld100"` (default, output
+   bit-identical to before) and `"sldem2015_gld100"`. A non-default source is in the DEM and
+   shaded-ortho filenames. The hard-cut precedence merge is already in (`mosaic_elevation`): every
+   probe corner within ±60° comes out with no `NaN`, SLDEM 2-11 m above GLD100 on median, 15-33 m RMS
+   apart, ~0.6 s per 200 km grid once the tiles are in the OS cache.
+3. **Merge at ±60°.** The hard cut puts GLD100's poleward edge rows, including the 60°N nodata row,
+   right against SLDEM's edge. The seam can't move poleward (SLDEM stops at 60°), so mitigating it
+   means rejecting GLD100's bad rows there and filling across from both sides
+   (`docs/map-seams.md` principle 9); moving it equatorward would only help if SLDEM's own edge rows
+   turn out bad. Decide with step 4's measurements; add feathering or an offset correction only if
+   they show a step that needs it.
 4. **Probe the mosaic**, #1 first, then #2, #3, #6, #7. Fix, re-probe.
 5. **Quality check: is SLDEM actually better here?** Same entries, both sources:
    - the steep-pixel count (`open-items.md`: 38 of 207 `trntest1` DEMs have pixels > 60°; start with
