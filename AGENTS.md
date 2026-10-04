@@ -79,9 +79,11 @@ file). Then, as needed:
   messaging" subsection (now the first thing under its "Multi-agent worktrees" section) for the
   full protocol.
 - **If you're running in a Claude Code worktree** (this session's checkout is
-  `.claude/worktrees/<name>/`, not the main checkout — check `git rev-parse --show-toplevel`), run
-  `scripts/setup_worktree_docker_env.sh` once before your first `docker compose` call in this
-  session, and use your worktree's own `output/<name>/` subfolder for anything else you write under
+  `.claude/worktrees/<name>/`, not the main checkout — check `git rev-parse --show-toplevel`),
+  `scripts/setup_worktree_docker_env.sh` must have run before your first `docker compose` call —
+  the SessionStart hook (`.claude/settings.json` → `scripts/claude_session_start.sh`) runs it
+  automatically and reports the result in your context; run it yourself only if that report shows
+  a failure or is missing. Use your worktree's own `output/<name>/` subfolder for anything else you write under
   the shared `trntest_ws` (e.g. one-off files outside `output/`, if you ever need them) — the outer
   `trntest_ws` workspace (`cache/`, `output/`, `scratch/`) is shared with the main checkout and any
   other concurrent worktree agents, and `output/` in particular isn't safe to write to un-namespaced

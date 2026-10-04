@@ -142,9 +142,11 @@ and `SendMessage` tools — are part of the normal workflow here, not just a bre
 
 `docker-compose.yml` handles all three via env vars (`TRNTEST_HOST_CACHE_DIR`,
 `TRNTEST_HOST_OUTPUT_DIR`, `TRNTEST_HOST_SCRATCH_DIR`, `TRNTEST_IMAGE_TAG`,
-`COMPOSE_PROJECT_NAME`), with defaults that already suit the main checkout unchanged. Run
-`scripts/setup_worktree_docker_env.sh` once in a new worktree, before the first `docker compose`
-call there — it detects the worktree name from the checkout path (no manual path arithmetic) and
+`COMPOSE_PROJECT_NAME`), with defaults that already suit the main checkout unchanged.
+`scripts/setup_worktree_docker_env.sh` must run once in a new worktree, before the first `docker
+compose` call there — a Claude Code SessionStart hook (`.claude/settings.json` →
+`scripts/claude_session_start.sh`) does this automatically at every session start, resume, and
+compaction, and also reminds the agent to call `ListAgents`. It detects the worktree name from the checkout path (no manual path arithmetic) and
 writes a gitignored `docker/.env` pointing cache/scratch at the shared roots and output/image
 tag/project name at agent-specific ones. Re-run it any time; it's idempotent. In practice, an
 active worktree agent runs its own `docker compose up` Jupyter Lab server (so the user can watch

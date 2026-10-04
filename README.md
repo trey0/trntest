@@ -110,10 +110,12 @@ if you've cloned it somewhere else, either recreate that wrapper directory, over
 below), or just set `TRNTEST_CACHE_ROOT`/`TRNTEST_OUTPUT_DIR`/a `trntest.toml` instead.
 
 **Working in a Claude Code worktree** (`.claude/worktrees/<name>/`, alongside the main checkout,
-sharing the same outer `trntest_ws`)? Run `scripts/setup_worktree_docker_env.sh` once before your
-first `docker compose` call — it writes a gitignored `docker/.env` so your worktree shares the main
-checkout's `cache`/`scratch` but gets its own `output/<name>/` subfolder and its own image
-tag/Compose project name, so concurrent agents don't clobber each other's outputs or image builds.
+sharing the same outer `trntest_ws`)? `scripts/setup_worktree_docker_env.sh` must run once before
+your first `docker compose` call (a Claude Code SessionStart hook in `.claude/settings.json` runs it
+automatically; run it by hand outside Claude Code) — it writes a gitignored `docker/.env` so your
+worktree shares the main checkout's `cache`/`scratch` but gets its own `output/<name>/` subfolder
+and its own image tag/Compose project name, so concurrent agents don't clobber each other's outputs
+or image builds.
 See `docs/environment.md`'s "Multi-agent worktrees" section for why.
 
 ## Linting and type-checking
