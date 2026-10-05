@@ -2,7 +2,9 @@
 
 Status: **Milestone 1 steps 0-4 done** (SLDEM2015 cached and checked; `TrntestConfig.dem_source =
 "sldem2015_gld100"` available with its ±60° seam treated, passing all 42 seam probes in
-`notebooks/dem_seams.ipynb`; not yet the default); step 5 next. Once the work is done, fold the
+`notebooks/dem_seams.ipynb`; not yet the default); step 5 next, after `dataset-meta.md`'s step 1
+(its seam/mitigation registries rework the ±60° treatment, and its dataset record lets an
+SLDEM-built dataset identify itself). Once the work is done, fold the
 lasting facts into `docs/data-sources/` (one file per new source) and `dem_ortho.py`'s docstrings,
 and delete this file.
 
@@ -162,11 +164,15 @@ wrap.
    mosaic none, with no `NaN` anywhere. Still to do: #7 (more longitudes along ±60°). Not yet looked
    at: whether the ~3 km feather or the texture change (SLDEM's far sharper detail meeting GLD100's
    blur, visible in a low-sun hillshade, untreatable at the seam) shows up in rendered images.
-5. **Quality check: is SLDEM actually better here?** Same entries, both sources:
-   - the steep-pixel count (`open-items.md`: 38 of 207 `trntest1` DEMs have pixels > 60°; start with
-     `M1314424588CE`)
-   - low-sun hillshade side by side, and each against the real WAC image
-   - effective resolution of each (see "DEM working resolution" below)
+5. **Quality check: is SLDEM actually better here?** Effective resolution is settled (user, by eye:
+   much sharper than the nominal posting difference suggests), so don't measure it. Instead
+   regenerate `trntest2` (69 entries, all within ±63°) on both sources and compare the dataset
+   reports' full-zoom hillshade-vs-WAC views side by side; the GLD100 side needs regenerating too
+   (`open-items.md`'s half-pixel DEM fix). Add targeted checks only where the reports don't reach:
+   a steep-pixel table (pixels > 60°, max slope) per entry, split < 57° vs. the 57-63° band, which
+   also shows whether the ±60° feather is visible in renders. `M1314424588CE` (the steep-pixel
+   item's worst case) is at 69.9°N, outside SLDEM, so it can't test this milestone. `trntest1` only
+   if `trntest2` looks good.
 6. **End-to-end.** Render a few entries near each seam type through all three generators; confirm
    `image_generation.ipynb`'s geometry checks don't regress. Check DEM↔ortho registration: GLD100 is
    WAC-derived and so co-registered with WAC_EMP by construction; SLDEM (LOLA-controlled) may not be,
