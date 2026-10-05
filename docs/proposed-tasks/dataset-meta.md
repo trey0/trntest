@@ -51,6 +51,22 @@ the code's source registry.
    dataset was created with. Each product's sidecar holds its own resolved generation record plus the
    git commit (and dirty flag) that produced it. Comparing the two catches drift.
 
+## How a pixel is resolved
+
+The same work `dem_sources.mosaic_elevation` does today, in a fixed order with a stated contract
+for each step. The default path (no mitigations) costs what today's precedence merge costs. A
+mitigation does work only inside its own region.
+
+1. **Source layers.** Each source is resampled onto the output grid on its own, with `NaN` where it
+   has no valid data. A source's own tiles are merged here as hard cuts (SLDEM's 45°/30° tile seams
+   live entirely inside this step).
+2. **Precedence merge.** Each pixel comes from the first source, in list order, that's valid there.
+3. **Mitigations**, seam by seam, each confined to its declared region (below).
+4. **Hole fill** (`dem_mosaic --hole-fill-length`) of whatever is still `NaN`.
+
+Where an output pixel comes from is then: the precedence winner, unless it falls in a mitigation's
+region, in which case that method's docstring says what it does there.
+
 ## Seams and mitigations
 
 ### Coordinate seams vs. data seams
@@ -61,58 +77,83 @@ the code's source registry.
   code's bugs. They are fixed in the reader (`geo_utils.read_eqc_raster_to_local_grid_array`) and
   take no parameters. A longitude branch cut therefore never appears in the record. The code version
   covers it.
-- **Data seams** are defects in, or disagreements between, source data. These get mitigations, and
-  they occur at both latitudes and longitudes. Today's real examples:
+- **Data seams** are defects in, or disagreements between, source data. They occur at both latitudes
+  and longitudes, so the current `lat_seams` name is too narrow. Today's real examples:
   - SLDEM2015 ↔ GLD100 at ±60° (mitigated).
   - WAC_EMP equirectangular ↔ polar at ±60° (mitigated).
   - GLD100's internal lines at ±60° and at 90°/270° longitude (unmitigated).
 
-  So the current `lat_seams` name is too narrow.
+### Seams: where they are
 
-### Seam registry: where seams are
-
-A seam is a fact about two sources' coverage, so it's defined next to the sources, once, by name.
-Each seam's location is given in a named reference frame:
+A seam is a fact about the sources' coverage, defined once, by name, next to the sources. Its
+location is one coordinate of a named reference frame, so each seam has a **low side** and a **high
+side** (smaller and larger values of that coordinate):
 
 ```python
 SEAMS = {
-    "sldem2015|gld100@lat60": Seam(
-        sides=("sldem2015", "gld100"),
-        frame="geographic",  # a named CRS defined once in geo_utils
-        coord="abs_lat",
-        value=60.0,
-    ),
-    "wac_emp_equirect|wac_emp_polar@lat60": Seam(...),
-    "gld100@lon90": Seam(sides=("gld100", "gld100"), frame="gld100_eqc", coord="lon", value=90.0),
+    "sldem2015|gld100@abslat60": Seam(frame="geographic", coord="abs_lat", value=60.0,
+                                      low="sldem2015", high="gld100"),
+    "gld100@lon90": Seam(frame="gld100_eqc", coord="lon", value=90.0, low="gld100", high="gld100"),
 }
 ```
 
-`sides` names which source lies on which side. That settles the asymmetry question: a mitigation's
-per-side parameters are keyed by source name, not by "equatorward"/"poleward".
+Frames are named CRSes defined once in `geo_utils`. Which source lies on which side is in the seam,
+so a reader of the record looks it up there.
 
-### Mitigation registry: what's done at a seam
+### Mitigation methods: what's done at a seam
 
-A short list of named methods. Each one has named, unit-suffixed parameters and a version. A method
-may be tuned to one particular seam; that's acceptable once it has a name and a place in the
-registry. A new mitigation means a new registry entry, not a new parameter on an old one.
+A short registry of named methods, each with named parameters and a version. A seam's mitigations
+are a list of `(method, parameters)`; **an empty list, or no entry, is a hard cut.**
+
+**Generic where it's cheap, specific where it isn't.** A method takes its seam as an argument and
+addresses the two sides as `low`/`high`, never by source name, so the same method serves any seam.
+Where a parameter is in native pixels, it means the native pixels of whichever source is on that
+side. A method that models one archive's particular defect is allowed to be specific to that
+source; it says so in its name.
 
 | Method | Parameters | Today's use |
 |---|---|---|
-| `hard_cut@1` | none | every SLDEM tile seam, `"sldem2015_gld100_hardcut"` |
-| `reject_fill@1` | `band_<side>` per side; fill: IDW, `max_search_px` | `LatSeam.reject_deg` |
-| `linear_feather@1` | `width_<side>` (side the blend lies on) | `LatSeam.feather_deg` |
-| `wac_emp_edge_model@1` | the module's zone widths in WAC_EMP native px | `wac_emp_edge_correction.py` |
+| `reject_fill@1` | `low_native_px`, `high_native_px`, `max_search_dest_px` | `LatSeam.reject_deg` |
+| `linear_feather@1` | `side` (`low`/`high`), `width_m` | `LatSeam.feather_deg` |
+| `wac_emp_edge_model@1` | the module's zone widths, WAC_EMP native px | `wac_emp_edge_correction.py` |
 
-Today's `LatSeam` becomes two methods applied in order (reject/fill, then feather). Splitting it lets
-each be enabled or retuned on its own.
+**Each method's docstring states its regions**, in terms of its seam and parameters:
 
-**Units matter, and `LatSeam` currently picks the wrong ones.** The reject band exists to cover
-GLD100's defective rows, which are a fixed number of GLD100 native pixels (~4.5 at 0.015°). It's
-specified in degrees, though, and was tuned in destination-grid pixels (~7 px at 100 m). Change
-`dem_target_gsd_m` and the band no longer means what it was tuned to mean. A parameter should take
-the unit of what it covers: `band_gld100_native_px` for the defect, `max_search_dest_px` for the
-fill reach. Integer pixels in a named projection are the natural unit for most such parameters. The record
-then reads unambiguously without a general spec language.
+- **Write region:** the only pixels it may change. `reject_fill`: the band from `low_native_px`
+  below the seam to `high_native_px` above it. `linear_feather`: `width_m` on `side`, where both
+  sources are valid.
+- **Read margin:** how far beyond the write region it reads. `reject_fill`: `max_search_dest_px`.
+- **AOI-dependent: yes/no.** Whether a ground pixel's result depends on what else the AOI contains.
+  `wac_emp_edge_model` fits its correction from the AOI's own pixels, so yes.
+
+This is documentation, not runtime enforcement. Conformance is checked in tests for free: the seam
+probes already render each seam with and without mitigations, and the two must agree outside the
+write regions.
+
+**Units follow what the parameter covers.** A defect band is a count of the defective source's
+native pixels; a fill reach is output pixels; a smooth transition is meters. `LatSeam` uses degrees
+throughout, which doesn't fit any of them: its reject band covers GLD100's defective rows (~4.5
+GLD100 pixels at 0.015°) but was tuned in output pixels (~7 at 100 m), so changing
+`dem_target_gsd_m` changes what it means.
+
+### Where seams meet
+
+Mitigations run in a priority order, as sources do: the seams' order in the mosaic definition, then
+each seam's own list order. Where two write regions overlap, the higher-priority one's writes stand
+(apply in reverse priority order, so it runs last). That's the default; a junction that needs more
+gets its own method.
+
+At today's junctions it never comes up. At (60°N, 0°) the other seam is SLDEM's own tile seam, which
+step 1 resolves, so only one mitigation is active. The probes passing at all 16 ±60° corners confirms
+it. Overlapping regions first become possible in Milestone 2, where the polar products' corners
+reach ~48° and three sources can overlap near ±60°.
+
+### What changes in today's output
+
+Mapping `LatSeam` onto these methods changes the DEM slightly. Its reject band also discards SLDEM's
+clean side: not a defect, but a way to spread GLD100's local disagreement over ~7 px. Under the new
+methods, that's either `low_native_px > 0`, which states the choice, or dropped if the feather
+covers it. Either way, rerun the seam probes and re-tune the widths.
 
 ## Proposed record
 
@@ -130,16 +171,16 @@ intermediates, which keeps hashing straightforward (next section).
       "target_gsd_m": 100.0, "padding_fraction": 0.3,
       "sources": ["sldem2015_512@1", "gld100@1"],
       "seams": {
-        "sldem2015|gld100@lat60": [
-          {"method": "reject_fill@1", "band_sldem2015_dest_px": 2, "band_gld100_native_px": 5, "max_search_dest_px": 20},
-          {"method": "linear_feather@1", "width_sldem2015_deg": 0.1}
+        "sldem2015|gld100@abslat60": [
+          {"method": "reject_fill@1", "low_native_px": 4, "high_native_px": 5, "max_search_dest_px": 20},
+          {"method": "linear_feather@1", "side": "low", "width_m": 3000}
         ]
       },
       "hole_fill": {"method": "dem_mosaic_hole_fill@1", "length_px": 50}
     },
     "reflectance": {
       "source": "wac_emp_pds@1",
-      "seams": {"wac_emp_equirect|wac_emp_polar@lat60": [{"method": "wac_emp_edge_model@1"}]}
+      "seams": {"wac_emp_equirect|wac_emp_polar@abslat60": [{"method": "wac_emp_edge_model@1"}]}
     },
     "shading": {"model": "hapke@1", "along_track_correction": true, "real_params": true,
                 "calibration_wavelength_nm": 643, "cast_shadows": "horizon_sweep@1"},
@@ -153,9 +194,10 @@ Choices worth checking:
 - **The `dem_source` config key doesn't appear in the record.** It becomes a named preset that
   expands into `sources` + `seams`. Presets are a convenience for selecting a configuration; the
   record holds the expansion.
-- **A seam that's present but unmitigated is still listed**, as `hard_cut@1`, whenever a dataset's
-  sources include one. That records "we knew and chose not to." Today that includes GLD100's own
-  lines. That is also where a "known uncorrectable defect" caution (`open-items.md`) can be read from.
+- **Only mitigated seams appear.** A seam the dataset's sources cross with no mitigations is a hard
+  cut and needs no entry. Known-defective unmitigated seams (GLD100's own lines) are listed in the
+  seam registry with a defect note, which is where a "known uncorrectable defect" caution
+  (`open-items.md`) can be read from; the record doesn't need to repeat them.
 - **Shading flags move out of module constants.** `hapke.DEFAULT_*` and `dem_ortho.DEFAULT_ORTHO_SOURCE`
   aren't in `TrntestConfig` today. They need to be resolvable settings so the record can be built in
   one place. Their filename suffixes (`_atc`, `_castshadow2`, ...) are a hand-maintained version of
@@ -193,7 +235,8 @@ staleness check (purpose 3) guards it.
 ## Incremental path
 
 1. Seam and mitigation registries in code; `LatSeam` split into `reject_fill` + `linear_feather`
-   with per-side, unit-suffixed parameters (re-verify the seam probes still pass).
+   with `low`/`high`, unit-suffixed parameters; re-tune against the seam probes, and add the
+   "mitigated and unmitigated passes agree outside write regions" check to the probe tests.
 2. `generation_record(config)`: resolves the full record; generator flags moved into `TrntestConfig`.
 3. Written to `dataset_meta.json` by `create()` and to each product sidecar; staleness check in
    `open()`/`populate()`.
